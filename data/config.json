@@ -1,0 +1,27 @@
+{
+    "wifi":
+    {        "ssid":"wqs1",
+        "password":"18203534321"
+    },
+
+    "oled":
+    {   "sda":4,
+        "scl":5,
+        "i2c_speed":100000,
+        "frame_delay":50,
+        "rotation": 2
+    },
+
+    "system":
+    {
+        "timezone":8
+    },
+
+      "time":
+    {
+        "timezone": 8,
+        "ntp_server1": "ntp.aliyun.com",
+        "ntp_server2": "cn.pool.ntp.org",
+        "sync_interval_day": 7
+    }
+}
