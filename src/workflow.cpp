@@ -254,6 +254,15 @@ static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
 
         // 计算目标时间
         rt->next_trigger_time = timer_calculate_next(trigger);
+        if (rt->next_trigger_time == 0)
+        {
+            rt->expired = true;
+            return TRIGGER_FAILED;
+        }
+
+        rt->last_trigger_minute = -1;
+        rt->triggered = false;
+        rt->expired = false;
         rt->last_trigger_minute = -1;
         rt->triggered = false;
         rt->expired = false;
@@ -296,7 +305,7 @@ static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
     // 第六步：检查是否到达目标时间（容忍窗口 ±6 秒）
     // =============================================
     time_t diff = now - rt->next_trigger_time;
-    if (diff >= -6 && diff < 6) {
+    if (diff >= -6 && diff <= 6) {
         rt->triggered = true;
 
         // 计算下一次触发时间（daily/weekly）
