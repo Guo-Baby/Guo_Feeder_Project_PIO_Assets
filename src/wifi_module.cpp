@@ -44,12 +44,112 @@ static unsigned long lastReconnectTime = 0;
 
 
 // ==========================
+// 信号更新
+// ==========================
+
+static unsigned long lastSignalUpdate = 0;
+
+static unsigned long signal_update_interval = 10000;
+
+
+
+// ==========================
 // 参数
 // ==========================
 
 static unsigned long wifi_connect_timeout = 30000;
 
 static unsigned long wifi_reconnect_interval = 10000;
+
+
+
+// ==========================
+// RSSI转换信号等级
+// ==========================
+
+static int wifi_calculate_signal(
+    int rssi
+)
+{
+
+    if(rssi >= -50)
+    {
+        return 4;
+    }
+    else if(rssi >= -65)
+    {
+        return 3;
+    }
+    else if(rssi >= -75)
+    {
+        return 2;
+    }
+    else if(rssi >= -90)
+    {
+        return 1;
+    }
+    else
+    {
+        return 0;
+    }
+
+}
+
+
+
+// ==========================
+// 更新WiFi信号状态
+// ==========================
+
+static void wifi_update_signal()
+{
+
+    if(
+        millis()
+        -
+        lastSignalUpdate
+        <
+        signal_update_interval
+    )
+    {
+        return;
+    }
+
+
+    lastSignalUpdate =
+        millis();
+
+
+
+    if(
+        WiFi.status()
+        !=
+        WL_CONNECTED
+    )
+    {
+        return;
+    }
+
+
+
+    int rssi =
+        WiFi.RSSI();
+
+
+
+    state_set_int(
+        STATE_WIFI_RSSI,
+        rssi
+    );
+
+
+
+    state_set_int(
+        STATE_WIFI_SIGNAL,
+        wifi_calculate_signal(rssi)
+    );
+
+}
 
 
 
@@ -84,8 +184,32 @@ void wifi_init()
         WIFI_IDLE;
 
 
-    system_set_wifi_status(
+    wifi_connected =
+        false;
+
+
+
+    state_set_bool(
+        STATE_WIFI_STATUS,
         false
+    );
+
+
+    state_set_int(
+        STATE_WIFI_STATE,
+        WIFI_IDLE
+    );
+
+
+    state_set_int(
+        STATE_WIFI_RSSI,
+        -100
+    );
+
+
+    state_set_int(
+        STATE_WIFI_SIGNAL,
+        0
     );
 
 }
@@ -135,6 +259,13 @@ static void wifi_start_connect()
     wifi_state =
         WIFI_CONNECTING;
 
+
+
+    state_set_int(
+        STATE_WIFI_STATE,
+        WIFI_CONNECTING
+    );
+
 }
 
 
@@ -147,14 +278,12 @@ static void wifi_start_connect()
 void wifi_task()
 {
 
+    wifi_update_signal();
+
 
     switch(wifi_state)
     {
 
-
-        // ======================
-        // 空闲
-        // ======================
 
         case WIFI_IDLE:
         {
@@ -162,17 +291,13 @@ void wifi_task()
             wifi_start_connect();
 
             break;
+
         }
 
 
 
-        // ======================
-        // 连接中
-        // ======================
-
         case WIFI_CONNECTING:
         {
-
 
             if(
                 WiFi.status()
@@ -181,50 +306,50 @@ void wifi_task()
             )
             {
 
-
                 if(!wifi_connected)
                 {
-
 
                     Serial.println(
                         "WiFi connected"
                     );
 
+
                     wifi_connected =
                         true;
 
-                    // 更新系统状态
-                    system_set_wifi_status(
+
+                    state_set_bool(
+                        STATE_WIFI_STATUS,
                         true
                     );
 
-                    // 发布事件
+
                     event_push(
-                        EVENT_WIFI_CONNECTED
+                        EVENT_WIFI_CONNECTED,
+                        "",
+                        "wifi_module",
+                        EVENT_PRIORITY_NORMAL,
+                        EVENT_POLICY_NORMAL,
+                        0
                     );
 
 
-                    Serial.println(
-                        "EVENT WIFI CONNECTED"
-                    );
                 }
-
-
-              
-
 
 
                 wifi_state =
                     WIFI_CONNECTED;
 
 
+                state_set_int(
+                    STATE_WIFI_STATE,
+                    WIFI_CONNECTED
+                );
+
 
             }
             else
             {
-
-
-                // 超时
 
                 if(
                     millis()
@@ -235,7 +360,6 @@ void wifi_task()
                 )
                 {
 
-
                     Serial.println(
                         "WiFi connect timeout"
                     );
@@ -245,12 +369,18 @@ void wifi_task()
                         WIFI_DISCONNECTED;
 
 
-                    system_set_wifi_status(
+                    state_set_bool(
+                        STATE_WIFI_STATUS,
                         false
                     );
 
-                }
 
+                    state_set_int(
+                        STATE_WIFI_STATE,
+                        WIFI_DISCONNECTED
+                    );
+
+                }
 
             }
 
@@ -261,10 +391,6 @@ void wifi_task()
 
 
 
-
-        // ======================
-        // 已连接
-        // ======================
 
         case WIFI_CONNECTED:
         {
@@ -277,11 +403,9 @@ void wifi_task()
             )
             {
 
-
                 Serial.println(
                     "WiFi lost"
                 );
-
 
 
                 wifi_connected =
@@ -289,26 +413,32 @@ void wifi_task()
 
 
 
-                system_set_wifi_status(
+                state_set_bool(
+                    STATE_WIFI_STATUS,
                     false
                 );
 
 
 
                 event_push(
-                    EVENT_WIFI_DISCONNECTED
-                );
-
-
-
-                Serial.println(
-                    "EVENT WIFI DISCONNECTED"
+                    EVENT_WIFI_DISCONNECTED,
+                    "",
+                    "wifi_module",
+                    EVENT_PRIORITY_NORMAL,
+                    EVENT_POLICY_NORMAL,
+                    0
                 );
 
 
 
                 wifi_state =
                     WIFI_DISCONNECTED;
+
+
+                state_set_int(
+                    STATE_WIFI_STATE,
+                    WIFI_DISCONNECTED
+                );
 
             }
 
@@ -319,10 +449,6 @@ void wifi_task()
 
 
 
-
-        // ======================
-        // 断开
-        // ======================
 
         case WIFI_DISCONNECTED:
         {
@@ -336,7 +462,6 @@ void wifi_task()
                 wifi_reconnect_interval
             )
             {
-
 
                 lastReconnectTime =
                     millis();
@@ -365,23 +490,51 @@ void wifi_task()
 
 
 
-
-
-
 // ==========================
 // 查询状态
 // ==========================
-//
-// 保留接口
-//
-// 未来调试使用
-//
-// Time Manager不要调用
-//
 
 bool wifi_is_connected()
 {
 
     return wifi_connected;
+
+}
+
+
+
+// ==========================
+// RSSI查询接口
+// ==========================
+
+int wifi_get_rssi()
+{
+
+    if(
+        WiFi.status()
+        ==
+        WL_CONNECTED
+    )
+    {
+        return WiFi.RSSI();
+    }
+
+
+    return -100;
+
+}
+
+
+
+// ==========================
+// 信号等级查询
+// ==========================
+
+int wifi_get_signal_quality()
+{
+
+    return wifi_calculate_signal(
+        wifi_get_rssi()
+    );
 
 }

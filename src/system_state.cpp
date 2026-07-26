@@ -4,201 +4,380 @@
 
 
 // =====================================================
-// 系统状态变量
-//
-// 所有变量只存在RAM
-//
-// 断电后消失
-//
+// System State存储区
 // =====================================================
 
+static SystemStateValue state_table[STATE_MAX];
 
-// ==========================
-// WiFi状态
-// ==========================
-static bool wifi_status = false;
+// =====================================================
+// ESP32 双核临界区锁
+// =====================================================
 
+static portMUX_TYPE state_mux = portMUX_INITIALIZER_UNLOCKED;
 
-// ==========================
-// 时间状态
-// ==========================
-static time_t system_time = 0;
-static bool time_valid = false;
-
-
-// ==========================
-// NTP状态
-// ==========================
-static bool ntp_synced = false;
-static time_t last_ntp_sync = 0;
-
-
-// ==========================
-// RTC状态
-// ==========================
-static bool rtc_available = false;
-
-
-// ==========================
-// 错误状态
-// ==========================
-static uint16_t error_code = 0;
-
-
-// ==========================
-// 运行状态
-// ==========================
-static SystemRunState run_state =
-    SYSTEM_IDLE;
+// =====================================================
+// 初始化
+// =====================================================
 
 void system_state_init()
 {
 
-    wifi_status = false;
+    portENTER_CRITICAL(&state_mux);
 
 
-    system_time = 0;
-    time_valid = false;
-
-
-    ntp_synced = false;
-    last_ntp_sync = 0;
-
-
-    rtc_available = false;
-
-
-    error_code = 0;
-
-
-    run_state = SYSTEM_IDLE;
-
-
-    Serial.println(
-        "System state init OK"
-    );
-
-}
-
-// =====================================================
-// WiFi
-// =====================================================
-void system_set_wifi_status(
-    bool status
-)
-{
-    wifi_status = status;
-}
-
-bool system_get_wifi_status()
-{
-    return wifi_status;
-}
-
-
-// =====================================================
-// 时间
-// =====================================================
-void system_set_time(
-    time_t timestamp
-)
-{
-    system_time = timestamp;
-
-
-    if(timestamp > 0)
+    for(
+        int i = 0;
+        i < STATE_MAX;
+        i++
+    )
     {
-        time_valid = true;
-    }
-    else
-    {
-        time_valid = false;
+        state_table[i].type =
+            STATE_TYPE_LONG;
+
+
+        state_table[i].value =
+            0;
+
+
+        state_table[i].valid =
+            false;
     }
 
-}
 
-time_t system_get_time()
-{
-    return system_time;
+    portEXIT_CRITICAL(&state_mux);
+
 }
 
 
-bool system_is_time_valid()
-{
-    return time_valid;
-}
 
 // =====================================================
-// NTP
+// 写 INT
 // =====================================================
-void system_set_ntp_synced(
-    bool status
+
+bool state_set_int(
+    SystemStateKey key,
+    int value
 )
 {
-    ntp_synced = status;
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    state_table[key].type =
+        STATE_TYPE_INT;
+
+
+    state_table[key].value =
+        value;
+
+
+    state_table[key].valid =
+        true;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return true;
+
 }
 
-bool system_is_ntp_synced()
-{
-    return ntp_synced;
-}
 
-void system_set_last_ntp_sync(
-    time_t timestamp
+
+// =====================================================
+// 写 BOOL
+// =====================================================
+
+bool state_set_bool(
+    SystemStateKey key,
+    bool value
 )
 {
-    last_ntp_sync = timestamp;
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    state_table[key].type =
+        STATE_TYPE_BOOL;
+
+
+    state_table[key].value =
+        value ? 1 : 0;
+
+
+    state_table[key].valid =
+        true;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return true;
+
 }
 
-time_t system_get_last_ntp_sync()
-{
-    return last_ntp_sync;
-}
 
 
 // =====================================================
-// RTC
+// 写 LONG
 // =====================================================
-void system_set_rtc_available(
-    bool status
+
+bool state_set_long(
+    SystemStateKey key,
+    long value
 )
 {
-    rtc_available = status;
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    state_table[key].type =
+        STATE_TYPE_LONG;
+
+
+    state_table[key].value =
+        value;
+
+
+    state_table[key].valid =
+        true;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return true;
+
 }
 
-bool system_is_rtc_available()
-{
-    return rtc_available;
-}
-
-
 // =====================================================
-// 错误
+// 写 float
 // =====================================================
-void system_set_error_code(
-    uint16_t code
+
+bool state_set_float(
+    SystemStateKey key,
+    float value
 )
 {
-    error_code = code;
-}
 
-uint16_t system_get_error_code()
-{
-    return error_code;
+    if(key >= STATE_MAX)
+        return false;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    state_table[key].type = STATE_TYPE_FLOAT;
+
+    state_table[key].value_float = value;
+
+    state_table[key].valid = true;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return true;
 }
 
 
 // =====================================================
-// 系统运行状态
+// 读 INT
 // =====================================================
-void system_set_run_state(
-    SystemRunState state
+
+int state_get_int(
+    SystemStateKey key
 )
 {
-    run_state = state;
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return 0;
+    }
+
+
+    int value;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    value =
+        (int)state_table[key].value;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return value;
+
 }
 
-SystemRunState system_get_run_state()
+
+
+// =====================================================
+// 读 BOOL
+// =====================================================
+
+bool state_get_bool(
+    SystemStateKey key
+)
 {
-    return run_state;
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+
+
+    bool value;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    value =
+        state_table[key].value != 0;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return value;
+
+}
+
+
+
+// =====================================================
+// 读 LONG
+// =====================================================
+
+long state_get_long(
+    SystemStateKey key
+)
+{
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return 0;
+    }
+
+
+    long value;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    value =
+        state_table[key].value;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return value;
+
+}
+
+// =====================================================
+// 读 float
+// =====================================================
+
+float state_get_float(
+    SystemStateKey key
+)
+{
+
+    if(key >= STATE_MAX)
+        return 0;
+
+
+    float value;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    value =
+        state_table[key].value_float;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return value;
+}
+
+
+// =====================================================
+// 状态有效性
+// =====================================================
+
+bool state_is_valid(
+    SystemStateKey key
+)
+{
+
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+
+
+    bool valid;
+
+
+    portENTER_CRITICAL(&state_mux);
+
+
+    valid =
+        state_table[key].valid;
+
+
+    portEXIT_CRITICAL(&state_mux);
+
+
+    return valid;
+
 }

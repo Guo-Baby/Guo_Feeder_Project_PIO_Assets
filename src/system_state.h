@@ -1,103 +1,191 @@
-#pragma once
+#ifndef SYSTEM_STATE_H
+#define SYSTEM_STATE_H
 
 #include <Arduino.h>
-#include <time.h>
 
 
 // =====================================================
-// 系统运行状态模块
+// System State 类型
 //
-// 作用：
-// 保存设备运行期间的公共状态变量
+// 所有系统共享状态统一登记位置
 //
-// 注意：
-// 1. 不保存用户配置
-// 2. 不操作Flash
-// 3. 不负责通信
+// 规则：
+// 1. 谁产生状态，谁调用 state_set_xxx()
+// 2. 所有模块通过 state_get_xxx()读取
+// 3. 不允许业务逻辑写入其他模块状态
 //
-// 其他模块通过这里交换运行状态
-//
-// 例如：
-// OLED读取重量、时间、WiFi状态
-// 云端读取设备状态
-// RTC读取时间状态
 // =====================================================
 
-// 初始化系统状态
-void system_state_init();
 
-// ==========================
-// WiFi状态
-// ==========================
-void system_set_wifi_status(bool status);
-bool system_get_wifi_status();
-
-
-// ==========================
-// 系统时间状态
-// ==========================
-// 设置当前系统时间
-void system_set_time(time_t timestamp);
-
-// 获取当前系统时间
-time_t system_get_time();
-
-// 时间是否有效
-bool system_is_time_valid();
-
-
-// ==========================
-// NTP同步状态
-// ==========================
-// 设置NTP同步完成
-void system_set_ntp_synced(bool status);
-
-// 获取NTP同步状态
-bool system_is_ntp_synced();
-
-// 记录最后一次NTP同步时间
-void system_set_last_ntp_sync(time_t timestamp);
-
-// 获取最后一次NTP同步时间
-time_t system_get_last_ntp_sync();
-
-// ==========================
-// RTC状态
-// ==========================
-// RTC是否存在
-void system_set_rtc_available(bool status);
-
-// RTC状态查询
-bool system_is_rtc_available();
-
-
-// ==========================
-// 系统错误状态
-// ==========================
-// 当前错误代码
-void system_set_error_code(
-    uint16_t code
-);
-
-// 获取错误代码
-uint16_t system_get_error_code();
-
-
-// ==========================
-// 设备运行状态
-// ==========================
-enum SystemRunState
+enum SystemStateKey
 {
-    SYSTEM_IDLE = 0,
-    SYSTEM_RUNNING,
-    SYSTEM_ERROR
+
+    // WiFi
+    STATE_WIFI_STATUS,//连接状态，bool值
+    STATE_WIFI_RSSI,//信号分贝
+    STATE_WIFI_SIGNAL,//信号质量，int值，规则为0，1极差，2中等，3良好，4极好
+    STATE_WIFI_STATE,//WiFi模块工作状态机,int值，规则为0 idle，1 connecting，2 connected，3 disconnected
+
+    // 时间
+    //
+    STATE_TIME_VALID,
+
+
+    // 阀门
+    STATE_VALVE_STATUS,
+
+
+    // 重量(g)
+    STATE_WEIGHT_VALUE,
+
+
+    // 称重异常
+    STATE_WEIGHT_ERROR,
+
+
+    // Event队列数量
+    STATE_EVENT_QUEUE_COUNT,
+
+
+    // 状态数量
+    STATE_MAX
 };
 
 
-// 设置系统状态
-void system_set_run_state(
-    SystemRunState state
+
+
+// =====================================================
+// 状态值类型
+// =====================================================
+
+
+enum StateValueType
+{
+
+    STATE_TYPE_INT,
+
+    STATE_TYPE_BOOL,
+
+    STATE_TYPE_LONG,
+
+    STATE_TYPE_FLOAT
+
+};
+
+
+
+
+
+// =====================================================
+// 状态存储结构
+// =====================================================
+
+
+struct SystemStateValue
+{
+
+    StateValueType type;
+
+
+    long value;
+
+
+    float value_float;
+
+
+    bool valid;
+
+};
+
+
+
+
+
+// =====================================================
+// 初始化
+// =====================================================
+
+void system_state_init();
+
+
+
+
+
+// =====================================================
+// 写接口
+//
+// 对应模块内部调用
+// =====================================================
+
+
+bool state_set_int(
+    SystemStateKey key,
+    int value
 );
 
-// 获取系统状态
-SystemRunState system_get_run_state();
+
+
+bool state_set_bool(
+    SystemStateKey key,
+    bool value
+);
+
+
+
+bool state_set_long(
+    SystemStateKey key,
+    long value
+);
+
+
+
+bool state_set_float(
+    SystemStateKey key,
+    float value
+);
+
+
+// =====================================================
+// 读接口
+//
+// 所有模块公开读取
+// =====================================================
+
+
+int state_get_int(
+    SystemStateKey key
+);
+
+
+
+bool state_get_bool(
+    SystemStateKey key
+);
+
+
+
+long state_get_long(
+    SystemStateKey key
+);
+
+
+
+float state_get_float(
+    SystemStateKey key
+);
+
+
+
+
+
+// =====================================================
+// 查询有效性
+// =====================================================
+
+bool state_is_valid(
+    SystemStateKey key
+);
+
+
+
+#endif
