@@ -2,8 +2,8 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
+#include <new>
 #include "workflow.h"
-
 // =====================================================
 // 注册表
 // =====================================================
@@ -36,6 +36,8 @@ static String workflow_json_cache;
 // =====================================================
 static WorkflowTriggerInstance* trigger_instances = nullptr;
 static WorkflowActionInstance* action_instances = nullptr;
+static bool trigger_instances_psram = false;
+static bool action_instances_psram = false;
 static uint16_t trigger_instance_index = 0;
 static uint16_t action_instance_index = 0;
 
@@ -66,26 +68,64 @@ static WorkflowActionDescriptor* find_action_descriptor(const String &id)
 
 void workflow_destroy_all_instances()
 {
-    if (trigger_instances != nullptr) {
-        for (uint16_t i = 0; i < WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP; i++) {
-            if (trigger_instances[i].runtime != nullptr) {
+    uint16_t count = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP;
+
+
+    if(trigger_instances != nullptr)
+    {
+        for(uint16_t i = 0; i < count; i++)
+        {
+            if(trigger_instances[i].runtime != nullptr)
+            {
                 free(trigger_instances[i].runtime);
                 trigger_instances[i].runtime = nullptr;
             }
+
+            trigger_instances[i].~WorkflowTriggerInstance();
         }
-        heap_caps_free(trigger_instances);
+
+
+        if(trigger_instances_psram)
+        {
+            heap_caps_free(trigger_instances);
+        }
+        else
+        {
+            free(trigger_instances);
+        }
+
+
         trigger_instances = nullptr;
+        trigger_instances_psram = false;
     }
 
-    if (action_instances != nullptr) {
-        for (uint16_t i = 0; i < WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP; i++) {
-            if (action_instances[i].runtime != nullptr) {
+
+    if(action_instances != nullptr)
+    {
+        for(uint16_t i = 0; i < count; i++)
+        {
+            if(action_instances[i].runtime != nullptr)
+            {
                 free(action_instances[i].runtime);
                 action_instances[i].runtime = nullptr;
             }
+
+            action_instances[i].~WorkflowActionInstance();
         }
-        heap_caps_free(action_instances);
+
+
+        if(action_instances_psram)
+        {
+            heap_caps_free(action_instances);
+        }
+        else
+        {
+            free(action_instances);
+        }
+
+
         action_instances = nullptr;
+        action_instances_psram = false;
     }
 }
 
@@ -330,7 +370,10 @@ bool workflow_init()
     json_state = WORKFLOW_JSON_EMPTY;
     workflow_json_cache = "";
 
-    memset(workflows, 0, sizeof(workflows));
+    for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        new (&workflows[i]) Workflow();
+    }
     memset(trigger_registry, 0, sizeof(trigger_registry));
     memset(action_registry, 0, sizeof(action_registry));
 
@@ -341,6 +384,15 @@ bool workflow_init()
 
     trigger_instances = (WorkflowTriggerInstance*)heap_caps_malloc(trigger_size, MALLOC_CAP_SPIRAM);
     action_instances = (WorkflowActionInstance*)heap_caps_malloc(action_size, MALLOC_CAP_SPIRAM);
+    if(trigger_instances != nullptr)
+    {
+        trigger_instances_psram = true;
+    }
+
+    if(action_instances != nullptr)
+    {
+        action_instances_psram = true;
+    }
 
     if (trigger_instances == nullptr || action_instances == nullptr) {
         if (trigger_instances != nullptr) {
@@ -354,6 +406,8 @@ bool workflow_init()
 
         trigger_instances = (WorkflowTriggerInstance*)malloc(trigger_size);
         action_instances = (WorkflowActionInstance*)malloc(action_size);
+        trigger_instances_psram = false;
+        action_instances_psram = false;
 
         if (trigger_instances == nullptr || action_instances == nullptr) {
             if (trigger_instances != nullptr) {
@@ -369,8 +423,13 @@ bool workflow_init()
         }
     }
 
-    memset(trigger_instances, 0, trigger_size);
-    memset(action_instances, 0, action_size);
+    uint16_t instance_count = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP;
+
+    for(uint16_t i = 0; i < instance_count; i++)
+    {
+        new (&trigger_instances[i]) WorkflowTriggerInstance();
+        new (&action_instances[i]) WorkflowActionInstance();
+    }
     // ===== 新增：注册内置 Timer Trigger =====
     static WorkflowParam timer_params[] = {
         {"type", PARAM_STRING, "", "once/daily/weekly"},
@@ -587,7 +646,11 @@ bool workflow_parse_json(JsonDocument &doc)
                 }
 
                 WorkflowTriggerInstance *inst = &trigger_instances[trigger_instance_index++];
-                memset(inst, 0, sizeof(WorkflowTriggerInstance));
+                inst->id = "";
+                inst->param_count = 0;
+                inst->state = TRIGGER_IDLE;
+                inst->runtime = nullptr;
+                inst->descriptor = nullptr;
 
                 inst->id = s.id;
                 inst->descriptor = find_trigger_descriptor(s.id);
@@ -613,10 +676,14 @@ bool workflow_parse_json(JsonDocument &doc)
                 }
 
                 WorkflowActionInstance *inst = &action_instances[action_instance_index++];
-                memset(inst, 0, sizeof(WorkflowActionInstance));
-
+                
                 inst->id = s.id;
                 inst->descriptor = find_action_descriptor(s.id);
+                inst->id = "";
+                inst->param_count = 0;
+                inst->result = ACTION_IDLE;
+                inst->runtime = nullptr;
+                inst->descriptor = nullptr;
 
                 if(inst->descriptor == nullptr) {
                     s.instance = nullptr;
