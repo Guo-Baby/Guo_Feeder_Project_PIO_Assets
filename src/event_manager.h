@@ -143,7 +143,7 @@ enum EventPushResult
 
 typedef void (*EventCallback)
 (
-    EventMessage message
+    const EventMessage &message
 );
 
 
