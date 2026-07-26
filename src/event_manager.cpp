@@ -256,7 +256,7 @@ void event_dispatch()
     while (queue_count > 0 && processed < MAX_PROCESS_PER_DISPATCH)
     {
         int index = find_highest_priority();
-        EventMessage msg = event_queue[index];
+        const EventMessage &msg = event_queue[index];
 
         bool is_expired = false;
         if (msg.expire > 0)
@@ -266,6 +266,7 @@ void event_dispatch()
                 is_expired = true;
             }
         }
+        EventMessage dispatch_msg = msg;
 
         remove_event(index);
 
@@ -275,7 +276,7 @@ void event_dispatch()
             continue;
         }
 
-        int eid = static_cast<int>(msg.event);
+        int eid = static_cast<int>(dispatch_msg.event);
         if (eid >= 0 && eid < MAX_EVENT_TYPE)
         {
             for (int i = 0; i < sub_count[eid]; i++)
@@ -283,7 +284,7 @@ void event_dispatch()
                 EventCallback cb = callback_table[eid][i];
                 if (cb != nullptr)
                 {
-                    cb(msg);
+                    cb(dispatch_msg);
                 }
             }
         }

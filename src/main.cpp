@@ -130,12 +130,13 @@ void setup()
     Serial.println("[OK] Workflow init");
 
     // 2. 注册测试 Action
-    if (!workflow_register_action(&test_action_desc)) {
-        Serial.println("[ERROR] Action register failed!");
-        return;
-    }
-    Serial.println("[OK] Action registered: test.action");
-
+Serial.println("[DEBUG] test_action_desc.id = " + String(test_action_desc.id));
+Serial.println("[DEBUG] test_action_desc.handler = " + String((int)test_action_desc.handler));
+if (!workflow_register_action(&test_action_desc)) {
+    Serial.println("[ERROR] Action register failed!");
+    return;
+}
+Serial.println("[OK] Action registered: test.action");
     // 3. 加载测试 JSON（Timer 初始化时会检查 TIME_VALID）
     if (!workflow_load_json(test_json)) {
         Serial.println("[ERROR] JSON load failed!");

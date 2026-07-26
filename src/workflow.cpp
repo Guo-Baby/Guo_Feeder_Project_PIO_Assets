@@ -4,7 +4,9 @@
 //     
 //         Serial.printf("[DEBUG] Action handler is nullptr for %s\n", action->id.c_str());
 //    
-
+//         // ===== 调试打印 =====
+// Serial.printf("[DEBUG] Step %d: instance_type=%d, instance=%p, type=%d\n",
+//     wf.current_step, step.instance_type, step.instance, step.type);
 
 
 
@@ -655,12 +657,15 @@ bool workflow_parse_json(JsonDocument &doc)
                 }
 
                 WorkflowTriggerInstance *inst = &trigger_instances[trigger_instance_index++];
+
+                // 先重置所有字段
                 inst->id = "";
                 inst->param_count = 0;
                 inst->state = TRIGGER_IDLE;
                 inst->runtime = nullptr;
                 inst->descriptor = nullptr;
 
+                // 再赋值有效内容
                 inst->id = s.id;
                 inst->descriptor = find_trigger_descriptor(s.id);
 
@@ -685,14 +690,17 @@ bool workflow_parse_json(JsonDocument &doc)
                 }
 
                 WorkflowActionInstance *inst = &action_instances[action_instance_index++];
-                
-                inst->id = s.id;
-                inst->descriptor = find_action_descriptor(s.id);
+
+                // 先重置所有字段
                 inst->id = "";
                 inst->param_count = 0;
                 inst->result = ACTION_IDLE;
                 inst->runtime = nullptr;
                 inst->descriptor = nullptr;
+
+                // 再赋值有效内容
+                inst->id = s.id;
+                inst->descriptor = find_action_descriptor(s.id);
 
                 if(inst->descriptor == nullptr) {
                     s.instance = nullptr;
