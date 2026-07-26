@@ -3,6 +3,7 @@
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
 #include <new>
+#include "system_state.h"
 #include "workflow.h"
 // =====================================================
 // 注册表
@@ -225,95 +226,80 @@ static time_t timer_calculate_next(WorkflowTriggerInstance *trigger)
 // =====================================================
 static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
 {
+    // =============================================
+    // 第一步：检查系统时间是否可信
+    // =============================================
+    if (!state_get_bool(STATE_TIME_VALID)) {
+        // 时间不可信，不触发，不初始化，等待下一次轮询
+        return TRIGGER_RUNNING;
+    }
 
     time_t now = time(nullptr);
     TimerRuntime *rt = (TimerRuntime*)trigger->runtime;
 
-        //测试代码 删除
-    //测试代码 删除   
-    //测试代码 删除     
-       // ===== 添加调试代码 =====
-    Serial.println("[DEBUG] timer_handler called");
-    if (rt == nullptr) {
-        Serial.println("[DEBUG] rt == nullptr, initializing...");
-    } else {
-        Serial.printf("[DEBUG] rt exists: type=%d, expired=%d, triggered=%d, next=%ld, now=%ld\n",
-            rt->type, rt->expired, rt->triggered, rt->next_trigger_time, now);
-    }
-    
-       //测试代码 删除    
-    //测试代码 删除    
-    //测试代码 删除    
-    //测试代码 删除    
-
+    // =============================================
+    // 第二步：初始化（第一次调用时）
+    // =============================================
     if (rt == nullptr) {
         rt = (TimerRuntime*)calloc(1, sizeof(TimerRuntime));
         if (rt == nullptr) return TRIGGER_FAILED;
         trigger->runtime = rt;
 
+        // 解析类型
         String type_str = timer_get_string_param(trigger->params, trigger->param_count, "type");
         if (type_str == "once") rt->type = 0;
         else if (type_str == "daily") rt->type = 1;
         else if (type_str == "weekly") rt->type = 2;
         else rt->type = 1;  // 默认 daily
 
+        // 计算目标时间
         rt->next_trigger_time = timer_calculate_next(trigger);
         rt->last_trigger_minute = -1;
         rt->triggered = false;
         rt->expired = false;
 
-     // ===== 诊断：打印所有参数 =====    
-      // ===== 诊断：打印所有参数 =====
-       // ===== 诊断：打印所有参数 =====
-        // ===== 诊断：打印所有参数 =====
-         // ===== 诊断：打印所有参数 =====
+        // =============================================
+        // 一次性过期检测（once 类型，时间已过）
+        // =============================================
+        if (rt->type == 0 && rt->next_trigger_time < now) {
+            rt->expired = true;
+            return TRIGGER_FAILED;
+        }
 
-    Serial.printf("[DEBUG] Timer params count: %d\n", trigger->param_count);
-    for (uint8_t i = 0; i < trigger->param_count; i++) {
-        Serial.printf("  param[%d]: name=%s, type=%d, string_value=%s\n",
-            i,
-            trigger->params[i].name.c_str(),
-            trigger->params[i].type,
-            trigger->params[i].string_value.c_str()
-        );
-    }
-     // ===== 诊断：打印所有参数 =====
-      // ===== 诊断：打印所有参数 =====
-       // ===== 诊断：打印所有参数 =====
-        // ===== 诊断：打印所有参数 =====
-         // ===== 诊断：打印所有参数 =====
         return TRIGGER_RUNNING;
-
-
     }
 
+    // =============================================
+    // 第三步：已过期 → 永远失败
+    // =============================================
     if (rt->expired) {
         return TRIGGER_FAILED;
     }
 
-    // 已过期检测（once 类型，目标时间已过）
-    if (rt->type == 0 && rt->next_trigger_time < now) {
-        rt->expired = true;
-        return TRIGGER_FAILED;
-    }
-
+    // =============================================
+    // 第四步：跨分钟复位（用于每日/每周重复）
+    // =============================================
     int current_minute = now / 60;
-
-    // 跨分钟复位
     if (current_minute != rt->last_trigger_minute) {
         rt->triggered = false;
         rt->last_trigger_minute = current_minute;
     }
 
+    // =============================================
+    // 第五步：本轮已触发 → 等待下一轮
+    // =============================================
     if (rt->triggered) {
         return TRIGGER_RUNNING;
     }
 
-    // 容忍窗口 ±30 秒
+    // =============================================
+    // 第六步：检查是否到达目标时间（容忍窗口 ±6 秒）
+    // =============================================
     time_t diff = now - rt->next_trigger_time;
     if (diff >= -6 && diff < 6) {
         rt->triggered = true;
-        // 计算下一次触发时间
+
+        // 计算下一次触发时间（daily/weekly）
         rt->next_trigger_time = timer_calculate_next(trigger);
         if (rt->next_trigger_time == 0) {
             rt->expired = true;
