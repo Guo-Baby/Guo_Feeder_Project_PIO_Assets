@@ -37,13 +37,6 @@ bool config_init()
 {
     Serial.println("Config init...");
 
-    // 挂载ESP32内部LittleFS文件系统
-    if(!LittleFS.begin())
-    {
-        Serial.println("LittleFS mount failed");
-        return false;
-    }
-
     // 打开配置文件
     File file = LittleFS.open(
         CONFIG_FILE,
@@ -93,26 +86,11 @@ bool config_init()
 // 调用此函数永久保存
 bool config_save()
 {
-    // 以写入模式打开配置文件
-    File file =
-        LittleFS.open(
-            CONFIG_FILE,
-            "w"
-        );
-
-    // 文件打开失败
-    if(!file)
-    {
+    File file = LittleFS.open(CONFIG_FILE, "w");
+    if (!file) {
         return false;
     }
-
-    // 将JSON对象写入Flash
-    serializeJson(
-        config,
-        file
-    );
-
-    // 关闭文件
+    serializeJson(config, file);
     file.close();
     return true;
 }
@@ -241,3 +219,133 @@ int config_get_ntp_sync_interval_day()
         |
         7;
 }
+
+
+int config_get_ntp_sync_hour()
+{
+    if (!config.containsKey("time")) return 4;
+    JsonObject time = config["time"];
+    if (!time["sync_hour"].is<int>()) return 4;
+    return time["sync_hour"].as<int>();
+}
+
+int config_get_ntp_sync_minute()
+{
+    if (!config.containsKey("time")) return 10;
+    JsonObject time = config["time"];
+    if (!time.containsKey("sync_minute")) return 10;
+    return time["sync_minute"].as<int>();
+}
+
+
+// ==========================
+// HX711称重模块配置读取
+// ==========================
+int config_get_weight_dt()
+{
+    return config["weight"]["dt"]
+    |
+    4;
+}
+
+int config_get_weight_sck()
+{
+    return config["weight"]["sck"]
+    |
+    5;
+}
+
+int config_get_weight_sample_interval()
+{
+    return config["weight"]["sample_interval"]
+    |
+    50;
+}
+
+float config_get_weight_scale()
+{
+    return config["weight"]["scale"]
+    |
+    741.0;
+}
+
+long config_get_weight_zero_offset()
+{
+    return config["weight"]["zero_offset"]
+    |
+    0;
+}
+
+int config_get_weight_filter_samples()
+{
+    return config["weight"]["filter_samples"]
+    |
+    10;
+}
+
+void config_set_weight_zero_offset(
+    long offset
+)
+{
+    config["weight"]["zero_offset"]
+        = offset;
+}
+
+
+// =====================================================
+// Bemfa_Cloud MQTT配置读取
+// =====================================================
+
+
+String config_get_mqtt_server()
+{
+    return config["bemfa_cloud"]["mqtt_server"]
+    |
+    "mqtt.bemfa.com";
+}
+int config_get_mqtt_port()
+{
+    return config["bemfa_cloud"]["mqtt_port"]
+    |
+    9501;
+}
+String config_get_mqtt_client_id()
+{
+    return config["bemfa_cloud"]["client_id"]
+    |
+    "";
+}
+String config_get_mqtt_subscribe_topic()
+{
+    return config["bemfa_cloud"]["subscribe_topic"]
+    |
+    "";
+}
+unsigned long config_get_mqtt_retry_interval()
+{
+    return config["bemfa_cloud"]["retry_interval"]
+    |
+    8000;
+}
+int config_get_mqtt_retry_max()
+{
+    return config["bemfa_cloud"]["retry_max"]
+    |
+    30;
+}
+unsigned long config_get_mqtt_sleep_interval()
+{
+    return config["bemfa_cloud"]["sleep_retry_interval"]
+    |
+    3600000;
+}
+int config_get_mqtt_keep_alive()
+{
+    return config["bemfa_cloud"]["mqtt_keep_alive"]
+    |
+    60;
+}
+
+
+
+

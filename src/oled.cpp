@@ -11,7 +11,7 @@
 // 内部函数提前声明
 static void oled_show_frame();
 
-
+static void oled_restart();
 
 static int frame_delay = 50;
 
@@ -108,7 +108,7 @@ void oled_init()
 
 
     Serial.println("OLED init OK");
-
+    
 }
 
 
@@ -206,45 +206,98 @@ void oled_clear()
 // =======================
 // OLED事件处理
 // =======================
+// =======================
+// OLED事件处理
+// =======================
 
 void oled_event_handler(
-    SystemEvent event
+    EventMessage message
 )
 {
+
+    SystemEvent event =
+        message.event;
+
+
     switch(event)
     {
+
         case EVENT_WIFI_CONNECTED:
-        {
-            Serial.println(
-                "OLED: WIFI CONNECTED"
-            );
-            // 未来：
-            // wifi_icon=true;
-            break;
-        }
 
-        case EVENT_WIFI_DISCONNECTED:
-        {
             Serial.println(
-                "OLED: WIFI LOST"
+                "OLED wifi event"
             );
-            // 未来：
-            // wifi_icon=false;
-            break;
-        }
 
-        case EVENT_NTP_SYNC_OK:
-        {
-            Serial.println(
-                "OLED: TIME READY"
-            );
-            // 未来：
-            // 显示时间
             break;
-        }
+
+
+        case EVENT_WEIGHT_ERROR:
+
+            Serial.println(
+                "OLED weight error"
+            );
+
+            break;
+
+
         default:
-            break;
 
+            break;
     }
 
 }
+
+// =======================
+// OLED重启
+// =======================
+static void oled_restart()
+{
+
+    oled.clearBuffer();
+
+    oled.sendBuffer();
+
+
+    oled_init();
+
+}
+
+
+
+// =======================
+//事件队列
+// =======================
+
+void oled_event_init()
+{
+
+    event_subscribe(
+        EVENT_CONFIG_CHANGED,
+        oled_event_handler
+    );
+
+
+    event_subscribe(
+        EVENT_NTP_SYNC_OK,
+        oled_event_handler
+    );
+
+
+    event_subscribe(
+        EVENT_WIFI_CONNECTED,
+        oled_event_handler
+    );
+
+
+    event_subscribe(
+        EVENT_WIFI_DISCONNECTED,
+        oled_event_handler
+    );
+
+
+    Serial.println(
+        "OLED event registered"
+    );
+
+}
+

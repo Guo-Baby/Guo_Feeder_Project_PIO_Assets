@@ -1,5 +1,5 @@
 #pragma once
-
+#include "event_manager.h"
 
 // OLED初始化
 void oled_init();
@@ -17,3 +17,4 @@ void oled_clear();
 void oled_event_handler(
     SystemEvent event
 );
+void oled_event_init();

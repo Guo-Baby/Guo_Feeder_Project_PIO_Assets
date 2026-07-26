@@ -1,0 +1,147 @@
+{
+    "version": "1.0",
+    "device_id": "guo_feeder_001",
+    "settings": {
+        "max_workflow_runtime": 600,
+        "max_running_workflows": 8,
+        "max_steps_per_workflow": 16
+    },
+    "triggers": [
+        {
+            "id": "timer_daily",
+            "name": "每日定时",
+            "module": "timer",
+            "type": "time",
+            "description": "每天指定时间触发",
+            "parameters": {
+                "hour": 8,
+                "minute": 0
+            }
+        },
+        {
+            "id": "delay",
+            "name": "延时",
+            "module": "timer",
+            "type": "delay",
+            "description": "等待指定时间",
+            "parameters": {
+                "seconds": 60
+            }
+        },
+        {
+            "id": "wifi_connected",
+            "name": "WiFi连接",
+            "module": "system",
+            "type": "event",
+            "description": "WiFi连接成功触发",
+            "parameters": {}
+        },
+        {
+            "id": "weight_decrease",
+            "name": "重量减少",
+            "module": "weight",
+            "type": "compare",
+            "description": "重量减少指定克数",
+            "parameters": {
+                "operator": "less_equal",
+                "value": 20,
+                "unit": "gram"
+            }
+        }
+    ],
+    "actions": [
+        {
+            "id": "valve_open",
+            "name": "打开阀门",
+            "module": "valve",
+            "type": "command",
+            "parameters": {}
+        },
+        {
+            "id": "valve_close",
+            "name": "关闭阀门",
+            "module": "valve",
+            "type": "command",
+            "parameters": {}
+        },
+        {
+            "id": "valve_open_time",
+            "name": "打开阀门指定时间",
+            "module": "valve",
+            "type": "command",
+            "parameters": {
+                "duration_ms": 5000
+            }
+        },
+        {
+            "id": "oled_show",
+            "name": "OLED显示",
+            "module": "oled",
+            "type": "command",
+            "parameters": {
+                "text": "Hello"
+            }
+        },
+        {
+            "id": "weight_record",
+            "name": "记录重量",
+            "module": "weight",
+            "type": "command",
+            "parameters": {}
+        }
+    ],
+    "workflows": [
+        {
+            "id": 1,
+            "name": "自动喂水",
+            "enabled": true,
+            "timeout_sec": 600,
+            "steps": [
+                {
+                    "index": 0,
+                    "type": "trigger",
+                    "ref": "timer_daily"
+                },
+                {
+                    "index": 1,
+                    "type": "action",
+                    "ref": "valve_open"
+                },
+                {
+                    "index": 2,
+                    "type": "trigger",
+                    "ref": "weight_decrease",
+                    "parameters": {
+                        "value": 20
+                    }
+                },
+                {
+                    "index": 3,
+                    "type": "action",
+                    "ref": "valve_close"
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "name": "联网显示",
+            "enabled": true,
+            "timeout_sec": 60,
+            "steps": [
+                {
+                    "index": 0,
+                    "type": "trigger",
+                    "ref": "wifi_connected"
+                },
+                {
+                    "index": 1,
+                    "type": "action",
+                    "ref": "oled_show",
+                    "parameters": {
+                        "text": "WiFi OK"
+                    }
+                }
+            ]
+        }
+    ]
+}
