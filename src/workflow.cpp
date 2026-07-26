@@ -1,3 +1,17 @@
+// //测试的代码WorkflowActionResult workflow_action_execute(WorkflowActionInstance *action)
+// 
+//         Serial.println("[DEBUG] Action descriptor is nullptr");
+//     
+//         Serial.printf("[DEBUG] Action handler is nullptr for %s\n", action->id.c_str());
+//    
+
+
+
+
+
+
+
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
@@ -851,8 +865,20 @@ WorkflowTriggerState workflow_trigger_check(WorkflowTriggerInstance *trigger)
 WorkflowActionResult workflow_action_execute(WorkflowActionInstance *action)
 {
     if(action == nullptr) return ACTION_FAILED;
-    if(action->descriptor == nullptr) return ACTION_FAILED;
-    if(action->descriptor->handler == nullptr) return ACTION_FAILED;
+    if(action->descriptor == nullptr) {
+
+        Serial.println("[DEBUG] Action descriptor is nullptr");
+
+
+        return ACTION_FAILED;
+    }
+    if(action->descriptor->handler == nullptr) {
+
+        Serial.printf("[DEBUG] Action handler is nullptr for %s\n", action->id.c_str());
+
+
+        return ACTION_FAILED;
+    }
 
     action->result = action->descriptor->handler(action);
     return action->result;
@@ -866,9 +892,6 @@ void workflow_timer_check()
 {
     static unsigned long last_timer_check = 0;
     unsigned long now = millis();
-
-    // 调试：确认函数被调用
-    Serial.println("[Timer] workflow_timer_check() called");
 
     if (now - last_timer_check < 5000) {
         return;
