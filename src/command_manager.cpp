@@ -35,9 +35,7 @@ static CommandEntry command_table
 static int command_count = 0;
 
 
-static void command_event_callback(
-    EventMessage msg
-);
+static void command_event_callback(const EventMessage &msg);
 
 
 // =====================================================
@@ -552,10 +550,7 @@ CommandResult command_submit
 // =====================================================
 
 
-static void command_event_callback
-(
-    EventMessage msg
-)
+static void command_event_callback(const EventMessage &msg)
 {    if(
         msg.source=="command_manager"
     )

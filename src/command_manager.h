@@ -4,7 +4,6 @@
 
 #include <Arduino.h>
 
-
 // =====================================================
 // 最大命令数量
 // 静态数组，ESP32安全，无malloc
@@ -12,29 +11,18 @@
 
 #define MAX_COMMAND_TABLE 20
 
-
-
 // =====================================================
 // 云端命令枚举
 // =====================================================
 
 enum CloudCommand
 {
-
     CMD_UNKNOWN = 0,
-
-
     CMD_TEST,
-
     CMD_FEED_START,
-
     CMD_FEED_STOP,
-
     CMD_VALVE_OPEN,
-
     CMD_VALVE_CLOSE
-
-
 };
 
 
@@ -48,28 +36,15 @@ enum CommandResult
 {
 
     CMD_OK = 0,
-
-
     // 当前模块忙
     CMD_BUSY,
-
-
     // 参数错误
     CMD_INVALID_PARAM,
-
-
     // 未知命令
     CMD_UNKNOWN_CMD,
-
-
     // 执行错误
     CMD_ERROR
-
 };
-
-
-
-
 // =====================================================
 // 命令消息
 // command_manager解析完成后发送给业务模块
@@ -77,30 +52,15 @@ enum CommandResult
 
 struct CommandMessage
 {
-
     // 枚举类型
     CloudCommand command;
-
-
     // 原始命令名称
     // 例如 feed_start
-
     String name;
-
-
-
     // 参数
-
     long param;
-
-
-
     // 数据来源
-
     String source;
-
-
-
 };
 
 
@@ -156,9 +116,6 @@ bool command_register
     CommandCallback callback
 );
 
-
-
-
 // =====================================================
 // 提交命令
 //
@@ -174,10 +131,6 @@ CommandResult command_submit
 (
     const String &command_string
 );
-
-
-
-
 // =====================================================
 // 字符串解析
 //
@@ -192,9 +145,6 @@ CloudCommand command_parse
 (
     const String &name
 );
-
-
-
 
 // =====================================================
 // 枚举转字符串
@@ -211,9 +161,6 @@ const char* command_get_name
     CloudCommand command
 );
 
-
-
-
 // =====================================================
 // 获取结果字符串
 //
@@ -228,7 +175,5 @@ const char* command_result_name
 (
     CommandResult result
 );
-
-
 
 #endif

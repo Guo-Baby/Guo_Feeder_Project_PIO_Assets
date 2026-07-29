@@ -213,3 +213,407 @@ TIME_SYNC_SUCCESS
 禁止：
 while等待
 delay等待
+
+
+
+
+标准event注册代码模板。这些模板可以直接复制到 weight 和 valve 模块中使用。
+
+一、Event Trigger 注册模板（事件驱动型）
+适用场景：模块产生事件（如重量变化、WiFi 连接），由 Event Manager 驱动 Workflow 启动。
+
+标准模板代码
+cpp
+// =====================================================
+// 模块：weight_event
+// 功能：注册重量事件 Trigger（由 Event Manager 驱动）
+// =====================================================
+
+#include "workflow.h"
+#include "event_manager.h"
+
+// =====================================================
+// 参数定义（Event Trigger 通常无参数）
+// =====================================================
+static WorkflowParam weight_ready_params[] = {
+    // 无参数
+};
+
+// =====================================================
+// Descriptor 定义
+// =====================================================
+static WorkflowTriggerDescriptor weight_ready_desc = {
+       .id = "EVENT_WEIGHT_READY",        // ←EVENT开头，全大写 + 下划线
+    .name = "重量就绪",
+    .module = "weight",
+    .params = weight_ready_params,
+    .param_count = 0,
+    .handler = nullptr,              // ← Event Trigger 不需要 handler
+    .event_id = EVENT_WEIGHT_READY   // ← 关联的事件 ID
+};
+
+// =====================================================
+// 注册函数（在模块初始化时调用）
+// =====================================================
+void weight_event_register()
+{
+    workflow_register_trigger(&weight_ready_desc);
+}
+
+
+
+二、普通 Trigger 注册模板（轮询型）
+适用场景：模块需要 workflow_task 轮询检查条件（如重量阈值、温度变化）。
+
+标准模板代码
+cpp
+// =====================================================
+// 模块：weight_trigger
+// 功能：注册重量阈值 Trigger（轮询驱动）
+// =====================================================
+
+#include "workflow.h"
+#include "weight.h"
+
+// =====================================================
+// 参数定义
+// =====================================================
+static WorkflowParam weight_above_params[] = {
+    {"threshold", PARAM_INT, "gram", "触发阈值"},
+    {"duration", PARAM_INT, "ms", "持续时间（可选）"}
+};
+
+// =====================================================
+// Handler 实现
+// =====================================================
+static WorkflowTriggerState weight_above_handler(WorkflowTriggerInstance *trigger)
+{
+    // 1. 获取当前重量
+    float current_weight = weight_get_current();
+    if (current_weight < 0) {
+        return TRIGGER_FAILED;  // 传感器错误
+    }
+
+    // 2. 解析参数
+    int threshold = 0;
+    for (uint8_t i = 0; i < trigger->param_count; i++) {
+        if (trigger->params[i].name == "threshold") {
+            threshold = trigger->params[i].int_value;
+        }
+    }
+
+    // 3. 判断条件
+    if (current_weight >= threshold) {
+        return TRIGGER_SUCCESS;
+    }
+
+    return TRIGGER_RUNNING;
+}
+
+// =====================================================
+// Descriptor 定义
+// =====================================================
+static WorkflowTriggerDescriptor weight_above_desc = {
+    .id = "WEIGHT_ABOVE",              // ← 全大写 + 下划线，不允许以EVENT开头
+    .name = "重量高于",
+    .module = "weight",
+    .params = weight_above_params,
+    .param_count = 1,
+    .handler = weight_above_handler   // ← 必须提供 handler
+};
+
+// =====================================================
+// 注册函数
+// =====================================================
+void weight_trigger_register()
+{
+    workflow_register_trigger(&weight_above_desc);
+}
+
+
+
+三、Action 注册模板
+适用场景：模块执行具体动作（如打开阀门、记录重量）。
+
+标准模板代码
+cpp
+// =====================================================
+// 模块：weight_action
+// 功能：注册重量 Action
+// =====================================================
+
+#include "workflow.h"
+#include "weight.h"
+
+// =====================================================
+// 参数定义
+// =====================================================
+static WorkflowParam weight_record_params[] = {
+    // 无参数，只记录当前重量
+};
+
+// =====================================================
+// Handler 实现
+// =====================================================
+static WorkflowActionResult weight_record_handler(WorkflowActionInstance *action)
+{
+    float weight = weight_get_current();
+    if (weight < 0) {
+        return ACTION_FAILED;
+    }
+
+    Serial.printf("[Weight] Recorded: %.1f g\n", weight);
+    // 可以存入变量或发送到云端
+    return ACTION_SUCCESS;
+}
+
+// =====================================================
+// Descriptor 定义
+// =====================================================
+static WorkflowActionDescriptor weight_record_desc = {
+    .id = "WEIGHT_RECORD",             // ← 全大写 + 下划线
+    .name = "记录重量",
+    .module = "weight",
+    .params = weight_record_params,
+    .param_count = 0,
+    .handler = weight_record_handler   // ← 必须提供 handler
+};
+
+// =====================================================
+// 注册函数
+// =====================================================
+void weight_action_register()
+{
+    workflow_register_action(&weight_record_desc);
+}
+四、统一注册函数（推荐）
+在一个文件中集中注册同一个模块的所有 Trigger/Action：
+
+cpp
+// =====================================================
+// 模块：weight
+// 功能：统一注册所有 Workflow 接口
+// =====================================================
+
+#include "workflow.h"
+#include "weight.h"
+
+// =====================================================
+// 1. Event Trigger（事件驱动）
+// =====================================================
+static WorkflowParam weight_ready_params[] = {};
+
+static WorkflowTriggerDescriptor weight_ready_desc = {
+    .id = "EVENT_WEIGHT_READY",// ← EVENT开头，全大写 + 下划线
+    .name = "重量就绪",
+    .module = "weight",
+    .params = weight_ready_params,
+    .param_count = 0,
+    .handler = nullptr,
+    .event_id = EVENT_WEIGHT_READY
+};
+
+// =====================================================
+// 2. 普通 Trigger（轮询驱动）
+// =====================================================
+static WorkflowParam weight_above_params[] = {
+    {"threshold", PARAM_INT, "gram", "触发阈值"}
+};
+
+static WorkflowTriggerState weight_above_handler(WorkflowTriggerInstance *trigger)
+{
+    float current_weight = weight_get_current();
+    int threshold = 0;
+    for (uint8_t i = 0; i < trigger->param_count; i++) {
+        if (trigger->params[i].name == "threshold") {
+            threshold = trigger->params[i].int_value;
+        }
+    }
+    return (current_weight >= threshold) ? TRIGGER_SUCCESS : TRIGGER_RUNNING;
+}
+
+static WorkflowTriggerDescriptor weight_above_desc = {
+    .id = "WEIGHT_ABOVE",              // ← 全大写 + 下划线，不允许以EVENT开头
+    .name = "重量高于",
+    .module = "weight",
+    .params = weight_above_params,
+    .param_count = 1,
+    .handler = weight_above_handler
+};
+
+// =====================================================
+// 3. Action
+// =====================================================
+static WorkflowActionResult weight_record_handler(WorkflowActionInstance *action)
+{
+    float weight = weight_get_current();
+    if (weight < 0) return ACTION_FAILED;
+    Serial.printf("[Weight] Recorded: %.1f g\n", weight);
+    return ACTION_SUCCESS;
+}
+
+static WorkflowActionDescriptor weight_record_desc = {
+    .id = "WEIGHT_RECORD",             // ← 全大写 + 下划线
+    .name = "记录重量",
+    .module = "weight",
+    .params = NULL,
+    .param_count = 0,
+    .handler = weight_record_handler
+};
+
+// =====================================================
+// 统一注册
+// =====================================================
+void weight_workflow_register()
+{
+    workflow_register_trigger(&weight_ready_desc);
+    workflow_register_trigger(&weight_above_desc);
+    workflow_register_action(&weight_record_desc);
+}
+
+
+六、UI 获取参数示例
+cpp
+// UI 获取所有 Trigger 信息
+uint8_t count = workflow_get_trigger_count();
+for (uint8_t i = 0; i < count; i++) {
+    WorkflowTriggerDescriptor *desc = workflow_get_trigger_descriptor(i);
+    Serial.printf("ID: %s, Name: %s\n", desc->id, desc->name);
+    for (uint8_t j = 0; j < desc->param_count; j++) {
+        Serial.printf("  Param: %s, Type: %d, Unit: %s\n", 
+            desc->params[j].name, desc->params[j].type, desc->params[j].unit);
+    }
+}
+
+
+
+
+
+新增system state的规范
+新增 System State 注册流程
+
+假设新增一个状态：
+
+Light 模块
+状态：
+灯当前状态
+1. system_state.h 增加枚举
+
+位置：
+
+enum SystemStateKey
+{
+    ...
+};
+
+增加：
+
+STATE_LIGHT_STATUS,
+
+规则：
+
+STATE_模块名_状态名
+
+例如：
+
+STATE_WIFI_STATUS
+STATE_VALVE_STATUS
+STATE_WEIGHT_VALUE
+2. system_state.cpp 增加 state_map
+
+位置：
+
+static const struct {
+    const char *name;
+    SystemStateKey key;
+    StateValueType type;
+    bool readable;
+} state_map[]
+
+增加：
+
+{"light_status",
+ STATE_LIGHT_STATUS,
+ STATE_TYPE_BOOL,
+ true},
+
+参数说明：
+
+参数	说明
+light_status	外部访问字符串，UI/Command使用
+STATE_LIGHT_STATUS	对应枚举
+STATE_TYPE_BOOL	数据类型
+true	是否允许UI显示
+3. 模块内部写入状态
+
+Light模块：
+
+state_set_bool(
+    STATE_LIGHT_STATUS,
+    true
+);
+
+原则：
+
+谁产生状态，谁负责更新。
+
+4. Command/UI自动支持
+
+无需修改：
+
+Command Manager
+Cloud Manager
+UI
+
+查询：
+
+light_status
+
+自动进入：
+
+state_string_to_key()
+
+↓
+
+system_state_query()
+
+↓
+
+state_get_bool()
+
+↓
+
+返回字符串
+readable规则
+true
+
+表示：
+
+用户/UI可看到。
+
+例如：
+
+wifi_status
+weight_value
+valve_status
+false
+
+表示：
+
+内部状态，不展示。
+
+例如：
+
+event_queue_count
+weight_error
+新增状态检查：
+
+新增一个状态，只检查：
+
+□ system_state.h 增加枚举
+
+□ system_state.cpp 增加state_map
+
+□ 模块初始化/运行时调用state_set_xxx()
+
+三步完成。

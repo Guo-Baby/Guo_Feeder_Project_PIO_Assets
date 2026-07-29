@@ -31,6 +31,87 @@ static int sub_count[MAX_EVENT_TYPE];
 static unsigned long drop_count = 0;
 static unsigned long duplicate_count = 0;
 
+// =====================================================
+// 字符串 → 事件枚举
+// =====================================================
+SystemEvent event_from_string(const String &str)
+{
+    // 去掉 "event." 前缀（如果存在）
+    String name = str;
+    if (name.startsWith("event.")) {
+        name = name.substring(6);
+    }
+    
+    // 转换为大写
+    name.toUpperCase();
+    
+    // 构建完整事件名
+    String full_name = "EVENT_" + name;
+    
+    // 定义事件名称映射表（与 SystemEvent 枚举顺序一致）
+    static const char* event_names[] = {
+        "EVENT_NONE",
+        "EVENT_WIFI_CONNECTED",
+        "EVENT_WIFI_DISCONNECTED",
+        "EVENT_NTP_SYNC_OK",
+        "EVENT_TIME_VALID",
+        "EVENT_TIME_INVALID",
+        "EVENT_CONFIG_CHANGED",
+        "EVENT_CLOUD_CONNECTED",
+        "EVENT_CLOUD_DISCONNECTED",
+        "EVENT_CLOUD_UPLOAD",
+        "EVENT_CLOUD_COMMAND",
+        "EVENT_COMMAND_RESULT",
+        "EVENT_WEIGHT_READY",
+        "EVENT_WEIGHT_ERROR",
+        "EVENT_ERROR"
+    };
+    
+    for (int i = 0; i < SYSTEM_EVENT_COUNT; i++) {
+        if (full_name == event_names[i]) {
+            return (SystemEvent)i;
+        }
+    }
+    
+    return EVENT_NONE;
+}
+
+// =====================================================
+// 事件枚举 → 字符串
+// =====================================================
+String event_to_string(SystemEvent event)
+{
+    int idx = (int)event;
+    if (idx < 0 || idx >= SYSTEM_EVENT_COUNT) {
+        return "EVENT_UNKNOWN";
+    }
+    
+    static const char* event_names[] = {
+        "EVENT_NONE",
+        "EVENT_WIFI_CONNECTED",
+        "EVENT_WIFI_DISCONNECTED",
+        "EVENT_NTP_SYNC_OK",
+        "EVENT_TIME_VALID",
+        "EVENT_TIME_INVALID",
+        "EVENT_CONFIG_CHANGED",
+        "EVENT_CLOUD_CONNECTED",
+        "EVENT_CLOUD_DISCONNECTED",
+        "EVENT_CLOUD_UPLOAD",
+        "EVENT_CLOUD_COMMAND",
+        "EVENT_COMMAND_RESULT",
+        "EVENT_WEIGHT_READY",
+        "EVENT_WEIGHT_ERROR",
+
+
+        //新增的枚举字符串按顺序放在上方
+        "EVENT_ERROR"
+    };
+    
+    return String(event_names[idx]);
+}
+
+
+
 void event_manager_init()
 {
     queue_count = 0;
@@ -114,14 +195,7 @@ static int find_highest_priority()
 // =================================================
 // event_push
 // =================================================
-EventPushResult event_push(
-    SystemEvent event,
-    String data,
-    String source,
-    int priority,
-    EventPolicy policy,
-    unsigned long expire
-)
+EventPushResult event_push(SystemEvent event,String data,String source,int priority,EventPolicy policy,unsigned long expire)
 {
     int eid = static_cast<int>(event);
     unsigned long now = millis();
@@ -211,10 +285,7 @@ EventPushResult event_push(
 // =================================================
 // 注册监听
 // =================================================
-bool event_subscribe(
-    SystemEvent event,
-    EventCallback callback
-)
+bool event_subscribe(SystemEvent event,EventCallback callback)
 {
     if (callback == nullptr)
         return false;

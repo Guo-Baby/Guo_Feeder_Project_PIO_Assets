@@ -12,6 +12,14 @@
         "rotation": 2
     },
 
+        "valve": {
+        "gpio_pin": 12,
+        "active_level": 1,
+        "open_duration_ms": 0,
+        "safety_timeout_sec": 300,
+        "enable": true
+    },
+
     "system":
     {
     },
