@@ -200,7 +200,7 @@ SystemStateKey state_string_to_key(const String &str);
 // =====================================================
 // 新增：通用查询接口（供 Command Manager 调用）
 // =====================================================
-String system_state_query(const String &key);
+bool system_state_query(const String &key,String &output);
 
 // =====================================================
 // 新增：获取所有字段列表（供 UI 使用）
