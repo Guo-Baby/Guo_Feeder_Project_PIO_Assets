@@ -457,6 +457,7 @@ bool workflow_init()
         "timer",
         "Timer",
         "system",
+        "系统定时触发器",
         timer_params,
         7,
         timer_handler
@@ -471,6 +472,7 @@ bool workflow_init()
         "delay",
         "Delay",
         "system",
+        "延时触发器",
         delay_params,
         1,
         delay_handler
@@ -527,6 +529,22 @@ bool workflow_register_action(WorkflowActionDescriptor *action)
 // =====================================================
 uint8_t workflow_get_trigger_count() { return trigger_count; }
 uint8_t workflow_get_action_count() { return action_count; }
+// =====================================================
+// 根据ID查找Action Descriptor
+// Command内部调用
+// 获取Action数量
+// 已有 workflow_get_action_count()
+// 获取Action Descriptor
+// 已有 workflow_get_action_descriptor()
+// =====================================================
+// =====================================================
+WorkflowActionDescriptor*
+workflow_find_action(
+    const String &id
+)
+{
+    return find_action_descriptor(id);
+}
 
 WorkflowTriggerDescriptor* workflow_get_trigger_descriptor(uint8_t index)
 {
@@ -540,12 +558,15 @@ WorkflowActionDescriptor* workflow_get_action_descriptor(uint8_t index)
     return action_registry[index];
 }
 
+
+
 uint8_t workflow_get_count() { return workflow_count; }
 
 Workflow* workflow_get(uint8_t index)
 {
     if(index >= workflow_count) return nullptr;
     return &workflows[index];
+    
 }
 
 // =====================================================
@@ -899,6 +920,34 @@ WorkflowActionResult workflow_action_execute(WorkflowActionInstance *action)
     return action->result;
 }
 
+
+// =====================================================
+// 外部Action执行接口
+//
+// Command调用
+//
+// 不创建Workflow运行实例
+//
+// =====================================================
+WorkflowActionResult workflow_execute_action(
+    const String &id,
+    WorkflowParamValue *params,
+    uint8_t param_count
+)
+{    WorkflowActionDescriptor *desc =
+        find_action_descriptor(id);
+    if(desc == nullptr)
+    {return ACTION_FAILED;}
+    WorkflowActionInstance action;
+    action.descriptor = desc;
+    action.id = id;
+    action.param_count = param_count;
+    action.result = ACTION_IDLE;
+    action.runtime = nullptr;
+    for(uint8_t i=0;i<param_count;i++)
+    {action.params[i] = params[i];}
+    return workflow_action_execute(&action);
+}
 // =====================================================
 // Timer 外部触发检查（由 loop 调用）
 // 模式：独立于 workflow_task，未来 Event 同样方式

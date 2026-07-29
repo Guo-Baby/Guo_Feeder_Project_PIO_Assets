@@ -252,6 +252,16 @@ WorkflowActionResult workflow_action_execute(
     WorkflowActionInstance *action
 );
 
+// =====================================================
+// 外部Action调用，Command Manager调用，根据action id创建临时实例并执行
+// =====================================================
+
+WorkflowActionResult workflow_execute_action(
+    const String &id,
+    WorkflowParamValue *params,
+    uint8_t param_count
+);
+
 WorkflowJsonState workflow_get_json_state();
 // =====================================================
 // Workflow JSON处理，包含加载，保存，重载等动作
@@ -287,8 +297,10 @@ bool workflow_parse_json(
 uint8_t workflow_get_count();
 
 Workflow*workflow_get(uint8_t index);
-//Action查询
+// 查询Action注册表
+// Command/UI使用
 uint8_t workflow_get_action_count();
+
 WorkflowActionDescriptor*
 workflow_get_action_descriptor(
     uint8_t index
@@ -300,6 +312,8 @@ workflow_get_trigger_descriptor(
     uint8_t index
 );
 
+
+
 void workflow_clear();
 
 
@@ -309,11 +323,14 @@ typedef WorkflowActionResult(*WorkflowActionHandler)
 
 struct WorkflowActionDescriptor
 {
-    const char *id;
-    const char *name;
-    const char *module;
+    const char *id;              // 内部唯一ID，例如 valve_open
+    const char *name;            // 显示名称，例如 Open Valve
+    const char *description;     // UI说明，例如 打开出粮阀门
+    const char *module;          // 来源模块
+
     WorkflowParam *params;
     uint8_t param_count;
+
     WorkflowActionHandler handler;
 
 };
@@ -323,12 +340,14 @@ struct WorkflowTriggerDescriptor
 {
     const char *id;
     const char *name;
+    const char *description;
     const char *module;
+
     WorkflowParam *params;
     uint8_t param_count;
+
     WorkflowTriggerHandler handler;
 };
-
 
 bool workflow_init();
 
