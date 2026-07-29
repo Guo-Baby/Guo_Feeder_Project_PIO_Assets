@@ -182,6 +182,34 @@ int config_get_oled_rotation()
 }
 
 // =============================
+// Valve 阀门配置读取
+// =============================
+int config_get_valve_gpio_pin()
+{
+    return config["valve"]["gpio_pin"] | -1;
+}
+
+int config_get_valve_active_level()
+{
+    return config["valve"]["active_level"] | 1;
+}
+
+int config_get_valve_open_duration_ms()
+{
+    return config["valve"]["open_duration_ms"] | 0;
+}
+
+bool config_get_valve_enable()
+{
+    return config["valve"]["enable"] | true;
+}
+
+int config_get_valve_safety_timeout_sec()
+{
+    return config["valve"]["safety_timeout_sec"] | 300;
+}
+
+// =============================
 // 系统配置读取
 // =============================
 // 获取时区

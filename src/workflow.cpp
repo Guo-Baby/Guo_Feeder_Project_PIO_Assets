@@ -38,6 +38,7 @@ static uint8_t action_count = 0;
 Workflow workflows[WORKFLOW_MAX_COUNT];
 static uint8_t workflow_count = 0;
 
+
 // =====================================================
 // JSON状态
 // =====================================================
@@ -732,6 +733,12 @@ bool workflow_parse_json(JsonDocument &doc)
 
     workflow_count = index;
     json_state = WORKFLOW_JSON_READY;
+
+    #if WORKFLOW_EVENT_ENABLED
+    workflow_event_init();
+    #endif
+
+    
     return true;
 }
 
@@ -1140,4 +1147,61 @@ bool workflow_stop(const String &id)
         }
     }
     return false;
+}
+
+
+// =====================================================
+// Event响应相关代码
+// =====================================================
+
+// =====================================================
+// 向 Event Manager 订阅所有事件
+// =====================================================
+void workflow_event_init()
+{
+    // 遍历所有 Workflow，直接订阅事件
+    for (uint8_t i = 0; i < workflow_count; i++) {
+        Workflow &wf = workflows[i];
+        if (wf.step_count == 0) continue;
+
+        WorkflowStep &step = wf.steps[0];
+        if (step.type != WORKFLOW_STEP_TRIGGER) continue;
+        if (step.instance == nullptr) continue;
+
+        WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
+        if (!trigger->id.startsWith("event_")) continue;
+
+        // 直接使用 Event Manager 的函数转换字符串为事件枚举
+        SystemEvent event = event_from_string(trigger->id);
+        if (event != EVENT_NONE) {
+            event_subscribe(event, workflow_event_callback);
+        }
+    }
+}
+
+// =====================================================
+// Event 回调（由 Event Manager 调用）
+// =====================================================
+void workflow_event_callback(const EventMessage &msg)
+{
+    SystemEvent event = msg.event;
+
+    for (uint8_t i = 0; i < workflow_count; i++) {
+        Workflow &wf = workflows[i];
+        if (wf.step_count == 0) continue;
+        if (wf.state != WORKFLOW_IDLE) continue;
+
+        WorkflowStep &step = wf.steps[0];
+        if (step.type != WORKFLOW_STEP_TRIGGER) continue;
+        if (step.instance == nullptr) continue;
+
+        WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
+        if (!trigger->id.startsWith("event_")) continue;
+
+        // 将字符串转换为事件枚举，与接收到的事件对比
+        SystemEvent trigger_event = event_from_string(trigger->id);
+        if (trigger_event == event) {
+            workflow_start(&wf, true);
+        }
+    }
 }

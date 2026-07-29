@@ -210,13 +210,11 @@ void oled_clear()
 // OLED事件处理
 // =======================
 
-void oled_event_handler(
-    EventMessage message
-)
+void oled_event_handler(const EventMessage &msg)
 {
 
     SystemEvent event =
-        message.event;
+        msg.event;
 
 
     switch(event)

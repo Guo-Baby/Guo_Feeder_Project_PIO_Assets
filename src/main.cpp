@@ -1,7 +1,5 @@
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <esp_partition.h>
-
 #include "system_state.h"
 #include "config_manager.h"
 #include "event_manager.h"
@@ -11,89 +9,8 @@
 #include "time_manager.h"
 #include "cloud_manager.h"
 #include "weight.h"
-#include "workflow.h"
-
-
-
-// =====================================================
-// 测试 Action Handler
-// =====================================================
-static WorkflowActionResult test_action_handler(WorkflowActionInstance *action)
-{
-    Serial.println("[ACTION] Test action executed!");
-    return ACTION_SUCCESS;
-}
-
-static WorkflowParam test_action_params[] = {
-    {"value", PARAM_INT, "", "test value"}
-};
-
-static WorkflowActionDescriptor test_action_desc = {
-    "test.action",
-    "Test Action",
-    "test",
-    test_action_params,
-    1,
-    test_action_handler
-};
-
-// =====================================================
-// 测试 JSON（包含 Timer 和 Delay）
-// =====================================================
-const char *test_json = 
-"{"
-"    \"workflows\": ["
-"        {"
-"            \"id\": \"wf_timer\","
-"            \"name\": \"Timer Test (expired)\","
-"            \"enable\": true,"
-"            \"timeout_ms\": 600000,"
-"            \"steps\": ["
-"                {"
-"                    \"type\": \"trigger\","
-"                    \"id\": \"timer\","
-"                    \"params\": {"
-"                        \"type\": \"once\","
-"                        \"hour\": 0,"
-"                        \"minute\": 0,"
-"                        \"year\": 2000,"
-"                        \"month\": 1,"
-"                        \"day\": 1"
-"                    }"
-"                },"
-"                {"
-"                    \"type\": \"action\","
-"                    \"id\": \"test.action\","
-"                    \"params\": {"
-"                        \"value\": 100"
-"                    }"
-"                }"
-"            ]"
-"        },"
-"        {"
-"            \"id\": \"wf_delay\","
-"            \"name\": \"Delay Test (3s)\","
-"            \"enable\": true,"
-"            \"timeout_ms\": 600000,"
-"            \"steps\": ["
-"                {"
-"                    \"type\": \"trigger\","
-"                    \"id\": \"delay\","
-"                    \"params\": {"
-"                        \"seconds\": 3"
-"                    }"
-"                },"
-"                {"
-"                    \"type\": \"action\","
-"                    \"id\": \"test.action\","
-"                    \"params\": {"
-"                        \"value\": 200"
-"                    }"
-"                }"
-"            ]"
-"        }"
-"    ]"
-"}";
+#include "valve.h"
+#include "workflow.h" 
 
 // =====================================================
 // setup
@@ -102,143 +19,114 @@ void setup()
 {
     Serial.begin(115200);
     delay(1000);
-    // 初始化littleFS
-    if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) 
-        {Serial.println("LittleFS mount failed!");}
-    system_state_init();// 初始化系统状态，顺序必须先于其他模块
-    config_init();// 初始化配置参数文档，顺序必须先于其他模块
+
+    // ---- 原有初始化（保持不变） ----
+    if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
+        Serial.println("LittleFS mount failed!");
+    }
+    system_state_init();
+    config_init();
     event_manager_init();
-    wifi_init();// 初始化WiFi模块
-    time_init();// 初始化时间模块
-    cloud_init();// 初始化云通信模块
-    command_manager_init();//初始化命令模块
-    oled_init();// 初始化OLED
-    oled_event_init();//事件注册
+    wifi_init();
+    time_init();
+    cloud_init();
+    command_manager_init();
+    oled_init();
+    oled_event_init();
     weight_init();
+    valve_init();
 
-    Serial.println();
-    Serial.println("========================================");
-    Serial.println("    Workflow Timer + Delay Test");
-    Serial.println("========================================");
-    Serial.println();
-
-    // 1. 初始化 Workflow（只初始化框架，不加载 JSON）
-    if (!workflow_init()) {
-        Serial.println("[ERROR] Workflow init failed!");
-        return;
-    }
-    Serial.println("[OK] Workflow init");
-
-    // 2. 注册测试 Action
-Serial.println("[DEBUG] test_action_desc.id = " + String(test_action_desc.id));
-Serial.println("[DEBUG] test_action_desc.handler = " + String((int)test_action_desc.handler));
-if (!workflow_register_action(&test_action_desc)) {
-    Serial.println("[ERROR] Action register failed!");
-    return;
-}
-Serial.println("[OK] Action registered: test.action");
-    // 3. 加载测试 JSON（Timer 初始化时会检查 TIME_VALID）
-    if (!workflow_load_json(test_json)) {
-        Serial.println("[ERROR] JSON load failed!");
-        return;
-    }
-    Serial.println("[OK] JSON loaded");
-
-    // 4. 打印所有 Workflow
-    Serial.printf("[INFO] Total workflows: %d\n", workflow_get_count());
-    for (uint8_t i = 0; i < workflow_get_count(); i++) {
-        Workflow *wf = workflow_get(i);
-        if (wf == nullptr) continue;
-        Serial.printf("  [%d] %s (%s), steps: %d\n",
-            i, wf->id.c_str(), wf->name.c_str(), wf->step_count);
-        for (uint8_t j = 0; j < wf->step_count; j++) {
-            const char *type_str = (wf->steps[j].type == WORKFLOW_STEP_TRIGGER) ? "TRIGGER" : "ACTION";
-            Serial.printf("      Step %d: %s (%s)\n", j, wf->steps[j].id.c_str(), type_str);
-        }
+    //各模块加载放在上方，否则无法注册workflow
+    // 加载真实的 workflow.json（放在 data 目录）
+    workflow_init();
+    if (workflow_load_json_file("/workflow.json")) {
+        Serial.println("[OK] Workflow loaded from /workflow.json");
+    } else {
+        Serial.println("[WARN] No workflow.json found");
     }
 
-    // =============================================
-    // Timer Workflow 由 workflow_timer_check() 自动检测触发
-    // 不手动启动
-    // =============================================
-    Serial.println();
-    Serial.println("[INFO] Timer Workflow (wf_timer) will be auto-detected by workflow_timer_check()");
-    Serial.println("[INFO] Expected: timer expired → workflow_start(skip_first_step=true) → ERROR");
 
-    // =============================================
-    // Delay Workflow 手动启动（测试 Delay 功能）
-    // =============================================
-    Serial.println();
-    Serial.println("[START] Delay Workflow (wf_delay) will start in 5 seconds...");
 }
 
+
+void serial_debug_command_process();
 // =====================================================
 // loop
 // =====================================================
-static bool delay_workflow_started = false;
-static unsigned long status_print_time = 0;
-static unsigned long last_timer_log = 0;
-
 void loop()
 {
+    // ---- 原有任务（保持不变） ----
     wifi_task();
     event_dispatch();
     time_task();
-    cloud_task();// 巴法云通信模块
+    cloud_task();
     oled_task();
     weight_task();
-    event_dispatch();    
-    unsigned long now = millis();
+    valve_task();
 
-    // =============================================
-    // 1. Timer 自动触发检查（每 5 秒）
-    //    由 workflow_timer_check() 扫描 IDLE 的 Workflow
-    // =============================================
-    workflow_timer_check();
+    // ---- 新增：Workflow 任务 ----
+    workflow_timer_check();   // 检查 Timer 触发
+    workflow_task();          // 执行 Workflow 状态机
+    serial_debug_command_process();
 
-    // =============================================
-    // 2. 延时启动 Delay Workflow（setup 后 5 秒）
-    //    手动启动，验证 Delay 功能
-    // =============================================
-    if (!delay_workflow_started && now > 5000) {
-        delay_workflow_started = true;
-        Serial.println();
-        Serial.println("[START] Starting Delay Workflow (wf_delay)...");
-        Workflow *wf_delay = workflow_get(1);
-        if (wf_delay) {
-            if (workflow_start(wf_delay, false)) {
-                Serial.println("[OK] Delay Workflow started (should execute after 3 seconds)");
-            } else {
-                Serial.println("[WARN] Delay Workflow start failed");
+    
+
+}
+
+
+//测试代码
+
+//==== 放在 main.cpp 全局区域（不要写在loop内部）====
+String serial_cmd_buffer;
+
+//==== 命令解析函数，在loop()中调用 ====
+void serial_debug_command_process(void)
+{
+    while (Serial.available() > 0)
+    {
+        char ch = Serial.read();
+        // 回车 / 换行 触发解析
+        if (ch == '\n' || ch == '\r')
+        {
+            if (serial_cmd_buffer.length() == 0)
+            {
+                continue;
             }
+
+            serial_cmd_buffer.trim(); // 清除首尾空格
+            Serial.print("Recv cmd: [");
+            Serial.print(serial_cmd_buffer);
+            Serial.println("]");
+
+            if (serial_cmd_buffer == "valve_open")
+            {
+                bool ok = valve_open();
+                Serial.printf("valve_open execute ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "valve_close")
+            {
+                bool ok = valve_close();
+                Serial.printf("valve_close execute ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "valve_toggle")
+            {
+                bool ok = valve_toggle();
+                Serial.printf("valve_toggle execute ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "valve_status")
+            {
+                Serial.printf("Valve current open state: %d\n", valve_is_open());
+            }
+            else
+            {
+                Serial.println("unknown command");
+            }
+
+            serial_cmd_buffer = ""; //清空缓冲区
+        }
+        else
+        {
+            serial_cmd_buffer += ch;
         }
     }
-
-    // =============================================
-    // 3. 执行 Workflow 任务
-    // =============================================
-    workflow_task();
-
-    // =============================================
-    // 4. 每 3 秒打印状态
-    // =============================================
-    if (now - status_print_time > 5000) {
-        status_print_time = now;
-        Serial.println("--- Status ---");
-        for (uint8_t i = 0; i < workflow_get_count(); i++) {
-            Workflow *wf = workflow_get(i);
-            if (wf == nullptr) continue;
-            const char *state_str[] = {"IDLE", "RUNNING", "WAITING", "FINISHED", "TIMEOUT", "ERROR"};
-            const char *state_name = (wf->state <= WORKFLOW_ERROR) ? state_str[wf->state] : "UNKNOWN";
-            Serial.printf("  %s: state=%s, step=%d/%d\n",
-                wf->id.c_str(), state_name, wf->current_step, wf->step_count);
-            Serial.printf("[DEBUG] TIME_VALID = %d\n", state_get_bool(STATE_TIME_VALID));
-        }
-        Serial.println();
-    
-    }
-    
-
-
-    delay(100);
 }

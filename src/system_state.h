@@ -46,6 +46,8 @@ enum SystemStateKey
     // Event队列数量
     STATE_EVENT_QUEUE_COUNT,
 
+    
+
 
     // 状态数量
     STATE_MAX
@@ -186,6 +188,25 @@ bool state_is_valid(
     SystemStateKey key
 );
 
+
+
+
+// =====================================================
+// 新增：枚举 → 字符串 映射
+// =====================================================
+const char* state_key_to_string(SystemStateKey key);
+SystemStateKey state_string_to_key(const String &str);
+
+// =====================================================
+// 新增：通用查询接口（供 Command Manager 调用）
+// =====================================================
+String system_state_query(const String &key);
+
+// =====================================================
+// 新增：获取所有字段列表（供 UI 使用）
+// =====================================================
+uint8_t state_get_field_count();
+const char* state_get_field_name(uint8_t index);
 
 
 #endif

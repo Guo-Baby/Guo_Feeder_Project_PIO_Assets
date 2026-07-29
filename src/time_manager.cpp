@@ -289,7 +289,7 @@ void time_init()
 
     event_subscribe(
         EVENT_WIFI_CONNECTED,
-        [](EventMessage msg) {
+        [](const EventMessage&msg) {
             // 距上次NTP同步不足一个周期（默认7天）→ 忽略
             time_t now_time = time(nullptr);
             if (last_ntp_sync_time != 0 && 
@@ -629,6 +629,8 @@ void time_task()
                     last_ntp_sync_time = ntp_time;
 
                     Serial.println("NTP sync OK");
+                    String timestr = time_get_string();
+                    Serial.printf("当前时间：%s\n", timestr.c_str());
 
                     event_push(
                         EVENT_NTP_SYNC_OK,

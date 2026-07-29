@@ -1,6 +1,14 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "event_manager.h"
+
+//=============================
+//是否启用workflow的事件响应，填0则不会注册任何事件监听
+//=============================
+#define WORKFLOW_EVENT_ENABLED 0   // 0=禁用, 1=启用
+
+
 // =====================================================
 // Workflow 自动化框架
 //
@@ -224,6 +232,7 @@ bool workflow_start(Workflow *workflow, bool skip_first_step = false);
 // =====================================================
 void workflow_task();
 void workflow_timer_check();  // 新增：Timer 外部触发检查
+
 // =====================================================
 // Trigger检查接口
 //
@@ -264,6 +273,11 @@ bool workflow_export_json(String &json);
 
 extern Workflow workflows[WORKFLOW_MAX_COUNT];
 
+// =====================================================
+// Event 响应（Workflow 内部独立实现）
+// =====================================================
+void workflow_event_init();
+void workflow_event_callback(const EventMessage &msg);
 
 //11. JSON解析接口
 bool workflow_parse_json(

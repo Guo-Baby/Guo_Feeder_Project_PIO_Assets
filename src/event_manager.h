@@ -32,13 +32,32 @@ enum SystemEvent
     // 重量称重
     EVENT_WEIGHT_READY,
     EVENT_WEIGHT_ERROR,
+    
+    //所有workflow event trigger对应的新增事件放在event_error之前
+    //并且同步到cpp文件内的枚举函数SystemEvent event_from_string(const String &str);
+    //以及String event_to_string(SystemEvent event);
+    //SYSTEM_EVENT_COUNT 自动更新，无需维护
+
     // 系统
-    EVENT_ERROR
+    EVENT_ERROR,
 
-
+    //所有无需workflow响应的事件放在下方
+      //阀门模块
+    EVENT_VALVE_OPEN,      // 阀门打开事件
+    EVENT_VALVE_CLOSE,     // 阀门关闭事件
+    EVENT_VALVE_ERROR     // 阀门错误事件（可选）
 };
 
+// =====================================================
+// 事件总数（新增事件时自动更新）
+// =====================================================
+#define SYSTEM_EVENT_COUNT (EVENT_ERROR + 1)
 
+// =====================================================
+// 字符串 ↔ 事件枚举 转换，用于workflow模块响应事件
+// =====================================================
+SystemEvent event_from_string(const String &str);
+String event_to_string(SystemEvent event);
 
 
 // ==========================
@@ -64,19 +83,12 @@ enum EventPolicy
 {
 
     EVENT_POLICY_NORMAL,
-
-
     // 同事件只保留一个
     EVENT_POLICY_DEDUP,
-
-
     // 新状态覆盖旧状态
     EVENT_POLICY_STATE,
-
-
     // 强制执行
     EVENT_POLICY_FORCE
-
 };
 
 
@@ -87,33 +99,17 @@ enum EventPolicy
 // 消息结构
 // ==========================
 
-
 struct EventMessage
 {
-
     SystemEvent event;
-
-
     String data;
-
-
     String source;
-
-
     int priority;
-
-
     EventPolicy policy;
-
-
     unsigned long timestamp;
-
-
     // 生命周期
     // 0 = 永不过期
     unsigned long expire;
-
-
 };
 
 
@@ -189,9 +185,6 @@ bool event_subscribe(
 
 
 void event_dispatch();
-
-
-
 
 
 unsigned long event_get_drop_count();
