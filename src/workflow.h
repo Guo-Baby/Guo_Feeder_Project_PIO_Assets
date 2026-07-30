@@ -39,6 +39,7 @@ struct Workflow;
 #define WORKFLOW_MAX_PARAM 8
 #define WORKFLOW_MAX_STEP 16
 #define WORKFLOW_MAX_COUNT 16
+
 // =====================================================
 // =====================================================
 // Step类型
@@ -141,6 +142,28 @@ struct WorkflowParam
     const char *unit;
     const char *description;
 };
+
+// =====================================================
+// Timer Runtime 结构（内部使用）
+// =====================================================
+struct TimerRuntime
+{
+    time_t next_trigger_time;
+    int last_trigger_minute;
+    bool triggered;
+    bool expired;
+    int type;  // 0: once, 1: daily, 2: weekly
+};
+
+// =====================================================
+// Delay Runtime 结构（内部使用）
+// =====================================================
+struct DelayRuntime
+{
+    unsigned long start_time;
+    unsigned long delay_ms;
+    bool started;
+};
 // =====================================================
 // Trigger实例
 //
@@ -161,7 +184,11 @@ struct WorkflowTriggerInstance
     WorkflowParamValue params[WORKFLOW_MAX_PARAM];
     uint8_t param_count;
     WorkflowTriggerState state;
-    void *runtime;
+    // void *runtime;  // 删除这一行
+    TimerRuntime timer_runtime;  // 新增：内嵌 Timer 运行时
+    DelayRuntime delay_runtime;  // 新增：内嵌 Delay 运行时
+    bool is_timer;              // 新增：标记是否为 Timer
+    bool is_delay;              // 新增：标记是否为 Delay
 };
 // =====================================================
 // Action实例
@@ -176,6 +203,9 @@ struct WorkflowActionInstance
     WorkflowParamValue params[WORKFLOW_MAX_PARAM];
     uint8_t param_count;
     WorkflowActionResult result;
+    // Action是否已经启动 ，用于异步Action。false: 第一次执行。true:后续轮询
+    bool started;
+    // Action运行上下文，保留给电机、阀门等模块
     void *runtime;
 };
 
@@ -186,12 +216,19 @@ struct WorkflowActionInstance
 //
 // =====================================================
 //Workflow Step结构
+
+
+union StepInstance {
+    WorkflowTriggerInstance *trigger;
+    WorkflowActionInstance *action;
+};
+
 struct WorkflowStep
 {
     WorkflowStepType type;
     WorkflowInstanceType instance_type;
     String id;
-    void *instance;
+    StepInstance instance;  // ← 替代 void* instance
 };
 
 struct Workflow
@@ -256,11 +293,28 @@ WorkflowActionResult workflow_action_execute(
 // 外部Action调用，Command Manager调用，根据action id创建临时实例并执行
 // =====================================================
 
-WorkflowActionResult workflow_execute_action(
+struct WorkflowActionTicket
+{
+    uint32_t instance_id;
+    WorkflowActionResult result;
+};
+
+bool workflow_enqueue_action(
     const String &id,
     WorkflowParamValue *params,
-    uint8_t param_count
+    uint8_t param_count,
+    uint32_t *instance_id,
+    void (*callback)(uint32_t instance_id,WorkflowActionResult result) = nullptr,
+    unsigned long timeout_ms = 600000
 );
+// 查询临时 Action 执行状态（用于 CommandManager 轮询）
+bool workflow_temp_action_is_complete(
+    uint32_t instance_id,
+    WorkflowActionResult &result
+);
+
+// 获取等待中的临时 Action 数量
+uint8_t workflow_temp_action_pending_count();
 
 WorkflowJsonState workflow_get_json_state();
 // =====================================================
@@ -364,3 +418,7 @@ bool workflow_disable(
 bool workflow_stop(
     const String &id
 );
+
+
+bool workflow_start_by_id(const String &id, bool skip_first_step = false);
+

@@ -7,6 +7,7 @@
 #include "system_state.h"
 #include "config_manager.h"
 #include "event_manager.h"
+#include "command_manager.h"
 
 // =====================================================
 // MQTT对象
@@ -56,13 +57,11 @@ static String last_command;
 static void mqtt_callback(char* topic, byte* payload, unsigned int length)
 {
     String message;
-    for (unsigned int i = 0; i < length; i++)
-    {
+    for (unsigned int i = 0; i < length; i++) {
         message += (char)payload[i];
     }
 
-    if (message.length() == 0)
-    {
+    if (message.length() == 0) {
         Serial.println("Empty command");
         return;
     }
@@ -72,9 +71,20 @@ static void mqtt_callback(char* topic, byte* payload, unsigned int length)
     Serial.println("Cloud command:");
     Serial.println(message);
 
-    last_command = message;
-    // 推送事件给EventManager
-    event_push(EVENT_CLOUD_COMMAND, message, "mqtt");
+    // ===== 上报"收到命令"状态 =====
+    JsonDocument ack;
+    ack["type"] = "cmd_ack";
+    ack["status"] = "received";
+    ack["timestamp"] = time(nullptr);  // 如果 TimeManager 已就绪
+    cloud_publish_json(ack);
+
+    // ===== 通过 Command Manager 处理 =====
+    String response = command_manager_execute(message);
+
+    // ===== 发送同步响应到云端 =====
+    if (response.length() > 0) {
+        cloud_send_raw(response.c_str());
+    }
 }
 
 // =====================================================
@@ -138,6 +148,14 @@ static void cloud_connect()
 }
 
 // =====================================================
+// Command Manager 结果回调
+// =====================================================
+static void on_command_result(const String &json)
+{
+    cloud_send_raw(json.c_str());
+}
+
+// =====================================================
 // 初始化入口
 // =====================================================
 void cloud_init()
@@ -165,7 +183,7 @@ void cloud_init()
     Serial.println(mqtt_sub_topic);
 
     // MQTT客户端配置
-    mqttClient.setBufferSize(512);
+    mqttClient.setBufferSize(2048);
     mqttClient.setServer(mqtt_server.c_str(), mqtt_port);
     mqttClient.setCallback(mqtt_callback);
     mqttClient.setKeepAlive(keep_alive);
@@ -174,6 +192,9 @@ void cloud_init()
     retry_count = 0;
     retry_mode = FAST_RETRY;
     last_command.clear();
+
+        // ===== 注册 Command Manager 结果回调 =====
+    command_manager_set_result_callback(on_command_result);
 }
 
 // =====================================================
@@ -226,6 +247,13 @@ bool cloud_send_raw(const char* message)
         return false;
     }
 
+    size_t msg_len = strlen(message);
+    if (msg_len >= mqttClient.getBufferSize() - 32)  // 预留 MQTT 头部空间
+    {
+        Serial.printf("MQTT message too long: %d bytes\n", msg_len);
+        return false;
+    }
+
     bool result = mqttClient.publish(mqtt_sub_topic.c_str(), message);
     if (result)
     {
@@ -258,11 +286,10 @@ bool cloud_publish_message(const char* message)
 // =====================================================
 bool cloud_publish_status()
 {
-    String json;
-    json = "{";
-    json += "\"event\":\"status\"";
-    json += "}";
-    return cloud_send_raw(json.c_str());
+    JsonDocument doc;
+    doc["event"] = "status";
+    doc["timestamp"] = time(nullptr);
+    return cloud_publish_json(doc);
 }
 
 // =====================================================
@@ -290,3 +317,4 @@ bool cloud_is_connected()
 {
     return mqtt_connected;
 }
+

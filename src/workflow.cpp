@@ -32,6 +32,7 @@ static WorkflowActionDescriptor* action_registry[WORKFLOW_MAX_ACTION];
 static uint8_t trigger_count = 0;
 static uint8_t action_count = 0;
 
+
 // =====================================================
 // Workflow存储区
 // =====================================================
@@ -59,6 +60,77 @@ static bool action_instances_psram = false;
 static uint16_t trigger_instance_index = 0;
 static uint16_t action_instance_index = 0;
 
+
+// =====================================================
+// 临时 Action 任务队列（用于 Command 调用）
+// =====================================================
+#define MAX_TEMP_ACTIONS 8
+#define MAX_TEMP_ACTION_INST MAX_TEMP_ACTIONS
+
+
+struct TempActionItem {
+
+    uint32_t instance_id;
+    WorkflowActionDescriptor *desc;
+    WorkflowParamValue params[WORKFLOW_MAX_PARAM];
+    uint8_t param_count;
+    bool completed;
+    WorkflowActionResult result;
+    unsigned long start_time;
+    WorkflowActionInstance *instance;
+    void (*callback)(uint32_t instance_id,WorkflowActionResult result);
+    unsigned long timeout_ms;
+};
+
+static TempActionItem temp_action_queue[MAX_TEMP_ACTIONS];
+
+static uint8_t queue_wr_ptr = 0;
+static uint8_t queue_rd_ptr = 0;
+// 临时Action唯一ID生成器
+static uint32_t temp_action_instance_counter = 0;
+
+static WorkflowActionInstance temp_action_instances[MAX_TEMP_ACTION_INST];
+// 简易分配器：查找空闲实例
+static WorkflowActionInstance* temp_action_alloc_instance()
+{
+    for(uint8_t i = 0; i < MAX_TEMP_ACTION_INST; i++)
+    {
+        if(temp_action_instances[i].descriptor == nullptr)
+        {
+            WorkflowActionInstance *inst = &temp_action_instances[i];
+
+            inst->started = false;
+            inst->runtime = nullptr;
+            inst->result = ACTION_IDLE;
+
+            return inst;
+        }
+    }
+
+    return nullptr;
+}
+
+// 释放实例
+static void temp_action_free_instance(WorkflowActionInstance *inst)
+{
+inst->descriptor = nullptr;
+inst->id = "";
+inst->param_count = 0;
+inst->result = ACTION_IDLE;
+inst->started = false;
+inst->runtime = nullptr;
+    
+
+    for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+    {
+        inst->params[i].name = "";
+        inst->params[i].type = PARAM_INT;
+        inst->params[i].string_value = "";
+        inst->params[i].bool_value = false;
+        inst->params[i].int_value = 0;
+        inst->params[i].float_value = 0.0f;
+    }
+}
 // =====================================================
 // 内部查找函数
 // =====================================================
@@ -88,20 +160,13 @@ void workflow_destroy_all_instances()
 {
     uint16_t count = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP;
 
-
     if(trigger_instances != nullptr)
     {
         for(uint16_t i = 0; i < count; i++)
         {
-            if(trigger_instances[i].runtime != nullptr)
-            {
-                free(trigger_instances[i].runtime);
-                trigger_instances[i].runtime = nullptr;
-            }
-
+            // 删除 runtime 相关代码
             trigger_instances[i].~WorkflowTriggerInstance();
         }
-
 
         if(trigger_instances_psram)
         {
@@ -112,25 +177,17 @@ void workflow_destroy_all_instances()
             free(trigger_instances);
         }
 
-
         trigger_instances = nullptr;
         trigger_instances_psram = false;
     }
-
 
     if(action_instances != nullptr)
     {
         for(uint16_t i = 0; i < count; i++)
         {
-            if(action_instances[i].runtime != nullptr)
-            {
-                free(action_instances[i].runtime);
-                action_instances[i].runtime = nullptr;
-            }
-
+            // 删除 runtime 相关代码
             action_instances[i].~WorkflowActionInstance();
         }
-
 
         if(action_instances_psram)
         {
@@ -141,33 +198,10 @@ void workflow_destroy_all_instances()
             free(action_instances);
         }
 
-
         action_instances = nullptr;
         action_instances_psram = false;
     }
 }
-
-// =====================================================
-// Timer Runtime 结构（内部使用）
-// =====================================================
-struct TimerRuntime
-{
-    time_t next_trigger_time;
-    int last_trigger_minute;
-    bool triggered;
-    bool expired;
-    int type;  // 0: once, 1: daily, 2: weekly
-};
-
-// =====================================================
-// Delay Runtime 结构（内部使用）
-// =====================================================
-struct DelayRuntime
-{
-    unsigned long start_time;
-    unsigned long delay_ms;
-    bool started;
-};
 
 // =====================================================
 // 辅助函数：从 params 中获取整数参数
@@ -200,8 +234,7 @@ static String timer_get_string_param(WorkflowParamValue *params, uint8_t count, 
 // =====================================================
 static time_t timer_calculate_next(WorkflowTriggerInstance *trigger)
 {
-    TimerRuntime *rt = (TimerRuntime*)trigger->runtime;
-    if (rt == nullptr) return 0;
+    TimerRuntime *rt = &trigger->timer_runtime;
 
     int hour = timer_get_int_param(trigger->params, trigger->param_count, "hour", 8);
     int minute = timer_get_int_param(trigger->params, trigger->param_count, "minute", 0);
@@ -252,15 +285,21 @@ static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
     }
 
     time_t now = time(nullptr);
-    TimerRuntime *rt = (TimerRuntime*)trigger->runtime;
+    TimerRuntime *rt = &trigger->timer_runtime;
 
     // =============================================
     // 第二步：初始化（第一次调用时）
     // =============================================
-    if (rt == nullptr) {
-        rt = (TimerRuntime*)calloc(1, sizeof(TimerRuntime));
-        if (rt == nullptr) return TRIGGER_FAILED;
-        trigger->runtime = rt;
+    if (trigger->is_timer == false) {
+        trigger->is_timer = true;
+        // 初始化 rt 的所有字段
+        rt->next_trigger_time = 0;
+        rt->last_trigger_minute = -1;
+        rt->triggered = false;
+        rt->expired = false;
+        rt->type = 1;  // 默认 daily
+    
+
 
         // 解析类型
         String type_str = timer_get_string_param(trigger->params, trigger->param_count, "type");
@@ -276,13 +315,6 @@ static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
             rt->expired = true;
             return TRIGGER_FAILED;
         }
-
-        rt->last_trigger_minute = -1;
-        rt->triggered = false;
-        rt->expired = false;
-        rt->last_trigger_minute = -1;
-        rt->triggered = false;
-        rt->expired = false;
 
         // =============================================
         // 一次性过期检测（once 类型，时间已过）
@@ -341,13 +373,11 @@ static WorkflowTriggerState timer_handler(WorkflowTriggerInstance *trigger)
 // =====================================================
 static WorkflowTriggerState delay_handler(WorkflowTriggerInstance *trigger)
 {
-    DelayRuntime *rt = (DelayRuntime*)trigger->runtime;
+    // ===== 将 rt 声明移到函数开头 =====
+    DelayRuntime *rt = &trigger->delay_runtime;
 
-    if (rt == nullptr) {
-        rt = (DelayRuntime*)calloc(1, sizeof(DelayRuntime));
-        if (rt == nullptr) return TRIGGER_FAILED;
-        trigger->runtime = rt;
-
+    if (!trigger->is_delay) {
+        trigger->is_delay = true;
         int seconds = timer_get_int_param(trigger->params, trigger->param_count, "seconds", 1);
         if (seconds < 1) seconds = 1;
         rt->delay_ms = (unsigned long)seconds * 1000UL;
@@ -480,8 +510,14 @@ bool workflow_init()
 
     workflow_register_trigger(&timer_desc);
     workflow_register_trigger(&delay_desc);
+            // 初始化临时action环形队列指针
+    queue_wr_ptr = 0;
+    queue_rd_ptr = 0;
+    // 初始化实例ID计数
+    temp_action_instance_counter = 0;
+    memset(temp_action_queue,0,sizeof(temp_action_queue));
+    
     return true;
-
 }
 
 // =====================================================
@@ -574,6 +610,9 @@ Workflow* workflow_get(uint8_t index)
 // =====================================================
 void workflow_clear()
 {
+    // =====================================================
+    // 1. 清理所有 Workflow
+    // =====================================================
     for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++) {
         workflows[i].id = "";
         workflows[i].name = "";
@@ -583,15 +622,75 @@ void workflow_clear()
         workflows[i].current_step = 0;
         workflows[i].start_time = 0;
         workflows[i].timeout_ms = 0;
-
         for(uint8_t j = 0; j < WORKFLOW_MAX_STEP; j++) {
             workflows[i].steps[j].id = "";
-            workflows[i].steps[j].instance = nullptr;
+            workflows[i].steps[j].instance.trigger = nullptr;
+            workflows[i].steps[j].instance.action = nullptr;
             workflows[i].steps[j].type = WORKFLOW_STEP_ACTION;
             workflows[i].steps[j].instance_type = INSTANCE_ACTION;
         }
     }
 
+    // =====================================================
+    // 2. 清理 Trigger Instance 池
+    // =====================================================
+    for(uint16_t i = 0; i < WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP; i++) {
+        WorkflowTriggerInstance &inst = trigger_instances[i];
+        inst.id = "";
+        inst.descriptor = nullptr;
+        inst.param_count = 0;
+        inst.state = TRIGGER_IDLE;
+        // timer runtime 清零
+        inst.timer_runtime.next_trigger_time = 0;
+        inst.timer_runtime.last_trigger_minute = -1;
+        inst.timer_runtime.triggered = false;
+        inst.timer_runtime.expired = false;
+        inst.timer_runtime.type = 0;
+        // delay runtime 清零
+        inst.delay_runtime.start_time = 0;
+        inst.delay_runtime.delay_ms = 0;
+        inst.delay_runtime.started = false;
+        inst.is_timer = false;
+        inst.is_delay = false;
+        // 参数清理
+        for(uint8_t p = 0; p < WORKFLOW_MAX_PARAM; p++) {
+            inst.params[p].name = "";
+            inst.params[p].type = PARAM_INT;
+            inst.params[p].int_value = 0;
+            inst.params[p].float_value = 0.0f;
+            inst.params[p].bool_value = false;
+            inst.params[p].string_value = "";
+        }
+    }
+
+    // =====================================================
+    // 3. 清理 Action Instance 池
+    // =====================================================
+    for(uint16_t i = 0; i < WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP; i++) {
+        WorkflowActionInstance &inst = action_instances[i];
+        // 如果未来 runtime 使用 heap，这里统一释放入口
+        if(inst.runtime != nullptr) {
+            inst.runtime = nullptr;
+        }
+        inst.id = "";
+        inst.descriptor = nullptr;
+        inst.param_count = 0;
+        inst.result = ACTION_IDLE;
+        // 新增：异步 Action 状态清理
+        inst.started = false;
+        for(uint8_t p = 0; p < WORKFLOW_MAX_PARAM; p++) {
+            inst.params[p].name = "";
+            inst.params[p].type = PARAM_INT;
+            inst.params[p].int_value = 0;
+            inst.params[p].float_value = 0.0f;
+            inst.params[p].bool_value = false;
+            inst.params[p].string_value = "";
+        }
+    }
+
+    // =====================================================
+    // 4. 清理索引
+    // =====================================================
     workflow_count = 0;
     trigger_instance_index = 0;
     action_instance_index = 0;
@@ -678,31 +777,69 @@ bool workflow_parse_json(JsonDocument &doc)
                     return false;
                 }
 
-                WorkflowTriggerInstance *inst = &trigger_instances[trigger_instance_index++];
-
-                // 先重置所有字段
-                inst->id = "";
-                inst->param_count = 0;
-                inst->state = TRIGGER_IDLE;
-                inst->runtime = nullptr;
-                inst->descriptor = nullptr;
-
-                // 再赋值有效内容
-                inst->id = s.id;
-                inst->descriptor = find_trigger_descriptor(s.id);
-
-                if(inst->descriptor == nullptr) {
-                    s.instance = nullptr;
+                // ===== 修复后的 Trigger 实例分配逻辑 =====
+                // 先查找 descriptor，确认存在后再分配实例
+                WorkflowTriggerDescriptor *desc = find_trigger_descriptor(s.id);
+                if (desc == nullptr) {
+                    // descriptor 不存在，不分配实例，直接跳过
+                    s.instance.trigger = nullptr;
                     step_index++;
                     continue;
                 }
 
-                JsonObject params = step["params"];
-                workflow_parse_params(params, inst->params, inst->param_count);
-                inst->state = TRIGGER_IDLE;
-                s.instance = inst;
+                // 确认 descriptor 存在后，再分配实例
+                if (trigger_instance_index >= WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP) {
+                    json_state = WORKFLOW_JSON_ERROR;
+                    return false;
+                }
 
-            } else if(type == "action") {
+                WorkflowTriggerInstance *inst = &trigger_instances[trigger_instance_index++];
+
+
+                // 完整初始化 Trigger Instance
+
+                inst->id = s.id;
+                inst->descriptor = desc;
+
+                inst->param_count = 0;
+                inst->state = TRIGGER_IDLE;
+
+
+                // 清理 runtime 状态
+
+                inst->timer_runtime.next_trigger_time = 0;
+                inst->timer_runtime.last_trigger_minute = -1;
+                inst->timer_runtime.triggered = false;
+                inst->timer_runtime.expired = false;
+                inst->timer_runtime.type = 0;
+
+
+                inst->delay_runtime.start_time = 0;
+                inst->delay_runtime.delay_ms = 0;
+                inst->delay_runtime.started = false;
+
+
+                inst->is_timer = false;
+                inst->is_delay = false;
+
+
+                // 清理参数
+
+                for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+                {
+                    inst->params[i].name = "";
+                    inst->params[i].type = PARAM_INT;
+                    inst->params[i].int_value = 0;
+                    inst->params[i].float_value = 0.0f;
+                    inst->params[i].bool_value = false;
+                    inst->params[i].string_value = "";
+                }
+
+                JsonObject step_params = step["params"];
+                workflow_parse_params(step_params, inst->params, inst->param_count);
+                s.instance.trigger = inst;
+            }
+            else if(type == "action") {
                 s.type = WORKFLOW_STEP_ACTION;
                 s.instance_type = INSTANCE_ACTION;
 
@@ -711,29 +848,51 @@ bool workflow_parse_json(JsonDocument &doc)
                     return false;
                 }
 
-                WorkflowActionInstance *inst = &action_instances[action_instance_index++];
-
-                // 先重置所有字段
-                inst->id = "";
-                inst->param_count = 0;
-                inst->result = ACTION_IDLE;
-                inst->runtime = nullptr;
-                inst->descriptor = nullptr;
-
-                // 再赋值有效内容
-                inst->id = s.id;
-                inst->descriptor = find_action_descriptor(s.id);
-
-                if(inst->descriptor == nullptr) {
-                    s.instance = nullptr;
+                // ===== 修复后的 Action 实例分配逻辑 =====
+                // 先查找 descriptor，确认存在后再分配实例
+                WorkflowActionDescriptor *desc = find_action_descriptor(s.id);
+                if (desc == nullptr) {
+                    // descriptor 不存在，不分配实例，直接跳过
+                    s.instance.action = nullptr;
                     step_index++;
                     continue;
                 }
 
-                JsonObject params = step["params"];
-                workflow_parse_params(params, inst->params, inst->param_count);
+                // 确认 descriptor 存在后，再分配实例
+                if (action_instance_index >= WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP) {
+                    json_state = WORKFLOW_JSON_ERROR;
+                    return false;
+                }
+
+                WorkflowActionInstance *inst = &action_instances[action_instance_index++];
+
+
+                // 完整初始化 Action Instance
+
+                inst->id = s.id;
+                inst->descriptor = desc;
+
+                inst->param_count = 0;
                 inst->result = ACTION_IDLE;
-                s.instance = inst;
+                inst->started = false;
+                inst->runtime = nullptr;
+
+
+                // 清理参数
+
+                for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+                {
+                    inst->params[i].name = "";
+                    inst->params[i].type = PARAM_INT;
+                    inst->params[i].int_value = 0;
+                    inst->params[i].float_value = 0.0f;
+                    inst->params[i].bool_value = false;
+                    inst->params[i].string_value = "";
+                }
+
+                JsonObject step_params = step["params"];
+                workflow_parse_params(step_params, inst->params, inst->param_count);
+                s.instance.action = inst;
             }
 
             step_index++;
@@ -790,24 +949,20 @@ bool workflow_load_json_file(const char *path)
 {
     if (path == nullptr) return false;
 
-    if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-        Serial.println("LittleFS mount failed");
-        return false;
-    }
+    
 
     File file = LittleFS.open(path, "r");
     if (!file) {
-        Serial.printf("Failed to open %s\n", path);
-        LittleFS.end();
-        return false;
-    }
+            Serial.printf("Failed to open %s\n", path);
+            return false;
+        }
+
 
     String json;
     while (file.available()) {
         json += (char)file.read();
     }
     file.close();
-    LittleFS.end();
 
     return workflow_load_json(json);
 }
@@ -822,21 +977,14 @@ bool workflow_save_json_file(const char *path)
     String json;
     if (!workflow_export_json(json)) return false;
 
-    if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-        Serial.println("LittleFS mount failed");
-        return false;
-    }
-
     File file = LittleFS.open(path, "w");
     if (!file) {
         Serial.printf("Failed to open %s for writing\n", path);
-        LittleFS.end();
         return false;
     }
 
     size_t written = file.print(json);
     file.close();
-    LittleFS.end();
 
     return (written == json.length());
 }
@@ -855,8 +1003,31 @@ bool workflow_save_json(String &json)
 // =====================================================
 bool workflow_reload()
 {
-    if(workflow_json_cache.length() == 0) return false;
-    return workflow_load_json(workflow_json_cache);
+
+    if(workflow_json_cache.length() == 0)
+        return false;
+    // 防止运行中的 Workflow 被强制清理
+    for(uint8_t i = 0; i < workflow_count; i++)
+    {
+        if(workflows[i].state == WORKFLOW_RUNNING)
+        {
+            Serial.println(
+                "[Workflow] Reload blocked: workflow running"
+            );
+            return false;
+        }
+    }
+    // 检查临时 Action 队列
+    if(queue_rd_ptr != queue_wr_ptr)
+    {
+        Serial.println(
+            "[Workflow] Reload blocked: temp action running"
+        );
+        return false;
+    }
+    return workflow_load_json(
+        workflow_json_cache
+    );
 }
 
 // =====================================================
@@ -867,15 +1038,44 @@ bool workflow_start(Workflow *workflow, bool skip_first_step)
     if (workflow == nullptr) return false;
     if (!workflow->enable) return false;
     if (workflow->state == WORKFLOW_RUNNING) return false;
-
-    // 检查 Step0 是否为 Trigger（防御）
-    if (workflow->step_count > 0) {
-        WorkflowStep &first = workflow->steps[0];
-        if (first.type != WORKFLOW_STEP_TRIGGER) {
-            return false;
+    
+    // 重置所有 step 的状态
+    for (uint8_t i = 0; i < workflow->step_count; i++) {
+        WorkflowStep &step = workflow->steps[i];
+        if (
+            step.instance_type == INSTANCE_TRIGGER 
+            && step.instance.trigger != nullptr
+        )
+        {    WorkflowTriggerInstance *trigger = step.instance.trigger;
+            trigger->state = TRIGGER_IDLE;
+            // Timer reset
+            trigger->timer_runtime.next_trigger_time = 0;
+            trigger->timer_runtime.last_trigger_minute = -1;
+            trigger->timer_runtime.triggered = false;
+            trigger->timer_runtime.expired = false;
+            trigger->timer_runtime.type = 0;
+            // Delay reset
+            trigger->delay_runtime.start_time = 0;
+            trigger->delay_runtime.delay_ms = 0;
+            trigger->delay_runtime.started = false;
+            trigger->is_timer = false;
+            trigger->is_delay = false;
+        }
+        else if (
+            step.instance_type == INSTANCE_ACTION 
+            && step.instance.action != nullptr
+        )
+        {
+            WorkflowActionInstance *action = step.instance.action;
+            action->result = ACTION_IDLE;
+            action->started = false;
+            // 清理运行上下文
+            // 具体Action如果需要重新创建runtime，
+            // 将在handler第一次执行时重新初始化
+            action->runtime = nullptr;
         }
     }
-
+    
     workflow->state = WORKFLOW_RUNNING;
     workflow->current_step = skip_first_step ? 1 : 0;
     workflow->start_time = millis();
@@ -900,27 +1100,125 @@ WorkflowTriggerState workflow_trigger_check(WorkflowTriggerInstance *trigger)
 // =====================================================
 WorkflowActionResult workflow_action_execute(WorkflowActionInstance *action)
 {
-    if(action == nullptr) return ACTION_FAILED;
+    if(action == nullptr)
+        return ACTION_FAILED;
+
     if(action->descriptor == nullptr) {
-
-        Serial.println("[DEBUG] Action descriptor is nullptr");
-
-
+        Serial.println("[Workflow] Action descriptor nullptr");
+        action->result = ACTION_FAILED;
+        action->started = false;
         return ACTION_FAILED;
     }
     if(action->descriptor->handler == nullptr) {
-
-        Serial.printf("[DEBUG] Action handler is nullptr for %s\n", action->id.c_str());
-
-
+        Serial.printf("[Workflow] Action handler nullptr:%s\n", action->id.c_str());
+        action->result = ACTION_FAILED;
+        action->started = false;
         return ACTION_FAILED;
     }
-
-    action->result = action->descriptor->handler(action);
-    return action->result;
+    /*
+        Action 状态机:
+        第一次: started=false, handler负责启动动作
+        中间:   started=true,  handler负责轮询状态
+        结束:   SUCCESS / FAILED, 自动复位 started
+    */
+    WorkflowActionResult result = action->descriptor->handler(action);
+    if(result == ACTION_RUNNING) {
+        action->started = true;
+    } else {
+        action->started = false;
+    }
+    action->result = result;
+    return result;
 }
+// =====================================================
+// 入队临时 Action（非阻塞）
+// =====================================================
+static bool enqueue_temp_action(
+    const String &id,
+    WorkflowParamValue *params,
+    uint8_t param_count,
+    uint32_t *instance_id,
+    void (*callback)(
+        uint32_t instance_id,
+        WorkflowActionResult result
+    ),
+    unsigned long timeout_ms
+)
+{
+    uint8_t next_wr = (queue_wr_ptr + 1) % MAX_TEMP_ACTIONS;
+    // 环形队列判满
+    if (next_wr == queue_rd_ptr)
+    {
+        return false;
+    }
+
+    WorkflowActionDescriptor *desc = find_action_descriptor(id);
+    if (desc == nullptr) {
+        return false;
+    }
+
+    WorkflowActionInstance *inst = temp_action_alloc_instance();
+    if(inst == nullptr)
+    {
+        return false;
+    }
+
+    // 初始化 Action Instance
+
+    inst->descriptor = desc;
+    inst->id = desc->id;
+    inst->param_count = 0;
+    inst->result = ACTION_IDLE;
+    inst->started = false;
+    inst->runtime = nullptr;
 
 
+    // 清空旧参数
+    for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+    {
+        inst->params[i].name = "";
+        inst->params[i].type = PARAM_INT;
+        inst->params[i].int_value = 0;
+        inst->params[i].float_value = 0.0f;
+        inst->params[i].bool_value = false;
+        inst->params[i].string_value = "";
+    }
+
+
+    // 写入新参数
+    for(uint8_t i = 0; i < param_count; i++)
+    {
+        inst->params[i] = params[i];
+    }
+
+    inst->param_count = param_count;
+
+    TempActionItem &item = temp_action_queue[queue_wr_ptr];
+    // ===============================
+    // 分配唯一实例ID
+    // ===============================
+    temp_action_instance_counter++;
+    // 防止uint32溢出后变0
+    if(temp_action_instance_counter == 0)
+    {
+        temp_action_instance_counter = 1;
+    }
+    item.instance_id = temp_action_instance_counter;
+    if(instance_id != nullptr)
+    {
+        *instance_id = item.instance_id;
+    }
+    item.desc = desc;
+    item.instance = inst;
+    item.param_count = param_count;
+    item.completed = false;
+    item.result = ACTION_IDLE;
+    item.start_time = millis();
+    item.callback = callback;
+    item.timeout_ms = timeout_ms;
+    queue_wr_ptr = next_wr;
+    return true;
+}
 // =====================================================
 // 外部Action执行接口
 //
@@ -929,24 +1227,106 @@ WorkflowActionResult workflow_action_execute(WorkflowActionInstance *action)
 // 不创建Workflow运行实例
 //
 // =====================================================
-WorkflowActionResult workflow_execute_action(
+bool workflow_enqueue_action(
     const String &id,
     WorkflowParamValue *params,
-    uint8_t param_count
+    uint8_t param_count,
+    uint32_t *instance_id,
+    void (*callback)(
+        uint32_t instance_id,
+        WorkflowActionResult result
+    ),
+    unsigned long timeout_ms
 )
-{    WorkflowActionDescriptor *desc =
-        find_action_descriptor(id);
-    if(desc == nullptr)
-    {return ACTION_FAILED;}
-    WorkflowActionInstance action;
-    action.descriptor = desc;
-    action.id = id;
-    action.param_count = param_count;
-    action.result = ACTION_IDLE;
-    action.runtime = nullptr;
-    for(uint8_t i=0;i<param_count;i++)
-    {action.params[i] = params[i];}
-    return workflow_action_execute(&action);
+{
+    return enqueue_temp_action(
+        id,
+        params,
+        param_count,
+        instance_id,
+        callback,
+        timeout_ms
+    );
+}
+
+// =====================================================
+// 查询临时 Action 是否已完成
+// CommandManager 轮询使用
+// =====================================================
+bool workflow_temp_action_is_complete(
+    uint32_t instance_id,
+    WorkflowActionResult &result
+)
+{
+    uint8_t rd = queue_rd_ptr;
+    while (rd != queue_wr_ptr)
+    {
+        TempActionItem &item = temp_action_queue[rd];
+        if (item.instance_id == instance_id)
+        {
+            if (item.completed)
+            {
+                result = item.result;
+                return true;
+            }
+            return false;
+        }
+        rd = (rd + 1) % MAX_TEMP_ACTIONS;
+    }
+    // 找不到实例
+    result = ACTION_IDLE;
+    return false;
+}
+
+// =====================================================
+// 回收已经完成的 Temp Action
+// =====================================================
+static void workflow_temp_action_cleanup()
+{
+    while(queue_rd_ptr != queue_wr_ptr)
+    {
+        TempActionItem &item =
+            temp_action_queue[queue_rd_ptr];
+        if(!item.completed)
+        {
+            break;
+        }
+
+        // 清理 instance
+        if(item.instance != nullptr)
+        {
+            item.instance->runtime = nullptr;
+            item.instance->started = false;
+            item.instance->result = ACTION_IDLE;
+        }
+
+        item.desc = nullptr;
+        item.instance = nullptr;
+        item.param_count = 0;
+        item.callback = nullptr;
+        item.timeout_ms = 0;
+        item.start_time = 0;
+        item.instance_id = 0;
+        item.result = ACTION_IDLE;
+        item.completed = false;
+
+        queue_rd_ptr =
+            (queue_rd_ptr + 1) % MAX_TEMP_ACTIONS;
+    }
+}
+// =====================================================
+// 获取等待中的临时 Action 数量
+// =====================================================
+uint8_t workflow_temp_action_pending_count()
+{
+    if (queue_wr_ptr >= queue_rd_ptr)
+    {
+        return queue_wr_ptr - queue_rd_ptr;
+    }
+    else
+    {
+        return MAX_TEMP_ACTIONS - queue_rd_ptr + queue_wr_ptr;
+    }
 }
 // =====================================================
 // Timer 外部触发检查（由 loop 调用）
@@ -970,9 +1350,13 @@ void workflow_timer_check()
 
         WorkflowStep &step = wf.steps[0];
         if (step.instance_type != INSTANCE_TRIGGER) continue;
-        if (step.instance == nullptr) continue;
 
-        WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
+        // 只定义一次
+        WorkflowTriggerInstance *trigger = step.instance.trigger;
+        if (trigger == nullptr) {
+            wf.state = WORKFLOW_ERROR;
+            continue;
+        }
         if (trigger->descriptor == nullptr) continue;
 
         // 只检查 Timer Trigger
@@ -991,6 +1375,7 @@ void workflow_timer_check()
         }
     }
 }
+
 
 // =====================================================
 // Workflow执行核心（非阻塞，loop调用）
@@ -1019,42 +1404,114 @@ void workflow_task()
         }
 
         WorkflowStep &step = wf.steps[wf.current_step];
-        if (step.instance == nullptr) {
+        if (step.instance.trigger == nullptr && step.instance.action == nullptr) {
             wf.state = WORKFLOW_ERROR;
             continue;
         }
+        else if (step.instance_type == INSTANCE_ACTION)
+        {
+            WorkflowActionInstance *action = step.instance.action;
 
-        if (step.instance_type == INSTANCE_TRIGGER) {
-            WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
-            if (trigger == nullptr) {
-                wf.state = WORKFLOW_ERROR;
-                continue;
-            }
-
-            WorkflowTriggerState result = workflow_trigger_check(trigger);
-
-            if (result == TRIGGER_SUCCESS) {
-                wf.current_step++;
-            } else if (result == TRIGGER_FAILED) {
-                wf.state = WORKFLOW_ERROR;
-            }
-        }
-        else if (step.instance_type == INSTANCE_ACTION) {
-            WorkflowActionInstance *action = (WorkflowActionInstance*)step.instance;
-            if (action == nullptr) {
+            if (action == nullptr)
+            {
                 wf.state = WORKFLOW_ERROR;
                 continue;
             }
 
             WorkflowActionResult result = workflow_action_execute(action);
 
+
             if (result == ACTION_SUCCESS) {
                 wf.current_step++;
-            } else if (result == ACTION_FAILED) {
+            }
+            else if (result == ACTION_FAILED)
+            {
                 wf.state = WORKFLOW_ERROR;
+            }
+            else if(result == ACTION_RUNNING)
+            {
+                // 保持当前step
+                // 下一轮继续调用handler
             }
         }
     }
+
+    // =====================================================
+    // 驱动临时 Action 环形队列（无数组拷贝）
+    // =====================================================
+    while (queue_rd_ptr != queue_wr_ptr)
+    {
+        TempActionItem &item = temp_action_queue[queue_rd_ptr];
+
+        // 超时判断
+        if ((unsigned long)(millis() - item.start_time) > item.timeout_ms)
+        {
+            Serial.printf("[Workflow] Temp action %s timeout after %lu ms\n", item.desc->id, item.timeout_ms);
+            item.completed = true;
+            item.result = ACTION_FAILED;
+
+            if (item.callback != nullptr)
+            {
+                item.callback(
+                    item.instance_id,
+                    ACTION_FAILED
+                );
+            }
+
+        }
+        else
+        {
+            WorkflowActionResult result = workflow_action_execute(item.instance);
+            if (result != ACTION_RUNNING)
+            {
+                item.completed = true;
+                item.result = result;
+
+
+                if(item.callback != nullptr)
+                {
+                    item.callback(
+                        item.instance_id,
+                        result
+                    );
+                }
+
+
+                // ===============================
+                // 生命周期回收
+                // ===============================
+            }
+        }
+
+        // 任务完成，释放实例、清空本条item，移动读指针
+        if (item.completed)
+        {
+            temp_action_free_instance(item.instance);
+            item.instance = nullptr;
+
+            // 清空本条item，避免脏数据
+            item.instance_id = 0;
+            item.desc = nullptr;
+            item.callback = nullptr;
+            item.param_count = 0;
+            item.completed = false;
+            item.result = ACTION_IDLE;
+            item.start_time = 0;
+            item.timeout_ms = 0;
+            memset(item.params,0,sizeof(item.params));
+
+            queue_rd_ptr = (queue_rd_ptr + 1) % MAX_TEMP_ACTIONS;
+        }
+        else
+        {
+            // 当前任务还在运行，跳出，下一轮loop继续轮询
+            break;
+        }
+    }
+        // =====================================================
+    // 清理已经完成的 Temp Action
+    // =====================================================
+    workflow_temp_action_cleanup();
 }
 
 // =====================================================
@@ -1080,7 +1537,7 @@ bool workflow_export_json(String &json)
             JsonObject step = steps.add<JsonObject>();
 
             if (s.type == WORKFLOW_STEP_TRIGGER) {
-                WorkflowTriggerInstance *t = (WorkflowTriggerInstance*)s.instance;
+                WorkflowTriggerInstance *t = s.instance.trigger;
 
                 if(t == nullptr) {
                     step["type"] = "trigger";
@@ -1113,7 +1570,7 @@ bool workflow_export_json(String &json)
                 }
 
             } else {
-                WorkflowActionInstance *a = (WorkflowActionInstance*)s.instance;
+                WorkflowActionInstance *a = s.instance.action;
 
                 if(a == nullptr) {
                     step["type"] = "action";
@@ -1208,21 +1665,26 @@ bool workflow_stop(const String &id)
 // =====================================================
 void workflow_event_init()
 {
-    // 遍历所有 Workflow，直接订阅事件
-    for (uint8_t i = 0; i < workflow_count; i++) {
+    for(uint8_t i = 0; i < workflow_count; i++)
+    {
         Workflow &wf = workflows[i];
-        if (wf.step_count == 0) continue;
-
+        if(!wf.enable)
+            continue;
+        if(wf.step_count == 0)
+            continue;
         WorkflowStep &step = wf.steps[0];
-        if (step.type != WORKFLOW_STEP_TRIGGER) continue;
-        if (step.instance == nullptr) continue;
-
-        WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
-        if (!trigger->id.startsWith("event_")) continue;
-
-        // 直接使用 Event Manager 的函数转换字符串为事件枚举
-        SystemEvent event = event_from_string(trigger->id);
-        if (event != EVENT_NONE) {
+        if(step.instance_type != INSTANCE_TRIGGER)
+            continue;
+        WorkflowTriggerInstance *trigger =
+            step.instance.trigger;
+        if(trigger == nullptr)
+            continue;
+        if(!trigger->id.startsWith("event_"))
+            continue;
+        SystemEvent event =
+            event_from_string(trigger->id);
+        if(event != EVENT_NONE)
+        {
             event_subscribe(event, workflow_event_callback);
         }
     }
@@ -1237,14 +1699,15 @@ void workflow_event_callback(const EventMessage &msg)
 
     for (uint8_t i = 0; i < workflow_count; i++) {
         Workflow &wf = workflows[i];
+        if (!wf.enable) continue;
         if (wf.step_count == 0) continue;
         if (wf.state != WORKFLOW_IDLE) continue;
 
         WorkflowStep &step = wf.steps[0];
         if (step.type != WORKFLOW_STEP_TRIGGER) continue;
-        if (step.instance == nullptr) continue;
+        if (step.instance.trigger == nullptr && step.instance.action == nullptr) continue;
 
-        WorkflowTriggerInstance *trigger = (WorkflowTriggerInstance*)step.instance;
+        WorkflowTriggerInstance *trigger = step.instance.trigger;
         if (!trigger->id.startsWith("event_")) continue;
 
         // 将字符串转换为事件枚举，与接收到的事件对比
@@ -1254,3 +1717,15 @@ void workflow_event_callback(const EventMessage &msg)
         }
     }
 }
+
+bool workflow_start_by_id(const String &id, bool skip_first_step)
+{
+    for (uint8_t i = 0; i < workflow_count; i++) {
+        if (workflows[i].id == id) {
+            return workflow_start(&workflows[i], skip_first_step);
+        }
+    }
+    return false;
+}
+
+
