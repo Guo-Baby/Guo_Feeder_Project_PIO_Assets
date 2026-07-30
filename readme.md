@@ -618,3 +618,97 @@ weight_value
 ---
 
 System State 是系统唯一状态中心，新模块只需要注册状态并通过统一接口读写。
+
+
+Workflow Action 编码规范（精简强制执行版）
+适用范围：系统所有 WorkflowActionDescriptor、Action Handler、临时 Command Action
+一、实例所有权规则（最高优先级）
+WorkflowActionInstance = 运行状态载体，所有权唯一
+任意时刻，一个实例只能归属一处持有者：WorkflowStep 或者 TempActionItem。
+禁止将同一个 WorkflowActionInstance* 赋值给多个持有者。
+实例未释放前，不允许再次分配；释放标记（descriptor == nullptr）生效后才可复用。
+WorkflowActionDescriptor = 只读模板，允许无限共享
+描述符仅存放 ID、参数定义、handler 函数指针，不能存放任何运行时状态。
+多个流程 / 指令共用同一个 Action 描述符完全安全。
+二、Handler 函数强制约束
+严禁在 handler 内部使用 static 局部变量保存运行状态
+所有跨 loop 持续状态，必须放置在 inst->runtime 自定义结构体。
+handler 入参 WorkflowActionInstance *inst 不可为空
+所有参数读取、状态读写，全部依托 inst，禁止访问全局业务状态充当运行上下文。
+返回值规范
+ACTION_RUNNING：未完成，下一轮 workflow_task 继续调度；
+ACTION_SUCCESS / ACTION_FAILED：任务终结，触发下一步跳转 / 流程报错。
+禁止阻塞
+不能使用 delay()、长时间阻塞读写；耗时操作采用非阻塞轮询。
+三、临时 Action（Command 调用）专项约束
+临时 Action 使用独立实例池 temp_action_instances，与 Workflow 主实例池物理隔离。
+temp_action_alloc_instance() 获取实例；任务结束先回调、后释放实例。
+释放函数 temp_action_free_instance() 必须清空所有字段、字符串缓冲区，恢复空闲标记。
+不手动修改 TempActionItem->instance 指针，仅由分配 / 释放函数管理生命周期。
+四、资源竞态约束（硬件类 Action 重点）
+Action 实例内存隔离 ≠ 硬件资源隔离。
+多流程并发调用同一个硬件 Action（阀门、称重、输出），会出现硬件争抢，实例隔离无法解决该问题。
+外设互斥方案二选一：
+方案 1：业务层限制，同一硬件不允许多任务同时触发；
+方案 2：增加外设互斥锁，进入 handler 抢占、结束释放。
+五、内存与字符串规范
+释放实例时，清空内部所有 String 对象，避免碎片累积。
+参数读取仅使用 inst->params，禁止缓存参数指针长期持有。
+六、调试与防御性编码建议
+分配失败、空实例指针，统一返回 ACTION_FAILED；
+开发阶段可开启实例分配日志，排查实例池耗尽、泄漏问题；
+禁止跨实例拷贝 WorkflowActionInstance 完整结构体（体积大、极易引入隐性风险）。
+极简一句话备忘录（可粘贴代码头部）
+Descriptor 只读共享；Instance 唯一归属；状态存入 runtime；禁用 static；不阻塞；硬件资源独立加锁。
+如果你需要，我可以把这份规范精简成注释版本，直接贴在 workflow.h 文件顶部。
+
+
+action 标准写法
+static WorkflowActionResult xxx_action(
+    WorkflowActionInstance *action
+)
+{
+    if(action == nullptr)
+        return ACTION_FAILED;
+
+
+    if(!action->started)
+    {
+        // 参数检查
+
+
+        // 创建runtime（需要才创建）
+
+
+        // 启动硬件动作
+
+
+        return ACTION_RUNNING;
+    }
+
+
+    // 检查运行状态
+
+
+    if(完成)
+    {
+        // 释放runtime
+
+        action->runtime=nullptr;
+
+        return ACTION_SUCCESS;
+    }
+
+
+    if(错误)
+    {
+        // 释放runtime
+
+        action->runtime=nullptr;
+
+        return ACTION_FAILED;
+    }
+
+
+    return ACTION_RUNNING;
+}

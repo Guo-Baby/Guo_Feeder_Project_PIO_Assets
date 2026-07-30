@@ -431,22 +431,38 @@ const char* state_key_to_string(SystemStateKey key)
     }
     return "unknown";
 }
-
+// 内部私有函数：按名称查找state_map，返回数组下标；找不到返回 -1
+static int state_lookup_by_name(const String &str)
+{
+    for (uint8_t i = 0; i < STATE_MAP_COUNT; i++)
+    {
+        if (str == state_map[i].name)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
 // =====================================================
 // 字符串 → 枚举
 // =====================================================
 SystemStateKey state_string_to_key(const String &str)
 {
-    for (uint8_t i = 0; i < STATE_MAP_COUNT; i++) {
-        if (str == state_map[i].name) {
-            return state_map[i].key;
-        }
+    int idx = state_lookup_by_name(str);
+    if(idx < 0)
+    {
+        return STATE_MAX;
     }
-    return STATE_MAX;  // 无效
+    return state_map[idx].key;
 }
+
+
 
 // =====================================================
 // 通用查询接口
+// =====================================================
+// =====================================================
+// 通用查询接口（完全基于映射表驱动）
 // =====================================================
 // =====================================================
 // 通用查询接口（完全基于映射表驱动）
@@ -456,57 +472,39 @@ bool system_state_query(
     String &output
 )
 {
-    SystemStateKey state_key =
-        state_string_to_key(key);
-
-    if (state_key == STATE_MAX) {
+    int idx = state_lookup_by_name(key);
+    if (idx < 0)
+    {
         return false;
     }
 
-    for (uint8_t i = 0; i < STATE_MAP_COUNT; i++) {
-        if (state_map[i].key == state_key) {
-            if (!state_is_valid(state_key)) {output = "invalid";return true;
-            }
+    const auto &item = state_map[idx];
+    SystemStateKey state_key = item.key;
 
-            switch (state_map[i].type) {
-                case STATE_TYPE_BOOL:
-                    output =
-                        state_get_bool(state_key)
-                        ?
-                        "true"
-                        :
-                        "false";
-                    return true;
-
-                case STATE_TYPE_INT:
-                    output =
-                        String(
-                            state_get_int(state_key)
-                        );
-                    return true;
-
-                case STATE_TYPE_LONG:
-                    output =
-                        String(
-                            state_get_long(state_key)
-                        );
-                    return true;
-
-                case STATE_TYPE_FLOAT:
-                    output =
-                        String(
-                            state_get_float(state_key),
-                            1
-                        );
-                    return true;
-
-                default:
-                    return false;
-            }
-        }
+    if (!state_is_valid(state_key))
+    {
+        output = "invalid";
+        return true;
     }
 
-    return false;
+    switch (item.type)
+    {
+        case STATE_TYPE_BOOL:
+            output = state_get_bool(state_key) ? "true" : "false";
+            break;
+        case STATE_TYPE_INT:
+            output = String(state_get_int(state_key));
+            break;
+        case STATE_TYPE_LONG:
+            output = String(state_get_long(state_key));
+            break;
+        case STATE_TYPE_FLOAT:
+            output = String(state_get_float(state_key), 1);
+            break;
+        default:
+            return false;
+    }
+    return true;
 }
 // =====================================================
 // 获取字段列表（供 UI 使用）

@@ -20,32 +20,53 @@ void setup()
     Serial.begin(115200);
     delay(1000);
 
-    // ---- 原有初始化（保持不变） ----
+    // =====================================================
+    // 第一层：基础系统（无依赖）
+    // =====================================================
+  // ===== 一次性挂载 LittleFS =====
     if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-        Serial.println("LittleFS mount failed!");
+        Serial.println("[System] LittleFS mount failed!");
+        // 根据你的错误处理策略，可以选择重启或继续
+    } else {
+        Serial.println("[System] LittleFS mounted");
     }
     system_state_init();
     config_init();
     event_manager_init();
+
+    // =====================================================
+    // 第二层：通信（依赖基础系统）
+    // =====================================================
     wifi_init();
     time_init();
-    cloud_init();
-    command_manager_init();
-    oled_init();
-    oled_event_init();
+
+    // =====================================================
+    // 第三层：Workflow 框架（依赖基础系统）
+    // =====================================================
+    workflow_init();
+
+    // =====================================================
+    // 第四层：业务模块注册（依赖 workflow_init）
+    // =====================================================
     weight_init();
     valve_init();
+    oled_init();
+    oled_event_init();
 
-    //各模块加载放在上方，否则无法注册workflow
-    // 加载真实的 workflow.json（放在 data 目录）
-    workflow_init();
+    // =====================================================
+    // 第五层：命令和云端（依赖业务模块注册完成）
+    // =====================================================
+    command_manager_init();
+    cloud_init();
+
+    // =====================================================
+    // 第六层：加载 Workflow 配置（依赖所有注册完成）
+    // =====================================================
     if (workflow_load_json_file("/workflow.json")) {
         Serial.println("[OK] Workflow loaded from /workflow.json");
     } else {
         Serial.println("[WARN] No workflow.json found");
     }
-
-
 }
 
 
@@ -67,6 +88,7 @@ void loop()
     // ---- 新增：Workflow 任务 ----
     workflow_timer_check();   // 检查 Timer 触发
     workflow_task();          // 执行 Workflow 状态机
+    command_manager_task();
     serial_debug_command_process();
 
     

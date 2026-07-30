@@ -1,179 +1,81 @@
-#ifndef COMMAND_MANAGER_H
-#define COMMAND_MANAGER_H
-
-
+#pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 // =====================================================
-// 最大命令数量
-// 静态数组，ESP32安全，无malloc
+// Command Manager
+//
+// 统一命令调度层
+//
+// Cloud Manager → Command Manager → Workflow / System State
+//
 // =====================================================
 
-#define MAX_COMMAND_TABLE 20
-
 // =====================================================
-// 云端命令枚举
+// 命令类型
 // =====================================================
-
-enum CloudCommand
+enum CommandType
 {
-    CMD_UNKNOWN = 0,
-    CMD_TEST,
-    CMD_FEED_START,
-    CMD_FEED_STOP,
-    CMD_VALVE_OPEN,
-    CMD_VALVE_CLOSE
+    CMD_NONE = 0,
+    CMD_ACTION,          // 执行 Action
+    CMD_WORKFLOW,        // 启动 Workflow
+    CMD_QUERY_STATE,     // 查询 System State
+    CMD_QUERY_ACTIONS,   // 查询 Action 列表
+    CMD_QUERY_TRIGGERS,  // 查询 Trigger 列表
+    CMD_QUERY_WORKFLOWS, // 查询 Workflow 列表
+    CMD_SYSTEM,          // 系统命令（reboot 等）
+    CMD_UPDATE           // 更新命令（OTA 等）
 };
 
-
-
-
 // =====================================================
-// 命令执行结果
+// 执行结果
 // =====================================================
-
 enum CommandResult
 {
-
-    CMD_OK = 0,
-    // 当前模块忙
-    CMD_BUSY,
-    // 参数错误
-    CMD_INVALID_PARAM,
-    // 未知命令
-    CMD_UNKNOWN_CMD,
-    // 执行错误
-    CMD_ERROR
+    CMD_RESULT_OK = 0,
+    CMD_RESULT_RUNNING,
+    CMD_RESULT_FAILED,
+    CMD_RESULT_ERROR,
+    CMD_RESULT_UNKNOWN
 };
-// =====================================================
-// 命令消息
-// command_manager解析完成后发送给业务模块
-// =====================================================
-
-struct CommandMessage
-{
-    // 枚举类型
-    CloudCommand command;
-    // 原始命令名称
-    // 例如 feed_start
-    String name;
-    // 参数
-    long param;
-    // 数据来源
-    String source;
-};
-
-
-
-
-// =====================================================
-// 命令回调函数
-//
-// 注意：
-// 1. 禁止阻塞
-// 2. 禁止delay
-// 3. 长任务只启动状态机
-//
-// =====================================================
-
-typedef CommandResult
-(*CommandCallback)
-(
-    CommandMessage message
-);
-
-
-
 
 // =====================================================
 // 初始化
 // =====================================================
-
 void command_manager_init();
 
-
-
+// =====================================================
+// 主任务（loop 调用）
+// =====================================================
+void command_manager_task();
 
 // =====================================================
-// 注册命令
+// 接收并执行命令
 //
-// 由业务模块调用
-//
-// 示例:
-//
-// command_register(
-//     CMD_FEED_START,
-//     "feed_start",
-//     feed_start_handler
-// );
-//
+// 输入: JSON 字符串
+// 输出: JSON 字符串（响应）
 // =====================================================
-
-bool command_register
-(
-    CloudCommand command,
-    const char* name,
-    CommandCallback callback
-);
+String command_manager_execute(const String &json);
 
 // =====================================================
-// 提交命令
-//
-// 外部调用
-//
-// 格式:
-//
-// feed_start:20
-//
+// 获取最后一次执行结果
 // =====================================================
-
-CommandResult command_submit
-(
-    const String &command_string
-);
-// =====================================================
-// 字符串解析
-//
-// feed_start
-//      |
-//      v
-// CMD_FEED_START
-//
-// =====================================================
-
-CloudCommand command_parse
-(
-    const String &name
-);
+CommandResult command_manager_last_result();
 
 // =====================================================
-// 枚举转字符串
-//
-// CMD_FEED_START
-//      |
-//      v
-// "feed_start"
-//
+// 清除状态
 // =====================================================
-
-const char* command_get_name
-(
-    CloudCommand command
-);
+void command_manager_clear();
 
 // =====================================================
-// 获取结果字符串
-//
-// CMD_OK
-//      |
-//      v
-// "OK"
-//
+// 日志回调（外部注入）
 // =====================================================
+typedef void (*CommandLogCallback)(const char *level, const char *msg);
+void command_manager_set_log_callback(CommandLogCallback callback);
 
-const char* command_result_name
-(
-    CommandResult result
-);
+// =====================================================
+// Command 执行结果回调（由上层注入）
+// =====================================================
+typedef void (*CommandResultCallback)(const String &json);
 
-#endif
+void command_manager_set_result_callback(CommandResultCallback callback);
