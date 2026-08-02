@@ -5,17 +5,22 @@
 #include "time_manager.h"
 #include "workflow.h"
 #include "system_state.h"
+#include "cloud_manager.h"
 
-// =====================================================
-// 默认 Action 超时（毫秒）
-// =====================================================
-#define DEFAULT_ACTION_TIMEOUT_MS 600000UL
 
-// =====================================================
-// 并发 Action 限制
-// =====================================================
-#define MAX_CONCURRENT_ACTIONS 4
-static uint8_t active_action_count = 0;
+//callback格式定义
+typedef void (*CommandTempActionCallback)(
+    uint32_t instance_id,
+    const String &action_id,
+    const String &command_id,
+    WorkflowActionResult result
+);
+
+typedef void (*WorkflowResultCallback)(
+    const String &workflow_id,
+    const String &command_id,
+    WorkflowState state
+);
 // =====================================================
 // 日志回调
 // =====================================================
@@ -36,8 +41,8 @@ static void command_log(const char *level, const char *msg)
 // =====================================================
 // 内部函数声明
 // =====================================================
-static bool command_execute_action(JsonDocument &doc, JsonDocument &response);
-static bool command_execute_workflow(JsonDocument &doc, JsonDocument &response);
+static bool command_execute_action(const CommandMessage &cmd, JsonDocument &response);
+static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &response);
 static bool command_query_actions(JsonDocument &response);
 static bool command_query_triggers(JsonDocument &response);
 static bool command_query_workflows(JsonDocument &response);
@@ -70,195 +75,6 @@ static time_t get_unix_timestamp()
     return time_get();
 }
 
-// =====================================================
-// Command 启动的 Workflow 追踪
-// =====================================================
-struct CommandWorkflowTracker {
-    String workflow_id;
-    String command_id;
-    bool reported;
-    unsigned long start_time;
-};
-
-static CommandWorkflowTracker trackers[WORKFLOW_MAX_COUNT];
-static uint8_t tracker_count = 0;
-
-static void add_workflow_tracker(const String &wf_id, const String &cmd_id)
-{
-    for(uint8_t i=0; i<tracker_count; i++)
-    {
-        if(trackers[i].workflow_id == wf_id && trackers[i].command_id == cmd_id)
-        {
-            return;
-        }
-    }
-
-    if (tracker_count >= WORKFLOW_MAX_COUNT) {
-        command_log("WARN", "Tracker full, cannot track workflow");
-        return;
-    }
-    trackers[tracker_count].workflow_id = wf_id;
-    trackers[tracker_count].command_id = cmd_id;
-    trackers[tracker_count].reported = false;
-    trackers[tracker_count].start_time = millis();
-    tracker_count++;
-}
-
-static void check_workflow_trackers()
-{
-    for (uint8_t i = 0; i < tracker_count; )
-    {
-        if (trackers[i].reported)
-        {
-            for(uint8_t k = i; k < tracker_count - 1; k++)
-            {
-                trackers[k] = trackers[k+1];
-            }
-            tracker_count--;
-            continue;
-        }
-
-        Workflow *wf = nullptr;
-        for (uint8_t j = 0; j < workflow_get_count(); j++) {
-            Workflow *w = workflow_get(j);
-            if (w != nullptr && w->id == trackers[i].workflow_id) {
-                wf = w;
-                break;
-            }
-        }
-
-        if (wf == nullptr) {
-            trackers[i].reported = true;
-            command_log("WARN", "Workflow not found");
-            
-            JsonDocument doc;
-            doc["type"] = "workflow_result";
-            doc["workflow"] = trackers[i].workflow_id;
-            doc["command_id"] = trackers[i].command_id;
-            doc["status"] = "error";
-            doc["message"] = "workflow not found";
-            time_t ts = get_unix_timestamp();
-            if (ts > 0)
-            {
-                doc["timestamp"] = ts;
-            }  // ← 新增
-            String json;
-            serializeJson(doc, json);
-            command_report_result(json);
-            continue;
-        }
-
-        if (wf->state == WORKFLOW_FINISHED || wf->state == WORKFLOW_ERROR || wf->state == WORKFLOW_TIMEOUT) {
-            trackers[i].reported = true;
-            
-            JsonDocument doc;
-            doc["type"] = "workflow_result";
-            doc["workflow"] = trackers[i].workflow_id;
-            doc["command_id"] = trackers[i].command_id;
-            if (wf->state == WORKFLOW_FINISHED) {
-                doc["status"] = "success";
-                command_log("INFO", "Workflow finished");
-            } else {
-                doc["status"] = "failed";
-                command_log("WARN", "Workflow failed");
-            }
-            time_t ts = get_unix_timestamp();
-            if (ts > 0)
-            {
-                doc["timestamp"] = ts;
-            }  // ← 新增
-            
-            String json;
-            serializeJson(doc, json);
-            command_report_result(json);
-        }
-        i++;
-    }
-}
-
-// =====================================================
-// Command 启动的 Action 追踪
-// =====================================================
-struct CommandActionTracker
-{
-    uint32_t instance_id;
-    String action_id;
-    String command_id;
-    bool running;
-    unsigned long start_time;
-    unsigned long timeout_ms;
-    bool completed; 
-};
-static CommandActionTracker action_trackers[MAX_CONCURRENT_ACTIONS];
-
-static bool add_action_tracker(
-    uint32_t instance_id,
-    const String &action_id,
-    const String &cmd_id,
-    unsigned long timeout_ms
-)
-{
-    for (uint8_t i = 0; i < MAX_CONCURRENT_ACTIONS; i++) {
-        if (!action_trackers[i].running) {
-            action_trackers[i].instance_id = instance_id;
-            action_trackers[i].action_id = action_id;
-            action_trackers[i].command_id = cmd_id;
-            action_trackers[i].running = true;
-            action_trackers[i].start_time = millis();
-            action_trackers[i].timeout_ms = timeout_ms;
-            action_trackers[i].completed = false;
-            return true;
-        }
-    }
-    command_log("WARN", "Action tracker full");
-    return false;
-}
-
-static void check_action_trackers()
-{
-    for (uint8_t i = 0; i < MAX_CONCURRENT_ACTIONS; i++) {
-        if (!action_trackers[i].running) continue;
-
-        WorkflowActionResult result;
-        bool is_complete =
-        workflow_temp_action_is_complete(
-            action_trackers[i].instance_id,
-            result
-        );
-        bool timed_out = (millis() - action_trackers[i].start_time) > action_trackers[i].timeout_ms;
-
-        if (!action_trackers[i].completed && (is_complete || timed_out)) {
-            // 统一在这里递减并发计数，避免回调丢失导致泄漏
-            if (active_action_count > 0) {
-                active_action_count--;
-            }
-            action_trackers[i].running = false;
-
-            JsonDocument doc;
-            doc["type"] = "action_result";
-            doc["action"] = action_trackers[i].action_id;
-            doc["command_id"] = action_trackers[i].command_id;
-
-            if (timed_out && !is_complete) {
-                doc["status"] = "failed";
-                doc["reason"] = "timeout";
-                command_log("WARN", "Action tracker timeout");
-            } else {
-                doc["status"] = (result == ACTION_SUCCESS) ? "success" : "failed";
-                command_log("INFO", "Action completed");
-            }
-            time_t ts = get_unix_timestamp();
-            if (ts > 0)
-            {
-                doc["timestamp"] = ts;
-            }  // ← 新增
-            String json;
-            serializeJson(doc, json);
-            command_report_result(json);
-            action_trackers[i].completed = true;
-        }
-    }
-}
 
 // =====================================================
 // 初始化
@@ -266,28 +82,13 @@ static void check_action_trackers()
 void command_manager_init()
 {
     last_result = CMD_RESULT_OK;
-    active_action_count = 0;
-    tracker_count = 0;
-    
-    // 不要对含 String 的结构体使用 memset！逐个默认构造
-    for (uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++) {
-        trackers[i] = CommandWorkflowTracker();
-    }
-    
-    for (uint8_t i = 0; i < MAX_CONCURRENT_ACTIONS; i++) {
-        action_trackers[i] = CommandActionTracker();
-    }
-    
-    command_log("INFO", "Command Manager initialized");
 }
 // =====================================================
 // 主任务
 // =====================================================
 void command_manager_task()
 {
-    // 检查由 Command 启动的 Workflow和action 完成状态
-    check_workflow_trackers();
-    check_action_trackers();
+
 
 }
 
@@ -296,9 +97,7 @@ void command_manager_task()
 // =====================================================
 String command_manager_execute(const String &json)
 {
-    JsonDocument doc;
-    JsonDocument response;
-
+    const String command = cmd.command;
     command_log("INFO", "Received command");
 
     // 1. 解析 JSON
@@ -383,65 +182,17 @@ void command_manager_clear()
     command_log("INFO", "Command cleared");
 }
 
+
+
+
 // =====================================================
 // 执行 Action
 // =====================================================
 // Action完成回调，用来减少并发计数
-static void action_finish_callback(
-    uint32_t instance_id,
-    WorkflowActionResult res
-)
-{
-    for(uint8_t i = 0; i < MAX_CONCURRENT_ACTIONS; i++)
-    {
-        if(!action_trackers[i].running)
-            continue;
-        if(action_trackers[i].completed)
-        return;
-        if(action_trackers[i].instance_id != instance_id)
-            continue;
-        JsonDocument doc;
-        doc["type"] = "action_result";
-        doc["action"] = action_trackers[i].action_id;
-        doc["command_id"] = action_trackers[i].command_id;
-        if(res == ACTION_SUCCESS){
-            doc["status"] = "success";
-            command_log("INFO", "Action callback success");
-        }
-        else{
-            doc["status"] = "failed";
-            command_log("WARN", "Action callback failed");
-        }
-        time_t ts = get_unix_timestamp();
-        if(ts > 0){doc["timestamp"] = ts;}
-        String json;
-        serializeJson(doc,json);
-        command_report_result(json);
-        action_trackers[i].completed = true;
-        // 释放tracker
-        action_trackers[i].running = false;
-        if(active_action_count > 0)
-        {active_action_count--;}
-        return;
-    }
 
-
-    // 没找到tracker
-    command_log(
-        "WARN",
-        "Action callback tracker not found"
-    );
-}
 
 static bool command_execute_action(JsonDocument &doc, JsonDocument &response)
-{
-    if (active_action_count >= MAX_CONCURRENT_ACTIONS) {
-        response["status"] = "error";
-        response["message"] = "Too many concurrent actions";
-        last_result = CMD_RESULT_ERROR;
-        return false;
-    }
-    
+{       
     const char *action_id = doc["action"];
     if (action_id == nullptr) {
         response["status"] = "error";
@@ -507,12 +258,6 @@ static bool command_execute_action(JsonDocument &doc, JsonDocument &response)
     // workflow_enqueue_action 只负责入队
     // 真正结果由 callback 返回
     const char *cmd_id = doc["command_id"] | "";
-    bool tracker_ok = add_action_tracker(
-        instance_id,
-        String(action_id),
-        String(cmd_id),
-        DEFAULT_ACTION_TIMEOUT_MS
-    );
     if(tracker_ok)
     {active_action_count++;}
     response["status"] = "accepted";
@@ -521,10 +266,54 @@ static bool command_execute_action(JsonDocument &doc, JsonDocument &response)
     last_result = CMD_RESULT_RUNNING;
     return true;
 }
+//执行完毕后的callback
+static void command_temp_action_callback(
+    uint32_t instance_id,
+    const String &action_id,
+    const String &command_id,
+    WorkflowActionResult result
+)
+{
+    JsonDocument doc;
+
+    doc["type"] = "action_result";
+    doc["instance_id"] = instance_id;
+    doc["action"] = action_id;
+    doc["command_id"] = command_id;
+
+    if(result == ACTION_SUCCESS)
+    {
+        doc["status"] = "success";
+    }
+    else
+    {
+        doc["status"] = "failed";
+    }
+
+    time_t ts = get_unix_timestamp();
+
+    if(ts > 0)
+    {
+        doc["timestamp"] = ts;
+    }
+
+    String json;
+
+    serializeJson(
+        doc,
+        json
+    );
+
+    command_report_result(json);
+}
+
 
 // =====================================================
 // 执行 Workflow（通过 Workflow ID）
 // =====================================================
+
+
+
 static bool command_execute_workflow(JsonDocument &doc, JsonDocument &response)
 {
     const char *wf_id = doc["workflow"];
@@ -557,10 +346,13 @@ static bool command_execute_workflow(JsonDocument &doc, JsonDocument &response)
     // 启动 Workflow
     bool success = workflow_start(wf, true);
     if (success) {
-        // 加入追踪列表
-        const char *cmd_id = doc["command_id"] | "";
-        add_workflow_tracker(String(wf_id), String(cmd_id));
-
+        workflow_start(
+            wf,
+            true,
+            workflow_finish_callback,
+            cmd.cmd_id
+        );
+        cmd.cmd_id;
         response["status"] = "accepted";
         response["message"] = "Workflow started";
         response["workflow"] = wf_id;
@@ -572,6 +364,61 @@ static bool command_execute_workflow(JsonDocument &doc, JsonDocument &response)
         last_result = CMD_RESULT_ERROR;
         return false;
     }
+}
+
+
+static void command_workflow_callback(
+    const String &workflow_id,
+    const String &command_id,
+    WorkflowState state
+)
+{
+    JsonDocument doc;
+
+    doc["type"] = "workflow_result";
+
+    doc["workflow"] = workflow_id;
+
+    doc["command_id"] = command_id;
+
+
+    switch(state)
+    {
+        case WORKFLOW_FINISHED:
+            doc["status"] = "success";
+            break;
+
+        case WORKFLOW_TIMEOUT:
+            doc["status"] = "timeout";
+            break;
+
+        case WORKFLOW_ERROR:
+            doc["status"] = "failed";
+            break;
+
+        default:
+            doc["status"] = "unknown";
+            break;
+    }
+
+
+    time_t ts = get_unix_timestamp();
+
+    if(ts > 0)
+    {
+        doc["timestamp"] = ts;
+    }
+
+
+    String json;
+
+    serializeJson(
+        doc,
+        json
+    );
+
+
+    command_report_result(json);
 }
 // =====================================================
 // 查询 Action 列表

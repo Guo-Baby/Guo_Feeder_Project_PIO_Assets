@@ -44,7 +44,7 @@ struct CommandMessage
     String command; 
     String object; 
     String cmd_id; 
-    JsonObject payload; 
+    String payload; 
     String source; 
     unsigned long timestamp; 
 };
@@ -65,7 +65,7 @@ void command_manager_task();
 // 输入: JSON 字符串
 // 输出: JSON 字符串（响应）
 // =====================================================
-String command_manager_execute(const String &json);
+String command_manager_execute(const CommandMessage &cmd);
 
 // =====================================================
 // 获取最后一次执行结果
@@ -86,6 +86,6 @@ void command_manager_set_log_callback(CommandLogCallback callback);
 // =====================================================
 // Command 执行结果回调（由上层注入）
 // =====================================================
-typedef void (*CommandResultCallback)(const String &json);
+typedef void (*CommandReportCallback)(const String &json);
 
 void command_manager_set_result_callback(CommandResultCallback callback);
