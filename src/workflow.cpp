@@ -1576,10 +1576,7 @@ bool workflow_enqueue_action(
     WorkflowParamValue *params,
     uint8_t param_count,
     uint32_t *instance_id,
-    void (*callback)(
-        uint32_t instance_id,
-        WorkflowActionResult result
-    ),
+    CommandTempActionCallback callback,
     unsigned long timeout_ms
 )
 {
@@ -1593,34 +1590,6 @@ bool workflow_enqueue_action(
     );
 }
 
-// =====================================================
-// 查询临时 Action 是否已完成
-// CommandManager 轮询使用
-// =====================================================
-bool workflow_temp_action_is_complete(
-    uint32_t instance_id,
-    WorkflowActionResult &result
-)
-{
-    uint8_t rd = queue_rd_ptr;
-    while (rd != queue_wr_ptr)
-    {
-        TempActionItem &item = temp_action_queue[rd];
-        if (item.instance_id == instance_id)
-        {
-            if (item.completed)
-            {
-                result = item.result;
-                return true;
-            }
-            return false;
-        }
-        rd = (rd + 1) % MAX_TEMP_ACTIONS;
-    }
-    // 找不到实例
-    result = ACTION_IDLE;
-    return false;
-}
 
 // =====================================================
 // 回收已经完成的 Temp Action

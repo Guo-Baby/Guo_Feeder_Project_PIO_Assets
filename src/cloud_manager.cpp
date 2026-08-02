@@ -163,7 +163,7 @@ static void mqtt_callback(
     cloud_send_up(
         ack_string.c_str()
     );
-    command_manager_execute(cmd);
+    String command_manager_execute(CommandMessage &cmd);
 }
 
 //对wifi连接事件的处理，主要是为了在wifi连接后立即尝试连接云端
