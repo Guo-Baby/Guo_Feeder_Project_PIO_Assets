@@ -10,11 +10,12 @@
 // =====================================================
 // Command Runtime（命令生命周期管理）
 //
-// CommandRuntimeEntry 只管理"命令请求生命周期":
+// CommandRuntime 只管理"命令请求生命周期":
 //   - 运行时槽位与容量保护
 //   - command_id 去重
-//   - 异步回调匹配（主键: command_id）
+//   - 异步回调匹配（主键: cmd_id）
 //   - 超时保护与清理
+//   - CommandMessage 唯一所有权（其他模块只读查询，不得复制保存）
 //
 // 它不是执行 tracker:
 //   - 不轮询 Workflow / Action 状态
@@ -33,48 +34,7 @@ static const unsigned long COMMAND_ACTION_TIMEOUT_MS        = 600000UL;
 static const unsigned long COMMAND_WORKFLOW_TIMEOUT_MS      = 600000UL;
 static const unsigned long COMMAND_RUNTIME_SCAN_INTERVAL_MS = 1000UL;
 
-// 运行时目标类型
-enum CommandTargetType
-{
-    COMMAND_TARGET_ACTION,
-    COMMAND_TARGET_WORKFLOW
-};
-
-// 运行时状态
-enum CommandRuntimeStatus
-{
-    COMMAND_RUNTIME_PENDING,
-    COMMAND_RUNTIME_SUCCESS,
-    COMMAND_RUNTIME_FAILED,
-    COMMAND_RUNTIME_TIMEOUT
-};
-
-// 命令请求生命周期记录
-struct CommandRuntimeEntry
-{
-    bool used;
-
-    String command_id;          // 生命周期主键
-
-    CommandTargetType target_type;
-
-    String action_id;           // action 目标（action 命令）
-    String workflow_id;         // workflow 目标（workflow 命令）
-
-    uint32_t instance_id;       // WorkflowManager 域实例号（仅用于校验，不作主键）
-
-    String source;              // 来源（仅记录）
-    String object;              // 目标字段原值
-
-    String payload;             // 原始 payload 唯一所有权；命令完成后随记录销毁
-
-    unsigned long start_ms;
-    unsigned long timeout_ms;
-
-    CommandRuntimeStatus status;
-};
-
-static CommandRuntimeEntry runtime_queue[MAX_COMMAND_RUNTIME];
+static CommandRuntime runtime_queue[MAX_COMMAND_RUNTIME];
 static unsigned long last_scan_ms = 0;
 
 // =====================================================
@@ -128,59 +88,42 @@ static bool command_query_triggers(JsonDocument &response);
 static bool command_query_workflows(JsonDocument &response);
 static bool command_query_state(const CommandMessage &cmd, JsonDocument &response);
 
-// 异步回调接收者（Phase 2 WorkflowManager 将按最终契约调用）
+// 异步回调接收者（WorkflowManager 按最终契约调用）
 static void command_temp_action_callback(
+    const String &cmd_id,
     uint32_t instance_id,
-    const String &action_id,
-    const String &command_id,
-    CommandActionResult result
+    WorkflowActionResult result
 );
 static void command_workflow_callback(
-    const String &workflow_id,
-    const String &command_id,
-    CommandWorkflowResult result
+    const String &cmd_id,
+    WorkflowState result
 );
 
 // 运行时管理
-static CommandRuntimeEntry *command_runtime_insert(
+static CommandRuntime *command_runtime_insert(
     const CommandMessage &cmd,
-    CommandTargetType target_type,
-    const String &action_id,
-    const String &workflow_id,
     unsigned long timeout_ms,
     JsonDocument &response
 );
-static CommandRuntimeEntry *command_runtime_find_by_command_id(const String &command_id);
-static bool command_runtime_validate_action(
-    CommandRuntimeEntry *entry,
-    uint32_t instance_id,
-    const String &action_id
-);
-static bool command_runtime_validate_workflow(
-    CommandRuntimeEntry *entry,
-    const String &workflow_id
-);
-static void command_runtime_remove(CommandRuntimeEntry *entry);
-static void command_runtime_report_timeout(CommandRuntimeEntry *entry);
+static CommandRuntime *command_runtime_find_by_cmd_id(const String &cmd_id);
+static void command_runtime_release(CommandRuntime *rt);
+static void command_runtime_report_timeout(CommandRuntime *rt);
 static void command_runtime_scan_timeouts();
 
 // =====================================================
-// 运行时：插入记录
+// 运行时：插入记录（CommandMessage 所有权转移至 Runtime）
 // 失败时填写 response 错误信息并返回 nullptr
 // =====================================================
-static CommandRuntimeEntry *command_runtime_insert(
+static CommandRuntime *command_runtime_insert(
     const CommandMessage &cmd,
-    CommandTargetType target_type,
-    const String &action_id,
-    const String &workflow_id,
     unsigned long timeout_ms,
     JsonDocument &response
 )
 {
     // 1. 队列容量保护：满则拒绝新命令（不覆盖正在运行的记录）
-    CommandRuntimeEntry *slot = nullptr;
+    CommandRuntime *slot = nullptr;
     for (uint8_t i = 0; i < MAX_COMMAND_RUNTIME; i++) {
-        if (!runtime_queue[i].used) {
+        if (!runtime_queue[i].active) {
             slot = &runtime_queue[i];
             break;
         }
@@ -192,40 +135,39 @@ static CommandRuntimeEntry *command_runtime_insert(
         return nullptr;
     }
 
-    // 2. command_id 重复保护
-    if (cmd.cmd_id.length() > 0 && command_runtime_find_by_command_id(cmd.cmd_id) != nullptr) {
+    // 2. cmd_id 重复保护
+    if (cmd.cmd_id.length() > 0 &&
+        command_runtime_find_by_cmd_id(cmd.cmd_id) != nullptr) {
         response["status"] = "error";
         response["message"] = "Duplicate command_id";
         command_log("WARN", "Duplicate command_id rejected");
         return nullptr;
     }
 
-    // 3. 填充记录（payload 单一所有权）
-    slot->used = true;
-    slot->command_id = cmd.cmd_id;
-    slot->target_type = target_type;
-    slot->action_id = action_id;
-    slot->workflow_id = workflow_id;
-    slot->instance_id = 0;
-    slot->source = cmd.source;
-    slot->object = cmd.object;
-    slot->payload = cmd.payload;
-    slot->start_ms = millis();
+    // 3. 填充记录（CommandMessage 唯一所有权在本记录）
+    slot->active = true;
+    slot->cmd_id = cmd.cmd_id;
+    slot->message = cmd;
+    slot->state = COMMAND_STATE_PENDING;
+    slot->create_time = millis();
+    slot->start_ms = slot->create_time;
     slot->timeout_ms = timeout_ms;
-    slot->status = COMMAND_RUNTIME_PENDING;
+    slot->instance_id = 0;
+    slot->workflow_id = "";
     return slot;
 }
 
 // =====================================================
-// 运行时：按 command_id 查找（回调匹配主键）
+// 运行时：按 cmd_id 查找（回调匹配主键 / 对外查询接口）
 // =====================================================
-static CommandRuntimeEntry *command_runtime_find_by_command_id(const String &command_id)
+static CommandRuntime *command_runtime_find_by_cmd_id(const String &cmd_id)
 {
-    if (command_id.length() == 0) {
+    if (cmd_id.length() == 0) {
         return nullptr;
     }
     for (uint8_t i = 0; i < MAX_COMMAND_RUNTIME; i++) {
-        if (runtime_queue[i].used && runtime_queue[i].command_id == command_id) {
+        if (runtime_queue[i].active &&
+            runtime_queue[i].cmd_id == cmd_id) {
             return &runtime_queue[i];
         }
     }
@@ -233,73 +175,48 @@ static CommandRuntimeEntry *command_runtime_find_by_command_id(const String &com
 }
 
 // =====================================================
-// 运行时：action 回调二次校验（instance_id / action_id）
+// 运行时：释放记录（CommandMessage 随记录销毁，不复制到其他模块）
 // =====================================================
-static bool command_runtime_validate_action(
-    CommandRuntimeEntry *entry,
-    uint32_t instance_id,
-    const String &action_id
-)
+static void command_runtime_release(CommandRuntime *rt)
 {
-    if (entry == nullptr) return false;
-    if (entry->target_type != COMMAND_TARGET_ACTION) return false;
-    if (entry->instance_id != instance_id) return false;
-    if (entry->action_id.length() > 0 && entry->action_id != action_id) return false;
-    return true;
+    if (rt == nullptr) return;
+    rt->active = false;
+    rt->cmd_id = "";
+    rt->message.command = "";
+    rt->message.object = "";
+    rt->message.cmd_id = "";
+    rt->message.payload = "";
+    rt->message.source = "";
+    rt->message.timestamp = 0;
+    rt->state = COMMAND_STATE_PENDING;
+    rt->create_time = 0;
+    rt->start_ms = 0;
+    rt->timeout_ms = 0;
+    rt->instance_id = 0;
+    rt->workflow_id = "";
 }
 
 // =====================================================
-// 运行时：workflow 回调二次校验（workflow_id）
+// 运行时：超时结果上报并释放记录
+// 后续到达的迟到回调将因 cmd_id 不存在而被忽略
 // =====================================================
-static bool command_runtime_validate_workflow(
-    CommandRuntimeEntry *entry,
-    const String &workflow_id
-)
+static void command_runtime_report_timeout(CommandRuntime *rt)
 {
-    if (entry == nullptr) return false;
-    if (entry->target_type != COMMAND_TARGET_WORKFLOW) return false;
-    if (entry->workflow_id.length() > 0 && entry->workflow_id != workflow_id) return false;
-    return true;
-}
-
-// =====================================================
-// 运行时：移除记录（payload 随记录销毁，不复制到其他模块）
-// =====================================================
-static void command_runtime_remove(CommandRuntimeEntry *entry)
-{
-    if (entry == nullptr) return;
-    entry->used = false;
-    entry->command_id = "";
-    entry->action_id = "";
-    entry->workflow_id = "";
-    entry->instance_id = 0;
-    entry->source = "";
-    entry->object = "";
-    entry->payload = "";
-    entry->start_ms = 0;
-    entry->timeout_ms = 0;
-    entry->status = COMMAND_RUNTIME_PENDING;
-}
-
-// =====================================================
-// 运行时：超时结果上报并移除记录
-// 后续到达的迟到回调将因 command_id 不存在而被忽略
-// =====================================================
-static void command_runtime_report_timeout(CommandRuntimeEntry *entry)
-{
-    command_log("WARN", "Command runtime timeout, entry removed");
+    command_log("WARN", "Command runtime timeout, entry released");
 
     JsonDocument doc;
-    if (entry->target_type == COMMAND_TARGET_ACTION) {
+    if (rt->message.command == "execute_action") {
         doc["type"] = "action_result";
-        doc["action"] = entry->action_id;
-        doc["command_id"] = entry->command_id;
+        doc["action"] = rt->message.object;
+        doc["command_id"] = rt->cmd_id;
         doc["status"] = "timeout";
-        doc["instance_id"] = entry->instance_id;
+        doc["instance_id"] = rt->instance_id;
     } else {
         doc["type"] = "workflow_result";
-        doc["workflow"] = entry->workflow_id;
-        doc["command_id"] = entry->command_id;
+        doc["workflow"] = rt->workflow_id.length() > 0
+                            ? rt->workflow_id
+                            : rt->message.object;
+        doc["command_id"] = rt->cmd_id;
         doc["status"] = "timeout";
     }
 
@@ -312,23 +229,23 @@ static void command_runtime_report_timeout(CommandRuntimeEntry *entry)
     serializeJson(doc, json);
     command_report_result(json);
 
-    command_runtime_remove(entry);
+    command_runtime_release(rt);
 }
 
 // =====================================================
 // 运行时：超时扫描（command_manager_task 每 1s 调用一次）
-// 只扫描 CommandRuntimeEntry，不查询 Workflow/Action 状态
+// 只扫描 CommandRuntime，不查询 Workflow/Action 状态
 // =====================================================
 static void command_runtime_scan_timeouts()
 {
     unsigned long now = millis();
     for (uint8_t i = 0; i < MAX_COMMAND_RUNTIME; i++) {
-        CommandRuntimeEntry *entry = &runtime_queue[i];
-        if (!entry->used) continue;
-        if (entry->status != COMMAND_RUNTIME_PENDING) continue;
+        CommandRuntime *rt = &runtime_queue[i];
+        if (!rt->active) continue;
+        if (rt->state != COMMAND_STATE_PENDING) continue;
         // Arduino 标准无符号减法，回绕安全
-        if (now - entry->start_ms >= entry->timeout_ms) {
-            command_runtime_report_timeout(entry);
+        if (now - rt->start_ms >= rt->timeout_ms) {
+            command_runtime_report_timeout(rt);
         }
     }
 }
@@ -340,7 +257,7 @@ void command_manager_init()
 {
     last_result = CMD_RESULT_OK;
     for (uint8_t i = 0; i < MAX_COMMAND_RUNTIME; i++) {
-        command_runtime_remove(&runtime_queue[i]);
+        command_runtime_release(&runtime_queue[i]);
     }
     last_scan_ms = 0;
 }
@@ -348,7 +265,7 @@ void command_manager_init()
 // =====================================================
 // 主任务（loop 调用）
 //
-// 仅做 CommandRuntimeEntry 超时扫描（1s 节流）。
+// 仅做 CommandRuntime 超时扫描（1s 节流）。
 // 禁止: 轮询 Workflow / Action、调用 workflow_temp_action_is_complete()
 // =====================================================
 void command_manager_task()
@@ -440,12 +357,29 @@ void command_manager_clear()
 }
 
 // =====================================================
+// cmd_id 查询接口
+//
+// 供 WorkflowManager / Action 等模块查询当前有效命令。
+// 只读查询：不创建、不复制；数据生命周期归 CommandManager。
+// =====================================================
+CommandRuntime *command_manager_get_runtime(const String &cmd_id)
+{
+    return command_runtime_find_by_cmd_id(cmd_id);
+}
+
+const CommandMessage *command_manager_get_message(const String &cmd_id)
+{
+    CommandRuntime *rt = command_runtime_find_by_cmd_id(cmd_id);
+    return (rt != nullptr) ? &rt->message : nullptr;
+}
+
+// =====================================================
 // 执行 Action
 //
 // 流程:
 //   1. 校验 action id（cmd.object）
-//   2. 创建 CommandRuntimeEntry（payload 归记录所有，不解析）
-//   3. 调用 WorkflowManager 最终入队接口
+//   2. 创建 CommandRuntime（CommandMessage 归记录所有，不解析）
+//   3. 调用 WorkflowManager 最终入队接口（携带 cmd_id + 回调）
 //   4. 返回 accepted；完成由回调/超时路径处理
 // =====================================================
 static bool command_execute_action(const CommandMessage &cmd, JsonDocument &response)
@@ -459,51 +393,42 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
     }
 
     // 2. 创建运行时记录
-    CommandRuntimeEntry *entry = command_runtime_insert(
+    CommandRuntime *rt = command_runtime_insert(
         cmd,
-        COMMAND_TARGET_ACTION,
-        cmd.object,
-        "",
         COMMAND_ACTION_TIMEOUT_MS,
         response
     );
-    if (entry == nullptr) {
+    if (rt == nullptr) {
         last_result = CMD_RESULT_FAILED;
         return false;
     }
 
-    // 3. 调用 WorkflowManager 最终接口
-    //
-    // TODO(Phase 2): WorkflowManager 需按最终契约升级 workflow_enqueue_action:
-    //   - 增加 command_id 传递
-    //   - 回调升级为 CommandTempActionCallback(instance_id, action_id, command_id, CommandActionResult)
-    //   - payload 由 WorkflowManager / Action 模块自行解析（CommandManager 不解析）
-    // 当前 workflow.h 为旧签名 (id, params, param_count, instance_id*, 2参回调, timeout)，
-    // 与本调用点不兼容 —— 外部依赖不匹配，已记录，Phase 2 适配。
+    // 3. 调用 WorkflowManager 最终接口（cmd_id 关联 + CommandManager 回调契约）
+    //    payload 由 WorkflowManager 自行转换为 Action 参数，CommandManager 不解析。
     uint32_t instance_id = 0;
     bool queued = workflow_enqueue_action(
-        entry->action_id,
-        entry->payload,
+        rt->message.object,     // action id
+        rt->message.payload,    // 原始 payload
         &instance_id,
-        entry->command_id,
+        rt->cmd_id,             // 关联 ID
         command_temp_action_callback,
-        entry->timeout_ms
+        rt->timeout_ms
     );
 
     if (!queued) {
         response["status"] = "error";
         response["message"] = "Failed to queue action";
         last_result = CMD_RESULT_FAILED;
-        command_runtime_remove(entry);
+        command_runtime_release(rt);
         return false;
     }
 
-    // 回填 WorkflowManager 域实例号（仅用于回调二次校验）
-    entry->instance_id = instance_id;
+    // 回填 WorkflowManager 域实例号（回调校验用）
+    rt->instance_id = instance_id;
 
     response["status"] = "accepted";
     response["message"] = "Action queued";
-    response["action"] = entry->action_id;
+    response["action"] = rt->message.object;
     response["instance_id"] = instance_id;
     last_result = CMD_RESULT_RUNNING;
     return true;
@@ -514,8 +439,8 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
 //
 // 流程:
 //   1. 校验并查找 Workflow
-//   2. 创建 CommandRuntimeEntry
-//   3. 调用 WorkflowManager 最终启动接口
+//   2. 创建 CommandRuntime
+//   3. 调用 WorkflowManager 最终启动接口（cmd_id + WorkflowResultCallback）
 //   4. 返回 accepted；完成由回调/超时路径处理
 // =====================================================
 static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &response)
@@ -545,27 +470,22 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
         return false;
     }
 
-    CommandRuntimeEntry *entry = command_runtime_insert(
+    CommandRuntime *rt = command_runtime_insert(
         cmd,
-        COMMAND_TARGET_WORKFLOW,
-        "",
-        cmd.object,
         COMMAND_WORKFLOW_TIMEOUT_MS,
         response
     );
-    if (entry == nullptr) {
+    if (rt == nullptr) {
         last_result = CMD_RESULT_FAILED;
         return false;
     }
+    rt->workflow_id = wf->id;
 
-    // TODO(Phase 2): WorkflowManager 需按最终契约升级 workflow_start:
-    //   workflow_start(workflow, skip_first_step, command_id, WorkflowResultCallback)
-    //   WorkflowManager 将内部 WorkflowState 转换为 CommandWorkflowResult 后回调。
-    // 当前 workflow.h 仅有 workflow_start(Workflow*, bool) —— 外部依赖不匹配，已记录。
+    // 调用 WorkflowManager 最终接口（cmd_id 关联 + 完成回调）
     bool started = workflow_start(
         wf,
         true,
-        entry->command_id,
+        rt->cmd_id,
         command_workflow_callback
     );
 
@@ -573,7 +493,7 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
         response["status"] = "error";
         response["message"] = "Failed to start workflow";
         last_result = CMD_RESULT_ERROR;
-        command_runtime_remove(entry);
+        command_runtime_release(rt);
         return false;
     }
 
@@ -588,42 +508,41 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
 // Action 完成回调（最终契约）
 //
 // 流程:
-//   1. 按 command_id 查找运行时记录（主键）
-//   2. 校验 instance_id / action_id
+//   1. 按 cmd_id 查找运行时记录（主键）
+//   2. 校验 instance_id
 //   3. 生成 action_result JSON
 //   4. command_report_result() 上报
-//   5. 移除记录（迟到回调因 command_id 不存在而被忽略）
+//   5. 释放记录（迟到回调因 cmd_id 不存在而被忽略）
 // =====================================================
 static void command_temp_action_callback(
+    const String &cmd_id,
     uint32_t instance_id,
-    const String &action_id,
-    const String &command_id,
-    CommandActionResult result
+    WorkflowActionResult result
 )
 {
-    CommandRuntimeEntry *entry = command_runtime_find_by_command_id(command_id);
-    if (entry == nullptr) {
-        command_log("WARN", "Action callback for unknown command_id, ignored");
+    CommandRuntime *rt = command_runtime_find_by_cmd_id(cmd_id);
+    if (rt == nullptr) {
+        command_log("WARN", "Action callback for unknown cmd_id, ignored");
         return;
     }
 
-    if (!command_runtime_validate_action(entry, instance_id, action_id)) {
-        command_log("WARN", "Action callback mismatch (instance_id/action_id), ignored");
+    if (rt->instance_id != instance_id) {
+        command_log("WARN", "Action callback mismatch (instance_id), ignored");
         return;
     }
 
     JsonDocument doc;
     doc["type"] = "action_result";
-    doc["action"] = action_id;
-    doc["command_id"] = command_id;
+    doc["action"] = rt->message.object;
+    doc["command_id"] = cmd_id;
     doc["instance_id"] = instance_id;
 
-    if (result == COMMAND_ACTION_SUCCESS) {
+    if (result == ACTION_SUCCESS) {
         doc["status"] = "success";
-        entry->status = COMMAND_RUNTIME_SUCCESS;
+        rt->state = COMMAND_STATE_SUCCESS;
     } else {
         doc["status"] = "failed";
-        entry->status = COMMAND_RUNTIME_FAILED;
+        rt->state = COMMAND_STATE_FAILED;
     }
 
     time_t ts = get_unix_timestamp();
@@ -635,43 +554,39 @@ static void command_temp_action_callback(
     serializeJson(doc, json);
     command_report_result(json);
 
-    command_runtime_remove(entry);
+    command_runtime_release(rt);
 }
 
 // =====================================================
 // Workflow 完成回调（最终契约）
 // =====================================================
 static void command_workflow_callback(
-    const String &workflow_id,
-    const String &command_id,
-    CommandWorkflowResult result
+    const String &cmd_id,
+    WorkflowState result
 )
 {
-    CommandRuntimeEntry *entry = command_runtime_find_by_command_id(command_id);
-    if (entry == nullptr) {
-        command_log("WARN", "Workflow callback for unknown command_id, ignored");
-        return;
-    }
-
-    if (!command_runtime_validate_workflow(entry, workflow_id)) {
-        command_log("WARN", "Workflow callback mismatch (workflow_id), ignored");
+    CommandRuntime *rt = command_runtime_find_by_cmd_id(cmd_id);
+    if (rt == nullptr) {
+        command_log("WARN", "Workflow callback for unknown cmd_id, ignored");
         return;
     }
 
     JsonDocument doc;
     doc["type"] = "workflow_result";
-    doc["workflow"] = workflow_id;
-    doc["command_id"] = command_id;
+    doc["workflow"] = rt->workflow_id.length() > 0
+                        ? rt->workflow_id
+                        : rt->message.object;
+    doc["command_id"] = cmd_id;
 
-    if (result == COMMAND_WORKFLOW_SUCCESS) {
+    if (result == WORKFLOW_FINISHED) {
         doc["status"] = "success";
-        entry->status = COMMAND_RUNTIME_SUCCESS;
-    } else if (result == COMMAND_WORKFLOW_TIMEOUT) {
+        rt->state = COMMAND_STATE_SUCCESS;
+    } else if (result == WORKFLOW_TIMEOUT) {
         doc["status"] = "timeout";
-        entry->status = COMMAND_RUNTIME_TIMEOUT;
+        rt->state = COMMAND_STATE_TIMEOUT;
     } else {
         doc["status"] = "failed";
-        entry->status = COMMAND_RUNTIME_FAILED;
+        rt->state = COMMAND_STATE_FAILED;
     }
 
     time_t ts = get_unix_timestamp();
@@ -683,7 +598,7 @@ static void command_workflow_callback(
     serializeJson(doc, json);
     command_report_result(json);
 
-    command_runtime_remove(entry);
+    command_runtime_release(rt);
 }
 
 // =====================================================

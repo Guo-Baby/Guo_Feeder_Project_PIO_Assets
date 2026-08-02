@@ -2,6 +2,15 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "event_manager.h"
+#include "command_manager.h"
+
+// =====================================================
+// 依赖说明:
+//   本头文件包含 command_manager.h，以引用 CommandManager 定义的回调契约
+//   （CommandTempActionCallback / WorkflowResultCallback）。
+//   command_manager.h 对 WorkflowActionResult / WorkflowState 使用
+//   固定底层类型前向声明，因此本文件中这两个枚举定义必须带 ": int"。
+// =====================================================
 
 //=============================
 //是否启用workflow的事件响应，填0则不会注册任何事件监听
@@ -64,7 +73,7 @@ enum WorkflowTriggerState
 // =====================================================
 // Action执行结果
 // =====================================================
-enum WorkflowActionResult
+enum WorkflowActionResult : int
 {
     ACTION_IDLE = 0,      // 未开始
     ACTION_RUNNING,       // 执行中
@@ -90,7 +99,7 @@ enum WorkflowParamType
 // =====================================================
 // Workflow状态
 // =====================================================
-enum WorkflowState
+enum WorkflowState : int
 {
     WORKFLOW_IDLE = 0,
     WORKFLOW_RUNNING,
@@ -346,6 +355,10 @@ struct Workflow
     unsigned long start_time;
     unsigned long timeout_ms;
     WorkflowState state;
+    // CommandManager 关联 ID（Workflow 只保存关联，不理解命令业务）
+    String cmd_id;
+    // 完成回调（CommandManager 契约；完成/超时/失败时回调 cmd_id + 结果）
+    WorkflowResultCallback finish_callback;
     WorkflowStep steps[WORKFLOW_MAX_STEP];
     uint8_t step_count;
     uint8_t current_step;
@@ -365,7 +378,12 @@ bool workflow_register_action(
 // =====================================================
 // Workflow执行
 // =====================================================
-bool workflow_start(Workflow *workflow, bool skip_first_step = false);
+bool workflow_start(
+    Workflow *workflow,
+    bool skip_first_step = false,
+    const String &cmd_id = "",
+    WorkflowResultCallback callback = nullptr
+);
 // =====================================================
 // Workflow任务
 //
@@ -389,10 +407,10 @@ struct WorkflowActionTicket
 
 bool workflow_enqueue_action(
     const String &id,
-    WorkflowParamValue *params,
-    uint8_t param_count,
+    const String &payload,
     uint32_t *instance_id,
-    void (*callback)(uint32_t instance_id,WorkflowActionResult result) = nullptr,
+    const String &cmd_id,
+    CommandTempActionCallback callback = nullptr,
     unsigned long timeout_ms = 600000
 );
 // 查询临时 Action 执行状态（用于 CommandManager 轮询）

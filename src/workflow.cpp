@@ -80,7 +80,8 @@ struct TempActionItem {
     WorkflowActionResult result;
     unsigned long start_time;
     WorkflowActionInstance *instance;
-    void (*callback)(uint32_t instance_id,WorkflowActionResult result);
+    String cmd_id;   // CommandManager 关联 ID（仅保存关联，不理解命令业务）
+    CommandTempActionCallback callback;   // CommandManager 契约回调
     unsigned long timeout_ms;
 };
 
@@ -929,6 +930,8 @@ void workflow_clear()
         workflows[i].current_step = 0;
         workflows[i].start_time = 0;
         workflows[i].timeout_ms = 0;
+        workflows[i].cmd_id = "";
+        workflows[i].finish_callback = nullptr;
         for(uint8_t j = 0; j < WORKFLOW_MAX_STEP; j++) {
             workflows[i].steps[j].id = "";
             workflows[i].steps[j].instance.trigger = nullptr;
@@ -1378,7 +1381,12 @@ void workflow_reset_step(WorkflowStep &step)
 // =====================================================
 // Workflow启动
 // =====================================================
-bool workflow_start(Workflow *workflow,bool skip_first_step)
+bool workflow_start(
+    Workflow *workflow,
+    bool skip_first_step,
+    const String &cmd_id,
+    WorkflowResultCallback callback
+)
 {
     if(workflow == nullptr)
         return false;
@@ -1405,7 +1413,37 @@ bool workflow_start(Workflow *workflow,bool skip_first_step)
         skip_first_step ? 1 : 0;
     workflow->start_time =
         millis();
+    // CommandManager 关联：只保存关联 ID 与完成回调
+    workflow->cmd_id =
+        cmd_id;
+    workflow->finish_callback =
+        callback;
     return true;
+}
+
+// =====================================================
+// Workflow 完成通知（一次性）
+//
+// 在 Workflow 进入 FINISHED / TIMEOUT / ERROR 时，
+// 将 cmd_id + 最终状态经 CommandManager 定义的回调返回；
+// 回调后立即清空，避免重复通知或跨命令误报。
+// =====================================================
+static void workflow_notify_finish(Workflow &wf)
+{
+    if(wf.finish_callback == nullptr)
+        return;
+
+    WorkflowResultCallback cb =
+        wf.finish_callback;
+    String cmd_id =
+        wf.cmd_id;
+    WorkflowState state =
+        wf.state;
+
+    wf.finish_callback = nullptr;
+    wf.cmd_id = "";
+
+    cb(cmd_id, state);
 }
 
 
@@ -1477,13 +1515,10 @@ void workflow_trigger_reset(
 // =====================================================
 static bool enqueue_temp_action(
     const String &id,
-    WorkflowParamValue *params,
-    uint8_t param_count,
+    const String &payload,
     uint32_t *instance_id,
-    void (*callback)(
-        uint32_t instance_id,
-        WorkflowActionResult result
-    ),
+    const String &cmd_id,
+    CommandTempActionCallback callback,
     unsigned long timeout_ms
 )
 {
@@ -1529,7 +1564,30 @@ static bool enqueue_temp_action(
     }
 
 
-    // 写入新参数
+    // payload 由 Workflow 转换为 Action 参数（CommandManager 不解析）
+    uint8_t param_count = 0;
+    WorkflowParamValue params[WORKFLOW_MAX_PARAM];
+    if(payload.length() > 0)
+    {
+        JsonDocument doc;
+        DeserializationError err =
+            deserializeJson(doc, payload);
+        if(!err)
+        {
+            JsonObject obj =
+                doc.as<JsonObject>();
+            if(!obj.isNull())
+            {
+                workflow_parse_params(
+                    obj,
+                    params,
+                    param_count
+                );
+            }
+        }
+    }
+
+    // 写入参数
     for(uint8_t i = 0; i < param_count; i++)
     {
         inst->params[i] = params[i];
@@ -1558,6 +1616,7 @@ static bool enqueue_temp_action(
     item.completed = false;
     item.result = ACTION_IDLE;
     item.start_time = millis();
+    item.cmd_id = cmd_id;
     item.callback = callback;
     item.timeout_ms = timeout_ms;
     queue_wr_ptr = next_wr;
@@ -1573,18 +1632,18 @@ static bool enqueue_temp_action(
 // =====================================================
 bool workflow_enqueue_action(
     const String &id,
-    WorkflowParamValue *params,
-    uint8_t param_count,
+    const String &payload,
     uint32_t *instance_id,
+    const String &cmd_id,
     CommandTempActionCallback callback,
     unsigned long timeout_ms
 )
 {
     return enqueue_temp_action(
         id,
-        params,
-        param_count,
+        payload,
         instance_id,
+        cmd_id,
         callback,
         timeout_ms
     );
@@ -1616,6 +1675,7 @@ static void workflow_temp_action_cleanup()
         item.desc = nullptr;
         item.instance = nullptr;
         item.param_count = 0;
+        item.cmd_id = "";
         item.callback = nullptr;
         item.timeout_ms = 0;
         item.start_time = 0;
@@ -1663,12 +1723,14 @@ void workflow_task()
         if((uint32_t)(now - wf.start_time) > wf.timeout_ms)
         {
             wf.state = WORKFLOW_TIMEOUT;
+            workflow_notify_finish(wf);
             continue;
         }
         // 全部完成
         if(wf.current_step >= wf.step_count)
         {
             wf.state = WORKFLOW_FINISHED;
+            workflow_notify_finish(wf);
             continue;
         }
         WorkflowStep &step =
@@ -1683,6 +1745,7 @@ void workflow_task()
             if(trigger == nullptr)
             {
                 wf.state = WORKFLOW_ERROR;
+                workflow_notify_finish(wf);
                 continue;
             }
             if(!trigger->running)
@@ -1723,6 +1786,7 @@ void workflow_task()
             {
                 trigger->running = false;
                 wf.state = WORKFLOW_ERROR;
+                workflow_notify_finish(wf);
             }
             continue;
         }
@@ -1738,6 +1802,7 @@ void workflow_task()
             {
                 wf.state =
                     WORKFLOW_ERROR;
+                workflow_notify_finish(wf);
                 continue;
             }
 
@@ -1767,6 +1832,7 @@ void workflow_task()
 
                 wf.state =
                     WORKFLOW_ERROR;
+                workflow_notify_finish(wf);
             }
         }
     }
@@ -1795,6 +1861,7 @@ void workflow_task()
             if(item.callback != nullptr)
             {
                 item.callback(
+                    item.cmd_id,
                     item.instance_id,
                     ACTION_FAILED
                 );
@@ -1852,6 +1919,7 @@ void workflow_task()
                     if(item.callback != nullptr)
                     {
                         item.callback(
+                            item.cmd_id,
                             item.instance_id,
                             item.result
                         );
@@ -1873,6 +1941,7 @@ void workflow_task()
             item.start_time = 0;
             item.timeout_ms = 0;
             item.callback = nullptr;
+            item.cmd_id = "";
             for(uint8_t j = 0;
                 j < WORKFLOW_MAX_PARAM;
                 j++)
@@ -2020,6 +2089,8 @@ bool workflow_disable(const String &id)
         if(workflows[i].id == id) {
             workflows[i].enable = false;
             workflows[i].state = WORKFLOW_IDLE;
+            workflows[i].cmd_id = "";
+            workflows[i].finish_callback = nullptr;
             return true;
         }
     }
@@ -2036,6 +2107,8 @@ bool workflow_stop(const String &id)
             workflows[i].state = WORKFLOW_IDLE;
             workflows[i].current_step = 0;
             workflows[i].start_time = 0;
+            workflows[i].cmd_id = "";
+            workflows[i].finish_callback = nullptr;
             return true;
         }
     }
