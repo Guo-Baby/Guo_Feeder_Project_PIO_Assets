@@ -16,7 +16,7 @@ static String ntp_server1;
 static String ntp_server2;
 
 // 时区偏移，单位：小时
-static int timezone_offset = 0;
+static int timezone_offset_hours = 0;
 
 // 夏令时
 #define DAYLIGHT_OFFSET_SEC 0
@@ -231,7 +231,26 @@ void time_init()
 
     ntp_server1 = config_get_ntp_server1();
     ntp_server2 = config_get_ntp_server2();
-    timezone_offset = config_get_timezone();
+    timezone_offset_hours = config_get_timezone();
+    String tz ="GMT";
+
+    //设置系统内置时区tz
+    if(timezone_offset_hours >= 0)
+    {
+        tz += "-";
+        tz += String(timezone_offset_hours);
+    }
+    else
+    {
+        tz += "+";
+        tz += String(-timezone_offset_hours);
+    }
+    setenv(
+        "TZ",
+        tz.c_str(),
+        1
+    );
+    tzset();
 
     ntp_sync_interval_sec =
         (unsigned long)config_get_ntp_sync_interval_day() * 86400UL;
@@ -291,9 +310,10 @@ void time_init()
         EVENT_WIFI_CONNECTED,
         [](const EventMessage&msg) {
             // 距上次NTP同步不足一个周期（默认7天）→ 忽略
-            time_t now_time = time(nullptr);
-            if (last_ntp_sync_time != 0 && 
-                now_time - last_ntp_sync_time < (time_t)ntp_sync_interval_sec) {
+            time_t now_time =
+                time_get();
+
+            if(now_time == 0){
                 return;
             }
 
@@ -308,8 +328,10 @@ void time_init()
     time_state = TIME_WAIT_WIFI;
 
     // 初始化下次同步目标时间
-    time_t now = time(nullptr);
-    if (state_get_bool(STATE_TIME_VALID) && time_validate(now)) {
+    time_t now =
+        time_get();
+
+    if(now != 0){
         next_sync_target = calculate_next_sync_time(now);
     } else {
         next_sync_target = 0;
@@ -322,36 +344,26 @@ void time_init()
 // 获取系统时间
 // =====================================================
 
-time_t time_get()
-{
-    if (!state_get_bool(STATE_TIME_VALID)) {
-        return 0;
+time_t time_get() {
+    if (!state_get_bool(STATE_TIME_VALID)) 
+    { 
+        return 0; 
+    } 
+    time_t now = time(nullptr); 
+    if (!time_validate(now)) 
+    { return 0; }
+    return now; 
     }
-
-    time_t now = time(nullptr);
-
-    if (!time_validate(now)) {
-        return 0;
-    }
-
-    return now;
-}
-
 // =====================================================
-// 获取格式化时间
+// 获取格式化时间，传入任意时间戳都可计算
 // =====================================================
 
-String time_get_string()
+String time_get_string(time_t timestamp)
 {
-    time_t now = time_get();
-
-    if (now == 0) {
-        return "No Time";
-    }
+    if(timestamp == 0){return "No Time";}
 
     struct tm timeinfo;
-    localtime_r(&now, &timeinfo);
-
+    localtime_r(&timestamp, &timeinfo);
     char buffer[32];
     sprintf(
         buffer,
@@ -367,6 +379,19 @@ String time_get_string()
     return String(buffer);
 }
 
+//对外查询接口，默认返回当前时间的字符串表示，若时间无效则返回"No Time"
+String time_now_string()
+{
+    time_t now =
+        time_get();
+
+    if(now == 0)
+    {
+        return "No Time";
+    }
+
+    return time_get_string(now);
+}
 // =====================================================
 // 获取最后一次NTP同步时间
 // =====================================================
@@ -424,7 +449,7 @@ bool time_sync_ntp()
     Serial.println("NTP syncing...");
 
     configTime(
-        timezone_offset * 3600,
+        timezone_offset_hours * 3600,
         DAYLIGHT_OFFSET_SEC,
         ntp_server1.c_str(),
         ntp_server2.c_str()
@@ -629,7 +654,7 @@ void time_task()
                     last_ntp_sync_time = ntp_time;
 
                     Serial.println("NTP sync OK");
-                    String timestr = time_get_string();
+                    String timestr = time_get_string(ntp_time);
                     Serial.printf("当前时间：%s\n", timestr.c_str());
 
                     event_push(

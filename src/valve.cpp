@@ -42,9 +42,10 @@ static volatile uint8_t cmd_tail = 0;
 static WorkflowParam valve_params[] = {
     // 无参数
 };
-
-static WorkflowActionResult valve_open_action(WorkflowActionInstance *action);
-static WorkflowActionResult valve_close_action(WorkflowActionInstance *action);
+static void valve_action_reset(WorkflowActionInstance *action);
+static void valve_open_start(WorkflowActionInstance *action);
+static void valve_close_start(WorkflowActionInstance *action);
+static void valve_action_poll(WorkflowActionInstance *action);
 
 static WorkflowActionDescriptor valve_open_desc = {
     .id = "VALVE_OPEN",
@@ -52,8 +53,11 @@ static WorkflowActionDescriptor valve_open_desc = {
     .module = "valve",
     .params = valve_params,
     .param_count = 0,
-    .handler = valve_open_action
+    .reset = valve_action_reset,
+    .start = valve_open_start,
+    .poll = valve_action_poll
 };
+
 
 static WorkflowActionDescriptor valve_close_desc = {
     .id = "VALVE_CLOSE",
@@ -61,7 +65,9 @@ static WorkflowActionDescriptor valve_close_desc = {
     .module = "valve",
     .params = valve_params,
     .param_count = 0,
-    .handler = valve_close_action
+    .reset = valve_action_reset,
+    .start = valve_close_start,
+    .poll = valve_action_poll
 };
 
 // =====================================================
@@ -237,16 +243,82 @@ void valve_init()
 }
 
 // =====================================================
-// Workflow Action Handler（供 workflow 调用）
+// Workflow Action
+//
+// start:
+//      第一次进入step调用
+//
+// poll:
+//      workflow_task持续调用
+//
 // =====================================================
-static WorkflowActionResult valve_open_action(WorkflowActionInstance *action)
+
+static void valve_action_reset(
+    WorkflowActionInstance *action
+)
 {
-    return valve_open() ? ACTION_SUCCESS : ACTION_FAILED;
+    if(action == nullptr)
+        return;
+    action->result =
+        ACTION_IDLE;
+    action->running =
+        false;
+    action->runtime =
+        nullptr;
 }
 
-static WorkflowActionResult valve_close_action(WorkflowActionInstance *action)
+// 打开阀门
+static void valve_open_start(
+    WorkflowActionInstance *action
+)
 {
-    return valve_close() ? ACTION_SUCCESS : ACTION_FAILED;
+    if(action == nullptr)
+        return;
+    if(valve_open())
+    {
+        action->result =
+            ACTION_SUCCESS;
+    }
+    else
+    {
+        action->result =
+            ACTION_FAILED;
+    }
+}
+
+// 关闭阀门
+static void valve_close_start(
+    WorkflowActionInstance *action
+)
+{
+    if(action == nullptr)
+        return;
+    if(valve_close())
+    {
+        action->result =
+            ACTION_SUCCESS;
+    }
+    else
+    {
+        action->result =
+            ACTION_FAILED;
+    }
+}
+
+// 当前阀门动作无需异步等待
+static void valve_action_poll(
+    WorkflowActionInstance *action
+)
+{
+    if(action == nullptr)
+        return;
+    // 如果start已经完成
+    // 保持结果即可
+    if(action->result == ACTION_IDLE)
+    {
+        action->result =
+            ACTION_FAILED;
+    }
 }
 
 // =====================================================
@@ -254,19 +326,20 @@ static WorkflowActionResult valve_close_action(WorkflowActionInstance *action)
 // =====================================================
 bool valve_open()
 {
-    if (!initialized || valve_pin < 0) return false;
+    if (valve_pin < 0)
+        return false;
     valve_set_gpio(true);
-    return current_state;  // 返回实际状态
+    return current_state;
 }
-
 // =====================================================
 // 对外接口：关闭阀门
 // =====================================================
 bool valve_close()
 {
-    if (!initialized || valve_pin < 0) return false;
+    if (valve_pin < 0)
+        return false;
     valve_set_gpio(false);
-    return !current_state;  // 返回实际状态（关闭为 true）
+    return !current_state;
 }
 
 // =====================================================
@@ -274,12 +347,12 @@ bool valve_close()
 // =====================================================
 bool valve_toggle()
 {
-    if (!initialized || valve_pin < 0) return false;
+    if (valve_pin < 0)
+        return false;
     bool target = !current_state;
     valve_set_gpio(target);
     return (current_state == target);
 }
-
 // =====================================================
 // 获取当前状态
 // =====================================================

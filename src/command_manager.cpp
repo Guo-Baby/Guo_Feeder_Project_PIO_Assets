@@ -582,7 +582,7 @@ static bool command_query_actions(JsonDocument &response)
     uint8_t count = workflow_get_action_count();
 
     for (uint8_t i = 0; i < count; i++) {
-        WorkflowActionDescriptor *desc = workflow_get_action_descriptor(i);
+        const WorkflowActionDescriptor *desc = workflow_get_action_descriptor(i);
         if (desc == nullptr) continue;
 
         JsonObject item = arr.add<JsonObject>();
@@ -590,7 +590,7 @@ static bool command_query_actions(JsonDocument &response)
         item["name"] = desc->name;
         item["module"] = desc->module;
         if (desc->description != nullptr) {
-            item["description"] = desc->description;
+            item["description"] = desc->name;
         }
     }
 
@@ -609,7 +609,7 @@ static bool command_query_triggers(JsonDocument &response)
     uint8_t count = workflow_get_trigger_count();
 
     for (uint8_t i = 0; i < count; i++) {
-        WorkflowTriggerDescriptor *desc = workflow_get_trigger_descriptor(i);
+        const WorkflowTriggerDescriptor *desc = workflow_get_trigger_descriptor(i);
         if (desc == nullptr) continue;
 
         JsonObject item = arr.add<JsonObject>();

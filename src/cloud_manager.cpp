@@ -7,6 +7,7 @@
 #include "system_state.h"
 #include "config_manager.h"
 #include "event_manager.h"
+#include "time_manager.h"
 #include "command_manager.h"
 
 // =====================================================
@@ -32,12 +33,30 @@ static int keep_alive;
 // MQTT连接状态
 // =====================================================
 static bool mqtt_connected = false;
-
 // =====================================================
-// 重连管理
+// WiFi状态
 // =====================================================
-static unsigned long last_try_time = 0;
-static int retry_count = 0;
+static bool wifi_connected = false;
+// =====================================================
+// MQTT重连控制
+// =====================================================
+static unsigned long mqtt_retry_timer = 0;
+static uint8_t mqtt_retry_count = 0;
+// 最大连续失败次数
+#define MQTT_RETRY_MAX 10
+// 最大退避时间
+#define MQTT_RETRY_MAX_INTERVAL 120000
+// 失败休眠时间
+#define MQTT_FAIL_SLEEP_TIME 3600000
+static bool mqtt_sleep_mode = false;
+// =====================================================
+// 防重复缓存
+// =====================================================
+#define MQTT_DUP_CACHE_SIZE 10
+static String cmd_id_cache[MQTT_DUP_CACHE_SIZE];
+static uint8_t cmd_cache_index = 0;
+static String response_cache[MQTT_DUP_CACHE_SIZE];
+static uint8_t response_cache_index = 0;
 
 enum RetryMode
 {
@@ -54,97 +73,236 @@ static String last_command;
 // =====================================================
 // MQTT消息回调（接收处理，原cloud_receive_handle）
 // =====================================================
-static void mqtt_callback(char* topic, byte* payload, unsigned int length)
+// =====================================================
+// MQTT消息回调
+// 接收云端命令
+// =====================================================
+static void mqtt_callback(
+    char* topic,
+    byte* payload,
+    unsigned int length
+)
 {
     String message;
-    for (unsigned int i = 0; i < length; i++) {
+    for(unsigned int i=0;i<length;i++)
+    {
         message += (char)payload[i];
     }
-
-    if (message.length() == 0) {
-        Serial.println("Empty command");
+    if(message.length()==0)
+    {
+        Serial.println("[Cloud] Empty MQTT message");
         return;
     }
-
-    Serial.println("Topic:");
-    Serial.println(topic);
-    Serial.println("Cloud command:");
+    Serial.println("=================");
+    Serial.println("[Cloud] MQTT RX");
     Serial.println(message);
-
-    // ===== 上报"收到命令"状态 =====
+    JsonDocument doc;
+    DeserializationError error =
+        deserializeJson(doc,message);
+    if(error)
+    {
+        Serial.println("[Cloud] JSON parse failed");
+        return;
+    }
+    const char* command =
+        doc["cmd"];
+    const char* object =
+        doc["ob"];
+    const char* source =
+        doc["src"];
+    if(command==nullptr)
+    {
+        Serial.println("[Cloud] Missing cmd");
+        return;
+    }
+    String cmd_id =
+        doc["id"] | "";
+    if(cmd_id.length()==0)
+    {
+        Serial.println("[Cloud] Missing id");
+        return;
+    }
+    if(cloud_check_duplicate_cmd(cmd_id))
+    {
+        Serial.println("[Cloud] Command duplicate");
+        return;
+    }
+    unsigned long timestamp =
+        doc["ts"] | 0;
+    JsonObjectConst payload_obj =
+        doc["pl"];
+    CommandMessage cmd;
+    cmd.command =
+        command;
+    cmd.object =
+        object ? object : "";
+    cmd.cmd_id =
+        cmd_id;
+    cmd.payload =
+        payload_obj;
+    cmd.source =
+        source ? source : "";
+    cmd.timestamp =
+        timestamp;
     JsonDocument ack;
-    ack["type"] = "cmd_ack";
-    ack["status"] = "received";
-    ack["timestamp"] = time(nullptr);  // 如果 TimeManager 已就绪
-    cloud_publish_json(ack);
+    ack["cmd"]="ack";
+    ack["ob"] =
+        cmd.object;
+    ack["id"] =
+        cmd.cmd_id;
+    JsonObject pl =
+        ack["pl"].to<JsonObject>();
+    pl["result"]="received";
+    ack["src"]="esp32";
+    ack["ts"]= time_get();
+    String ack_string;
+    serializeJson(
+        ack,
+        ack_string
+    );
+    cloud_send_up(
+        ack_string.c_str()
+    );
+    command_manager_execute(cmd);
+}
 
-    // ===== 通过 Command Manager 处理 =====
-    String response = command_manager_execute(message);
-
-    // ===== 发送同步响应到云端 =====
-    if (response.length() > 0) {
-        cloud_send_raw(response.c_str());
+//对wifi连接事件的处理，主要是为了在wifi连接后立即尝试连接云端
+static void cloud_event_callback(const EventMessage &message)
+{
+    SystemEvent event = message.event;
+    switch(message.event)
+    {
+        case EVENT_WIFI_CONNECTED:
+            Serial.println(
+                "[Cloud] WiFi connected event"
+            );
+            wifi_connected = true;
+            mqtt_sleep_mode = false;
+            mqtt_retry_count = 0;
+            mqtt_retry_timer = 0;
+            break;
+        case EVENT_WIFI_DISCONNECTED:
+            Serial.println(
+                "[Cloud] WiFi disconnected event"
+            );
+            wifi_connected = false;
+            mqtt_connected = false;
+            mqttClient.disconnect();
+            break;
+        default:
+            break;
     }
 }
 
 // =====================================================
 // MQTT建立连接
 // =====================================================
-static void cloud_connect()
+static bool cloud_connect()
 {
-    Serial.println();
-    Serial.println("MQTT connecting...");
-
-    bool result = mqttClient.connect(mqtt_client_id.c_str(), "", "");
-
-    if (result)
+    if(!wifi_connected)
     {
-        Serial.println("MQTT connected OK");
+        Serial.println("[Cloud] WiFi offline, skip MQTT");
+        return false;
+    }
+    Serial.println("[Cloud] MQTT connecting...");
+    bool result =
+        mqttClient.connect(
+            mqtt_client_id.c_str(),
+            "",
+            ""
+        );
+    if(result)
+    {
+        Serial.println(
+            "[Cloud] MQTT connected"
+        );
         mqtt_connected = true;
-        retry_count = 0;
-        retry_mode = FAST_RETRY;
-
-        bool sub_result = mqttClient.subscribe(mqtt_sub_topic.c_str());
-        if (sub_result)
+        mqtt_retry_count = 0;
+        mqtt_sleep_mode = false;
+        state_set_bool(
+            STATE_MQTT_STATUS,
+            true
+        );
+        state_set_int(
+            STATE_MQTT_RETRY_COUNT,
+            0
+        );
+        state_set_string(
+            STATE_MQTT_LAST_CONNECT_TIME,
+            time_now_string()
+        );
+        state_set_int(
+            STATE_MQTT_LAST_ERROR,
+            0
+        );
+        bool sub =
+            mqttClient.subscribe(
+                mqtt_sub_topic.c_str()
+            );
+        if(sub)
         {
-            Serial.print("Subscribe topic:");
-            Serial.println(mqtt_sub_topic);
-            Serial.println("MQTT subscribe OK");
+            Serial.println(
+                "[Cloud] MQTT subscribe OK"
+            );
+            event_push(
+                EVENT_CLOUD_CONNECTED,
+                "",
+                "cloud",
+                EVENT_PRIORITY_NORMAL,
+                EVENT_POLICY_DEDUP
+            );
         }
         else
         {
-            Serial.println("MQTT subscribe FAIL");
+            Serial.println(
+                "[Cloud] MQTT subscribe FAIL"
+            );
+            mqtt_connected = false;
+            state_set_bool(
+                STATE_MQTT_STATUS,
+                false
+            );
+            state_set_int(
+                STATE_MQTT_LAST_ERROR,
+                mqttClient.state()
+            );
+            mqttClient.disconnect();
+            return false;
         }
-
-        // 上线通知
-        cloud_send_raw("device_online");
+        cloud_send_set(
+            "{\"cmd\":\"system\",\"id\":\"online\",\"src\":\"device\"}"
+        );
+        return true;
     }
-    else
+    Serial.print(
+        "[Cloud] MQTT connect failed:"
+    );
+    Serial.println(
+        mqttClient.state()
+    );
+    mqtt_connected = false;
+    state_set_bool(
+        STATE_MQTT_STATUS,
+        false
+    );
+    state_set_int(
+        STATE_MQTT_RETRY_COUNT,
+        mqtt_retry_count + 1
+    );
+    state_set_int(
+        STATE_MQTT_LAST_ERROR,
+        mqttClient.state()
+    );
+    mqtt_retry_count++;
+    if(mqtt_retry_count >= MQTT_RETRY_MAX)
     {
-        Serial.print("MQTT failed:");
-        Serial.println(mqttClient.state());
-
-        switch (mqttClient.state())
-        {
-            case -4:
-                Serial.println("TIMEOUT");
-                break;
-            case 5:
-                Serial.println("AUTH FAILED");
-                break;
-            default:
-                break;
-        }
-
-        mqtt_connected = false;
-        retry_count++;
-
-        if (retry_count >= retry_max)
-        {
-            Serial.println("Enter slow retry mode");
-            retry_mode = SLOW_RETRY;
-        }
+        Serial.println(
+            "[Cloud] enter sleep retry"
+        );
+        mqtt_sleep_mode = true;
+        mqtt_retry_timer = millis();
     }
+    return false;
 }
 
 // =====================================================
@@ -152,7 +310,7 @@ static void cloud_connect()
 // =====================================================
 static void on_command_result(const String &json)
 {
-    cloud_send_raw(json.c_str());
+    cloud_send_up(json.c_str());
 }
 
 // =====================================================
@@ -189,117 +347,349 @@ void cloud_init()
     mqttClient.setKeepAlive(keep_alive);
 
     mqtt_connected = false;
-    retry_count = 0;
+    mqtt_retry_count = 0;
     retry_mode = FAST_RETRY;
     last_command.clear();
 
         // ===== 注册 Command Manager 结果回调 =====
     command_manager_set_result_callback(on_command_result);
+
+
+    event_subscribe(EVENT_WIFI_CONNECTED, cloud_event_callback);
+    event_subscribe(EVENT_WIFI_DISCONNECTED, cloud_event_callback);
 }
+
+
 
 // =====================================================
 // 云主循环任务
 // =====================================================
 void cloud_task()
 {
-    if (mqtt_connected)
+    if(!wifi_connected)
     {
-        mqttClient.loop();
-        if (!mqttClient.connected())
+        if(mqtt_connected)
         {
-            Serial.println("MQTT disconnected");
+            Serial.println(
+                "[Cloud] WiFi lost, MQTT offline"
+            );
             mqtt_connected = false;
+            mqttClient.disconnect();
+            state_set_bool(
+                STATE_MQTT_STATUS,
+                false
+            );
+            state_set_int(
+                STATE_MQTT_LAST_ERROR,
+                -1
+            );
+            event_push(
+                EVENT_CLOUD_DISCONNECTED,
+                "",
+                "cloud",
+                EVENT_PRIORITY_NORMAL,
+                EVENT_POLICY_STATE
+            );
         }
         return;
     }
-
-    unsigned long interval;
-    if (retry_mode == FAST_RETRY)
+    if(mqtt_connected)
     {
-        interval = retry_interval;
+        mqttClient.loop();
+        if(!mqttClient.connected())
+        {
+            Serial.println(
+                "[Cloud] MQTT lost"
+            );
+            mqtt_connected = false;
+            state_set_bool(
+                STATE_MQTT_STATUS,
+                false
+            );
+            state_set_int(
+                STATE_MQTT_LAST_ERROR,
+                mqttClient.state()
+            );
+            event_push(
+                EVENT_CLOUD_DISCONNECTED,
+                "",
+                "cloud",
+                EVENT_PRIORITY_NORMAL,
+                EVENT_POLICY_STATE
+            );
+        }
+        return;
+    }
+    unsigned long now = millis();
+    unsigned long interval;
+    if(mqtt_sleep_mode)
+    {
+        interval =
+            MQTT_FAIL_SLEEP_TIME;
     }
     else
     {
-        interval = sleep_retry_interval;
+        interval =
+            5000 * (mqtt_retry_count + 1);
+        if(interval > MQTT_RETRY_MAX_INTERVAL)
+        {
+            interval =
+                MQTT_RETRY_MAX_INTERVAL;
+        }
     }
-
-    if (millis() - last_try_time < interval)
+    if(now - mqtt_retry_timer < interval)
     {
         return;
     }
-    last_try_time = millis();
+    mqtt_retry_timer = now;
     cloud_connect();
 }
 
+
+
 // =====================================================
-// 底层原始发送
+// 底层原始发送，分为/set消息和/up消息
 // =====================================================
-bool cloud_send_raw(const char* message)
+bool cloud_add_readable_time(
+    String &message
+)
 {
-    if (message == nullptr)
+    int ts_pos =
+        message.indexOf("\"ts\":");
+    if(ts_pos < 0)
     {
-        Serial.println("MQTT send null");
         return false;
     }
-    if (!mqtt_connected)
+    int ts_start =
+        ts_pos + 5;
+    while(
+        ts_start < message.length() &&
+        message[ts_start] == ' '
+    )
     {
-        Serial.println("MQTT offline");
+        ts_start++;
+    }
+    int ts_end =
+        ts_start;
+    while(
+        ts_end < message.length() &&
+        isDigit(message[ts_end])
+    )
+    {
+        ts_end++;
+    }
+    if(
+        ts_end <= ts_start
+    )
+    {
         return false;
     }
+    unsigned long timestamp =
+        message.substring(
+            ts_start,
+            ts_end
+        ).toInt();
+    if(timestamp == 0)
+    {
+        return false;
+    }
+    String readable =
+        time_get_string(timestamp);
+    int pl_pos =
+        message.indexOf("\"pl\":");
+    if(pl_pos < 0)
+    {
+        return false;
+    }
+    int insert_pos =
+        pl_pos + 5;
+    while(
+        insert_pos < message.length() &&
+        message[insert_pos] == ' '
+    )
+    {
+        insert_pos++;
+    }
+    if(
+        insert_pos >= message.length()
+    )
+    {
+        return false;
+    }
+    if(
+        message[insert_pos] != '{'
+    )
+    {
+        return false;
+    }
+    int payload_end_check =
+        insert_pos + 1;
+    if(
+        payload_end_check >= message.length()
+    )
+    {
+        return false;
+    }
+    String payload_head =
+        message.substring(
+            insert_pos,
+            min(
+                insert_pos + 64,
+                (int)message.length()
+            )
+        );
+    if(
+        payload_head.indexOf(
+            "\"time\""
+        ) >= 0
+    )
+    {
+        return false;
+    }
+    if(
+        message[insert_pos + 1] == '}'
+    )
+    {
+        String add =
+            "\"time\":\"" +
+            readable +
+            "\"";
+        message =
+            message.substring(
+                0,
+                insert_pos + 1
+            )
+            +
+            add
+            +
+            message.substring(
+                insert_pos + 1
+            );
+        return true;
+    }
+    String add =
+        "\"time\":\"" +
+        readable +
+        "\",";
+    message =
+        message.substring(
+            0,
+            insert_pos + 1
+        )
+        +
+        add
+        +
+        message.substring(
+            insert_pos + 1
+        );
+    return true;
+}
 
-    size_t msg_len = strlen(message);
-    if (msg_len >= mqttClient.getBufferSize() - 32)  // 预留 MQTT 头部空间
+// 这个函数发送/set 消息，推送给订阅设备，且发送消息的设备不会收到本条消息
+bool cloud_send_set(
+    const char* message
+)
+{
+    if(message==nullptr)
     {
-        Serial.printf("MQTT message too long: %d bytes\n", msg_len);
+        Serial.println("[Cloud SET] null");
         return false;
     }
-
-    bool result = mqttClient.publish(mqtt_sub_topic.c_str(), message);
-    if (result)
+    if(!mqtt_connected)
     {
-        Serial.println("MQTT send OK");
-        Serial.print("Message:");
-        Serial.println(message);
+        Serial.println("[Cloud SET] MQTT offline");
+        return false;
     }
-    else
+    String upload =
+        String(message);
+    cloud_add_readable_time(
+        upload
+    );
+    size_t len =
+        upload.length();
+    if(
+        len >= mqttClient.getBufferSize()-32
+    )
     {
-        Serial.println("MQTT send FAIL");
+        Serial.println("[Cloud SET] message too long");
+        return false;
+    }
+    String topic =
+        mqtt_sub_topic + "/set";
+    bool result =
+        mqttClient.publish(
+            topic.c_str(),
+            upload.c_str()
+        );
+    Serial.println(
+        result?
+        "[Cloud SET] OK":
+        "[Cloud SET] FAIL"
+    );
+    if(result)
+    {
+        Serial.println(upload);
+    }
+    return result;
+}
+
+
+///up = 只更新云端数据，不广播
+bool cloud_send_up(
+    const char* message
+)
+{
+    if(message==nullptr)
+    {
+        Serial.println("[Cloud UP] null");
+        return false;
+    }
+    if(!mqtt_connected)
+    {
+        Serial.println("[Cloud UP] MQTT offline");
+        return false;
+    }
+    String upload =
+        String(message);
+    cloud_add_readable_time(
+        upload
+    );
+    size_t len =
+        upload.length();
+    if(
+        len >= mqttClient.getBufferSize()-32
+    )
+    {
+        Serial.println("[Cloud UP] message too long");
+        return false;
+    }
+    String topic =
+        mqtt_sub_topic + "/up";
+    bool result =
+        mqttClient.publish(
+            topic.c_str(),
+            upload.c_str()
+        );
+    Serial.println(
+        result?
+        "[Cloud UP] OK":
+        "[Cloud UP] FAIL"
+    );
+    if(result)
+    {
+        Serial.println(upload);
     }
     return result;
 }
 
 // =====================================================
-// 发布普通消息（原cloud_publish_message）
-// =====================================================
-bool cloud_publish_message(const char* message)
-{
-    if (message == nullptr)
-    {
-        Serial.println("Publish null message");
-        return false;
-    }
-    return cloud_send_raw(message);
-}
-
-// =====================================================
-// 发布状态报文（原cloud_publish_status）
-// =====================================================
-bool cloud_publish_status()
-{
-    JsonDocument doc;
-    doc["event"] = "status";
-    doc["timestamp"] = time(nullptr);
-    return cloud_publish_json(doc);
-}
-
-// =====================================================
 // 新增：直接传入JsonDocument序列化发布
 // =====================================================
-bool cloud_publish_json(JsonDocument& doc)
+bool cloud_upload_json(JsonDocument& doc)
 {
     String buf;
     serializeJson(doc, buf);
-    return cloud_send_raw(buf.c_str());
+    return cloud_send_up(buf.c_str());
 }
 
 // =====================================================
@@ -318,3 +708,39 @@ bool cloud_is_connected()
     return mqtt_connected;
 }
 
+//cmd id 过滤，防风暴
+static bool cloud_check_duplicate_cmd(
+    const String &id
+)
+{
+    if(id.length()==0)
+        return false;
+    for(
+        int i=0;
+        i<MQTT_DUP_CACHE_SIZE;
+        i++
+    )
+    {
+        if(
+            cmd_id_cache[i]==id
+        )
+        {
+            Serial.println(
+              "[Cloud] duplicate command"
+            );
+            return true;
+        }
+    }
+    cmd_id_cache[
+        cmd_cache_index
+    ] = id;
+    cmd_cache_index++;
+    if(
+        cmd_cache_index >=
+        MQTT_DUP_CACHE_SIZE
+    )
+    {
+        cmd_cache_index=0;
+    }
+    return false;
+}

@@ -39,6 +39,16 @@ enum CommandResult
     CMD_RESULT_UNKNOWN
 };
 
+struct CommandMessage 
+{ 
+    String command; 
+    String object; 
+    String cmd_id; 
+    JsonObject payload; 
+    String source; 
+    unsigned long timestamp; 
+};
+
 // =====================================================
 // 初始化
 // =====================================================
