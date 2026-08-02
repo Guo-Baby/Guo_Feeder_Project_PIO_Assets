@@ -53,10 +53,17 @@ static bool mqtt_sleep_mode = false;
 // 防重复缓存
 // =====================================================
 #define MQTT_DUP_CACHE_SIZE 10
-static String cmd_id_cache[MQTT_DUP_CACHE_SIZE];
+#define MQTT_DUP_CACHE_TTL_MS 30000UL
+
+// 短周期 FIFO 防风暴缓存：仅防 MQTT 重复投递 / UI 重复点击 / 消息风暴
+struct CmdIdCacheEntry
+{
+    String cmd_id;
+    unsigned long received_ms;
+};
+
+static CmdIdCacheEntry cmd_id_cache[MQTT_DUP_CACHE_SIZE];
 static uint8_t cmd_cache_index = 0;
-static String response_cache[MQTT_DUP_CACHE_SIZE];
-static uint8_t response_cache_index = 0;
 
 enum RetryMode
 {
@@ -77,6 +84,9 @@ static String last_command;
 // MQTT消息回调
 // 接收云端命令
 // =====================================================
+// 短周期 cmd_id 防风暴过滤（定义在文件底部，此处前向声明）
+static bool cloud_check_duplicate_cmd(const String &id);
+
 static void mqtt_callback(
     char* topic,
     byte* payload,
@@ -129,8 +139,6 @@ static void mqtt_callback(
     }
     unsigned long timestamp =
         doc["ts"] | 0;
-    JsonObjectConst payload_obj =
-        doc["pl"];
     CommandMessage cmd;
     cmd.command =
         command;
@@ -138,8 +146,14 @@ static void mqtt_callback(
         object ? object : "";
     cmd.cmd_id =
         cmd_id;
-    cmd.payload =
-        payload_obj;
+    if(!doc["pl"].isNull())
+    {
+        // pl 原样序列化为 String 透明传递，不解析内部字段
+        serializeJson(
+            doc["pl"],
+            cmd.payload
+        );
+    }
     cmd.source =
         source ? source : "";
     cmd.timestamp =
@@ -163,7 +177,9 @@ static void mqtt_callback(
     cloud_send_up(
         ack_string.c_str()
     );
-    String command_manager_execute(CommandMessage &cmd);
+    // 执行命令：同步返回 String 不在此处理，
+    // 结果只经已注册 CommandResultCallback → on_command_result → cloud_send_up 单通道上报
+    command_manager_execute(cmd);
 }
 
 //对wifi连接事件的处理，主要是为了在wifi连接后立即尝试连接云端
@@ -715,6 +731,8 @@ static bool cloud_check_duplicate_cmd(
 {
     if(id.length()==0)
         return false;
+
+    unsigned long now = millis();
     for(
         int i=0;
         i<MQTT_DUP_CACHE_SIZE;
@@ -722,7 +740,9 @@ static bool cloud_check_duplicate_cmd(
     )
     {
         if(
-            cmd_id_cache[i]==id
+            cmd_id_cache[i].cmd_id == id
+            &&
+            now - cmd_id_cache[i].received_ms < MQTT_DUP_CACHE_TTL_MS
         )
         {
             Serial.println(
@@ -731,16 +751,17 @@ static bool cloud_check_duplicate_cmd(
             return true;
         }
     }
-    cmd_id_cache[
-        cmd_cache_index
-    ] = id;
+
+    // FIFO 写入最新 cmd_id（覆盖最旧条目）
+    cmd_id_cache[cmd_cache_index].cmd_id = id;
+    cmd_id_cache[cmd_cache_index].received_ms = now;
     cmd_cache_index++;
     if(
         cmd_cache_index >=
         MQTT_DUP_CACHE_SIZE
     )
     {
-        cmd_cache_index=0;
+        cmd_cache_index = 0;
     }
     return false;
 }
