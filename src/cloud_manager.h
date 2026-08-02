@@ -9,19 +9,13 @@ void cloud_init();
 void cloud_task();
 
 // MQTT底层原始发送接口
-bool cloud_send_raw(const char* message);
+bool cloud_send_set(const char* message);
 
-// 发布普通字符串消息
-bool cloud_publish_message(const char* message);
-
-// 发布状态JSON（简易版本）
-bool cloud_publish_status();
+bool cloud_send_up(const char *message);
 
 // 【扩展】直接传入JsonDocument序列化发布（新增接口）
-bool cloud_publish_json(JsonDocument& doc);
+bool cloud_upload_json(JsonDocument& doc);
 
-// 获取最近收到的云端指令
-String cloud_receive_get_command();
 
 // 查询MQTT当前在线状态
 bool cloud_is_connected();

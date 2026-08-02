@@ -10,7 +10,7 @@
 #include "cloud_manager.h"
 #include "weight.h"
 #include "valve.h"
-#include "workflow.h" 
+#include "workflow.h"
 
 // =====================================================
 // setup
@@ -19,11 +19,10 @@ void setup()
 {
     Serial.begin(115200);
     delay(1000);
-
     // =====================================================
     // 第一层：基础系统（无依赖）
     // =====================================================
-  // ===== 一次性挂载 LittleFS =====
+    // ===== 一次性挂载 LittleFS =====
     if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
         Serial.println("[System] LittleFS mount failed!");
         // 根据你的错误处理策略，可以选择重启或继续
@@ -33,18 +32,15 @@ void setup()
     system_state_init();
     config_init();
     event_manager_init();
-
     // =====================================================
     // 第二层：通信（依赖基础系统）
     // =====================================================
     wifi_init();
     time_init();
-
     // =====================================================
     // 第三层：Workflow 框架（依赖基础系统）
     // =====================================================
     workflow_init();
-
     // =====================================================
     // 第四层：业务模块注册（依赖 workflow_init）
     // =====================================================
@@ -52,13 +48,11 @@ void setup()
     valve_init();
     oled_init();
     oled_event_init();
-
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
     command_manager_init();
     cloud_init();
-
     // =====================================================
     // 第六层：加载 Workflow 配置（依赖所有注册完成）
     // =====================================================
@@ -68,7 +62,6 @@ void setup()
         Serial.println("[WARN] No workflow.json found");
     }
 }
-
 
 void serial_debug_command_process();
 // =====================================================
@@ -81,26 +74,19 @@ void loop()
     event_dispatch();
     time_task();
     cloud_task();
+
+    command_manager_task();
+    // ---- 新增：Workflow 任务 ----
+    workflow_task();          // 执行 Workflow 状态机
     oled_task();
     weight_task();
     valve_task();
-
-    // ---- 新增：Workflow 任务 ----
-    workflow_timer_check();   // 检查 Timer 触发
-    workflow_task();          // 执行 Workflow 状态机
-    command_manager_task();
     serial_debug_command_process();
-
-    
-
 }
 
-
 //测试代码
-
 //==== 放在 main.cpp 全局区域（不要写在loop内部）====
 String serial_cmd_buffer;
-
 //==== 命令解析函数，在loop()中调用 ====
 void serial_debug_command_process(void)
 {
@@ -114,12 +100,10 @@ void serial_debug_command_process(void)
             {
                 continue;
             }
-
             serial_cmd_buffer.trim(); // 清除首尾空格
             Serial.print("Recv cmd: [");
             Serial.print(serial_cmd_buffer);
             Serial.println("]");
-
             if (serial_cmd_buffer == "valve_open")
             {
                 bool ok = valve_open();
@@ -143,7 +127,6 @@ void serial_debug_command_process(void)
             {
                 Serial.println("unknown command");
             }
-
             serial_cmd_buffer = ""; //清空缓冲区
         }
         else

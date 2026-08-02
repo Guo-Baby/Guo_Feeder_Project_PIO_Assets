@@ -27,9 +27,14 @@ static const struct {
     // 重量
     {"weight_value", STATE_WEIGHT_VALUE, STATE_TYPE_FLOAT, true},
     {"weight_error", STATE_WEIGHT_ERROR, STATE_TYPE_BOOL, false},
+
+    //MQTT
+    {"mqtt_status", STATE_MQTT_STATUS, STATE_TYPE_BOOL, true},
+    {"mqtt_retry_count", STATE_MQTT_RETRY_COUNT, STATE_TYPE_INT, true},
+    {"mqtt_last_connect_time", STATE_MQTT_LAST_CONNECT_TIME, STATE_TYPE_STRING, true},
+    {"mqtt_last_error", STATE_MQTT_LAST_ERROR, STATE_TYPE_INT, true},
     
-    // 事件队列
-    {"event_queue_count", STATE_EVENT_QUEUE_COUNT, STATE_TYPE_INT, false},
+
 };
 
 static const uint8_t STATE_MAP_COUNT = sizeof(state_map) / sizeof(state_map[0]);
@@ -53,34 +58,21 @@ static portMUX_TYPE state_mux = portMUX_INITIALIZER_UNLOCKED;
 
 void system_state_init()
 {
-
     portENTER_CRITICAL(&state_mux);
-
-
     for(
         int i = 0;
         i < STATE_MAX;
         i++
     )
     {
-        state_table[i].type =
-            STATE_TYPE_LONG;
-
-
-        state_table[i].value =
-            0;
-
-
-        state_table[i].valid =
-            false;
+        state_table[i].type = STATE_TYPE_LONG;
+        state_table[i].value = 0;
+        state_table[i].value_float = 0;
+        state_table[i].value_string = "";
+        state_table[i].valid = false;
     }
-
-
     portEXIT_CRITICAL(&state_mux);
-
 }
-
-
 
 // =====================================================
 // 写 INT
@@ -91,7 +83,6 @@ bool state_set_int(
     int value
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
@@ -99,28 +90,15 @@ bool state_set_int(
     {
         return false;
     }
-
-
     portENTER_CRITICAL(&state_mux);
-
-
     state_table[key].type =
         STATE_TYPE_INT;
-
-
     state_table[key].value =
         value;
-
-
     state_table[key].valid =
         true;
-
-
     portEXIT_CRITICAL(&state_mux);
-
-
     return true;
-
 }
 
 
@@ -134,7 +112,6 @@ bool state_set_bool(
     bool value
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
@@ -142,28 +119,15 @@ bool state_set_bool(
     {
         return false;
     }
-
-
     portENTER_CRITICAL(&state_mux);
-
-
     state_table[key].type =
         STATE_TYPE_BOOL;
-
-
     state_table[key].value =
         value ? 1 : 0;
-
-
     state_table[key].valid =
         true;
-
-
     portEXIT_CRITICAL(&state_mux);
-
-
     return true;
-
 }
 
 
@@ -177,7 +141,6 @@ bool state_set_long(
     long value
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
@@ -185,26 +148,14 @@ bool state_set_long(
     {
         return false;
     }
-
-
     portENTER_CRITICAL(&state_mux);
-
-
     state_table[key].type =
         STATE_TYPE_LONG;
-
-
     state_table[key].value =
         value;
-
-
     state_table[key].valid =
         true;
-
-
     portEXIT_CRITICAL(&state_mux);
-
-
     return true;
 
 }
@@ -218,7 +169,6 @@ bool state_set_float(
     float value
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
@@ -226,163 +176,130 @@ bool state_set_float(
     {
         return false;
     }
-
     portENTER_CRITICAL(&state_mux);
-
-
     state_table[key].type = STATE_TYPE_FLOAT;
-
     state_table[key].value_float = value;
-
     state_table[key].valid = true;
-
-
     portEXIT_CRITICAL(&state_mux);
-
-
     return true;
 }
 
+// =====================================================
+// 写 string
+// =====================================================
+
+bool state_set_string(
+    SystemStateKey key,
+    String value
+)
+{
+    if(
+        key < 0 ||
+        key >= STATE_MAX
+    )
+    {
+        return false;
+    }
+    portENTER_CRITICAL(&state_mux);
+    state_table[key].type =
+        STATE_TYPE_STRING;
+    state_table[key].value_string =
+        value;
+    state_table[key].valid =
+        true;
+    portEXIT_CRITICAL(&state_mux);
+    return true;
+}
 
 // =====================================================
 // 读 INT
 // =====================================================
-
-int state_get_int(
-    SystemStateKey key
-)
+int state_get_int(SystemStateKey key)
 {
-
-    if(
-        key < 0 ||
-        key >= STATE_MAX
-    )
+    if(key < 0 || key >= STATE_MAX)
     {
         return 0;
     }
-
-
     int value;
-
-
     portENTER_CRITICAL(&state_mux);
-
-
-    value =
-        (int)state_table[key].value;
-
-
+    value = (int)state_table[key].value;
     portEXIT_CRITICAL(&state_mux);
-
-
     return value;
-
 }
-
-
 
 // =====================================================
 // 读 BOOL
 // =====================================================
-
-bool state_get_bool(
-    SystemStateKey key
-)
+bool state_get_bool(SystemStateKey key)
 {
-
-    if(
-        key < 0 ||
-        key >= STATE_MAX
-    )
+    if(key < 0 || key >= STATE_MAX)
     {
         return false;
     }
-
-
     bool value;
-
-
     portENTER_CRITICAL(&state_mux);
-
-
-    value =
-        state_table[key].value != 0;
-
-
+    value = state_table[key].value != 0;
     portEXIT_CRITICAL(&state_mux);
-
-
     return value;
-
 }
-
-
 
 // =====================================================
 // 读 LONG
 // =====================================================
+long state_get_long(SystemStateKey key)
+{
+    if(key < 0 || key >= STATE_MAX)
+    {
+        return 0;
+    }
+    long value;
+    portENTER_CRITICAL(&state_mux);
+    value = state_table[key].value;
+    portEXIT_CRITICAL(&state_mux);
+    return value;
+}
 
-long state_get_long(
+// =====================================================
+// 读 FLOAT
+// =====================================================
+float state_get_float(SystemStateKey key)
+{
+    if(key < 0 || key >= STATE_MAX)
+    {
+        return 0.0f;
+    }
+    float value;
+    portENTER_CRITICAL(&state_mux);
+    value = state_table[key].value_float;
+    portEXIT_CRITICAL(&state_mux);
+    return value;
+}
+
+// =====================================================
+// 读 STRING
+// =====================================================
+String state_get_string(
     SystemStateKey key
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
     )
     {
-        return 0;
+        return "";
     }
-
-
-    long value;
-
-
-    portENTER_CRITICAL(&state_mux);
-
-
+    String value;
+    portENTER_CRITICAL(
+        &state_mux
+    );
     value =
-        state_table[key].value;
-
-
-    portEXIT_CRITICAL(&state_mux);
-
-
-    return value;
-
-}
-
-// =====================================================
-// 读 float
-// =====================================================
-
-float state_get_float(
-    SystemStateKey key
-)
-{
-
-    if(key >= STATE_MAX)
-        return 0;
-
-
-    float value;
-
-
-    portENTER_CRITICAL(&state_mux);
-
-
-    value =
-        state_table[key].value_float;
-
-
-    portEXIT_CRITICAL(&state_mux);
-
-
+        state_table[key].value_string;
+    portEXIT_CRITICAL(
+        &state_mux
+    );
     return value;
 }
-
-
 // =====================================================
 // 状态有效性
 // =====================================================
@@ -391,7 +308,6 @@ bool state_is_valid(
     SystemStateKey key
 )
 {
-
     if(
         key < 0 ||
         key >= STATE_MAX
@@ -399,23 +315,12 @@ bool state_is_valid(
     {
         return false;
     }
-
-
     bool valid;
-
-
     portENTER_CRITICAL(&state_mux);
-
-
     valid =
         state_table[key].valid;
-
-
     portEXIT_CRITICAL(&state_mux);
-
-
     return valid;
-
 }
 
 
@@ -459,51 +364,62 @@ SystemStateKey state_string_to_key(const String &str)
 
 
 // =====================================================
-// 通用查询接口
-// =====================================================
-// =====================================================
 // 通用查询接口（完全基于映射表驱动）
 // =====================================================
-// =====================================================
-// 通用查询接口（完全基于映射表驱动）
-// =====================================================
-bool system_state_query(
-    const String &key,
-    String &output
-)
+bool system_state_query(const String &key, String &output)
 {
-    int idx = state_lookup_by_name(key);
-    if (idx < 0)
+    int idx =
+        state_lookup_by_name(key);
+    if(idx < 0)
     {
         return false;
     }
-
-    const auto &item = state_map[idx];
-    SystemStateKey state_key = item.key;
-
-    if (!state_is_valid(state_key))
+    const auto &item =
+        state_map[idx];
+    SystemStateKey state_key =
+        item.key;
+    if(!state_is_valid(state_key))
     {
         output = "invalid";
         return true;
     }
-
-    switch (item.type)
+    portENTER_CRITICAL(&state_mux);
+    switch(item.type)
     {
         case STATE_TYPE_BOOL:
-            output = state_get_bool(state_key) ? "true" : "false";
+            output =
+                state_table[state_key].value
+                ? "true"
+                : "false";
             break;
         case STATE_TYPE_INT:
-            output = String(state_get_int(state_key));
+            output =
+                String(
+                    state_table[state_key].value
+                );
             break;
         case STATE_TYPE_LONG:
-            output = String(state_get_long(state_key));
+            output =
+                String(
+                    state_table[state_key].value
+                );
             break;
         case STATE_TYPE_FLOAT:
-            output = String(state_get_float(state_key), 1);
+            output =
+                String(
+                    state_table[state_key].value_float,
+                    1
+                );
+            break;
+        case STATE_TYPE_STRING:
+            output =
+                state_table[state_key].value_string;
             break;
         default:
+            portEXIT_CRITICAL(&state_mux);
             return false;
     }
+    portEXIT_CRITICAL(&state_mux);
     return true;
 }
 // =====================================================

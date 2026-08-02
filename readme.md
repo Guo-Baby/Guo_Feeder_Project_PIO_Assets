@@ -217,130 +217,6 @@ delay等待
 
 
 
-# Workflow Action / Trigger 注册规范
-
-所有模块通过 Workflow 注册自身提供的 Trigger 和 Action。
-
-注册完成后，Workflow Registry 统一维护接口信息，Command Manager、UI 等模块通过 Workflow 提供的查询接口获取可用能力。
-
-## 模块统一注册模板
-
-```cpp
-#include "workflow.h"
-#include "module.h"
-
-
-// =====================================================
-// Trigger Handler（可选）
-// =====================================================
-
-static WorkflowTriggerState module_trigger_handler(
-    WorkflowTriggerInstance *trigger
-)
-{
-    // 参数解析
-    // 条件判断
-
-    return TRIGGER_SUCCESS;
-}
-
-
-// =====================================================
-// Trigger Descriptor
-// =====================================================
-
-static WorkflowParam trigger_params[] =
-{
-    {"param_name", PARAM_INT, "unit", "description"}
-};
-
-
-static WorkflowTriggerDescriptor module_trigger_desc =
-{
-    .id = "MODULE_TRIGGER",
-    .name = "触发名称",
-    .module = "module",
-    .params = trigger_params,
-    .param_count = 1,
-    .handler = module_trigger_handler
-};
-
-
-// =====================================================
-// Action Handler
-// =====================================================
-
-static WorkflowActionResult module_action_handler(
-    WorkflowActionInstance *action
-)
-{
-    // 执行动作
-
-    return ACTION_SUCCESS;
-}
-
-
-// =====================================================
-// Action Descriptor
-// =====================================================
-
-static WorkflowParam action_params[] =
-{
-    {"param_name", PARAM_STRING, "", "description"}
-};
-
-
-static WorkflowActionDescriptor module_action_desc =
-{
-    .id = "MODULE_ACTION",
-    .name = "动作名称",
-    .module = "module",
-    .params = action_params,
-    .param_count = 1,
-    .handler = module_action_handler
-};
-
-
-// =====================================================
-// 模块统一注册入口
-// =====================================================
-
-void module_workflow_register()
-{
-    workflow_register_trigger(
-        &module_trigger_desc
-    );
-
-    workflow_register_action(
-        &module_action_desc
-    );
-}
-```
-
-## ID 命名规范
-
-| 类型      | 格式       | 示例             |
-| ------- | -------- | -------------- |
-| Trigger | 大写 + 下划线 | `WEIGHT_ABOVE` |
-| Action  | 大写 + 下划线 | `VALVE_OPEN`   |
-
-## 参数规范
-
-参数统一使用 `WorkflowParam`：
-
-```cpp
-{
-    name,
-    type,
-    unit,
-    description
-}
-```
-
-Workflow、UI、Command Manager 均通过 Descriptor 获取参数定义，不重复维护注册表。
-
-
-
 
 # System State 新增状态规范
 
@@ -663,52 +539,1164 @@ Descriptor 只读共享；Instance 唯一归属；状态存入 runtime；禁用 
 如果你需要，我可以把这份规范精简成注释版本，直接贴在 workflow.h 文件顶部。
 
 
-action 标准写法
-static WorkflowActionResult xxx_action(
+
+
+# 云端通信协议（MQTT JSON）
+
+## 1. 通信模型
+
+设备与云端通过 MQTT 通信。
+
+通信采用统一 JSON 消息格式：
+
+- 云端 → 设备：发送控制命令
+- 设备 → 云端：返回 ACK、执行结果、状态、数据
+
+
+所有消息均使用同一个 JSON 外壳。
+
+
+---
+
+# 2. 统一 JSON 格式（核心协议）
+
+所有 MQTT 消息必须符合以下结构：
+
+```json
+{
+    "cmd":"execute_action",
+    "ob":"VALVE_OPEN",
+    "id":"1785514667334",
+    "pl":{},
+    "src":"cloud",
+    "ts":1785514667
+}
+```
+
+
+## 字段说明
+
+
+
+
+| 字段 | 含义 | 类型 | 说明 |
+cmd    |     command      |    消息类型，决定消息行为，采用枚举匹配，查询command.h |
+ob      |    object       |  操作对象或目标，由各模块定义其动作函数名|
+id      |    cmd_id        |  消息关联ID，用于匹配请求和响应，采用发出命令时的unix时间戳+毫秒 |
+pl      |    payload       |  自定义数据区域 |
+src      |   source       | 消息来源 |
+ts       |   timestamp       | Unix时间戳 |
+
+---
+
+# 3. 字段设计原则
+
+## command
+
+表示消息意图。
+
+
+Command Manager 根据 command 进行解析和路由。
+
+
+---
+
+## object
+
+
+表示操作目标。
+
+
+例如：
+
+```
+VALVE_OPEN
+
+FEED_WORKFLOW
+
+SYSTEM
+
+WEIGHT
+```
+
+
+---
+
+## id
+
+用于关联一次完整通信过程。
+
+
+例如：
+
+云端发送：
+
+```
+1785514667334
+```
+
+
+设备返回：
+
+```
+1785514667334
+```
+
+
+表示属于同一次请求。
+
+
+一个 id 可以对应多个响应消息。
+
+
+例如：
+
+```
+1785514667334
+ |
+ +---- ack
+ |
+ +---- action_result
+ |
+ +---- state_report
+```
+
+
+
+---
+
+## payload
+
+
+自定义数据区域。
+
+
+Command Manager 不解析具体业务内容。
+
+
+payload 由目标模块自行定义。
+
+
+例如 Action 参数：
+
+
+```json
+{
+    "id":"cmd_001",
+
+    "command":"execute_action",
+
+    "object":"MOTOR_MOVE",
+
+    "payload":
+    {
+        "speed":100,
+        "position":500
+    },
+
+    "timestamp":1785514667,
+
+    "source":"cloud"
+}
+```
+
+
+Motor 模块自行解析 payload。
+
+
+---
+
+# 4. Command 枚举
+
+
+## 4.1 云端 → 设备
+
+
+请求类型：
+
+```text
+execute_action
+
+execute_workflow
+
+
+query_state
+
+query_actions
+
+query_triggers
+
+query_workflows
+
+
+system_restart
+
+system_sync_time
+
+system_get_time
+
+
+query_config
+
+update_config
+```
+
+
+---
+
+## 4.2 设备 → 云端
+
+
+响应类型：
+
+```text
+ack
+
+
+action_result
+
+workflow_result
+
+
+state_report
+
+
+config_upload
+
+log_upload
+
+
+error
+
+
+device_online
+
+device_offline
+```
+
+
+---
+
+# 5. ACK协议
+
+
+设备收到命令后立即返回 ACK。
+
+
+示例：
+
+```json
+{
+    "id":"cmd_001",
+
+    "command":"ack",
+
+    "object":"VALVE_OPEN",
+
+    "payload":
+    {
+        "state":"received"
+    },
+
+    "timestamp":1785514668,
+
+    "source":"device"
+}
+```
+
+
+说明：
+
+ACK 仅表示：
+
+```
+设备已经收到消息
+```
+
+
+不代表执行完成。
+
+
+---
+
+# 6. Action执行协议
+
+
+## 请求
+
+
+云端：
+
+```json
+{
+    "id":"cmd_001",
+
+    "command":"execute_action",
+
+    "object":"VALVE_OPEN",
+
+    "payload":
+    {
+    },
+
+    "timestamp":1785514667,
+
+    "source":"cloud"
+}
+```
+
+
+---
+
+## 执行完成
+
+
+成功：
+
+```json
+{
+    "id":"cmd_001",
+
+    "command":"action_result",
+
+    "object":"VALVE_OPEN",
+
+    "payload":
+    {
+        "state":"success"
+    },
+
+    "timestamp":1785514670,
+
+    "source":"device"
+}
+```
+
+
+失败：
+
+```json
+{
+    "id":"cmd_001",
+
+    "command":"action_result",
+
+    "object":"VALVE_OPEN",
+
+    "payload":
+    {
+        "state":"failed",
+        "error":"timeout"
+    },
+
+    "timestamp":1785514670,
+
+    "source":"device"
+}
+```
+
+
+---
+
+# 7. Workflow执行协议
+
+
+请求：
+
+```json
+{
+    "id":"cmd_002",
+
+    "command":"execute_workflow",
+
+    "object":"FEED_CAT",
+
+    "payload":
+    {
+    },
+
+    "timestamp":1785514700,
+
+    "source":"cloud"
+}
+```
+
+
+结果：
+
+```json
+{
+    "id":"cmd_002",
+
+    "command":"workflow_result",
+
+    "object":"FEED_CAT",
+
+    "payload":
+    {
+        "state":"success"
+    },
+
+    "timestamp":1785514800,
+
+    "source":"device"
+}
+```
+
+
+---
+
+# 8. 查询协议
+
+
+所有查询统一使用：
+
+```
+query_xxx
+```
+
+
+例如：
+
+查询系统状态：
+
+```json
+{
+    "id":"cmd_003",
+
+    "command":"query_state",
+
+    "object":"system",
+
+    "payload":
+    {},
+
+    "timestamp":1785514900,
+
+    "source":"cloud"
+}
+```
+
+
+返回：
+
+```json
+{
+    "id":"cmd_003",
+
+    "command":"state_report",
+
+    "object":"system",
+
+    "payload":
+    {
+        "state":"success",
+
+        "data":
+        {
+            "wifi":true,
+            "valve":false
+        }
+    },
+
+    "timestamp":1785514901,
+
+    "source":"device"
+}
+```
+
+
+---
+
+# 9. Source来源
+
+
+用于日志和追踪。
+
+
+当前：
+
+```text
+cloud
+
+device
+
+ui
+
+local
+```
+
+
+未来新增控制端无需修改协议。
+
+
+---
+
+# 10. 时间格式
+
+
+设备内部统一使用：
+
+```
+Unix timestamp
+```
+
+
+例如：
+
+```
+1785514667
+```
+
+
+进入用户显示层时转换为：
+
+```
+2026-08-01 02:51:07
+```
+
+
+转换由 Cloud Manager 或 UI 层完成。
+
+
+---
+
+# 11. MQTT发送规则
+
+
+设备发送消息：
+
+普通广播：
+
+```
+topic/set
+```
+
+
+仅更新云端：
+
+```
+topic/up
+```
+
+
+规则：
+
+|消息|方式|
+|-|-|
+|ACK|up|
+|Action结果|up|
+|Workflow结果|up|
+|状态上传|up|
+|配置上传|up|
+|日志上传|up|
+|需要通知其他设备|set|
+
+
+---
+
+# 12. 扩展原则
+
+
+协议冻结以下部分：
+
+固定：
+
+```
+id
+command
+object
+payload
+timestamp
+source
+```
+
+
+新增功能：
+
+只允许增加：
+
+```
+command枚举
+object定义
+payload结构
+```
+
+
+禁止修改基础 JSON 外壳。
+
+
+
+
+# 
+# Workflow Trigger / Action 模块注册规范
+#
+
+## 1. 概述
+
+所有业务模块通过 Workflow Framework 注册自身提供的：
+
+- Trigger（触发器）
+- Action（动作）
+
+注册完成后，由 Workflow Registry 统一维护模块能力信息。
+
+其他模块：
+
+- Command Manager
+- UI
+- Cloud Manager
+- 自动化流程编辑器
+
+均通过 Workflow 查询接口获取可用 Trigger / Action。
+
+模块自身不维护额外注册表。
+---
+
+# 2. 模块注册结构
+
+Workflow 模块结构：
+
+```
+Module
+ |
+ |
+ +---- Trigger Descriptor
+ |
+ +---- Action Descriptor
+ |
+ +---- Register Function
+```
+
+运行流程：
+
+```
+Workflow Step
+       |
+       |
+ Trigger / Action Instance
+       |
+       |
+ Descriptor
+       |
+       |
+ start()
+       |
+       |
+ poll()
+       |
+       |
+
+ SUCCESS / FAILED
+```
+
+# 3. Trigger 注册模板
+
+
+## 3.1 Trigger Reset（必须）
+
+
+用于 Workflow 重新执行前初始化状态。
+
+
+```cpp
+static void module_trigger_reset(
+    WorkflowTriggerInstance *trigger
+)
+{
+    if(trigger == nullptr)
+        return;
+    trigger->state =
+        TRIGGER_IDLE;
+    trigger->running =
+        false;
+    // 清理模块私有 runtime
+
+}
+```
+
+
+---
+
+## 3.2 Trigger Start（必须）
+
+
+Workflow 第一次进入 Trigger Step 时调用。
+
+```cpp
+static void module_trigger_start(
+    WorkflowTriggerInstance *trigger
+)
+{
+    if(trigger == nullptr)
+        return;
+    // 初始化 runtime
+
+    trigger->state =
+        TRIGGER_RUNNING;
+}
+```
+
+
+---
+
+## 3.3 Trigger Poll（必须）
+
+
+Workflow Task 周期调用。
+
+要求：
+
+- 非阻塞
+- 完成后修改 state
+
+
+```cpp
+static void module_trigger_poll(
+    WorkflowTriggerInstance *trigger
+)
+{
+    if(trigger == nullptr)
+        return;
+
+
+    // 查询条件
+
+
+    if(condition_ok)
+    {
+        trigger->state =
+            TRIGGER_SUCCESS;
+    }
+}
+```
+
+
+---
+
+# 4. Trigger Descriptor
+
+
+示例：
+
+
+```cpp
+static WorkflowParam trigger_params[] =
+{
+    {
+        "threshold",
+        PARAM_INT,
+        "",
+        "触发阈值"
+    }
+};
+
+
+static const WorkflowTriggerDescriptor
+module_trigger_desc =
+{
+    .id =
+        "MODULE_TRIGGER",
+    .name =
+        "触发名称",
+    .module =
+        "module",
+    .description =
+        "触发说明",
+    .params =
+        trigger_params,
+    .param_count =
+        1,
+    .reset =
+        module_trigger_reset,
+    .start =
+        module_trigger_start,
+    .poll =
+        module_trigger_poll
+};
+```
+
+---
+
+# 5. Action 注册模板
+
+
+Action 支持：
+
+- 同步动作
+- 异步动作
+
+
+生命周期：
+
+
+```
+reset()
+   |
+start()
+   |
+poll()
+   |
+SUCCESS / FAILED
+```
+---
+
+# 5.1 Action Reset
+
+
+```cpp
+static void module_action_reset(
     WorkflowActionInstance *action
 )
 {
     if(action == nullptr)
-        return ACTION_FAILED;
+        return;
 
 
-    if(!action->started)
-    {
-        // 参数检查
+    action->result =
+        ACTION_IDLE;
 
 
-        // 创建runtime（需要才创建）
+    action->running =
+        false;
 
 
-        // 启动硬件动作
-
-
-        return ACTION_RUNNING;
-    }
-
-
-    // 检查运行状态
-
-
-    if(完成)
-    {
-        // 释放runtime
-
-        action->runtime=nullptr;
-
-        return ACTION_SUCCESS;
-    }
-
-
-    if(错误)
-    {
-        // 释放runtime
-
-        action->runtime=nullptr;
-
-        return ACTION_FAILED;
-    }
-
-
-    return ACTION_RUNNING;
+    action->runtime =
+        nullptr;
 }
+```
+
+
+---
+
+# 5.2 Action Start
+第一次执行 Action 时调用。
+```cpp
+static void module_action_start(
+    WorkflowActionInstance *action
+)
+{
+    if(action == nullptr)
+        return;
+    // 执行动作
+    action->result =
+        ACTION_RUNNING;
+    // 如果立即完成
+
+    action->result =
+        ACTION_SUCCESS;
+}
+```
+---
+
+# 5.3 Action Poll
+异步任务继续执行。
+```cpp
+static void module_action_poll(
+    WorkflowActionInstance *action
+)
+{
+    if(action == nullptr)
+        return;
+    // 查询执行状态
+    if(done)
+    {
+        action->result =
+            ACTION_SUCCESS;
+    }
+    if(error)
+    {
+        action->result =
+            ACTION_FAILED;
+    }
+}
+```
+---
+
+# 6. Action Descriptor
+
+示例：
+
+```cpp
+static WorkflowParam action_params[] =
+{
+    {
+        "duration",
+        PARAM_INT,
+        "ms",
+        "执行时间"
+    }
+};
+
+static const WorkflowActionDescriptor
+module_action_desc =
+{
+    .id =
+        "MODULE_ACTION",
+    .name =
+        "动作名称",
+    .module =
+        "module",
+    .description =
+        "动作说明",
+    .params =
+        action_params,
+    .param_count =
+        1,
+    .reset =
+        module_action_reset,
+    .start =
+        module_action_start,
+    .poll =
+        module_action_poll
+};
+```
+
+---
+
+# 7. 模块统一注册入口
+
+
+每个模块提供：
+
+```cpp
+void module_workflow_register();
+```
+
+示例：
+```cpp
+void module_workflow_register()
+{
+    workflow_register_trigger(
+        &module_trigger_desc
+    );
+
+
+    workflow_register_action(
+        &module_action_desc
+    );
+}
+```
+系统启动时调用：
+
+```cpp
+module_workflow_register();
+```
+
+
+
+---
+
+# 8. ID 命名规范
+
+
+| 类型 | 格式 | 示例 |
+|-|-|-|
+| Trigger | 大写 + 下划线 | `WEIGHT_ABOVE` |
+| Action | 大写 + 下划线 | `VALVE_OPEN` |
+
+
+
+规则：
+
+- 全部大写
+- 单词之间使用 `_`
+- 必须唯一
+- 不允许重复注册
+
+
+
+---
+
+# 9. 参数规范
+
+
+统一使用：
+
+```cpp
+WorkflowParam
+```
+结构：
+
+```cpp
+{
+    name,
+    type,
+    unit,
+    description
+}
+```
+示例：
+
+```cpp
+{
+    "speed",
+    PARAM_INT,
+    "rpm",
+    "电机转速"
+}
+```
+参数类型：
+| 类型 | 说明 |
+|-|-|
+| PARAM_INT | 整数 |
+| PARAM_FLOAT | 浮点 |
+| PARAM_BOOL | 布尔 |
+| PARAM_STRING | 字符串 |
+---
+
+# 10. 查询接口
+Workflow Registry 提供：
+
+## 查询 Trigger
+```cpp
+workflow_get_trigger_count();
+
+workflow_get_trigger_descriptor(index);
+```
+## 查询 Action
+```cpp
+workflow_get_action_count();
+
+workflow_get_action_descriptor(index);
+```
+
+Command Manager / UI 不直接访问模块。
+
+统一通过 Workflow Framework 获取能力。
+---
+
+# 11. Cloud Command 流程
+
+
+云端下发：
+
+
+```
+Cloud
+
+ |
+
+Cloud Manager
+
+ |
+
+Command Manager
+
+ |
+
+Workflow Action Registry
+
+ |
+
+workflow_enqueue_action()
+
+ |
+
+Temporary Action Queue
+
+ |
+
+Action Instance
+
+ |
+
+start()
+
+ |
+
+poll()
+
+ |
+
+SUCCESS / FAILED
+
+```
+
+
+
+---
+
+# 12. 开发注意事项
+
+
+## Trigger
+
+必须保证：
+
+- start 非阻塞
+- poll 非阻塞
+- 不使用 delay()
+- 完成修改 state
+
+
+例如：
+
+```cpp
+trigger->state =
+    TRIGGER_SUCCESS;
+```
+
+---
+
+## Action
+同步动作：
+
+```
+start()
+
+直接 SUCCESS
+```
+
+
+异步动作：
+
+```
+start()
+
+ACTION_RUNNING
+
+
+poll()
+
+ACTION_SUCCESS
+```
+
+禁止：
+
+- 阻塞等待
+- while等待完成
+- delay()
+- 自建任务循环
+---
+
+# 13. 当前支持模块
+
+| 模块 | Trigger | Action |
+|-|-|-|
+| Timer | ✅ | ❌ |
+| Delay | ✅ | ❌ |
+| Valve | ❌ | ✅ |
+| Motor | 待开发 | 待开发 |
+
+
+---
+
+# 14. 总结
+
+Workflow Framework 负责：
+
+- 生命周期管理
+- Step 调度
+- Trigger / Action Registry
+- JSON解析
+- Cloud Action 调用
+- 临时 Action 队列
+
+业务模块只负责：
+
+- Descriptor定义
+- start()
+- poll()
+- reset()
+实现模块与自动化系统完全解耦。

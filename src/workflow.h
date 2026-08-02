@@ -36,6 +36,8 @@ struct WorkflowActionInstance;
 struct WorkflowStep;
 struct Workflow;
 
+
+
 #define WORKFLOW_MAX_PARAM 8
 #define WORKFLOW_MAX_STEP 16
 #define WORKFLOW_MAX_COUNT 16
@@ -115,25 +117,33 @@ enum WorkflowInstanceType
     INSTANCE_ACTION
 };
 
+
+//trigger callback函数
+typedef void (*WorkflowTriggerCallback)(
+    WorkflowTriggerInstance *trigger,
+    WorkflowTriggerState state
+);
+//action callback 函数
+typedef void (*WorkflowActionCallback)(
+    WorkflowActionInstance *action,
+    WorkflowActionResult result
+);
+
+
+// =====================================================
+// 参数值
+// =====================================================
 struct WorkflowParamValue
 {
     String name;
-
     WorkflowParamType type;
-
     int int_value;
-
     float float_value;
-
     bool bool_value;
-
     String string_value;
 };
 // =====================================================
 // 参数描述
-//
-// 注册Trigger / Action时使用
-//
 // =====================================================
 struct WorkflowParam
 {
@@ -143,21 +153,23 @@ struct WorkflowParam
     const char *description;
 };
 
+
 // =====================================================
-// Timer Runtime 结构（内部使用）
+// Timer Runtime
 // =====================================================
+
 struct TimerRuntime
 {
     time_t next_trigger_time;
     int last_trigger_minute;
     bool triggered;
     bool expired;
-    int type;  // 0: once, 1: daily, 2: weekly
+    int type;
 };
+// =====================================================
+// Delay Runtime
+// =====================================================
 
-// =====================================================
-// Delay Runtime 结构（内部使用）
-// =====================================================
 struct DelayRuntime
 {
     unsigned long start_time;
@@ -165,18 +177,89 @@ struct DelayRuntime
     bool started;
 };
 // =====================================================
-// Trigger实例
+// Trigger Descriptor
 //
-// Workflow运行时创建
+// 用户注册Trigger使用
+//
+// 生命周期:
+// reset
+// start
+// poll
 //
 // =====================================================
-typedef WorkflowTriggerState
-(*WorkflowTriggerHandler)
-(
-    WorkflowTriggerInstance *trigger
-);
+struct WorkflowTriggerDescriptor
+{
+    const char *id;
+    const char *name;
+    const char *module;
+    const char *description;
+    WorkflowParam *params;
+    uint8_t param_count;
+    // 初始化运行状态
+    void (*reset)
+    (
+        WorkflowTriggerInstance *trigger
+    );
+    // 启动Trigger
+    //
+    // 第一次进入时调用
+    //
+    void (*start)
+    (
+        WorkflowTriggerInstance *trigger
+    );
+    // 非阻塞轮询
+    //
+    // 完成后调用callback
+    //
+    void (*poll)
+    (
+        WorkflowTriggerInstance *trigger
+    );
+};
+// =====================================================
+// Action Descriptor
+//
+// 用户注册Action使用
+//
+// 生命周期:
+// reset
+// start
+// poll
+//
+// =====================================================
 
+struct WorkflowActionDescriptor
+{
+    const char *id;
+    const char *name;
+    const char *module;
+    const char *description;
+    WorkflowParam *params;
+    uint8_t param_count;
+    // 初始化运行状态
+    void (*reset)
+    (
+        WorkflowActionInstance *action
+    );
+    // 启动Action
+    void (*start)
+    (
+        WorkflowActionInstance *action
+    );
+    // 非阻塞轮询
+    void (*poll)
+    (
+        WorkflowActionInstance *action
+    );
+};
 
+// =====================================================
+// Trigger Instance
+//
+// Workflow运行实例
+//
+// =====================================================
 struct WorkflowTriggerInstance
 {
     const WorkflowTriggerDescriptor *descriptor;
@@ -184,16 +267,24 @@ struct WorkflowTriggerInstance
     WorkflowParamValue params[WORKFLOW_MAX_PARAM];
     uint8_t param_count;
     WorkflowTriggerState state;
-    // void *runtime;  // 删除这一行
-    TimerRuntime timer_runtime;  // 新增：内嵌 Timer 运行时
-    DelayRuntime delay_runtime;  // 新增：内嵌 Delay 运行时
-    bool is_timer;              // 新增：标记是否为 Timer
-    bool is_delay;              // 新增：标记是否为 Delay
+    // 内部runtime
+    TimerRuntime timer_runtime;
+    DelayRuntime delay_runtime;
+    // 是否已经启动
+    //
+    // false:
+    // 第一次start
+    //
+    // true:
+    // poll阶段
+    //
+    bool running;
+    WorkflowTriggerCallback callback;
 };
 // =====================================================
-// Action实例
+// Action Instance
 //
-// Workflow运行时创建
+// Workflow运行实例
 //
 // =====================================================
 struct WorkflowActionInstance
@@ -203,33 +294,49 @@ struct WorkflowActionInstance
     WorkflowParamValue params[WORKFLOW_MAX_PARAM];
     uint8_t param_count;
     WorkflowActionResult result;
-    // Action是否已经启动 ，用于异步Action。false: 第一次执行。true:后续轮询
-    bool started;
-    // Action运行上下文，保留给电机、阀门等模块
+    // 是否已经启动
+    //
+    // false:
+    // 调用start()
+    //
+    // true:
+    // 调用poll()
+    //
+    bool running;
+    // 模块私有上下文
+    //
+    // 电机、阀门等使用
+    //
     void *runtime;
+    WorkflowActionCallback callback;
 };
-
 // =====================================================
-// Workflow对象
-//
-// 一个自动化任务
-//
+// Step Instance
 // =====================================================
-//Workflow Step结构
 
-
-union StepInstance {
+union StepInstance
+{
     WorkflowTriggerInstance *trigger;
     WorkflowActionInstance *action;
 };
+
+// =====================================================
+// Workflow Step
+// =====================================================
 
 struct WorkflowStep
 {
     WorkflowStepType type;
     WorkflowInstanceType instance_type;
     String id;
-    StepInstance instance;  // ← 替代 void* instance
+    StepInstance instance;
+    // 等待异步结果
+    bool waiting;
 };
+
+// =====================================================
+// Workflow
+// =====================================================
 
 struct Workflow
 {
@@ -239,7 +346,7 @@ struct Workflow
     unsigned long start_time;
     unsigned long timeout_ms;
     WorkflowState state;
-    WorkflowStep steps[WORKFLOW_MAX_STEP];  // ← 改为固定数组
+    WorkflowStep steps[WORKFLOW_MAX_STEP];
     uint8_t step_count;
     uint8_t current_step;
 };
@@ -247,13 +354,13 @@ struct Workflow
 // Trigger注册接口
 // =====================================================
 bool workflow_register_trigger(
-    WorkflowTriggerDescriptor *trigger
+    const WorkflowTriggerDescriptor *trigger
 );
 // =====================================================
 // Action注册接口
 // =====================================================
 bool workflow_register_action(
-    WorkflowActionDescriptor *action
+    const WorkflowActionDescriptor *action
 );
 // =====================================================
 // Workflow执行
@@ -268,26 +375,7 @@ bool workflow_start(Workflow *workflow, bool skip_first_step = false);
 //
 // =====================================================
 void workflow_task();
-void workflow_timer_check();  // 新增：Timer 外部触发检查
 
-// =====================================================
-// Trigger检查接口
-//
-// Workflow内部调用
-//
-// =====================================================
-WorkflowTriggerState workflow_trigger_check(
-    WorkflowTriggerInstance *trigger
-);
-// =====================================================
-// Action执行接口
-//
-// Workflow内部调用
-//
-// =====================================================
-WorkflowActionResult workflow_action_execute(
-    WorkflowActionInstance *action
-);
 
 // =====================================================
 // 外部Action调用，Command Manager调用，根据action id创建临时实例并执行
@@ -355,53 +443,9 @@ Workflow*workflow_get(uint8_t index);
 // Command/UI使用
 uint8_t workflow_get_action_count();
 
-WorkflowActionDescriptor*
-workflow_get_action_descriptor(
-    uint8_t index
-);
-//Trigger查询
-uint8_t workflow_get_trigger_count();
-WorkflowTriggerDescriptor*
-workflow_get_trigger_descriptor(
-    uint8_t index
-);
-
 
 
 void workflow_clear();
-
-
-typedef WorkflowActionResult(*WorkflowActionHandler)
-(WorkflowActionInstance *action);
-
-
-struct WorkflowActionDescriptor
-{
-    const char *id;              // 内部唯一ID，例如 valve_open
-    const char *name;            // 显示名称，例如 Open Valve
-    const char *description;     // UI说明，例如 打开出粮阀门
-    const char *module;          // 来源模块
-
-    WorkflowParam *params;
-    uint8_t param_count;
-
-    WorkflowActionHandler handler;
-
-};
-
-
-struct WorkflowTriggerDescriptor
-{
-    const char *id;
-    const char *name;
-    const char *description;
-    const char *module;
-
-    WorkflowParam *params;
-    uint8_t param_count;
-
-    WorkflowTriggerHandler handler;
-};
 
 bool workflow_init();
 
@@ -422,3 +466,14 @@ bool workflow_stop(
 
 bool workflow_start_by_id(const String &id, bool skip_first_step = false);
 
+const WorkflowActionDescriptor*
+workflow_get_action_descriptor(
+    uint8_t index
+);
+//Trigger查询
+uint8_t workflow_get_trigger_count();
+
+const WorkflowTriggerDescriptor*
+workflow_get_trigger_descriptor(
+    uint8_t index
+);

@@ -26,7 +26,6 @@ enum SystemEvent
     EVENT_CLOUD_CONNECTED,
     EVENT_CLOUD_DISCONNECTED,
     EVENT_CLOUD_UPLOAD,
-    EVENT_CLOUD_COMMAND,
     // 命令执行结果
     EVENT_COMMAND_RESULT,
     // 重量称重
@@ -59,26 +58,16 @@ enum SystemEvent
 SystemEvent event_from_string(const String &str);
 String event_to_string(SystemEvent event);
 
-
 // ==========================
 // 优先级
 // ==========================
-
 #define EVENT_PRIORITY_LOW        0
-
 #define EVENT_PRIORITY_NORMAL     1
-
 #define EVENT_PRIORITY_HIGH       2
-
 #define EVENT_PRIORITY_CRITICAL   3
-
-
-
-
 // ==========================
 // 策略
 // ==========================
-
 enum EventPolicy
 {
 
@@ -90,10 +79,6 @@ enum EventPolicy
     // 强制执行
     EVENT_POLICY_FORCE
 };
-
-
-
-
 
 // ==========================
 // 消息结构
@@ -112,30 +97,17 @@ struct EventMessage
     unsigned long expire;
 };
 
-
-
-
-
 // ==========================
 // 返回
 // ==========================
 
 enum EventPushResult
 {
-
     EVENT_PUSH_OK,
-
     EVENT_QUEUE_FULL,
-
     EVENT_DROPPED,
-
     EVENT_DUPLICATE
-
 };
-
-
-
-
 
 typedef void (*EventCallback)
 (
@@ -143,41 +115,22 @@ typedef void (*EventCallback)
 );
 
 
-
-
-
 void event_manager_init();
 
 
-
-
-
 EventPushResult event_push(
-
     SystemEvent event,
-
     String data = "",
-
     String source = "",
-
     int priority = EVENT_PRIORITY_NORMAL,
-
     EventPolicy policy = EVENT_POLICY_NORMAL,
-
     unsigned long expire = 0
-
 );
-
-
-
-
 
 bool event_subscribe(
 
     SystemEvent event,
-
     EventCallback callback
-
 );
 
 
@@ -186,15 +139,10 @@ bool event_subscribe(
 
 void event_dispatch();
 
-
 unsigned long event_get_drop_count();
-
 
 unsigned long event_get_duplicate_count();
 
-
 int event_get_queue_count();
-
-
 
 #endif

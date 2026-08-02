@@ -114,7 +114,10 @@ time_t time_get();
 //
 // =====================================================
 
-String time_get_string();
+String time_get_string(time_t timestamp);
+
+//对外查询接口，默认返回当前时间的字符串表示，若时间无效则返回"No Time"
+String time_now_string()
 
 // =====================================================
 // 手动校时
