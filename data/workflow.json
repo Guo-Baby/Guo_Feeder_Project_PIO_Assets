@@ -1,51 +1,68 @@
 {
     "workflows": [
-        {
-            "id": "wf_timer",
-            "name": "Timer Test (expired)",
-            "enable": true,
-            "timeout_ms": 600000,
-            "steps": [
                 {
-                    "type": "trigger",
-                    "id": "timer",
-                    "params": {
-                        "type": "once",
-                        "hour": 0,
-                        "minute": 0,
-                        "year": 2000,
-                        "month": 1,
-                        "day": 1
-                    }
-                },
-                {
-                    "type": "action",
-                    "id": "test.action",
-                    "params": {
-                        "value": 100
-                    }
-                }
+                    "id":"daily_valve_test",
+                    "name":"每日开阀测试",
+                    "enable":true,
+                    "timeout_ms":60000,
+                    "steps":[
+                        {
+                            "type":"trigger",
+                            "id":"timer_daily",
+                            "params":{
+                                "hour":7,
+                                "minute":0
+                            }
+                        },
+                        {
+                            "type":"action",
+                            "id":"VALVE_OPEN"
+                        },
+                        {
+                            "type":"action",
+                            "id":"DELAY",
+                            "params":{
+                                "ms":30000
+                            }
+                        },
+                        {
+                            "type":"action",
+                            "id":"VALVE_CLOSE"
+                        }
             ]
         },
+
+
+
+
         {
-            "id": "wf_delay",
-            "name": "Delay Test (3s)",
-            "enable": true,
-            "timeout_ms": 600000,
-            "steps": [
+            "id":"daily_valve_test1",
+            "name":"每日开阀测试1",
+            "enable":true,
+            "timeout_ms":60000,
+            "steps":[
                 {
-                    "type": "trigger",
-                    "id": "delay",
-                    "params": {
-                        "seconds": 3
+                    "type":"trigger",
+                    "id":"timer_daily",
+                    "params":{
+                        "hour":7,
+                        "minute":0
                     }
                 },
                 {
-                    "type": "action",
-                    "id": "test.action",
-                    "params": {
-                        "value": 200
+                    "type":"action",
+                    "id":"VALVE_OPEN"
+                },
+                {
+                    "type":"trigger",
+                    "id":"delay",
+                    "params":{
+                        "seconds":30
                     }
+                },
+                {
+                    "type":"action",
+                    "id":"VALVE_CLOSE"
                 }
             ]
         }

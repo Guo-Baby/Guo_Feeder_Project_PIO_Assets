@@ -74,8 +74,6 @@ struct TempActionItem {
 
     uint32_t instance_id;
     const WorkflowActionDescriptor *desc;
-    WorkflowParamValue params[WORKFLOW_MAX_PARAM];
-    uint8_t param_count;
     bool completed;
     WorkflowActionResult result;
     unsigned long start_time;
@@ -1612,7 +1610,6 @@ static bool enqueue_temp_action(
     }
     item.desc = desc;
     item.instance = inst;
-    item.param_count = param_count;
     item.completed = false;
     item.result = ACTION_IDLE;
     item.start_time = millis();
@@ -1667,14 +1664,15 @@ static void workflow_temp_action_cleanup()
         // 清理 instance
         if(item.instance != nullptr)
         {
-            item.instance->runtime = nullptr;
-            
-            item.instance->result = ACTION_IDLE;
+            temp_action_free_instance(
+                item.instance
+            );
+
+            item.instance = nullptr;
         }
 
         item.desc = nullptr;
         item.instance = nullptr;
-        item.param_count = 0;
         item.cmd_id = "";
         item.callback = nullptr;
         item.timeout_ms = 0;
@@ -1855,9 +1853,17 @@ void workflow_task()
                 item.desc->id :
                 "nullptr"
             );
+
+            if(item.instance != nullptr)
+            {
+                item.instance->result = ACTION_FAILED;
+                item.instance->running = false;
+            }
+
             item.completed = true;
             item.result =
                 ACTION_FAILED;
+
             if(item.callback != nullptr)
             {
                 item.callback(
@@ -1929,30 +1935,9 @@ void workflow_task()
         }
         if(item.completed)
         {
-            temp_action_free_instance(
-                item.instance
-            );
-            item.instance = nullptr;
-            item.instance_id = 0;
-            item.desc = nullptr;
-            item.param_count = 0;
-            item.completed = false;
-            item.result = ACTION_IDLE;
-            item.start_time = 0;
-            item.timeout_ms = 0;
-            item.callback = nullptr;
-            item.cmd_id = "";
-            for(uint8_t j = 0;
-                j < WORKFLOW_MAX_PARAM;
-                j++)
-            {
-                item.params[j].name = "";
-                item.params[j].type = PARAM_INT;
-                item.params[j].int_value = 0;
-                item.params[j].float_value = 0.0f;
-                item.params[j].bool_value = false;
-                item.params[j].string_value = "";
-            }
+            // 不在这里释放
+            // 统一交给 workflow_temp_action_cleanup()
+
             queue_rd_ptr =
                 (queue_rd_ptr + 1)
                 %
