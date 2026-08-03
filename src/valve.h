@@ -38,4 +38,6 @@ int valve_get_pin();
 // =====================================================
 void valve_task();
 
+bool valve_force_close();
+
 #endif

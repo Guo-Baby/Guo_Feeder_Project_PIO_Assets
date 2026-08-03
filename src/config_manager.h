@@ -60,7 +60,7 @@ int config_get_weight_sample_interval();// HX711采样间隔，单位ms
 
 float config_get_weight_scale();// HX711称重模块的比例因子
 long config_get_weight_zero_offset();// HX711称重模块的零点偏移量
-void config_set_weight_zero_offset(long offset);// 设置HX711零点
+bool config_set_weight_zero_offset(long offset);// 设置HX711零点
 int config_get_weight_filter_samples();// HX711称重模块的滤波采样数
 
 

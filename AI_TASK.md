@@ -1,272 +1,390 @@
-请先阅读当前 src/cloud_manager.h 和 src/cloud_manager.cpp 代码。
+# Weight 模块升级需求
 
-当前 CommandManager 已经完成定版，不需要重新设计。现在只修改 CloudManager，使其符合最终架构。
+目标：
+按照《新增动作模板.md》的标准，将 weight 模块改造成标准 Workflow Trigger + Action 模块。
+修改当前阻塞执行机制，改为状态机。
+本次任务仅修改weight.cpp weight.h，禁止修改其他文件。如果由于本模块提供的接口在其他模块中无相关实现或调用导致编译失败，不得做临时修改以通过编译，保留完整相关接口，忽略由于该原因导致的编译失败。
 
-修改目标：
 
-1. CloudManager 职责调整
+# 1. Weight Trigger 注册
 
-CloudManager 只负责：
-- MQTT 通信
-- MQTT JSON → CommandMessage 转换
-- 短周期消息防风暴
+新增 Workflow Trigger：
 
-CloudManager 不负责：
-- command 生命周期管理
-- command 执行去重
-- workflow/action 状态管理
+ID:
 
-command_id 的业务生命周期判断已经由 CommandManager Runtime 负责。
+weight_decrease
 
----
 
-2. 修改 payload 传递方式
+Name:
 
-当前 CommandMessage.payload 定义为 String。
+重量减少
 
-修改 CloudManager：
+ description = "当重量减少*克时执行下一步",
 
-MQTT 接收：
+类型：
 
-{
-  cmd,
-  ob,
-  id,
-  src,
-  pl,
-  ts
-}
+Workflow Trigger
 
-转换为：
 
-CommandMessage
-{
-  command,
-  object,
-  cmd_id,
-  payload,
-  source,
-  timestamp
-}
+按照新增动作模板.md内trigger模板实现：
 
-其中：
+- reset
+- start
+- poll
 
-payload 保持原始 String。
 
-禁止：
-- CloudManager 解析 payload
-- CloudManager 将 payload 转换成 JsonObject
-- CloudManager 理解 payload 业务含义
+Descriptor 生命周期：
 
-payload 只负责完整传递。
+workflow_register_trigger()
 
----
 
-3. 修改 MQTT cmd_id 防重复策略
+参数：
 
-删除当前长期 cmd_id cache 设计。
 
-不要保存 10 分钟。
+gram
 
-改为：
 
-短周期 FIFO duplicate protection。
+单位：
 
-要求：
+克
 
-- 使用固定大小 FIFO ring buffer
-- 保存最近收到的 cmd_id
-- 保存时间戳 received_ms
-- 有效时间约 30 seconds
-- 超过30秒自动失效
 
-目的：
+2. Weight Decrease Trigger 行为
 
-只防止：
-- MQTT 重复发送
-- UI 短时间重复点击
-- 网络异常导致的消息风暴
 
-不是业务去重。
+Trigger 启动时：
+首先检查 STATE_WEIGHT_ERROR如果为true则发布事件EVENT_WEIGHT_ERROR，返回 TRIGGER_FAILED。
 
-真正 command_id 冲突由 CommandManager Runtime 处理。
 
----
+ 如果为false则执行下方步骤：
+记录当前重量：
+start_weight
 
-4. 保留已有功能
+运行期间：
 
-保持：
+持续读取重量。
 
-- MQTT connect/reconnect
-- cloud_send_set()
-- cloud_send_up()
-- command result callback
-- WiFi event处理
-- MQTT状态同步
+计算：
 
-不要改变接口。
+weight_loss =
+start_weight - current_weight
 
----
+注意该weight不是HX711提供的raw数据，而是滤波算法后得到的重量数据
+当：
 
-5. 代码限制
+weight_loss >= gram
 
-只修改：
-- cloud_manager.h
-- cloud_manager.cpp
+触发：
 
-禁止：
-- 新建 manager
-- 修改 CommandManager
-- 修改 WorkflowManager
-- 修改 Action
-- 修改 system_state
+TRIGGER_SUCCESS
 
----
+否则：
 
-请先基于当前代码输出修改计划。
+TRIGGER_RUNNING
+3. Trigger 参数保护
 
-计划中只包含：
-- 修改文件
-- 修改函数
-- 修改数据结构
-- 修改流程
+workflow传入参数需要增加保护。
 
-不要重新设计架构，不要提出其他方案。
+合法范围：
 
-补充说明：当前代码中已经发现以下明确问题，请严格按照下面要求修复，不要自行设计其他方案。
+0 < gram <= 300
 
-1. CommandMessage.payload 类型不匹配问题
+以下情况视为非法：
+
+参数不存在
+params为空
+gram=0
+gram<0
+gram>300
+
+非法参数自动替换：
+
+gram = 20
+
+并发布WEIGHT_ERROR事件
+
+4. HX711采样机制优化
 
 当前：
-CommandMessage.payload 已经定义为 String。
 
-但是 cloud_manager.cpp 中：
+固定 millis 周期读取。
 
-cmd.payload = payload_obj;
+修改：
 
-这里直接把 JsonObjectConst 赋值给 String，不符合当前架构。
+采用：
 
-修改要求：
+HX711 is_ready()
 
-MQTT 收到的 pl 字段必须保持原始数据传输。
-
-请修改为：
-
-- 如果 pl 存在，将 pl 序列化为 String 保存到 cmd.payload。
-- CloudManager 不解析 pl 内部字段。
-- CloudManager 不访问 payload 内部业务参数。
-
-示例：
-
-JsonDocument payload_doc;
-serializeJson(doc["pl"], cmd.payload);
-
-payload 只作为透明数据传递给 CommandManager。
-
----
-
-2. CommandManager 调用缺失问题
-
-当前 mqtt_callback() 中：
-
-只有：
-
-String command_manager_execute(CommandMessage &cmd);
-
-这是错误的，只是声明，没有实际执行。
-
-修改要求：
-
-必须直接调用：
-
-command_manager_execute(cmd)
-
-执行收到的 CommandMessage。
-
-同步返回结果按照现有 CommandResultCallback 机制处理。
-
-不要增加新的执行流程。
-
----
-
-3. cmd_id 防重复机制修改
-
-当前：
-
-MQTT_DUP_CACHE_SIZE + cmd_id_cache
-
-属于长期缓存设计。
-
-修改要求：
-
-改成短周期 FIFO ring buffer。
-
-要求：
-
-数据结构：
-
-struct CmdIdCacheEntry
-{
-    String cmd_id;
-    unsigned long received_ms;
-};
-
-固定数量，例如10个。
+作为采样触发。
 
 逻辑：
 
-- 收到 MQTT command 时检查 cmd_id。
-- 如果相同 cmd_id 在30秒内出现，则认为重复消息，直接丢弃。
-- 超过30秒自动失效，可以重新接受。
-- 新 cmd_id 按 FIFO 写入。
+loop中：
 
-目的只是防止：
-- MQTT重复投递
-- UI短时间重复点击
-- 网络异常造成消息风暴
+if(scale.is_ready())
+{
+    read()
+}
+else
+{
+    return;
+}
 
-不是业务层去重。
+只有成功读取新的HX711数据：
 
-业务层 command_id 冲突由 CommandManager Runtime 判断。
+才进入：
 
----
-
-4. 保留接口，不扩大 CloudManager 职责
+滤波
+重量计算
+SystemState更新
 
 禁止：
 
-- CloudManager 保存 command runtime。
-- CloudManager 判断 command 是否执行完成。
-- CloudManager 判断 workflow/action 状态。
-- CloudManager 解析 payload。
-- CloudManager 增加 workflow/action 相关逻辑。
+重复读取同一个HX711数据。
 
-CloudManager 只负责：
+5. 滤波算法调整
 
-MQTT通信
+HX711输出：
+
+10Hz
+
+目标：
+
+调整：
+
+当前：
+
+8~10点平均
+
+修改：
+
+使用：
+
+5点窗口
+
+即：
+
+平均约0.5秒更新一次weight，实际采用HX711库提供的scale.is_ready()每提供5次数据计算1次重量，但按窗口期更新system state，见下第7点。
+
+滤波：
+
+保留：
+
+去最大值
+去最小值
+剩余平均
+
+6. Weight Error事件
+
+新增异常检测。
+
+算法：
+
+比较两个连续重量窗口。
+
+例如：
+
+窗口A：
+
+最近5次平均
+
+窗口B：
+
+下一组5次平均
+
+计算：
+
+delta = windowB - windowA
+
+判断：
+
+不能使用 abs(int)
+
+必须使用：
+
+fabs(float)
+
+异常条件：
+
+fabs(delta) >= 50.0
+
+触发：
+
+EVENT_WEIGHT_ERROR
+
+事件内容：
+
+"Weight jump detected"
+EVENT_PRIORITY_CRITICAL   设置为3
+其余按照event_manager.h提供的模板设置。
+
+7. System State
+从system_state.h获得修改state的入口函数。
+维护：
+STATE_WEIGHT_VALUE
+
+更新策略：
+
+空闲状态：weight_active =false则 30秒更新一次。
+
+
+weight active=true状态：按照设计的滤波算法，每次重量值更新都同步更新 STATE_WEIGHT_VALUE
+
+
+维护： STATE_WEIGHT_ERROR
+如果重量raw值长期为零，或5s内重量跳动触发 EVENT_WEIGHT_ERROR 5次，则设置 STATE_WEIGHT_ERROR 为true。
+
+8. Workflow Active状态接口
+
+增加weight模块状态：
+
+weight_active
+
+状态：
+
+false
+空闲
+
+true
+workflow重量触发运行
+
+进入weight trigger：
+
+weight_active=true
+
+trigger完成：
+
+weight_active=false
+
+reset：
+
+恢复：
+
+false
+9. Weight Zero Action
+
+新增 Workflow Action：
+
+ID:
+
+WEIGHT_ZERO
+
+功能：
+
+name:电子秤零点校准
+
+
+ description = "保证电子秤空载时执行此命令",
+
+
+执行零点校准。
+
+实现：
+
+按照新增动作模板：
+
+reset
+start
+poll
+
+start执行：
+
+调用：
+
+weight_zero_calibrate()
+
+10. Zero Offset配置保存接口
+
+当前：
+
+weight_zero_calibrate()
+
+只修改内存。
+
+需要增加config_manager接口。
+
+config_manager新增：
+
+bool config_set_weight_zero_offset(int value);
+
+weight模块：
+
+负责计算新的zero offset。
+
+config_manager：
+
+负责：
+
+修改配置
+保存config.json
+
+调用链：
+
+CommandManager
+
 ↓
-CommandMessage转换
+
+Workflow
+
 ↓
-发送CommandManager
+
+WEIGHT_ZERO Action
+
 ↓
-上传结果
 
----
+weight计算zero offset
 
-5. 修改范围限制
+↓
 
-只修改：
+config_set_weight_zero_offset()
 
-src/cloud_manager.h
-src/cloud_manager.cpp
+↓
 
-不要修改：
+config_save()
 
-command_manager
-workflow
-action
-system_state
+此次只修改weight.cpp和weight.h，不修改其他模块。
+如果由于config.cpp无相关函数实现导致编译报错，则忽略，下一步按命令修改config.cpp。
 
-除非为了编译错误进行最小接口适配，否则不要扩散修改。
+11. Weight模块职责边界
 
-请基于以上明确问题重新检查当前代码，并生成最终修改计划。
+weight负责：
+
+HX711读取
+数据滤波
+重量计算
+Weight Trigger
+Weight Error事件
+Weight Action
+
+config_manager负责：
+
+参数读取
+参数修改
+config.json保存
+
+Workflow负责：
+
+trigger/action流程
+
+CommandManager负责：
+
+云端命令解析
+workflow/action调用
+12. 禁止阻塞
+
+所有weight功能：
+
+禁止：
+
+while等待HX711
+长delay
+阻塞workflow
+
+所有任务：
+
+必须通过：
+
+weight_task()
+
+在loop周期运行。
+

@@ -311,7 +311,7 @@ int config_get_weight_filter_samples()
     10;
 }
 
-void config_set_weight_zero_offset(
+bool config_set_weight_zero_offset(
     long offset
 )
 {

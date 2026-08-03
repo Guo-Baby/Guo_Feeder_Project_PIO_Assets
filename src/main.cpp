@@ -11,6 +11,7 @@
 #include "weight.h"
 #include "valve.h"
 #include "workflow.h"
+#include "dispense_guard.h"
 
 // =====================================================
 // setup
@@ -46,6 +47,7 @@ void setup()
     // =====================================================
     weight_init();
     valve_init();
+    dispense_guard_init();
     oled_init();
     oled_event_init();
     // =====================================================
