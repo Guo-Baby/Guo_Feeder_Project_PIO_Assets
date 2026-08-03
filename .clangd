@@ -1,3 +1,2 @@
 CompileFlags:
-  CompilationDatabase: .
-  Compiler: D:/platformIO/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-g++
+  CompilationDatabase: ./compile_commands.json

@@ -288,8 +288,7 @@ int valve_get_pin()
 // Task 函数（loop 中调用）
 //
 // 仅做安全超时检测。
-// 旧命令队列已移除：阀门命令统一走
-// CommandManager → WorkflowManager → Action 链路。
+// 旧命令队列已移除：阀门命令统一走 CommandManager → WorkflowManager → Action 链路。
 // =====================================================
 void valve_task()
 {
@@ -310,4 +309,43 @@ void valve_task()
         // 推送异常事件
         event_push(EVENT_VALVE_ERROR, "Safety timeout", "valve", 0, EVENT_POLICY_STATE, 0);
     }
+}
+
+
+// =====================================================
+// 强制关闭阀门
+// 用于安全异常场景://   - Weight error  - 外部保护模块
+// 特点://   - 绕过50ms防风暴限制//   - 不判断当前状态//   - 强制同步GPIO，current_state，SystemState，Event
+// 不用于普通workflow动作
+// =====================================================
+bool valve_force_close()
+{
+    if(valve_pin < 0)    {        return false;    }
+    // ==============================
+    // 直接关闭GPIO
+    // ==============================
+    int level =        active_level ? 0 : 1;
+    gpio_set_level(        (gpio_num_t)valve_pin,        level    );
+ 
+    // 更新内部状态
+    current_state = false;
+    // 更新SystemState
+    valve_update_state();
+    // 清理安全计时
+    open_start_time = 0;
+    // 发布关闭事件
+    event_push(
+        EVENT_VALVE_CLOSE,
+        "force close",
+        "valve",
+        EVENT_PRIORITY_CRITICAL,
+        EVENT_POLICY_STATE,
+        0
+    );
+    Serial.printf(
+        "[Valve] FORCE CLOSE (pin=%d, level=%d)\n",
+        valve_pin,
+        level
+    );
+    return true;
 }
