@@ -376,8 +376,8 @@ void weight_task()
     float gram = (float)(filtered - zero_offset) / weight_scale_factor;
     current_weight = gram;
 
-    // =================================================
-    // Debug: 每5秒打印一次重量
+/*    // =================================================
+    // 调试代码Debug: 每5秒打印一次重量
     // =================================================
     static unsigned long last_weight_debug_print_ms = 0;
 
@@ -397,6 +397,7 @@ void weight_task()
             weight_active ? 1 : 0
         );
     }
+*/
 
     // 相邻窗口跳变检测：
     // delta = windowB - windowA，使用 fabs(float)，阈值 50g
