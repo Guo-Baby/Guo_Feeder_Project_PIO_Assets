@@ -30,6 +30,10 @@ static int weight_sck = -1;
 static float weight_scale_factor = 741.0f;
 static long zero_offset = 0;
 
+static unsigned long last_weight_debug_print_ms = 0;
+
+#define WEIGHT_DEBUG_PRINT_MS 5000UL
+
 // =====================================================
 // 滤波参数
 //
@@ -264,7 +268,6 @@ void weight_task()
 {
     if(!initialized)
         return;
-
     // =================================================
     // 零点校准模式：优先消费 HX711 数据
     // =================================================
@@ -287,7 +290,6 @@ void weight_task()
                 }else{
                     calibrate_ok=false;
                 }
-                calibrate_ok = config_save();
 
                 calibrating = false;
 
@@ -374,6 +376,28 @@ void weight_task()
     float gram = (float)(filtered - zero_offset) / weight_scale_factor;
     current_weight = gram;
 
+    // =================================================
+    // Debug: 每5秒打印一次重量
+    // =================================================
+    static unsigned long last_weight_debug_print_ms = 0;
+
+    unsigned long now = millis();
+
+    if(now - last_weight_debug_print_ms >= 5000)
+    {
+        last_weight_debug_print_ms = now;
+
+        Serial.printf(
+            "[Weight] raw=%ld filtered=%d gram=%.1fg zero=%ld error=%d active=%d\n",
+            raw_value,
+            filtered,
+            current_weight,
+            zero_offset,
+            error_state ? 1 : 0,
+            weight_active ? 1 : 0
+        );
+    }
+
     // 相邻窗口跳变检测：
     // delta = windowB - windowA，使用 fabs(float)，阈值 50g
     if(have_last_window)
@@ -384,6 +408,7 @@ void weight_task()
             weight_record_jump();
         }
     }
+    
     last_window_value = gram;
     have_last_window = true;
 
