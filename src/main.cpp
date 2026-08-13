@@ -12,6 +12,7 @@
 #include "valve.h"
 #include "workflow.h"
 #include "dispense_guard.h"
+#include "test_mqtt.h"
 
 // =====================================================
 // setup
@@ -50,6 +51,7 @@ void setup()
     dispense_guard_init();
     oled_init();
     oled_event_init();
+    test_mqtt_init();
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
@@ -83,6 +85,7 @@ void loop()
     oled_task();
     weight_task();
     valve_task();
+    test_mqtt_task();//测试代码，需要删除
     serial_debug_command_process();
 }
 

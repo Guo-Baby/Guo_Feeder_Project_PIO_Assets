@@ -357,7 +357,7 @@ void cloud_init()
     Serial.println(mqtt_sub_topic);
 
     // MQTT客户端配置
-    mqttClient.setBufferSize(2048);
+    mqttClient.setBufferSize(1024);
     mqttClient.setServer(mqtt_server.c_str(), mqtt_port);
     mqttClient.setCallback(mqtt_callback);
     mqttClient.setKeepAlive(keep_alive);

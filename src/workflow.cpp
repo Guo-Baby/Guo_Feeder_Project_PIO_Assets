@@ -66,9 +66,8 @@ static void workflow_action_callback(
 // =====================================================
 // 临时 Action 任务队列（用于 Command 调用）
 // =====================================================
-#define MAX_TEMP_ACTIONS 8
+#define MAX_TEMP_ACTIONS 8 //实际可用7个位置
 #define MAX_TEMP_ACTION_INST MAX_TEMP_ACTIONS
-
 
 struct TempActionItem {
 
@@ -89,7 +88,6 @@ static uint8_t queue_wr_ptr = 0;
 static uint8_t queue_rd_ptr = 0;
 // 临时Action唯一ID生成器
 static uint32_t temp_action_instance_counter = 0;
-
 static WorkflowActionInstance temp_action_instances[MAX_TEMP_ACTION_INST];
 // 简易分配器：查找空闲实例
 static WorkflowActionInstance* temp_action_alloc_instance()
@@ -1933,15 +1931,10 @@ void workflow_task()
                 }
             }
         }
-        if(item.completed)
+        if(!item.completed)
         {
-            // 不在这里释放
-            // 统一交给 workflow_temp_action_cleanup()
-
-            queue_rd_ptr =
-                (queue_rd_ptr + 1)
-                %
-                MAX_TEMP_ACTIONS;
+            // 队头未完成，等待下一次workflow_task()
+            break;
         }
         else
         {

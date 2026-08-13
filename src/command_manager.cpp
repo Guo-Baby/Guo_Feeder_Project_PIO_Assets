@@ -6,7 +6,6 @@
 #include "time_manager.h"
 #include "workflow.h"
 #include "system_state.h"
-
 // =====================================================
 // Command Runtime（命令生命周期管理）
 //
@@ -36,7 +35,6 @@ static const unsigned long COMMAND_RUNTIME_SCAN_INTERVAL_MS = 1000UL;
 
 static CommandRuntime runtime_queue[MAX_COMMAND_RUNTIME];
 static unsigned long last_scan_ms = 0;
-
 // =====================================================
 // 日志与结果回调
 // =====================================================
@@ -128,12 +126,13 @@ static CommandRuntime *command_runtime_insert(
             break;
         }
     }
-    if (slot == nullptr) {
-        response["status"] = "error";
-        response["message"] = "Command runtime queue full";
-        command_log("WARN", "Command runtime queue full");
-        return nullptr;
-    }
+        if(slot == nullptr)
+        {
+            command_log("WARN", "Command runtime queue full");
+            response["status"] = "error";
+            response["message"] = "Command runtime queue full";
+            return nullptr;
+        }
 
     // 2. cmd_id 重复保护
     if (cmd.cmd_id.length() > 0 &&
@@ -277,6 +276,15 @@ void command_manager_task()
     }
 }
 
+
+//判断命令是否为异步命令（execute_action / execute_workflow）   
+static bool command_is_async(const String &command)
+{
+    return (
+        command == "execute_action" ||
+        command == "execute_workflow"
+    );
+}
 // =====================================================
 // 接收并执行命令
 //
@@ -287,55 +295,129 @@ String command_manager_execute(const CommandMessage &cmd)
 {
     JsonDocument response;
     const String command = cmd.command;
-    command_log("INFO", "Received command");
-
-    if (command.length() == 0) {
+    command_log(
+        "INFO",
+        "Received command"
+    );
+    // =====================================================
+    // 命令字段检查
+    // =====================================================
+    if(command.length() == 0)
+    {
         response["status"] = "error";
         response["message"] = "Missing 'command' field";
         last_result = CMD_RESULT_ERROR;
         String output;
-        serializeJson(response, output);
+        serializeJson(
+            response,
+            output
+        );
+        command_report_result(output);
         return output;
     }
-
+    // =====================================================
     // 路由分发
+    // =====================================================
     bool success = false;
-    if (command == "execute_action") {
-        success = command_execute_action(cmd, response);
-    } else if (command == "execute_workflow") {
-        success = command_execute_workflow(cmd, response);
-    } else if (command == "query_actions") {
-        success = command_query_actions(response);
-    } else if (command == "query_state") {
-        success = command_query_state(cmd, response);
-    } else if (command == "query_triggers") {
-        success = command_query_triggers(response);
-    } else if (command == "query_workflows") {
-        success = command_query_workflows(response);
-    } else {
+    if(command == "execute_action")
+    {
+        success =
+            command_execute_action(
+                cmd,
+                response
+            );
+    }
+    else if(command == "execute_workflow")
+    {
+        success =
+            command_execute_workflow(
+                cmd,
+                response
+            );
+    }
+    else if(command == "query_actions")
+    {
+        success =
+            command_query_actions(
+                response
+            );
+    }
+    else if(command == "query_state")
+    {
+        success =
+            command_query_state(
+                cmd,
+                response
+            );
+    }
+    else if(command == "query_triggers")
+    {
+        success =
+            command_query_triggers(
+                response
+            );
+    }
+    else if(command == "query_workflows")
+    {
+        success =
+            command_query_workflows(
+                response
+            );
+    }
+    else
+    {
         response["status"] = "error";
-        String msg = "Unknown command: ";
+        String msg =
+            "Unknown command: ";
         msg += command;
         response["message"] = msg;
         success = false;
-    }
-
-    // 通用字段
-    response["command"] = command;
-    if (!success && response["status"].isNull()) {
-        response["status"] = "error";
-        response["message"] = "Execution failed";
         last_result = CMD_RESULT_ERROR;
     }
-
-    time_t ts = get_unix_timestamp();
-    if (ts > 0) {
+    // =====================================================
+    // 通用字段
+    // =====================================================
+    response["command"] = command;
+    if(!success &&
+       response["status"].isNull())
+    {
+        response["status"] = "error";
+        response["message"] =
+            "Execution failed";
+        last_result =
+            CMD_RESULT_ERROR;
+    }
+    time_t ts =
+        get_unix_timestamp();
+    if(ts > 0)
+    {
         response["timestamp"] = ts;
     }
-
+    // =====================================================
+    // 序列化结果
+    // =====================================================
     String output;
-    serializeJson(response, output);
-    command_log("INFO", "Command executed");
+    serializeJson(
+        response,
+        output
+    );
+    // =====================================================
+    // 同步命令：
+    // 当前调用直接完成，立即上传
+    //
+    // 异步命令：
+    // execute_action / execute_workflow
+    // 只返回accepted
+    // 后续由callback上传最终结果
+    // =====================================================
+    if(!command_is_async(command))
+    {
+        command_report_result(output);
+    }
+    command_log(
+        "INFO",
+        "Command executed"
+    );
     return output;
 }
 
@@ -500,7 +582,7 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
     response["status"] = "accepted";
     response["message"] = "Workflow started";
     response["workflow"] = wf->id;
-    last_result = CMD_RESULT_OK;
+    last_result = CMD_RESULT_RUNNING;
     return true;
 }
 
@@ -709,6 +791,10 @@ static bool command_query_state(const CommandMessage &cmd, JsonDocument &respons
 
     String value;
     if (system_state_query(cmd.object, value)) {
+        Serial.printf(
+            "[Command] query state: %s\n",
+            cmd.object.c_str()
+        );
         response["status"] = "success";
         response["key"] = cmd.object;
         response["value"] = value;
