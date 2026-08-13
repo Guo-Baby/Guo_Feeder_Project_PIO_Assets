@@ -19,3 +19,20 @@ bool cloud_upload_json(JsonDocument& doc);
 
 // 查询MQTT当前在线状态
 bool cloud_is_connected();
+
+//调试消息cbor化
+bool cloud_send_up_cbor(
+    const uint8_t* data,
+    size_t length
+);
+
+bool cloud_send_set_cbor(
+    const uint8_t* data,
+    size_t length
+);
+
+bool cloud_send_up_binary(
+    const uint8_t *data,
+    size_t length
+);
+//=========================

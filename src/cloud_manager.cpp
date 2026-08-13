@@ -1,3 +1,6 @@
+#define ARDUINOJSON_USE_CBOR 1
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
 #include <Arduino.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
@@ -665,36 +668,67 @@ bool cloud_send_up(
         Serial.println("[Cloud UP] MQTT offline");
         return false;
     }
+    // ===============================
+    // 1. 保持原JSON生成逻辑
+    // ===============================
     String upload =
         String(message);
     cloud_add_readable_time(
         upload
     );
-    size_t len =
-        upload.length();
-    if(
-        len >= mqttClient.getBufferSize()-32
-    )
+    Serial.println("[Cloud UP JSON]");
+    Serial.println(upload);
+    // ===============================
+    // 2. JSON -> CBOR
+    // ===============================
+    JsonDocument doc;
+    DeserializationError error =
+        deserializeJson(
+            doc,
+            upload
+        );
+    if(error)
     {
-        Serial.println("[Cloud UP] message too long");
+        Serial.println(
+            "[Cloud UP] JSON parse failed"
+        );
         return false;
     }
+    uint8_t buffer[512];
+    size_t cbor_len =
+        serializeMsgPack(
+            doc,
+            buffer,
+            sizeof(buffer)
+        );
+    if(cbor_len==0)
+    {
+        Serial.println(
+            "[Cloud UP] CBOR encode failed"
+        );
+        return false;
+    }
+    Serial.printf(
+        "[Cloud UP] JSON=%d CBOR=%d\n",
+        upload.length(),
+        cbor_len
+    );
+    // ===============================
+    // 3. MQTT binary publish
+    // ===============================
     String topic =
         mqtt_sub_topic + "/up";
     bool result =
         mqttClient.publish(
             topic.c_str(),
-            upload.c_str()
+            buffer,
+            cbor_len
         );
     Serial.println(
         result?
         "[Cloud UP] OK":
         "[Cloud UP] FAIL"
     );
-    if(result)
-    {
-        Serial.println(upload);
-    }
     return result;
 }
 
