@@ -37,23 +37,44 @@ static uint32_t crc32_byte(uint32_t crc, uint8_t byte)
 // =====================================================
 // 按映射顺序计算 checksum
 //
-// 输入固定顺序：每个条目先 1 字节长度，再跟 runtime_id 字节。
-// 因此顺序变化、增删条目都会导致 checksum 变化。
+// 输入固定顺序（每个条目）：
+//   1 字节 stable_id
+//   1 字节 runtime_id 长度
+//   runtime_id 字节
+// 因此 stable_id / 顺序 / 增删条目变化都会导致 checksum 变化。
 // 不包含函数指针 / 运行时指针 / 实例状态等非稳定信息。
 // =====================================================
 static uint32_t registry_checksum(const CapabilityRegistryTable &table)
 {
     uint32_t crc = 0xFFFFFFFFUL;
-    for (uint8_t i = 0; i < table.count; i++) {
+    for (uint8_t i = 0; i < table.count; i++)
+    {
+        uint8_t sid = table.entries[i].stable_id;
         uint8_t len = (uint8_t)table.entries[i].runtime_id.length();
+        crc = crc32_byte(crc, sid);
+        // 加入version
+        uint32_t ver = table.entries[i].object_version;
+        crc = crc32_byte(crc, (uint8_t)(ver & 0xFF));
+        crc = crc32_byte(crc, (uint8_t)((ver >> 8) & 0xFF));
+        crc = crc32_byte(crc, (uint8_t)((ver >> 16) & 0xFF));
+        crc = crc32_byte(crc, (uint8_t)((ver >> 24) & 0xFF));
         crc = crc32_byte(crc, len);
-        for (uint8_t j = 0; j < len; j++) {
-            crc = crc32_byte(
-                crc,
-                (uint8_t)table.entries[i].runtime_id[j]
-            );
-        }
-    }
+                for (uint8_t j = 0; j < len; j++)
+                {
+                    crc = crc32_byte(crc, (uint8_t)table.entries[i].runtime_id[j]);
+                }
+                /*
+                    Workflow Version 预留
+                    未来 WorkflowDescriptor 增加 version 后：
+                    这里加入:
+                    workflow_version uint32_t
+                    例如:
+                    crc = crc32_byte(crc, version byte0);
+                    crc = crc32_byte(crc, version byte1);
+                    当前版本：
+                    不加入，避免修改 workflow 结构。
+                */
+}
     return crc ^ 0xFFFFFFFFUL;
 }
 
@@ -128,11 +149,15 @@ static bool save_registry_file(
         // 目录创建失败时继续尝试打开文件，由 open 结果决定成败
     }
 
-    File file = LittleFS.open(path, "w");
+    // 断电安全：先写完整临时文件，成功后再替换正式文件。
+    // 正式文件任何时候要么是完整旧版本，要么是完整新版本。
+    String tmp_path = String(path) + ".tmp";
+
+    File file = LittleFS.open(tmp_path.c_str(), "w");
     if (!file) {
         Serial.printf(
             "[CapRegistry] open %s for write failed\n",
-            path
+            tmp_path.c_str()
         );
         return false;
     }
@@ -159,15 +184,66 @@ static bool save_registry_file(
         ) == len;
     }
 
+    file.flush();   // 确保数据落盘（框架中为 void）
     file.close();
 
     if (!ok) {
         Serial.printf(
             "[CapRegistry] write %s failed\n",
-            path
+            tmp_path.c_str()
+        );
+        return false;
+    }
+
+    // =====================================================
+    // 安全替换正式文件
+    // 保证任何时刻至少存在一份有效registry文件 old -> backup, tmp -> real, delete backup
+    // =====================================================
+    String backup_path = String(path) + ".bak";
+    // 删除旧backup
+    if (LittleFS.exists(backup_path.c_str()))
+    {
+        LittleFS.remove(backup_path.c_str());
+    }
+    // 原文件存在，则先备份
+    if (LittleFS.exists(path))
+    {
+        if (!LittleFS.rename(
+                path,
+                backup_path.c_str()))
+        {
+            Serial.printf(
+                "[CapRegistry] backup rename failed\n"
+            );
+            return false;
+        }
+    }
+    // tmp成为正式文件
+    if (!LittleFS.rename(
+            tmp_path.c_str(),
+            path))
+    {
+        Serial.printf(
+            "[CapRegistry] tmp rename failed\n"
+        );
+        // 尝试恢复旧文件
+        if (LittleFS.exists(backup_path.c_str()))
+        {
+            LittleFS.rename(
+                backup_path.c_str(),
+                path
+            );
+        }
+        return false;
+    }
+    // 删除backup
+    if (LittleFS.exists(backup_path.c_str()))
+    {
+        LittleFS.remove(
+            backup_path.c_str()
         );
     }
-    return ok;
+    return true;
 }
 
 // =====================================================
@@ -291,6 +367,7 @@ static uint8_t scan_action_ids(
             continue;
         }
         out[count].runtime_id = id;
+        out[count].object_version = 0;
         count++;
     }
     return count;
@@ -328,6 +405,7 @@ static uint8_t scan_trigger_ids(
             continue;
         }
         out[count].runtime_id = id;
+        out[count].object_version = 0;
         count++;
     }
     return count;
@@ -360,9 +438,41 @@ static uint8_t scan_workflow_ids(
             continue;
         }
         out[count].runtime_id = wf->id;
+        // TODO Task9:
+        // 等 workflow_version 接入 workflow.cpp 后启用
+        //
+        // out[count].object_version = wf->version;
+        out[count].object_version = 0;
         count++;
     }
     return count;
+}
+
+// =====================================================
+// 对 mapping 按 runtime_id 字符串升序排序
+//
+// Stable ID 由 runtime_id 唯一决定：排序后的 index 即 stable_id。
+// 因此注册顺序变化（新增 / 删除 / 调整顺序）不会改变
+// 同一 runtime_id 的 stable_id。
+//
+// 只排序本模块内部 mapping，不修改原始 workflow registry。
+// =====================================================
+static void sort_capability_mapping(
+    CapabilityMapping *arr,
+    uint8_t count
+)
+{
+    for (uint8_t i = 1; i < count; i++) {
+        CapabilityMapping key = arr[i];
+        int j = (int)i - 1;
+        while (j >= 0
+               && arr[j].runtime_id.compareTo(key.runtime_id) > 0)
+        {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
 }
 
 static const char *capability_type_name(CapabilityType type)
@@ -412,14 +522,21 @@ static bool registry_sync(CapabilityType type)
             return false;
     }
 
-    // 当前能力列表（stable_id 按注册顺序 0..count-1）
+    // 当前能力列表
     CapabilityRegistryTable current_table;
     table_reset(current_table);
     current_table.count = count;
     for (uint8_t i = 0; i < count; i++) {
-        current_table.entries[i].stable_id = i;
         current_table.entries[i].runtime_id =
             current[i].runtime_id;
+    }
+    // Stable ID 由 runtime_id 排序决定，与注册顺序无关
+    sort_capability_mapping(
+        current_table.entries,
+        current_table.count
+    );
+    for (uint8_t i = 0; i < count; i++) {
+        current_table.entries[i].stable_id = i;
     }
     current_table.checksum =
         registry_checksum(current_table);
@@ -470,15 +587,21 @@ static bool registry_sync(CapabilityType type)
                 current_table.entries[i].runtime_id;
         }
 
-        save_registry_file(path, magic, *table);
+if (!save_registry_file(path, magic, *table))
+{
+    Serial.printf(
+        "[CapRegistry] %s flash save failed, RAM cache kept\n",
+        capability_type_name(type)
+    );
+}
 
-        Serial.printf(
-            "[CapRegistry] %s rebuild version=%u count=%u checksum=%u\n",
-            capability_type_name(type),
-            table->version,
-            table->count,
-            table->checksum
-        );
+Serial.printf(
+    "[CapRegistry] %s rebuild version=%u count=%u checksum=%u\n",
+    capability_type_name(type),
+    table->version,
+    table->count,
+    table->checksum
+);
     }
 
     return true;
@@ -501,6 +624,7 @@ bool capability_registry_init()
 
     // 即使 Flash 写入失败，RAM Cache 仍然可用
     g_initialized = true;
+    Serial.printf("capability_registry_init: %s\n", ok ? "OK" : "FAIL");
     return ok;
 }
 
@@ -524,16 +648,12 @@ static void dump_table(
     const CapabilityRegistryTable &table
 )
 {
-    Serial.printf(
-        "[CapRegistry] %s version=%u count=%u checksum=%u\n",
-        name,
-        table.version,
-        table.count,
-        table.checksum
-    );
+    Serial.printf("[%s]\n", name);
+    Serial.printf("version=%u\n", table.version);
+    Serial.printf("checksum=%u\n", table.checksum);
     for (uint8_t i = 0; i < table.count; i++) {
         Serial.printf(
-            "  [%u] %s\n",
+            "%u %s\n",
             table.entries[i].stable_id,
             table.entries[i].runtime_id.c_str()
         );

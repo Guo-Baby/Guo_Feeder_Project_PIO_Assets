@@ -49,8 +49,16 @@
 //   magic    : uint32_t  文件魔数（区分三种 Registry）
 //   version  : uint32_t  Mapping 逻辑版本，变化时 +1（初始 1，禁止时间戳）
 //   count    : uint16_t  条目数
-//   checksum : uint32_t  CRC32（对映射顺序的 runtime_id 计算）
+//   checksum : uint32_t  CRC32（每个条目: stable_id + len + runtime_id）
 //   entries  : count 个 { stable_id(uint8) len(uint8) runtime_id[len] }
+//
+// Stable ID 规则:
+//   runtime_id 按字符串升序排序，排序后的 index 即 stable_id；
+//   与注册顺序无关，同一 runtime_id 的 stable_id 恒定。
+//
+// 写入安全:
+//   先写 <file>.tmp 并 flush/close，成功后删除旧文件并 rename；
+//   正式文件任何时候都是完整旧版本或完整新版本。
 // =====================================================
 
 // =====================================================
@@ -100,8 +108,10 @@ struct CapabilityMapping
 {
     uint8_t stable_id;
     String runtime_id;
+    // Workflow 专用版本
+    // Action / Trigger 保留0
+    uint32_t object_version;
 };
-
 // =====================================================
 // Flash 文件头（逻辑结构；实际序列化按固定小端字段写入）
 // =====================================================
