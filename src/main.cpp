@@ -13,6 +13,7 @@
 #include "workflow.h"
 #include "dispense_guard.h"
 #include "test_mqtt.h"
+#include "capability_registry.h"
 
 // =====================================================
 // setup
@@ -65,6 +66,10 @@ void setup()
     } else {
         Serial.println("[WARN] No workflow.json found");
     }
+    // =====================================================
+    // 第七层：capability registry（依赖所有注册完成）
+    // =====================================================
+    capability_registry_init();
 }
 
 void serial_debug_command_process();
