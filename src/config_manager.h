@@ -79,3 +79,14 @@ int config_get_mqtt_retry_max();
 unsigned long config_get_mqtt_sleep_interval();
 // MQTT keep alive 秒
 int config_get_mqtt_keep_alive();
+
+// ==========================
+// WiFi 配置更新（预留）
+// ==========================
+// 更新 WiFi SSID / 密码并保存。
+// 当前为空实现（占位），仅保证 CommandManager 路由可编译；
+// 未实现时返回 false。
+bool config_update_wifi(
+    const String &ssid,
+    const String &password
+);

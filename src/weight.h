@@ -34,7 +34,7 @@ float weight_get_gram();
 //
 // 只记录开始状态并立即返回，实际采样在 weight_task() 中完成；
 // 校准完成后自动调用 config_set_weight_zero_offset() 与 config_save()。
-void weight_zero_calibrate();
+bool weight_zero_calibrate();
 
 // 获取 weight_active 状态
 // false = 空闲；true = workflow 重量触发运行中

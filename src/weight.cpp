@@ -631,19 +631,15 @@ float weight_get_gram()
 }
 
 // 启动零点校准（非阻塞）
-void weight_zero_calibrate()
+bool weight_zero_calibrate()
 {
-    if(!initialized || calibrating)
-        return;
-
+    if(!initialized || calibrating){
+        return false;
+    }
     calibrating = true;
     calibrate_ok = false;
     cal_sum = 0;
     cal_sample_count = 0;
     Serial.println("[Weight] Zero calibration started");
-}
-
-bool weight_is_active()
-{
-    return weight_active;
+    return true;
 }

@@ -291,3 +291,11 @@ time_t time_get_last_ntp_sync();
 // =====================================================
 
 int time_get_state();
+
+// =====================================================
+// 预留：set_time 系统命令入口
+//
+// 当前为空实现，仅保证 CommandManager 路由可编译。
+// 未来由 time_manager 实现（如解析 payload 并调用 time_set_manual）。
+// =====================================================
+void time_manager_set_time();

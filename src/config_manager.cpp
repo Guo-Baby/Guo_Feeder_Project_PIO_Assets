@@ -374,6 +374,22 @@ int config_get_mqtt_keep_alive()
     60;
 }
 
+// =============================
+// WiFi 配置更新（预留）
+// =============================
+// 当前为空实现（占位），仅保证 CommandManager 路由可编译；
+// 未实现时返回 false，由调用方统一错误上报。
+bool config_update_wifi(
+    const String &ssid,
+    const String &password
+)
+{
+    (void)ssid;
+    (void)password;
+    // 预留：未来实现配置更新与保存
+    return false;
+}
+
 
 
 

@@ -6,6 +6,23 @@
 #include "time_manager.h"
 #include "workflow.h"
 #include "system_state.h"
+#include "capability_registry.h"
+#include "config_manager.h"
+#include "weight.h"
+
+// =====================================================
+// 统一错误码（command_send_error 使用）
+// =====================================================
+#define CMD_ERROR_UNKNOWN_COMMAND      1
+#define CMD_ERROR_MISSING_COMMAND      2
+#define CMD_ERROR_MISSING_OBJECT       3
+#define CMD_ERROR_ACTION_NOT_FOUND     4
+#define CMD_ERROR_WORKFLOW_NOT_FOUND   5
+#define CMD_ERROR_PARAM                6
+#define CMD_ERROR_QUEUE_FULL           7
+#define CMD_ERROR_DUPLICATE_CMD_ID     8
+#define CMD_ERROR_SYSTEM               9
+#define CMD_ERROR_EXECUTION           10
 // =====================================================
 // Command Runtime（命令生命周期管理）
 //
@@ -34,7 +51,12 @@ static const unsigned long COMMAND_WORKFLOW_TIMEOUT_MS      = 600000UL;
 static const unsigned long COMMAND_RUNTIME_SCAN_INTERVAL_MS = 1000UL;
 
 static CommandRuntime runtime_queue[MAX_COMMAND_RUNTIME];
+
 static unsigned long last_scan_ms = 0;
+static bool reboot_pending = false;
+static unsigned long reboot_start_ms = 0;
+
+#define REBOOT_WAIT_TIMEOUT_MS 10000UL
 // =====================================================
 // 日志与结果回调
 // =====================================================
@@ -77,6 +99,54 @@ static time_t get_unix_timestamp()
 }
 
 // =====================================================
+// 统一错误出口
+//
+// 所有错误结果必须经过此函数生成并上报，包括：
+//   - command 不存在
+//   - object 不存在
+//   - action 不存在
+//   - workflow 不存在
+//   - 参数错误
+//   - system command 失败
+//
+// 格式:
+// {
+//   "cmd":"result",
+//   "id":"xxx",
+//   "type":"command",
+//   "status":"error",
+//   "error_code":xxx,
+//   "message":"xxx"
+// }
+// =====================================================
+static void command_send_error(
+    const CommandMessage &cmd,
+    int error_code,
+    const String &message
+)
+{
+    JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = cmd.cmd_id;
+    doc["type"] = "command";
+    doc["status"] = "error";
+    doc["error_code"] = error_code;
+    doc["message"] = message;
+
+    time_t ts = get_unix_timestamp();
+    if (ts > 0) {
+        doc["timestamp"] = ts;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    command_report_result(json);
+
+    last_result = CMD_RESULT_ERROR;
+    command_log("ERROR", message.c_str());
+}
+
+// =====================================================
 // 内部函数声明
 // =====================================================
 static bool command_execute_action(const CommandMessage &cmd, JsonDocument &response);
@@ -85,6 +155,21 @@ static bool command_query_actions(JsonDocument &response);
 static bool command_query_triggers(JsonDocument &response);
 static bool command_query_workflows(JsonDocument &response);
 static bool command_query_state(const CommandMessage &cmd, JsonDocument &response);
+static bool command_query_capabilities(JsonDocument &response);
+static bool command_query_action_registry(JsonDocument &response);
+static bool command_query_trigger_registry(JsonDocument &response);
+static bool command_query_workflow_registry(JsonDocument &response);
+static bool execute_router(const CommandMessage &cmd, JsonDocument &response);
+static bool query_router(const CommandMessage &cmd, JsonDocument &response);
+static bool system_router(const CommandMessage &cmd, JsonDocument &response);
+static void command_system_reboot(const CommandMessage &cmd);
+static bool command_system_set_time(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_weight_zero(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_wifi_ap(const CommandMessage &cmd, JsonDocument &response);
+static bool command_is_execute(const String &command);
+static bool command_is_query(const String &command);
+static bool command_is_system(const String &command);
 
 // 异步回调接收者（WorkflowManager 按最终契约调用）
 static void command_temp_action_callback(
@@ -100,8 +185,7 @@ static void command_workflow_callback(
 // 运行时管理
 static CommandRuntime *command_runtime_insert(
     const CommandMessage &cmd,
-    unsigned long timeout_ms,
-    JsonDocument &response
+    unsigned long timeout_ms
 );
 static CommandRuntime *command_runtime_find_by_cmd_id(const String &cmd_id);
 static void command_runtime_release(CommandRuntime *rt);
@@ -110,12 +194,11 @@ static void command_runtime_scan_timeouts();
 
 // =====================================================
 // 运行时：插入记录（CommandMessage 所有权转移至 Runtime）
-// 失败时填写 response 错误信息并返回 nullptr
+// 失败（队列满 / cmd_id 重复）时由 command_send_error 统一上报并返回 nullptr
 // =====================================================
 static CommandRuntime *command_runtime_insert(
     const CommandMessage &cmd,
-    unsigned long timeout_ms,
-    JsonDocument &response
+    unsigned long timeout_ms
 )
 {
     // 1. 队列容量保护：满则拒绝新命令（不覆盖正在运行的记录）
@@ -126,20 +209,25 @@ static CommandRuntime *command_runtime_insert(
             break;
         }
     }
-        if(slot == nullptr)
-        {
-            command_log("WARN", "Command runtime queue full");
-            response["status"] = "error";
-            response["message"] = "Command runtime queue full";
-            return nullptr;
-        }
+    if (slot == nullptr) {
+        command_log("WARN", "Command runtime queue full");
+        command_send_error(
+            cmd,
+            CMD_ERROR_QUEUE_FULL,
+            "Command runtime queue full"
+        );
+        return nullptr;
+    }
 
     // 2. cmd_id 重复保护
     if (cmd.cmd_id.length() > 0 &&
         command_runtime_find_by_cmd_id(cmd.cmd_id) != nullptr) {
-        response["status"] = "error";
-        response["message"] = "Duplicate command_id";
         command_log("WARN", "Duplicate command_id rejected");
+        command_send_error(
+            cmd,
+            CMD_ERROR_DUPLICATE_CMD_ID,
+            "Duplicate command_id"
+        );
         return nullptr;
     }
 
@@ -204,6 +292,8 @@ static void command_runtime_report_timeout(CommandRuntime *rt)
     command_log("WARN", "Command runtime timeout, entry released");
 
     JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = rt->cmd_id;
     if (rt->message.command == "execute_action") {
         doc["type"] = "action_result";
         doc["action"] = rt->message.object;
@@ -269,13 +359,18 @@ void command_manager_init()
 // =====================================================
 void command_manager_task()
 {
+    if(reboot_pending){
+        if(millis() - reboot_start_ms >= REBOOT_WAIT_TIMEOUT_MS){
+            ESP.restart();
+        }
+    }
+    
     unsigned long now = millis();
     if (now - last_scan_ms >= COMMAND_RUNTIME_SCAN_INTERVAL_MS) {
         last_scan_ms = now;
         command_runtime_scan_timeouts();
     }
 }
-
 
 //判断命令是否为异步命令（execute_action / execute_workflow）   
 static bool command_is_async(const String &command)
@@ -285,15 +380,36 @@ static bool command_is_async(const String &command)
         command == "execute_workflow"
     );
 }
+
+// 一级路由分类
+static bool command_is_execute(const String &command)
+{
+    return command.startsWith("execute_");
+}
+
+static bool command_is_query(const String &command)
+{
+    return command.startsWith("query_");
+}
+
+static bool command_is_system(const String &command)
+{
+    return command == "system";
+}
+
 // =====================================================
 // 接收并执行命令
 //
 // 输入: 已解析的 CommandMessage（payload 原样，不解析）
-// 输出: JSON 字符串（响应）
+// 输出: true=路由成功 / false=失败（统一错误已上报）
+//
+// 一级路由:
+//   execute -> execute_router
+//   query   -> query_router
+//   system  -> system_router
 // =====================================================
-String command_manager_execute(const CommandMessage &cmd)
+bool command_manager_execute(const CommandMessage &cmd)
 {
-    JsonDocument response;
     const String command = cmd.command;
     command_log(
         "INFO",
@@ -304,89 +420,48 @@ String command_manager_execute(const CommandMessage &cmd)
     // =====================================================
     if(command.length() == 0)
     {
-        response["status"] = "error";
-        response["message"] = "Missing 'command' field";
-        last_result = CMD_RESULT_ERROR;
-        String output;
-        serializeJson(
-            response,
-            output
+        command_send_error(
+            cmd,
+            CMD_ERROR_MISSING_COMMAND,
+            "Missing 'command' field"
         );
-        command_report_result(output);
-        return output;
+        return false;
     }
+
     // =====================================================
     // 路由分发
     // =====================================================
+    JsonDocument response;
     bool success = false;
-    if(command == "execute_action")
-    {
-        success =
-            command_execute_action(
-                cmd,
-                response
-            );
-    }
-    else if(command == "execute_workflow")
-    {
-        success =
-            command_execute_workflow(
-                cmd,
-                response
-            );
-    }
-    else if(command == "query_actions")
-    {
-        success =
-            command_query_actions(
-                response
-            );
-    }
-    else if(command == "query_state")
-    {
-        success =
-            command_query_state(
-                cmd,
-                response
-            );
-    }
-    else if(command == "query_triggers")
-    {
-        success =
-            command_query_triggers(
-                response
-            );
-    }
-    else if(command == "query_workflows")
-    {
-        success =
-            command_query_workflows(
-                response
-            );
-    }
-    else
-    {
-        response["status"] = "error";
-        String msg =
-            "Unknown command: ";
+    if (command_is_execute(command)) {
+        success = execute_router(cmd, response);
+    } else if (command_is_query(command)) {
+        success = query_router(cmd, response);
+    } else if (command_is_system(command)) {
+        success = system_router(cmd, response);
+    } else {
+        String msg = "Unknown command: ";
         msg += command;
-        response["message"] = msg;
-        success = false;
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_UNKNOWN_COMMAND,
+            msg
+        );
+        return false;
     }
+
+    if (!success) {
+        // 错误已由 command_send_error 统一上报，此处不再重复上报
+        return false;
+    }
+
     // =====================================================
-    // 通用字段
+    // 通用字段（ACK + RESULT 双阶段：本层统一返回 cmd=result）
     // =====================================================
+    response["cmd"] = "result";
+    response["id"] = cmd.cmd_id;
     response["command"] = command;
-    if(!success &&
-       response["status"].isNull())
-    {
-        response["status"] = "error";
-        response["message"] =
-            "Execution failed";
-        last_result =
-            CMD_RESULT_ERROR;
-    }
+
     time_t ts =
         get_unix_timestamp();
     if(ts > 0)
@@ -402,23 +477,21 @@ String command_manager_execute(const CommandMessage &cmd)
         output
     );
     // =====================================================
-    // 同步命令：
-    // 当前调用直接完成，立即上传
+    // 所有成功命令立即返回 RESULT
     //
-    // 异步命令：
-    // execute_action / execute_workflow
-    // 只返回accepted
-    // 后续由callback上传最终结果
+    // execute:
+    //   RESULT accepted
+    //   后续 callback 返回最终结果
+    //
+    // query/system:
+    //   RESULT success
     // =====================================================
-    if(!command_is_async(command))
-    {
-        command_report_result(output);
-    }
+    command_report_result(output);
     command_log(
         "INFO",
         "Command executed"
     );
-    return output;
+    return true;
 }
 
 // =====================================================
@@ -468,20 +541,21 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
 {
     // 1. 校验目标 action id
     if (cmd.object.length() == 0) {
-        response["status"] = "error";
-        response["message"] = "Missing 'object' (action id)";
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_MISSING_OBJECT,
+            "Missing 'object' (action id)"
+        );
         return false;
     }
 
     // 2. 创建运行时记录
     CommandRuntime *rt = command_runtime_insert(
         cmd,
-        COMMAND_ACTION_TIMEOUT_MS,
-        response
+        COMMAND_ACTION_TIMEOUT_MS
     );
     if (rt == nullptr) {
-        last_result = CMD_RESULT_FAILED;
+        // 队列满 / cmd_id 重复：错误已由 command_send_error 统一上报
         return false;
     }
 
@@ -498,9 +572,11 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
     );
 
     if (!queued) {
-        response["status"] = "error";
-        response["message"] = "Failed to queue action";
-        last_result = CMD_RESULT_FAILED;
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "Failed to queue action"
+        );
         command_runtime_release(rt);
         return false;
     }
@@ -528,9 +604,11 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
 static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &response)
 {
     if (cmd.object.length() == 0) {
-        response["status"] = "error";
-        response["message"] = "Missing 'object' (workflow id)";
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_MISSING_OBJECT,
+            "Missing 'object' (workflow id)"
+        );
         return false;
     }
 
@@ -544,21 +622,22 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
     }
 
     if (wf == nullptr) {
-        response["status"] = "error";
         String msg = "Workflow not found: ";
         msg += cmd.object;
-        response["message"] = msg;
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_WORKFLOW_NOT_FOUND,
+            msg
+        );
         return false;
     }
 
     CommandRuntime *rt = command_runtime_insert(
         cmd,
-        COMMAND_WORKFLOW_TIMEOUT_MS,
-        response
+        COMMAND_WORKFLOW_TIMEOUT_MS
     );
     if (rt == nullptr) {
-        last_result = CMD_RESULT_FAILED;
+        // 队列满 / cmd_id 重复：错误已由 command_send_error 统一上报
         return false;
     }
     rt->workflow_id = wf->id;
@@ -572,9 +651,11 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
     );
 
     if (!started) {
-        response["status"] = "error";
-        response["message"] = "Failed to start workflow";
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "Failed to start workflow"
+        );
         command_runtime_release(rt);
         return false;
     }
@@ -614,6 +695,8 @@ static void command_temp_action_callback(
     }
 
     JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = cmd_id;
     doc["type"] = "action_result";
     doc["action"] = rt->message.object;
     doc["command_id"] = cmd_id;
@@ -654,6 +737,8 @@ static void command_workflow_callback(
     }
 
     JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = cmd_id;
     doc["type"] = "workflow_result";
     doc["workflow"] = rt->workflow_id.length() > 0
                         ? rt->workflow_id
@@ -684,6 +769,121 @@ static void command_workflow_callback(
 }
 
 // =====================================================
+// 查询 Action Registry
+// 数据来源:capability_registry RAM cache
+// =====================================================
+static bool command_query_action_registry(JsonDocument &response)
+{
+    response["registry"] = "action";
+    response["version"] = capability_get_action_version();
+    response["checksum"] = capability_get_action_checksum();
+    response["count"] = capability_get_action_count();
+
+    JsonArray entries = response["entries"].to<JsonArray>();
+
+    for(uint8_t i = 0;
+        i < capability_get_action_count();
+        i++)
+    {
+        String runtime_id;
+
+        if(!capability_get_action_by_stable_id(
+                i,
+                runtime_id))
+        {
+            continue;
+        }
+
+        JsonObject item = entries.add<JsonObject>();
+
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    response["status"] = "success";
+
+    last_result = CMD_RESULT_OK;
+
+    return true;
+}
+// =====================================================
+// 查询 Trigger Registry
+// 数据来源:
+// capability_registry RAM cache
+// =====================================================
+static bool command_query_trigger_registry(JsonDocument &response)
+{
+    response["registry"] = "trigger";
+    response["version"] = capability_get_trigger_version();
+    response["checksum"] = capability_get_trigger_checksum();
+    response["count"] = capability_get_trigger_count();
+
+    JsonArray entries = response["entries"].to<JsonArray>();
+
+    for(uint8_t i = 0;
+        i < capability_get_trigger_count();
+        i++)
+    {
+        String runtime_id;
+
+        if(!capability_get_trigger_by_stable_id(
+                i,
+                runtime_id))
+        {
+            continue;
+        }
+
+        JsonObject item = entries.add<JsonObject>();
+
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    response["status"] = "success";
+
+    last_result = CMD_RESULT_OK;
+
+    return true;
+}
+// =====================================================
+// 查询 Action Registry
+// 数据来源:capability_registry RAM cache
+// =====================================================
+static bool command_query_workflow_registry(JsonDocument &response)
+{
+    response["registry"] = "workflow";
+    response["version"] = capability_get_workflow_version();
+    response["checksum"] = capability_get_workflow_checksum();
+    response["count"] = capability_get_workflow_count();
+
+    JsonArray entries = response["entries"].to<JsonArray>();
+
+    for(uint8_t i = 0;
+        i < capability_get_workflow_count();
+        i++)
+    {
+        String runtime_id;
+
+        if(!capability_get_workflow_by_stable_id(
+                i,
+                runtime_id))
+        {
+            continue;
+        }
+
+        JsonObject item = entries.add<JsonObject>();
+
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    response["status"] = "success";
+
+    last_result = CMD_RESULT_OK;
+
+    return true;
+}
+// =====================================================
 // 查询 Action 列表
 // =====================================================
 static bool command_query_actions(JsonDocument &response)
@@ -700,7 +900,12 @@ static bool command_query_actions(JsonDocument &response)
         item["name"] = desc->name;
         item["module"] = desc->module;
         if (desc->description != nullptr) {
-            item["description"] = desc->name;
+            item["description"] = desc->description;
+        }
+        // stable_id 统一来自 Capability Registry（不重新扫描 workflow）
+        uint8_t stable_id = 0;
+        if (capability_get_action_stable_id(desc->id, stable_id)) {
+            item["stable_id"] = stable_id;
         }
     }
 
@@ -729,6 +934,11 @@ static bool command_query_triggers(JsonDocument &response)
         if (desc->description != nullptr) {
             item["description"] = desc->description;
         }
+        // stable_id 统一来自 Capability Registry（不重新扫描 workflow）
+        uint8_t stable_id = 0;
+        if (capability_get_trigger_stable_id(desc->id, stable_id)) {
+            item["stable_id"] = stable_id;
+        }
     }
 
     response["status"] = "success";
@@ -753,6 +963,11 @@ static bool command_query_workflows(JsonDocument &response)
         item["id"] = wf->id;
         item["name"] = wf->name;
         item["enable"] = wf->enable;
+        // stable_id 统一来自 Capability Registry（不重新扫描 workflow）
+        uint8_t stable_id = 0;
+        if (capability_get_workflow_stable_id(wf->id, stable_id)) {
+            item["stable_id"] = stable_id;
+        }
 
         const char *state_str = "UNKNOWN";
         switch (wf->state) {
@@ -783,9 +998,11 @@ static bool command_query_workflows(JsonDocument &response)
 static bool command_query_state(const CommandMessage &cmd, JsonDocument &response)
 {
     if (cmd.object.length() == 0) {
-        response["status"] = "error";
-        response["message"] = "Missing 'object' (state key)";
-        last_result = CMD_RESULT_ERROR;
+        command_send_error(
+            cmd,
+            CMD_ERROR_MISSING_OBJECT,
+            "Missing 'object' (state key)"
+        );
         return false;
     }
 
@@ -802,10 +1019,351 @@ static bool command_query_state(const CommandMessage &cmd, JsonDocument &respons
         return true;
     }
 
-    response["status"] = "error";
     String msg = "State not found: ";
     msg += cmd.object;
-    response["message"] = msg;
-    last_result = CMD_RESULT_ERROR;
+    command_send_error(
+        cmd,
+        CMD_ERROR_EXECUTION,
+        msg
+    );
     return false;
+}
+
+// =====================================================
+// 查询 Capability Registry（新增）
+//
+// 数据来源: capability_registry API（RAM Cache）
+// 禁止重新扫描 workflow registry。
+//
+// 返回:
+//   action / trigger / workflow 每项包含:
+//     version / checksum / count
+//     entries[]: { stable_id, runtime_id }
+// =====================================================
+static bool command_query_capabilities(JsonDocument &response)
+{
+    // ---- Action ----
+    JsonObject action = response["action"].to<JsonObject>();
+    action["version"] = capability_get_action_version();
+    action["checksum"] = capability_get_action_checksum();
+    action["count"] = capability_get_action_count();
+    JsonArray action_entries = action["entries"].to<JsonArray>();
+    for (uint8_t i = 0; i < capability_get_action_count(); i++) {
+        String runtime_id;
+        if (!capability_get_action_by_stable_id(i, runtime_id)) {
+            continue;
+        }
+        JsonObject item = action_entries.add<JsonObject>();
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    // ---- Trigger ----
+    JsonObject trigger = response["trigger"].to<JsonObject>();
+    trigger["version"] = capability_get_trigger_version();
+    trigger["checksum"] = capability_get_trigger_checksum();
+    trigger["count"] = capability_get_trigger_count();
+    JsonArray trigger_entries = trigger["entries"].to<JsonArray>();
+    for (uint8_t i = 0; i < capability_get_trigger_count(); i++) {
+        String runtime_id;
+        if (!capability_get_trigger_by_stable_id(i, runtime_id)) {
+            continue;
+        }
+        JsonObject item = trigger_entries.add<JsonObject>();
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    // ---- Workflow ----
+    JsonObject workflow = response["workflow"].to<JsonObject>();
+    workflow["version"] = capability_get_workflow_version();
+    workflow["checksum"] = capability_get_workflow_checksum();
+    workflow["count"] = capability_get_workflow_count();
+    JsonArray workflow_entries = workflow["entries"].to<JsonArray>();
+    for (uint8_t i = 0; i < capability_get_workflow_count(); i++) {
+        String runtime_id;
+        if (!capability_get_workflow_by_stable_id(i, runtime_id)) {
+            continue;
+        }
+        JsonObject item = workflow_entries.add<JsonObject>();
+        item["stable_id"] = i;
+        item["runtime_id"] = runtime_id;
+    }
+
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// 一级路由: execute
+//
+// 保留:
+//   execute_action
+//   execute_workflow
+//
+// 行为不变；失败必须通过 command_send_error 统一上报。
+// =====================================================
+static bool execute_router(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    const String &command = cmd.command;
+
+    if (command == "execute_action") {
+        return command_execute_action(cmd, response);
+    }
+    if (command == "execute_workflow") {
+        return command_execute_workflow(cmd, response);
+    }
+
+    String msg = "Unknown execute command: ";
+    msg += command;
+    command_send_error(
+        cmd,
+        CMD_ERROR_UNKNOWN_COMMAND,
+        msg
+    );
+    return false;
+}
+
+// =====================================================
+// 一级路由: query
+//
+// 保留旧接口:
+//   query_state / query_actions / query_triggers / query_workflows
+//
+// 新增:
+//   query_capabilities
+// =====================================================
+static bool query_router(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    const String &command = cmd.command;
+
+    if (command == "query_state") {
+        return command_query_state(cmd, response);
+    }
+    if (command == "query_actions") {
+        return command_query_actions(response);
+    }
+    if (command == "query_triggers") {
+        return command_query_triggers(response);
+    }
+    if (command == "query_workflows") {
+        return command_query_workflows(response);
+    }
+    if (command == "query_capabilities") {
+        return command_query_capabilities(response);
+    }
+    if (command == "query_action_registry") {
+        return command_query_action_registry(response);
+    }
+    if (command == "query_trigger_registry") {
+        return command_query_trigger_registry(response);
+    }
+    if (command == "query_workflow_registry") {
+        return command_query_workflow_registry(response);
+    }
+
+    String msg = "Unknown query command: ";
+    msg += command;
+    command_send_error(
+        cmd,
+        CMD_ERROR_UNKNOWN_COMMAND,
+        msg
+    );
+    return false;
+}
+
+// =====================================================
+// 一级路由: system
+//
+// 消息格式:
+// {
+//   "cmd":"system",
+//   "ob":"reboot|set_time|weight_zero|wifi_config|wifi_ap",
+//   "pl":{}
+// }
+// =====================================================
+static bool system_router(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    const String &object = cmd.object;
+
+    if (object == "reboot") {
+        // reboot 流程内部上报 result 并立即 ESP.restart()，正常不可达
+        command_system_reboot(cmd);
+        return false;
+    }
+    if (object == "set_time") {
+        return command_system_set_time(cmd, response);
+    }
+    if (object == "weight_zero") {
+        return command_system_weight_zero(cmd, response);
+    }
+    if (object == "wifi_config") {
+        return command_system_wifi_config(cmd, response);
+    }
+    if (object == "wifi_ap") {
+        return command_system_wifi_ap(cmd, response);
+    }
+
+    String msg = "Unknown system object: ";
+    msg += object;
+    command_send_error(
+        cmd,
+        CMD_ERROR_UNKNOWN_COMMAND,
+        msg
+    );
+    return false;
+}
+
+// =====================================================
+// system: reboot
+//
+// 流程:
+//   1. 上报 result: status=rebooting
+//   2. MQTT publish（当前 PubSubClient QoS0；QoS1 为后续独立任务）
+//   3. 不等待云端 ACK
+//   4. 立即执行 ESP.restart()
+//
+// 禁止使用 delay 模拟等待。
+// =====================================================
+static void command_system_reboot(const CommandMessage &cmd)
+{
+    JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = cmd.cmd_id;
+    doc["type"] = "command";
+    doc["status"] = "rebooting";
+
+    time_t ts = get_unix_timestamp();
+    if (ts > 0) {
+        doc["timestamp"] = ts;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    command_report_result(json);
+    command_log("INFO", "System reboot requested");
+    reboot_pending = true;
+    reboot_start_ms = millis();
+}
+
+// =====================================================
+// system: set_time（预留接口）
+//
+// CommandManager 只负责路由；
+// 未来由 time_manager 实现（当前为空实现，仅保证编译）。
+// =====================================================
+static bool command_system_set_time(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    time_manager_set_time();
+
+    response["status"] = "success";
+    response["message"] = "set_time reserved";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: weight_zero_calibrate
+//
+// object: weight_zero
+// 调用 weight_manager 现有接口，CommandManager 只负责调用。
+// =====================================================
+static bool command_system_weight_zero(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    if(!weight_zero_calibrate())
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_SYSTEM,
+            "weight zero calibration failed"
+        );
+        return false;
+    }
+    response["status"] = "accepted";
+    response["message"] = "weight zero calibration started";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: wifi_config
+//
+// object: wifi_config
+// pl: { "ssid":"...", "password":"..." }
+//
+// CommandManager 负责解析参数并调用 config_manager 接口。
+// =====================================================
+static bool command_system_wifi_config(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    DeserializationError error =
+        deserializeJson(pl, cmd.payload);
+    if (error) {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "wifi_config payload invalid"
+        );
+        return false;
+    }
+
+    String ssid = pl["ssid"] | "";
+    String password = pl["password"] | "";
+    if (ssid.length() == 0) {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "wifi_config missing 'ssid'"
+        );
+        return false;
+    }
+
+    if (!config_update_wifi(ssid, password)) {
+        command_send_error(
+            cmd,
+            CMD_ERROR_SYSTEM,
+            "config_update_wifi failed"
+        );
+        return false;
+    }
+
+    response["status"] = "success";
+    response["message"] = "wifi config updated";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: wifi_ap（入口预留）
+//
+// 当前只建立 command 入口，暂不实现 AP 逻辑。
+// =====================================================
+static bool command_system_wifi_ap(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    response["status"] = "success";
+    response["message"] = "wifi_ap reserved (not implemented)";
+    last_result = CMD_RESULT_OK;
+    return true;
 }
