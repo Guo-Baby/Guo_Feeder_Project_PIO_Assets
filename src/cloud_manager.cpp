@@ -180,9 +180,15 @@ static void mqtt_callback(
     cloud_send_up(
         ack_string.c_str()
     );
-    // 执行命令：同步返回 String 不在此处理，
-    // 结果只经已注册 CommandResultCallback → on_command_result → cloud_send_up 单通道上报
-    command_manager_execute(cmd);
+    // 执行命令：结果只经已注册 CommandResultCallback → on_command_result
+    // → cloud_send_up 单通道上报（ACK + RESULT 双阶段）。
+    // 返回值必须处理：false 时统一错误结果已由 command_send_error 上报，
+    // 此处补记录，禁止静默失败。
+    if (!command_manager_execute(cmd)) {
+        Serial.println(
+            "[Cloud] Command execution failed (error result sent)"
+        );
+    }
 }
 
 //对wifi连接事件的处理，主要是为了在wifi连接后立即尝试连接云端

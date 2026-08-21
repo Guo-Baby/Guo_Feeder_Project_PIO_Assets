@@ -151,7 +151,11 @@ void command_manager_init();
 void command_manager_task();
 
 // 接收并执行命令（已解析的 CommandMessage，不解析任何 JSON）
-String command_manager_execute(const CommandMessage &cmd);
+//
+// 返回:
+//   true  = 路由成功；结果经 CommandResultCallback 单通道上报
+//   false = 执行失败；统一错误结果已由 command_send_error 上报
+bool command_manager_execute(const CommandMessage &cmd);
 
 // 获取最后一次执行结果
 CommandResult command_manager_last_result();
