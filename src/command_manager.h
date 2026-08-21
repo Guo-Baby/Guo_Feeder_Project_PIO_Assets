@@ -62,6 +62,7 @@ enum CommandType
 enum CommandResult
 {
     CMD_RESULT_OK = 0,
+    CMD_RESULT_ACCEPTED,
     CMD_RESULT_RUNNING,
     CMD_RESULT_FAILED,
     CMD_RESULT_ERROR,
