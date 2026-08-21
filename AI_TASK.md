@@ -1,602 +1,145 @@
-# AI Task: CommandManager V1.0 Refactor
+# Task: Investigate ESP32 ESP-MQTT message loss / ordering issue
 
+## Background
 
-## 修改范围
+Project:
+ESP32-S3 IoT device
 
-主要修改：
+MQTT implementation:
+ESP-IDF native esp-mqtt
 
-src/command_manager.cpp
-src/command_manager.h
+Current publish:
 
+esp_mqtt_client_enqueue()
 
-允许增加：
+QoS1
 
-system command handler
+store=true
 
-query command handler
 
-error/result helper
+## Observed problem
 
+cloud_send_up() sends two messages:
 
-禁止修改：
+1. ACK
 
-workflow核心逻辑
+2. RESULT
 
-action注册方式
 
-trigger注册方式
+Serial output:
 
-CommandRuntime生命周期
+enqueue ACK
+enqueue RESULT
 
-MQTT协议底层
 
+However cloud receives:
 
-==================================================
+Case A:
+RESULT first
+ACK second
 
 
-# Task 1 Command Router 重构
+Case B:
+ACK only
 
 
-command_manager_execute()
+Case C:
+multiple old ACK messages
 
 
-改造成三个一级路由：
+Case D:
+After reboot:
+first command may receive old online message before result
 
-execute
 
-query
+## Important facts
 
-system
+1. cloud_send_up() return success.
+2. Serial confirms result JSON generated.
+3. No delay used.
+4. No cloud cmd_id deduplication currently.
+5. MQTT broker/web frontend cannot distinguish up/set.
+6. Problem happens even with small payload:
+ACK <100 bytes
+RESULT <150 bytes
 
 
-结构：
+## Questions to investigate
 
+### 1. esp_mqtt_client_enqueue internals
 
-command_manager_execute()
+Need confirm:
 
-{
+- Does enqueue guarantee FIFO?
+- What is outbox structure?
+- How is QoS1 message stored?
+- When is message removed?
+- What happens if PUBACK arrives?
+- Can messages be reordered?
 
-    if(command属于execute)
-    {
-        execute_router();
-    }
 
-    else if(command属于query)
-    {
-        query_router();
-    }
+### 2. Need inspect:
 
-    else if(command属于system)
-    {
-        system_router();
-    }
+esp_mqtt_client_enqueue()
 
-    else
-    {
-        返回错误结果
-    }
+mqtt_client_enqueue()
 
-}
+outbox_enqueue()
 
+outbox_delete()
 
+mqtt_task()
 
-禁止继续增加大量：
 
-else if(command=="xxx")
+### 3. Need add diagnostics
 
+Print:
 
-==================================================
+- enqueue return msg_id
+- MQTT_EVENT_PUBLISHED
+- PUBACK time
+- outbox size before/after enqueue
+- outbox size after PUBACK
+- MQTT reconnect events
 
 
-# Task 2 统一 Command Result / Error
+Example:
 
+[ENQUEUE]
+msg_id=10
+type=ACK
+size=40
+outbox=1
 
-增加统一错误出口。
 
+[ENQUEUE]
+msg_id=11
+type=RESULT
+size=90
+outbox=2
 
-新增内部函数：
 
+[PUBACK]
+msg_id=10
+time=xxxx
+outbox=1
 
-command_send_error()
 
+[PUBACK]
+msg_id=11
+time=xxxx
+outbox=0
 
-功能：
 
-生成标准错误结果。
+## Need determine
 
+Is the problem:
 
-格式：
+A. ESP MQTT outbox
+B. MQTT broker
+C. cloud frontend queue
+D. cloud_manager code
+E. FreeRTOS scheduling
 
-
-{
-"cmd":"result",
-"id":"xxx",
-"type":"command",
-"status":"error",
-"error_code":xxx,
-"message":"xxx"
-}
-
-
-
-所有错误必须经过该函数。
-
-
-包括：
-
-
-- command不存在
-
-- object不存在
-
-- action不存在
-
-- workflow不存在
-
-- 参数错误
-
-- system command失败
-
-
-==================================================
-
-
-# Task 3 保留 ACK + RESULT 双阶段
-
-
-ACK逻辑保持。
-
-
-收到MQTT命令后：
-
-CloudManager继续发送：
-
-
-cmd=ack
-
-
-表示收到。
-
-
-
-CommandManager执行后：
-
-必须返回：
-
-
-cmd=result
-
-
-
-成功：
-
-
-{
-"cmd":"result",
-"id":"xxx",
-"status":"success"
-}
-
-
-
-失败：
-
-{
-"cmd":"result",
-"id":"xxx",
-"status":"error"
-}
-
-
-
-==================================================
-
-
-# Task 4 execute 路由
-
-
-保留现有：
-
-
-execute_action
-
-execute_workflow
-
-
-行为不变。
-
-
-
-失败必须通过统一error出口返回。
-
-
-==================================================
-
-
-# Task 5 query 路由
-
-
-新增：
-
-
-query_capabilities
-
-
-调用：
-
-capability_registry接口。
-
-
-
-返回：
-
-包含：
-
-
-action registry
-
-trigger registry
-
-workflow registry
-
-
-
-必须包含：
-
-version
-
-checksum
-
-count
-
-stable_id
-
-runtime_id
-
-
-
-数据来源：
-
-禁止重新扫描workflow。
-
-
-直接使用：
-
-capability_registry API
-
-
-
-==================================================
-
-
-# Task 6 原query接口处理
-
-
-保留：
-
-query_state
-
-query_actions
-
-query_triggers
-
-query_workflows
-
-
-
-但是：
-
-后续调用统一转向 capability registry。
-
-
-不得删除旧接口。
-
-
-==================================================
-
-
-# Task 7 system command框架
-
-
-新增：
-
-
-system_router()
-
-
-
-格式：
-
-
-{
-"cmd":"system",
-"ob":"xxx",
-"pl":{}
-}
-
-
-
-system command列表：
-
-
-
-## reboot
-
-
-object:
-
-reboot
-
-
-
-执行流程：
-
-
-1. 发送result
-
-
-内容：
-
-status=rebooting
-
-
-2. MQTT publish QoS1
-
-
-3. 不等待云端ack
-
-
-4. 执行ESP.restart()
-
-
-
-禁止delay模拟等待。
-
-
-
-
-==================================================
-
-
-## set_time
-
-
-预留接口。
-
-
-CommandManager只负责路由。
-
-
-调用函数暂时保留。
-
-
-未来由time_manager实现。
-
-
-例如：
-
-
-time_manager_set_time()
-
-
-
-当前不存在时：
-
-创建空声明保证编译。
-
-
-
-==================================================
-
-
-## weight_zero_calibrate
-
-
-object:
-
-weight_zero
-
-
-
-调用：
-
-
-weight_zero_calibrate()
-
-
-
-当前weight manager已经存在。
-
-
-CommandManager只负责调用。
-
-
-
-==================================================
-
-
-## wifi_config
-
-
-object:
-
-wifi_config
-
-
-
-功能：
-
-接收：
-
-ssid
-
-password
-
-
-
-CommandManager负责：
-
-解析参数
-
-
-调用：
-
-
-config_update_wifi()
-
-
-
-当前config_manager没有实现时：
-
-创建空函数。
-
-
-保持编译通过。
-
-
-==================================================
-
-
-## wifi_ap
-
-
-object:
-
-wifi_ap
-
-
-
-当前只建立command入口。
-
-
-暂不实现AP逻辑。
-
-
-==================================================
-
-
-# Task 8 Capability Registry 查询
-
-
-增加：
-
-query_capabilities
-
-
-
-调用：
-
-capability_registry
-
-
-
-返回：
-
-action:
-
-trigger:
-
-workflow:
-
-
-每项：
-
-stable_id
-
-runtime_id
-
-
-
-同时返回：
-
-
-version
-
-checksum
-
-
-
-==================================================
-
-
-# Task 9 MQTT callback返回处理
-
-
-修改CloudManager：
-
-
-command_manager_execute(cmd)
-
-
-
-返回值必须处理。
-
-
-如果返回false：
-
-调用统一错误反馈。
-
-
-
-禁止静默失败。
-
-
-==================================================
-
-
-# Task 10 禁止修改内容
-
-
-以下暂不修改：
-
-
-1.
-
-CommandRuntime
-
-
-2.
-
-String payload设计
-
-
-3.
-
-MQTT payload缓存方式
-
-
-4.
-
-CBOR协议
-
-
-5.
-
-Workflow执行逻辑
-
-
-6.
-
-Capability Registry内部实现
-
-
-
-==================================================
-
-
-# Task 11 编译要求
-
-
-修改后必须：
-
-pio run
-
-
-通过。
-
-
-不得新增warning。
-
-
-
-==================================================
+Do not modify architecture.
+Only provide diagnosis first.
