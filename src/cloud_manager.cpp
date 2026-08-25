@@ -3,6 +3,7 @@
 #include <esp_event.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 
 #include "cloud_manager.h"
 #include "system_state.h"
@@ -37,10 +38,6 @@
 #define CLOUD_FRAG_UP              0
 #define CLOUD_FRAG_SET             1
 
-// 主题后缀
-#define CLOUD_TOPIC_UP             "/up"
-#define CLOUD_TOPIC_SET            "/set"
-
 // =====================================================
 // MQTT 对象（ESP-IDF 原生 esp-mqtt，QoS1）
 // =====================================================
@@ -59,7 +56,14 @@ static bool mqtt_disconnect_pending = false;
 static String mqtt_server;
 static int mqtt_port;
 static String mqtt_client_id;
+
+static String mqtt_username;
+static String mqtt_password;
+
 static String mqtt_sub_topic;
+static String mqtt_pub_topic;
+
+static String mqtt_ca_file;
 
 static unsigned long retry_interval;
 static int retry_max;
@@ -103,7 +107,7 @@ static size_t cloud_msg_limit = CLOUD_DEFAULT_MSG_LIMIT;
 // 下行接收环形缓冲（MQTT 回调只入队，cloud_task 主循环处理）
 // =====================================================
 #define MQTT_RX_SLOT_COUNT 4
-#define MQTT_RX_SLOT_SIZE  1024
+#define MQTT_RX_SLOT_SIZE  8192
 
 static uint8_t  rx_buffer[MQTT_RX_SLOT_COUNT][MQTT_RX_SLOT_SIZE];
 static uint16_t rx_len[MQTT_RX_SLOT_COUNT];
@@ -235,12 +239,31 @@ static void mqtt_event_handler(
                     CLOUD_MQTT_QOS,
                     msg_id);
             }
+            Serial.printf(
+                "[Cloud] MQTT connected outbox=%d\n",
+                esp_mqtt_client_get_outbox_size(mqtt_client));
+            break;
+
+        case MQTT_EVENT_SUBSCRIBED:
+            Serial.printf(
+                "[Cloud] MQTT subscribed msg_id=%d\n",
+                event->msg_id);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
-            Serial.println("[Cloud] MQTT disconnected");
+            Serial.printf(
+                "[Cloud] MQTT disconnected outbox=%d\n",
+                esp_mqtt_client_get_outbox_size(mqtt_client));
             mqtt_connected = false;
             mqtt_disconnect_pending = true;
+            break;
+
+        case MQTT_EVENT_PUBLISHED:
+            Serial.printf(
+                "[Cloud] MQTT published/ack msg_id=%d outbox=%d t=%lu\n",
+                event->msg_id,
+                esp_mqtt_client_get_outbox_size(mqtt_client),
+                (unsigned long)(millis() & 0xFFFFFFFFUL));
             break;
 
         case MQTT_EVENT_DATA:
@@ -306,6 +329,7 @@ static bool cloud_mqtt_publish_binary(
         return false;
     }
     int msg_id;
+    int outbox_before = esp_mqtt_client_get_outbox_size(mqtt_client);
 
     if(CLOUD_MQTT_QOS == 0)
     {
@@ -336,6 +360,15 @@ static bool cloud_mqtt_publish_binary(
             (unsigned)len);
         return false;
     }
+    Serial.printf(
+        "[Cloud] ENQ id=%d qos=%d store=%d outbox=%d->%d len=%u t=%lu\n",
+        msg_id,
+        CLOUD_MQTT_QOS,
+        (int)CLOUD_MQTT_STORE,
+        outbox_before,
+        esp_mqtt_client_get_outbox_size(mqtt_client),
+        (unsigned)len,
+        (unsigned long)(millis() & 0xFFFFFFFFUL));
     return true;
 }
 
@@ -405,7 +438,15 @@ static bool cloud_publish_fragmented(
     size_t len,
     uint8_t msg_type)
 {
-    String topic = mqtt_sub_topic + topic_suffix;
+    String topic;
+    if(msg_type == CLOUD_FRAG_UP)
+    {
+        topic = mqtt_pub_topic;
+    }
+    else
+    {
+        topic = mqtt_sub_topic;
+    }
 
     // 未超限：直接发送
     if(len <= cloud_msg_limit)
@@ -752,6 +793,11 @@ static void cloud_send_ack(const String& cmd_id, const String& object)
     ack["t"] = time_get();
     String ack_string;
     serializeJson(ack, ack_string);
+    Serial.printf(
+        "[Cloud] UP-ACK id=%s obj=%s t=%lu\n",
+        cmd_id.c_str(),
+        object.c_str(),
+        (unsigned long)(millis() & 0xFFFFFFFFUL));
     cloud_send_up(ack_string.c_str());
 }
 
@@ -978,6 +1024,7 @@ static bool cloud_translate_command(
 static void cloud_process_rx_message(const uint8_t* data, size_t len)
 {
     String message;
+    message.reserve(len + 1);
     for(size_t i = 0; i < len; i++)
     {
         message += (char)data[i];
@@ -991,7 +1038,7 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
     Serial.println("[Cloud] MQTT RX");
     Serial.println(message);
 
-    JsonDocument doc;
+    DynamicJsonDocument doc(4096);
     if(deserializeJson(doc, message))
     {
         Serial.println("[Cloud] JSON parse failed");
@@ -1052,13 +1099,21 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
     }
 }
 
+static uint8_t mqtt_rx_process_buffer[MQTT_RX_SLOT_SIZE];
+
+
 static void cloud_process_rx_queue()
 {
-    uint8_t tmp[MQTT_RX_SLOT_SIZE];
     size_t len = 0;
-    if(cloud_rx_dequeue(tmp, len, sizeof(tmp)))
+
+    if(cloud_rx_dequeue(
+        mqtt_rx_process_buffer,
+        len,
+        sizeof(mqtt_rx_process_buffer)))
     {
-        cloud_process_rx_message(tmp, len);
+        cloud_process_rx_message(
+            mqtt_rx_process_buffer,
+            len);
     }
 }
 
@@ -1108,6 +1163,10 @@ static void cloud_event_callback(const EventMessage& message)
 // =====================================================
 static void on_command_result(const String& json)
 {
+    Serial.printf(
+        "[Cloud] UP-RESULT len=%u t=%lu\n",
+        json.length(),
+        (unsigned long)(millis() & 0xFFFFFFFFUL));
     cloud_send_up(json.c_str());
 }
 
@@ -1128,14 +1187,73 @@ static bool cloud_connect()
         cfg.host = mqtt_server.c_str();
         cfg.port = mqtt_port;
         cfg.client_id = mqtt_client_id.c_str();
+        cfg.username = mqtt_username.c_str();
+        cfg.password = mqtt_password.c_str();
         cfg.keepalive = keep_alive;
         cfg.buffer_size = CLOUD_MQTT_BUFFER_SIZE;
         cfg.disable_clean_session = 0;
+        // MQTT TLS
+        if(mqtt_port == 8883)
+        {
+            cfg.transport = MQTT_TRANSPORT_OVER_SSL;
+        }
+        else
+        {
+            cfg.transport = MQTT_TRANSPORT_OVER_TCP;
+        }
+
+        Serial.println("===== MQTT DEBUG =====");
+
+        Serial.print("host=");
+        Serial.println(cfg.host);
+
+        Serial.print("port=");
+        Serial.println(cfg.port);
+
+        Serial.print("client_id=");
+        Serial.println(cfg.client_id);
+
+        Serial.print("username=");
+        Serial.println(cfg.username);
+
+        Serial.print("password=");
+        Serial.println(cfg.password);
+
+        Serial.print("buffer=");
+        Serial.println(cfg.buffer_size);
+
+        Serial.print("cert=");
+        Serial.println(cfg.cert_pem ? "YES" : "NO");
+
+        Serial.println("======================");
+        
+        static String ca_cert;
+        File file = LittleFS.open(
+            mqtt_ca_file,
+            "r"
+        );
+
+        if(file)
+        {
+            ca_cert = file.readString();
+            file.close();
+            cfg.cert_pem = ca_cert.c_str();
+            Serial.printf("[Cloud] CA length=%u\n", ca_cert.length());
+            Serial.println(
+                "[Cloud] CA certificate loaded");
+        }
+        else
+        {
+            Serial.println(
+                "[Cloud] CA certificate missing");
+        }
 
         mqtt_client = esp_mqtt_client_init(&cfg);
+
         if(mqtt_client == nullptr)
         {
             Serial.println("[Cloud] MQTT client init failed");
+            Serial.println("Check MQTT config parameters");
             return false;
         }
         esp_mqtt_client_register_event(
@@ -1166,22 +1284,39 @@ void cloud_init()
     Serial.println("Cloud manager init...");
 
     mqtt_server = config_get_mqtt_server();
+    Serial.print("MQTT server=");
+    Serial.println(mqtt_server);
     mqtt_port = config_get_mqtt_port();
+    Serial.print("MQTT port=");
+    Serial.println(mqtt_port);
     mqtt_client_id = config_get_mqtt_client_id();
+    Serial.print("MQTT client_id=");
+    Serial.println(mqtt_client_id);
+    mqtt_username = config_get_mqtt_username();
+    Serial.print("MQTT username=");
+    Serial.println(mqtt_username);
+    mqtt_password = config_get_mqtt_password();
+    Serial.print("MQTT password=");
+    Serial.println(mqtt_password);
     mqtt_sub_topic = config_get_mqtt_subscribe_topic();
-
-    retry_interval = config_get_mqtt_retry_interval();
-    retry_max = config_get_mqtt_retry_max();
-    sleep_retry_interval = config_get_mqtt_sleep_interval();
-    keep_alive = config_get_mqtt_keep_alive();
+    Serial.print("MQTT subscribe=");
+    Serial.println(mqtt_sub_topic);
+    mqtt_pub_topic = config_get_mqtt_publish_topic();
+    Serial.print("MQTT publish=");
+    Serial.println(mqtt_pub_topic);
+    mqtt_ca_file = config_get_mqtt_ca_path();
+    Serial.print("MQTT CA=");
+    Serial.println(mqtt_ca_file);
 
     Serial.println("MQTT Config:");
-    Serial.print("Server:");
-    Serial.println(mqtt_server);
-    Serial.print("Port:");
-    Serial.println(mqtt_port);
-    Serial.print("Topic:");
-    Serial.println(mqtt_sub_topic);
+
+    
+    Serial.printf(
+        "[Cloud] QoS=%d store=%d buffer=%d msg_limit=%u\n",
+        CLOUD_MQTT_QOS,
+        (int)CLOUD_MQTT_STORE,
+        CLOUD_MQTT_BUFFER_SIZE,
+        (unsigned)CLOUD_DEFAULT_MSG_LIMIT);
 
     mqtt_client = nullptr;
     mqtt_client_active = false;
@@ -1320,63 +1455,21 @@ void cloud_task()
 bool cloud_send_set(const char* message)
 {
     if(message == nullptr)
-    {
-        Serial.println("[Cloud SET] null");
         return false;
-    }
     if(!mqtt_connected)
-    {
-        Serial.println("[Cloud SET] MQTT offline");
         return false;
-    }
     String upload = String(message);
-    cloud_add_readable_time(upload);
-
-    String compact;
-    if(cloud_compress_uplink(upload, compact))
-    {
-        upload = compact;
-    }
-
-    String topic = mqtt_sub_topic + CLOUD_TOPIC_SET;
-    size_t len = upload.length();
-    if(len <= cloud_msg_limit)
-    {
-        bool result = cloud_mqtt_publish_text(topic, upload, 1);
-        Serial.println(result ? "[Cloud SET] OK" : "[Cloud SET] FAIL");
-        return result;
-    }
-
-    // 超限：二进制化后分片
-    JsonDocument doc;
-    if(deserializeJson(doc, upload))
-    {
-        Serial.println("[Cloud SET] JSON parse failed");
-        return false;
-    }
-    size_t bin_len = serializeMsgPack(
-        doc,
-        cloud_bin_buffer,
-        sizeof(cloud_bin_buffer));
-    if(bin_len == 0)
-    {
-        Serial.println("[Cloud SET] binary encode failed");
-        return false;
-    }
-    bool result = cloud_publish_fragmented(
-        CLOUD_TOPIC_SET,
-        cloud_bin_buffer,
-        bin_len,
-        CLOUD_FRAG_SET);
-    Serial.println(
-        result ?
-        "[Cloud SET] fragment OK" :
-        "[Cloud SET] fragment FAIL");
-    return result;
+    Serial.println("[Cloud SET JSON]");
+    Serial.println(upload);
+    return cloud_mqtt_publish_text(
+        mqtt_pub_topic,
+        upload,
+        1
+    );
 }
 
 // =====================================================
-// 底层原始发送：/up（JSON -> 二进制，超限分片）
+// 底层原始发送：/up（JSON 
 // =====================================================
 bool cloud_send_up(const char* message)
 {
@@ -1390,12 +1483,7 @@ bool cloud_send_up(const char* message)
         Serial.println("[Cloud UP] MQTT offline");
         return false;
     }
-
-    // 1. 保留原 JSON 生成逻辑（可读时间兼容旧格式）
     String upload = String(message);
-    cloud_add_readable_time(upload);
-
-    // 2. 协议字段压缩
     String compact;
     if(cloud_compress_uplink(upload, compact))
     {
@@ -1403,35 +1491,16 @@ bool cloud_send_up(const char* message)
     }
     Serial.println("[Cloud UP JSON]");
     Serial.println(upload);
-
-    // 3. JSON -> 二进制(MessagePack，保留现有实现)
-    JsonDocument doc;
-    if(deserializeJson(doc, upload))
-    {
-        Serial.println("[Cloud UP] JSON parse failed");
-        return false;
-    }
-    size_t bin_len = serializeMsgPack(
-        doc,
-        cloud_bin_buffer,
-        sizeof(cloud_bin_buffer));
-    if(bin_len == 0)
-    {
-        Serial.println("[Cloud UP] binary encode failed");
-        return false;
-    }
-    Serial.printf(
-        "[Cloud UP] JSON=%u BIN=%u\n",
-        upload.length(),
-        (unsigned)bin_len);
-
-    // 4. MQTT 发布（QoS1，超限自动分片）
-    bool result = cloud_publish_fragmented(
-        CLOUD_TOPIC_UP,
-        cloud_bin_buffer,
-        bin_len,
-        CLOUD_FRAG_UP);
-    Serial.println(result ? "[Cloud UP] OK" : "[Cloud UP] FAIL");
+    bool result = cloud_mqtt_publish_text(
+        mqtt_pub_topic,
+        upload,
+        1
+    );
+    Serial.println(
+        result ?
+        "[Cloud UP] OK":
+        "[Cloud UP] FAIL"
+    );
     return result;
 }
 
@@ -1443,50 +1512,6 @@ bool cloud_upload_json(JsonDocument& doc)
     String buf;
     serializeJson(doc, buf);
     return cloud_send_up(buf.c_str());
-}
-
-// =====================================================
-// 二进制 / cbor 发送接口
-// =====================================================
-bool cloud_send_up_binary(const uint8_t* data, size_t length)
-{
-    if(data == nullptr || length == 0)
-    {
-        return false;
-    }
-    if(!mqtt_connected)
-    {
-        Serial.println("[Cloud UP BIN] MQTT offline");
-        return false;
-    }
-    return cloud_publish_fragmented(
-        CLOUD_TOPIC_UP,
-        data,
-        length,
-        CLOUD_FRAG_UP);
-}
-
-bool cloud_send_up_cbor(const uint8_t* data, size_t length)
-{
-    return cloud_send_up_binary(data, length);
-}
-
-bool cloud_send_set_cbor(const uint8_t* data, size_t length)
-{
-    if(data == nullptr || length == 0)
-    {
-        return false;
-    }
-    if(!mqtt_connected)
-    {
-        Serial.println("[Cloud SET BIN] MQTT offline");
-        return false;
-    }
-    return cloud_publish_fragmented(
-        CLOUD_TOPIC_SET,
-        data,
-        length,
-        CLOUD_FRAG_SET);
 }
 
 // =====================================================
@@ -1504,7 +1529,6 @@ bool cloud_is_connected()
 {
     return mqtt_connected;
 }
-
 // =====================================================
 // cmd id 过滤，防风暴
 // =====================================================
@@ -1535,81 +1559,3 @@ static bool cloud_check_duplicate_cmd(const String& id)
     return false;
 }
 
-// =====================================================
-// 辅助：为旧格式消息补充可读时间（保留现有实现）
-// =====================================================
-bool cloud_add_readable_time(String& message)
-{
-    int ts_pos = message.indexOf("\"ts\":");
-    if(ts_pos < 0)
-    {
-        return false;
-    }
-    int ts_start = ts_pos + 5;
-    while(ts_start < message.length() && message[ts_start] == ' ')
-    {
-        ts_start++;
-    }
-    int ts_end = ts_start;
-    while(ts_end < message.length() && isDigit(message[ts_end]))
-    {
-        ts_end++;
-    }
-    if(ts_end <= ts_start)
-    {
-        return false;
-    }
-    unsigned long timestamp =
-        message.substring(ts_start, ts_end).toInt();
-    if(timestamp == 0)
-    {
-        return false;
-    }
-    String readable = time_get_string(timestamp);
-    int pl_pos = message.indexOf("\"pl\":");
-    if(pl_pos < 0)
-    {
-        return false;
-    }
-    int insert_pos = pl_pos + 5;
-    while(insert_pos < message.length() && message[insert_pos] == ' ')
-    {
-        insert_pos++;
-    }
-    if(insert_pos >= message.length())
-    {
-        return false;
-    }
-    if(message[insert_pos] != '{')
-    {
-        return false;
-    }
-    int payload_end_check = insert_pos + 1;
-    if(payload_end_check >= message.length())
-    {
-        return false;
-    }
-    String payload_head =
-        message.substring(
-            insert_pos,
-            min(insert_pos + 64, (int)message.length()));
-    if(payload_head.indexOf("\"time\"") >= 0)
-    {
-        return false;
-    }
-    if(message[insert_pos + 1] == '}')
-    {
-        String add = "\"time\":\"" + readable + "\"";
-        message =
-            message.substring(0, insert_pos + 1) +
-            add +
-            message.substring(insert_pos + 1);
-        return true;
-    }
-    String add = "\"time\":\"" + readable + "\",";
-    message =
-        message.substring(0, insert_pos + 1) +
-        add +
-        message.substring(insert_pos + 1);
-    return true;
-}

@@ -325,55 +325,85 @@ bool config_set_weight_zero_offset(
 // =====================================================
 
 
+// =====================================================
+// MQTT Cloud 配置读取
+// =====================================================
 String config_get_mqtt_server()
 {
-    return config["bemfa_cloud"]["mqtt_server"]
-    |
-    "mqtt.bemfa.com";
+    return config["mqtt_cloud"]["mqtt_server"]
+           |
+           "mqtt.bemfa.com";
 }
 int config_get_mqtt_port()
 {
-    return config["bemfa_cloud"]["mqtt_port"]
-    |
-    9501;
+    return config["mqtt_cloud"]["mqtt_port"]
+           |
+           9501;
 }
 String config_get_mqtt_client_id()
 {
-    return config["bemfa_cloud"]["client_id"]
-    |
-    "";
+    return config["mqtt_cloud"]["client_id"]
+           |
+           "";
 }
 String config_get_mqtt_subscribe_topic()
 {
-    return config["bemfa_cloud"]["subscribe_topic"]
-    |
-    "";
+    return config["mqtt_cloud"]["subscribe_topic"]
+           |
+           "";
 }
+String config_get_mqtt_username()
+{
+    return config["mqtt_cloud"]["username"]
+           |
+           "";
+}
+String config_get_mqtt_password()
+{
+    return config["mqtt_cloud"]["password"]
+           |
+           "";
+}
+String config_get_mqtt_publish_topic()
+{
+    return config["mqtt_cloud"]["publish_topic"]
+           |
+           "guo_feeder/up";
+}
+String config_get_mqtt_ca_path()
+{
+    return config["mqtt_cloud"]["ca_path"]
+           |
+           "/emqxsl-ca.crt";
+}
+// MQTT 重连间隔(ms)
 unsigned long config_get_mqtt_retry_interval()
 {
-    return config["bemfa_cloud"]["retry_interval"]
-    |
-    8000;
+    return config["mqtt_cloud"]["retry_interval"]
+           |
+           8000;
 }
+// 最大快速重试次数
 int config_get_mqtt_retry_max()
 {
-    return config["bemfa_cloud"]["retry_max"]
-    |
-    30;
+    return config["mqtt_cloud"]["retry_max"]
+           |
+           30;
 }
+// 进入休眠重试间隔(ms)
 unsigned long config_get_mqtt_sleep_interval()
 {
-    return config["bemfa_cloud"]["sleep_retry_interval"]
-    |
-    3600000;
+    return config["mqtt_cloud"]["sleep_retry_interval"]
+           |
+           3600000;
 }
+// MQTT keep alive 秒
 int config_get_mqtt_keep_alive()
 {
-    return config["bemfa_cloud"]["mqtt_keep_alive"]
-    |
-    60;
+    return config["mqtt_cloud"]["mqtt_keep_alive"]
+           |
+           60;
 }
-
 // =============================
 // WiFi 配置更新（预留）
 // =============================
@@ -389,7 +419,38 @@ bool config_update_wifi(
     // 预留：未来实现配置更新与保存
     return false;
 }
+//=============================================
+// 米家LYWSD03MMC温湿度计配置读取
+//=============================================
+void config_get_mithermometer_blekey(char *buf, size_t buf_size)
+{
+    if (buf == nullptr || buf_size == 0)
+    {
+        return;
+    }
+    // 缺失兜底：取 ""，和你现有 | "" 写法保持一致
+    const char *src = config["MiThermometer"]["BLE_key"] | "";
+    // strncpy 拷贝，保证末尾'\0'，不使用memset
+    size_t copy_len = (strlen(src) >= buf_size) ? (buf_size - 1U) : strlen(src);
+    strncpy(buf, src, copy_len);
+    buf[copy_len] = '\0';
+}
 
+void config_get_mithermometer_mac(char *buf, size_t buf_size)
+{
+    if (buf == nullptr || buf_size == 0)
+    {
+        return;
+    }
+    const char *src = config["MiThermometer"]["MAC"] | "";
+    size_t copy_len = (strlen(src) >= buf_size) ? (buf_size - 1U) : strlen(src);
+    strncpy(buf, src, copy_len);
+    buf[copy_len] = '\0';
+}
 
-
-
+bool config_get_mi_thermo_enable()
+{
+    return config["mi_thermo_enable"]
+           |
+           true;
+}

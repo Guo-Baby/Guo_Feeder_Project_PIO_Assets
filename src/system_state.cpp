@@ -33,6 +33,13 @@ static const struct {
     {"mqtt_retry_count", STATE_MQTT_RETRY_COUNT, STATE_TYPE_INT, true},
     {"mqtt_last_connect_time", STATE_MQTT_LAST_CONNECT_TIME, STATE_TYPE_STRING, true},
     {"mqtt_last_error", STATE_MQTT_LAST_ERROR, STATE_TYPE_INT, true},
+
+    // 米家BLE温湿度计 LYWSD03MMC
+    {"mi_thermo_temp", STATE_MI_THERMO_TEMP, STATE_TYPE_FLOAT, true},
+    {"mi_thermo_humid", STATE_MI_THERMO_HUMID, STATE_TYPE_FLOAT, true},
+    {"mi_thermo_bat_v", STATE_MI_THERMO_BAT_V, STATE_TYPE_FLOAT, true},
+    {"mi_thermo_ts", STATE_MI_THERMO_TS, STATE_TYPE_LONG, true},
+    {"mi_thermo_valid", STATE_MI_THERMO_VALID, STATE_TYPE_BOOL, true},
     
 
 };
