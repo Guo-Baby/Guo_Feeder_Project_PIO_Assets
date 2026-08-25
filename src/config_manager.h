@@ -71,6 +71,11 @@ String config_get_mqtt_server();
 int config_get_mqtt_port();
 String config_get_mqtt_client_id();
 String config_get_mqtt_subscribe_topic();
+String config_get_mqtt_username();
+String config_get_mqtt_password();
+String config_get_mqtt_publish_topic();
+String config_get_mqtt_ca_path();
+
 // MQTT重连间隔(ms)
 unsigned long config_get_mqtt_retry_interval();
 // 最大快速重试次数
@@ -90,3 +95,20 @@ bool config_update_wifi(
     const String &ssid,
     const String &password
 );
+
+// 米家LYWSD03MMC温湿度计配置读取
+/**
+ * @brief 读取BLE bindkey，输出到调用方提供的buf
+ * @param buf 调用方提供char缓冲区
+ * @param buf_size 缓冲区字节数，建议传入33
+ */
+void config_get_mithermometer_blekey(char *buf, size_t buf_size);
+
+/**
+ * @brief 读取温度计MAC地址，输出到调用方提供的buf
+ * @param buf 调用方提供char缓冲区
+ * @param buf_size 缓冲区字节数，建议传入24
+ */
+void config_get_mithermometer_mac(char *buf, size_t buf_size);
+
+bool config_get_mi_thermo_enable();

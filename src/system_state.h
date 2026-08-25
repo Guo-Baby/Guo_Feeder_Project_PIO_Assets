@@ -43,6 +43,12 @@ enum SystemStateKey
     STATE_MQTT_LAST_CONNECT_TIME,
     //MQTT最后错误信息
     STATE_MQTT_LAST_ERROR,
+    // 米家BLE温湿度计 LYWSD03MMC
+    STATE_MI_THERMO_TEMP,
+    STATE_MI_THERMO_HUMID,
+    STATE_MI_THERMO_BAT_V,
+    STATE_MI_THERMO_TS,
+    STATE_MI_THERMO_VALID,
 
 
     //新增state需要写在上方，同时维护cpp内的state_map映射表，state_get_field_count()和state_get_field_name()函数会自动更新，无需维护
@@ -113,13 +119,13 @@ String state_get_string(
 // =====================================================
 bool state_is_valid(SystemStateKey key);
 // =====================================================
-// 新增：枚举 → 字符串 映射
+// 枚举 → 字符串 映射
 // =====================================================
 const char* state_key_to_string(SystemStateKey key);
 SystemStateKey state_string_to_key(const String &str);
 
 // =====================================================
-// 新增：通用查询接口（供 Command Manager 调用）
+// 通用查询接口（供 Command Manager 调用）
 // =====================================================
 bool system_state_query(const String &key,String &output);
 

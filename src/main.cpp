@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <NimBLEDevice.h>
 #include "system_state.h"
 #include "config_manager.h"
 #include "event_manager.h"
@@ -14,6 +15,7 @@
 #include "dispense_guard.h"
 #include "test_mqtt.h"
 #include "capability_registry.h"
+#include "MiThermometer.h"
 
 // =====================================================
 // setup
@@ -38,6 +40,7 @@ void setup()
     // =====================================================
     // 第二层：通信（依赖基础系统）
     // =====================================================
+    NimBLEDevice::init("");
     wifi_init();
     time_init();
     // =====================================================
@@ -53,6 +56,7 @@ void setup()
     oled_init();
     oled_event_init();
     test_mqtt_init();
+    bool ok = MiThermometerInit();
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
@@ -90,6 +94,7 @@ void loop()
     oled_task();
     weight_task();
     valve_task();
+    MiThermometer_task();
     test_mqtt_task();//测试代码，需要删除
     serial_debug_command_process();
 }

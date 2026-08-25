@@ -103,6 +103,6 @@ enum FragmentType
 };
 
 // 分片默认上限：二进制化后消息长度超过该值进入分片
-#define CLOUD_DEFAULT_MSG_LIMIT 240
+#define CLOUD_DEFAULT_MSG_LIMIT 8000
 
 //=========================
