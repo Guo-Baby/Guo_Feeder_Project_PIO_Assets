@@ -263,7 +263,7 @@ bool MiThermometerInit(void)
     // 这里只控制BLE监听效率，160/160：约100% BLE占空。实际占空由start 和stop 的调用时间调节。
     pBLEScan->setInterval(160);
     pBLEScan->setWindow(160);
-    void mi_thermo_workflow_register();
+    mi_thermo_workflow_register();
     Serial.println("[MiThermo] init OK");
     return true;
 }
@@ -332,8 +332,13 @@ void MiThermometer_task()
                     } else if(s_thermo_level == MI_THERMO_LEVEL1) {
                         if(s_scan_fail_count >= MI_THERMO_MAX_FAIL) {
                             s_thermo_level = MI_THERMO_LEVEL2;
+                            if(s_ble_scanning) {
+                                pBLEScan->stop();
+                                s_ble_scanning = false;
+                            }
                             state_set_bool(STATE_MI_THERMO_ENABLE, false);
-                            Serial.println("[MiThermo] disabled");
+                            s_scan_state = MI_THERMO_DISABLED;
+                            Serial.println("[MiThermo] LEVEL2: scanning disabled");
                         }
                     }
                 }
@@ -665,4 +670,5 @@ void mi_thermo_workflow_register()
     workflow_register_action(
         &mi_thermo_stop_scan_desc
     );
+    Serial.println("[MiThermo] register workflow action");
 }
