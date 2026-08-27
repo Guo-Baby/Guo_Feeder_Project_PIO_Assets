@@ -38,8 +38,11 @@ static const struct {
     {"mi_thermo_temp", STATE_MI_THERMO_TEMP, STATE_TYPE_FLOAT, true},
     {"mi_thermo_humid", STATE_MI_THERMO_HUMID, STATE_TYPE_FLOAT, true},
     {"mi_thermo_bat_v", STATE_MI_THERMO_BAT_V, STATE_TYPE_FLOAT, true},
-    {"mi_thermo_ts", STATE_MI_THERMO_TS, STATE_TYPE_LONG, true},
+    {"mi_thermo_temp_ts", STATE_MI_THERMO_TEMP_TS, STATE_TYPE_LONG, true},
+    {"mi_thermo_humid_ts", STATE_MI_THERMO_HUMID_TS, STATE_TYPE_LONG, true},
+    {"mi_thermo_bat_ts", STATE_MI_THERMO_BAT_TS, STATE_TYPE_LONG, true},
     {"mi_thermo_valid", STATE_MI_THERMO_VALID, STATE_TYPE_BOOL, true},
+    {"mi_thermo_enable", STATE_MI_THERMO_ENABLE, STATE_TYPE_BOOL, true},
     
 
 };

@@ -1,15 +1,18 @@
 #include "MiThermometer.h"
 #include "config_manager.h"
 #include "system_state.h"
-#include "cloud_manager.h"
 #include "NimBLEDevice.h"
+#include "workflow.h"
 #include <time.h>
 #include <NimBLEDevice.h>
 #include <mbedtls/ccm.h>
 #include <cstring>
 #include <math.h>
 #include <WiFi.h>
+#include <strings.h>
 #include <Arduino.h>
+//前置声明
+void mi_thermo_workflow_register();
 
 QueueHandle_t xRawAdvQueue = nullptr;
 static uint8_t g_bin_bindkey[16] = {0};
@@ -17,6 +20,7 @@ static uint8_t g_bin_bindkey[16] = {0};
 // 模块静态缓存配置，仅MiThermometerInit()中从config读取一次
 static char s_target_mac[24] = {0};
 static char s_bindkey_str[33] = {0};
+static uint8_t s_target_mac_bin[6] = {0};
 
 static NimBLEScan* pBLEScan = nullptr;
 
@@ -27,145 +31,183 @@ static NimBLEScan* pBLEScan = nullptr;
 enum MiThermoScanState
 {
     MI_THERMO_BOOT_DELAY,
-    MI_THERMO_SLEEP,
-    MI_THERMO_START_SCAN,
-    MI_THERMO_SCANNING
+    MI_THERMO_SLEEP,    // 长时间休眠
+    MI_THERMO_SCAN_WINDOW_RUN,    // 扫描窗口内部运行
+    MI_THERMO_SCAN_WINDOW_WAIT,   //获取到温度+湿度，关闭扫描，等待
+    MI_THERMO_DISABLED,    //mi_thermo_allow_collect = true 时不执行任何任务
+    MI_THERMO_SCAN_ON,    // 当前1秒BLE扫描
+    MI_THERMO_SCAN_OFF    // 当前关闭BLE扫描，让WiFi运行
+
+};
+
+// 扫描等级
+enum MiThermoLevel
+{
+    MI_THERMO_LEVEL0,
+    MI_THERMO_LEVEL1,
+    MI_THERMO_LEVEL2
 };
 static MiThermoScanState s_scan_state = MI_THERMO_BOOT_DELAY;
-static uint32_t s_boot_time = 0;
-static uint32_t s_scan_start_time = 0;
-static uint32_t s_sleep_start_time = 0;
-static constexpr uint32_t MI_THERMO_SLEEP_MS = 20UL * 60UL * 1000UL;// 扫描周期
-static constexpr uint32_t MI_THERMO_SCAN_TIMEOUT_MS =60000UL;// 单次扫描最长时间
-static uint8_t s_scan_fail_count = 0;// 连续失败次数
-static constexpr uint8_t MI_THERMO_MAX_FAIL = 10;
-static bool s_disabled_by_fault = false;// 故障锁定
 
+static constexpr uint32_t MI_THERMO_SLEEP_MIN_MS = 48UL * 60UL * 1000UL; // 生产环境：48分钟
+static constexpr uint32_t MI_THERMO_SLEEP_MAX_MS = 60UL * 60UL * 1000UL;       // 生产环境：60分钟
+static constexpr uint32_t MI_THERMO_SCAN_WINDOW_MS = 15UL * 60UL * 1000UL;     // 生产环境：15分钟
+static constexpr uint32_t MI_THERMO_SCAN_ON_MS = 1000UL;                        // 每次扫描1秒
+static uint32_t s_sleep_start_time = 0; // 休眠开始时间
+static uint32_t s_boot_time = 0;
+static uint32_t s_sleep_target_ms = 0; // 休眠目标时长
+static uint32_t s_scan_window_start_time = 0; // 扫描窗口开始时间
+
+static uint8_t s_scan_fail_count = 0; // 扫描失败统计
+// 当前扫描窗口是否已经收到温湿度
+static bool s_got_temperature = false;
+static bool s_got_humidity = false;
+static constexpr uint8_t MI_THERMO_MAX_FAIL = 4; // Level2故障阈值
+static bool s_ble_scanning = false; // 当前是否BLE扫描中
+static uint32_t s_next_scan_switch_time = 0;
+static uint32_t s_scan_on_start_time = 0;
+static MiThermoLevel s_thermo_level = MI_THERMO_LEVEL0;
 
 struct RawAdvItem
 {
-    uint8_t mac[6];
-    uint8_t payload[31];
-    uint8_t payload_len;
+    uint8_t mac[6];               // 广播设备MAC
+    uint8_t adv_data[62];         // 完整BLE Advertisement payload，包含所有数据段
+    uint8_t adv_len;              // 实际长度
+    uint32_t timestamp;           // 接收时间
 };
+
+// =====================================================
+//捕获蓝牙数据后回调，做mac过滤+空包过滤
+// =====================================================
 class MiAdvCallback : public NimBLEScanCallbacks
 {
-    void onResult(
-        const NimBLEAdvertisedDevice* advertisedDevice) override
+public:
+    void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override
     {
-
-        static uint32_t ble_count = 0;
-        ble_count++;
-
-
-        std::string mac =
-            advertisedDevice->getAddress().toString();
-
-
-        Serial.printf(
-            "\n[BLE] #%lu MAC=%s\n",
-            ble_count,
-            mac.c_str()
-        );
-
-
-        std::vector<uint8_t> payload =
-            advertisedDevice->getPayload();
-
-
-        size_t advLen = payload.size();
-
-
-        Serial.printf(
-            "[BLE] payload len=%d : ",
-            advLen
-        );
-
-
-        for(size_t i=0;i<advLen;i++)
-        {
-            Serial.printf(
-                "%02X ",
-                payload[i]
-            );
+        if(!xRawAdvQueue) { return; }
+        // =====================================================
+        // 1. 获取原始MAC（不转换string，不malloc）
+        // =====================================================
+        const uint8_t* addr = advertisedDevice->getAddress().getVal();
+        if(!addr) { return; }
+        // NimBLE getVal() 地址顺序: 17:D4:31:38:C1:A4
+        // 用户输入: A4:C1:38:31:D4:17，需要反向比较
+        if(addr[0] != s_target_mac_bin[5] || addr[1] != s_target_mac_bin[4] ||
+        addr[2] != s_target_mac_bin[3] || addr[3] != s_target_mac_bin[2] ||
+        addr[4] != s_target_mac_bin[1] || addr[5] != s_target_mac_bin[0]) {return;}
+        // =====================================================
+        // 2. 获取payload（使用引用，不复制vector）
+        // =====================================================
+        const std::vector<uint8_t>& payload = advertisedDevice->getPayload();
+        if(payload.empty()) { return; }
+        // =====================================================
+        // 3. 查找FE95
+        // =====================================================
+        size_t fe95_pos = 0;
+        bool found_fe95 = false;
+        while(fe95_pos + 1 < payload.size()) {
+            if(payload[fe95_pos] == 0x95 && payload[fe95_pos + 1] == 0xFE) { found_fe95 = true; break; }
+            fe95_pos++;
         }
-
-        Serial.println();
-
-
-        if(!xRawAdvQueue)
-            return;
-
-
-        if(advLen < 12)
-            return;
-
-
+        if(!found_fe95) { return; }
+        // =====================================================
+        // 4. 构造RawAdvItem
+        // =====================================================
         RawAdvItem item{};
-
-
-        /*
-            MAC字符串转换为6字节
-        */
-        sscanf(
-            mac.c_str(),
-            "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-            &item.mac[0],
-            &item.mac[1],
-            &item.mac[2],
-            &item.mac[3],
-            &item.mac[4],
-            &item.mac[5]
-        );
-
-
-        item.payload_len =
-            advLen > sizeof(item.payload)
-            ?
-            sizeof(item.payload)
-            :
-            advLen;
-
-
-        memcpy(
-            item.payload,
-            payload.data(),
-            item.payload_len
-        );
-
-
-        /*
-            所有设备全部进入解密队列
-        */
-        if(
-            xQueueSend(
-                xRawAdvQueue,
-                &item,
-                0
-            )
-            != pdTRUE
-        )
-        {
-            Serial.println(
-                "[BLE] queue full"
-            );
+        memcpy(item.mac, addr, 6);
+        size_t len = payload.size();
+        if(len > sizeof(item.adv_data)) { len = sizeof(item.adv_data); }
+        item.adv_len = static_cast<uint8_t>(len);
+        memcpy(item.adv_data, payload.data(), len);
+        item.timestamp = millis();
+        // =====================================================
+        // 5. 入队（callback不解码、不打印）
+        // =====================================================
+        if(xQueueSend(xRawAdvQueue, &item, 0) != pdTRUE) {
+            Serial.println("[MiThermo] RAW queue full");
         }
     }
 };
+
+
 static MiAdvCallback s_advCallback;
 
-
-static bool lywsd03_decrypt(const uint8_t mac[6],
-                            const uint8_t bindkey[16],
-                            const uint8_t* advData, size_t advLen,
-                            float &out_temp, float &out_hum, float &out_bat);
-
-bool MiThermometerInit(void)
+//随机休眠函数，避免和温湿度计广播周期锁相。
+static uint32_t mi_random_sleep_ms()
 {
+    return random(
+        MI_THERMO_SLEEP_MIN_MS,
+        MI_THERMO_SLEEP_MAX_MS
+    );
+}
+
+
+//扫描间隔时间随机数，避免和温湿度计广播周期锁相。
+static uint32_t mi_random_scan_off_ms()
+{
+    return random(
+        1800UL,
+        2301UL
+    );
+}
+//Level 1 增强扫描窗口周期调整
+static uint32_t mi_get_scan_window_ms()
+{
+    switch(s_thermo_level) {
+        case MI_THERMO_LEVEL0: return 15UL * 60UL * 1000UL;
+        case MI_THERMO_LEVEL1: return 30UL * 60UL * 1000UL;
+        default: return 15UL * 60UL * 1000UL;
+    }
+}
+
+static bool lywsd03_decrypt(
+    const uint8_t mac[6],
+    const uint8_t bindkey[16],
+    const uint8_t* advData,
+    size_t advLen,
+    float &out_temp,
+    float &out_hum,
+    float &out_bat,
+    uint8_t &out_type
+);
+
+//========================
+//蓝牙协议栈初始化
+//========================
+void ble_init(void)
+{
+    NimBLEDevice::init("");
+    Serial.println("[BLE] init OK");
+}
+
+
+//========================
+//业务层初始化
+//========================
+bool MiThermometerInit(void)
+{   
+    state_set_float(STATE_MI_THERMO_TEMP, NAN);
+    state_set_float(STATE_MI_THERMO_HUMID, NAN);
+    state_set_float(STATE_MI_THERMO_BAT_V, NAN);
+
+    state_set_long(STATE_MI_THERMO_TEMP_TS, 0L);
+    state_set_long(STATE_MI_THERMO_HUMID_TS, 0L);
+    state_set_long(STATE_MI_THERMO_BAT_TS, 0L);
+
+    state_set_bool(STATE_MI_THERMO_ENABLE,true);
+    state_set_bool(STATE_MI_THERMO_VALID, false);
+
+    bool allow_collect = config_get_mi_thermo_allow_collect();
+    if(!allow_collect) {
+    Serial.println("[MiThermo] collection disabled by config");
+    state_set_bool(STATE_MI_THERMO_ENABLE,false);
+    }
+
     char macBuf[24] = {0};
     char keyBuf[33] = {0};
     config_get_mithermometer_mac(macBuf, sizeof(macBuf));
     config_get_mithermometer_blekey(keyBuf, sizeof(keyBuf));
+
 
     if (strlen(macBuf) == 0U || strlen(keyBuf) == 0U)
     {
@@ -180,7 +222,10 @@ bool MiThermometerInit(void)
 
     strncpy(s_target_mac, macBuf, sizeof(s_target_mac) - 1U);
     s_target_mac[sizeof(s_target_mac)-1] = '\0';
-
+    // MAC字符串转换为二进制缓存，callback中禁止再次解析字符串
+    sscanf(s_target_mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+        &s_target_mac_bin[0], &s_target_mac_bin[1], &s_target_mac_bin[2],
+        &s_target_mac_bin[3], &s_target_mac_bin[4], &s_target_mac_bin[5]);
 
     strncpy(s_bindkey_str, keyBuf, sizeof(s_bindkey_str) -1U);
     s_bindkey_str[sizeof(s_bindkey_str)-1] = '\0';
@@ -198,322 +243,426 @@ bool MiThermometerInit(void)
     if (!xRawAdvQueue)
     {
         Serial.println("[MiThermo] ERR xQueueCreate failed, no heap memory");
-        return false;
     }
 
+    // BLE温度计启动延迟
+    s_scan_window_start_time = millis();
 
-    state_set_float(STATE_MI_THERMO_TEMP, NAN);
-    state_set_float(STATE_MI_THERMO_HUMID, NAN);
-    state_set_float(STATE_MI_THERMO_BAT_V, NAN);
-    state_set_long(STATE_MI_THERMO_TS, 0L);
-    state_set_bool(STATE_MI_THERMO_VALID, false);
-    s_boot_time = millis();
     s_scan_state = MI_THERMO_BOOT_DELAY;
+
+    s_boot_time = millis();
+
     s_scan_fail_count = 0;
-    s_disabled_by_fault = false;
+    randomSeed(esp_random());
 
     pBLEScan = NimBLEDevice::getScan();   
     pBLEScan->setScanCallbacks(&s_advCallback);
     pBLEScan->setActiveScan(false);
-    pBLEScan->setInterval(100);
-    pBLEScan->setWindow(80);
+    // BLE radio扫描参数
+    // interval/window不是我们的3秒占空
+    // 这里只控制BLE监听效率，160/160：约100% BLE占空。实际占空由start 和stop 的调用时间调节。
+    pBLEScan->setInterval(160);
+    pBLEScan->setWindow(160);
+    void mi_thermo_workflow_register();
     Serial.println("[MiThermo] init OK");
     return true;
 }
 
 
+static void mi_enter_sleep()
+{
+    s_sleep_start_time = millis();
+    s_sleep_target_ms = mi_random_sleep_ms();
+    Serial.printf("[MiThermo] enter sleep %lu sec\n", s_sleep_target_ms / 1000);
+    s_scan_state = MI_THERMO_SLEEP;
+}
+
 void MiThermometer_task()
 {
-    if(xRawAdvQueue == nullptr)
+    if(xRawAdvQueue == nullptr) {
+        Serial.println("[MiThermo] ERR xQueueCreate failed, no heap memory");
         return;
-    if(!config_get_mi_thermo_enable())
-        return;
-    if(s_disabled_by_fault)
-        return;
+    }
+
     uint32_t now = millis();
     switch(s_scan_state)
     {
-        //=========================
-        // 开机等待30秒
-        //=========================
+        // =====================================================
+        // config中设置allow_collect为false，则不执行任何采集
+        // =====================================================        
+        case MI_THERMO_DISABLED:
+        {
+            break;
+        }
+        // =====================================================
+        // 开机等待
+        // =====================================================
         case MI_THERMO_BOOT_DELAY:
         {
-            if(
-                now - s_boot_time
-                >
-                30000UL
-            )
-            {
-                Serial.println(
-                    "[MiThermo] start first scan"
-                );
-                s_scan_state =
-                    MI_THERMO_START_SCAN;
+            if(now - s_boot_time >= 15000UL) {
+                Serial.println("[MiThermo] enter scan window");
+                s_got_temperature = false;
+                s_got_humidity = false;
+                s_scan_window_start_time = now;
+                s_next_scan_switch_time = now;
+                s_scan_state = MI_THERMO_SCAN_WINDOW_RUN;
             }
             break;
         }
-        //=========================
-        // 开始扫描
-        //=========================
-        case MI_THERMO_START_SCAN:
+        // =====================================================
+        // 扫描窗口运行：1秒扫描 -> 2秒关闭，无限循环
+        // =====================================================
+        case MI_THERMO_SCAN_WINDOW_RUN:
         {
-            pBLEScan->clearResults();
-            Serial.println(
-                "[BLE] scan begin"
-            );
-            pBLEScan->start(
-                60,
-                false
-            );
-            Serial.println(
-                "[MiThermo] scan started"
-            );
-            s_scan_start_time =
-                millis();
-            s_scan_state =
-                MI_THERMO_SCANNING;
-            break;
-        }
-        //=========================
-        // 扫描处理
-        //=========================
-        case MI_THERMO_SCANNING:
-        {
-            RawAdvItem rawItem;
-            while(
-                xQueueReceive(
-                    xRawAdvQueue,
-                    &rawItem,
-                    0U
-                )
-                ==
-                pdTRUE
-            )
-            {
-                Serial.println(
-                    "[MiThermo] try decrypt"
-                );
-                Serial.printf(
-                    "[MiThermo] mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
-                    rawItem.mac[0],
-                    rawItem.mac[1],
-                    rawItem.mac[2],
-                    rawItem.mac[3],
-                    rawItem.mac[4],
-                    rawItem.mac[5]
-                );
-                float temp;
-                float hum;
-                float bat;
-                bool ok =
-                    lywsd03_decrypt(
-                        rawItem.mac,
-                        g_bin_bindkey,
-                        rawItem.payload,
-                        rawItem.payload_len,
-                        temp,
-                        hum,
-                        bat
-                    );
-                if(ok)
-                {
-                    Serial.println(
-                        "[MiThermo] decrypt SUCCESS"
-                    );
-                    Serial.printf(
-                        "TEMP %.2f HUM %.2f BAT %.2f\n",
-                        temp,
-                        hum,
-                        bat
-                    );
-                    state_set_float(
-                        STATE_MI_THERMO_TEMP,
-                        temp
-                    );
-                    state_set_float(
-                        STATE_MI_THERMO_HUMID,
-                        hum
-                    );
-                    state_set_float(
-                        STATE_MI_THERMO_BAT_V,
-                        bat
-                    );
-                    state_set_long(
-                        STATE_MI_THERMO_TS,
-                        time(nullptr)
-                    );
-                    state_set_bool(
-                        STATE_MI_THERMO_VALID,
-                        true
-                    );
+            // 检查扫描窗口是否结束
+            if(now - s_scan_window_start_time >= mi_get_scan_window_ms()) {
+                if(s_ble_scanning) { pBLEScan->stop(); s_ble_scanning = false; }
+                Serial.println("[MiThermo] scan window finished");
+                // 判断本轮扫描是否成功（必须同时收到 temperature + humidity）
+                if(s_got_temperature && s_got_humidity) {
+                    Serial.println("[MiThermo] scan success");
                     s_scan_fail_count = 0;
-                    pBLEScan->stop();
-                    s_sleep_start_time =
-                        now;
-                    s_scan_state =
-                        MI_THERMO_SLEEP;
-                    return;
+                    s_thermo_level = MI_THERMO_LEVEL0;
+                } else {
+                    s_scan_fail_count++;
+                    Serial.printf("[MiThermo] scan failed count=%d level=%d\n", s_scan_fail_count, s_thermo_level);
+                    if(s_thermo_level == MI_THERMO_LEVEL0) {
+                        s_thermo_level = MI_THERMO_LEVEL1;
+                        Serial.println("[MiThermo] enter LEVEL1");
+                    } else if(s_thermo_level == MI_THERMO_LEVEL1) {
+                        if(s_scan_fail_count >= MI_THERMO_MAX_FAIL) {
+                            s_thermo_level = MI_THERMO_LEVEL2;
+                            state_set_bool(STATE_MI_THERMO_ENABLE, false);
+                            Serial.println("[MiThermo] disabled");
+                        }
+                    }
                 }
-                else
-                {
-                    Serial.println(
-                        "[MiThermo] decrypt failed"
-                    );
-                }
+                mi_enter_sleep();
+                break;
             }
-            //扫描超时
-            if(
-                now - s_scan_start_time
-                >
-                MI_THERMO_SCAN_TIMEOUT_MS
-            )
-            {
-                Serial.println(
-                    "[MiThermo] scan timeout"
-                );
-                pBLEScan->stop();
-                s_scan_fail_count++;
-                Serial.printf(
-                    "[MiThermo] fail count=%d\n",
-                    s_scan_fail_count
-                );
-                if(
-                    s_scan_fail_count
-                    >=
-                    MI_THERMO_MAX_FAIL
-                )
-                {
-                    s_disabled_by_fault=true;
-                    Serial.println(
-                        "[MiThermo] disabled by fault"
-                    );
-                    return;
-                }
-                s_sleep_start_time =
-                    now;
-                s_scan_state =
-                    MI_THERMO_SLEEP;
+            // 正常启动1秒扫描
+            if(now >= s_next_scan_switch_time) {
+                pBLEScan->clearResults();
+                pBLEScan->start(0, true);
+                s_ble_scanning = true;
+                s_scan_on_start_time = now;
+                s_scan_state = MI_THERMO_SCAN_ON;
             }
             break;
         }
-        //=========================
-        // 睡眠20分钟
-        //=========================
+        // =====================================================
+        // 关闭BLE扫描，等待计时结束
+        // =====================================================
+        case MI_THERMO_SCAN_WINDOW_WAIT:
+        {
+            if(now - s_scan_window_start_time >= mi_get_scan_window_ms()) {
+                Serial.println("[MiThermo] scan window finished");
+                s_scan_fail_count = 0;
+                s_thermo_level = MI_THERMO_LEVEL0;
+                mi_enter_sleep();
+            }
+            break;
+        }
+        // =====================================================
+        // BLE扫描开启
+        // =====================================================
+        case MI_THERMO_SCAN_ON:
+        {
+            if(now - s_scan_on_start_time >= MI_THERMO_SCAN_ON_MS) {
+                pBLEScan->stop();
+                s_ble_scanning = false; 
+                s_next_scan_switch_time = now + mi_random_scan_off_ms();
+                s_scan_state = MI_THERMO_SCAN_OFF;
+            }
+            break;
+        }
+        // =====================================================
+        // BLE关闭等待
+        // =====================================================
+        case MI_THERMO_SCAN_OFF:
+        {
+            if(now >= s_next_scan_switch_time) {
+                s_scan_state = MI_THERMO_SCAN_WINDOW_RUN;
+            }
+            break;
+        }
+        // =====================================================
+        // BLE休眠期
+        // =====================================================
         case MI_THERMO_SLEEP:
         {
-            if(
-                now - s_sleep_start_time
-                >
-                MI_THERMO_SLEEP_MS
-            )
-            {
-                Serial.println(
-                    "[MiThermo] wake scan"
-                );
-                s_scan_state =
-                    MI_THERMO_START_SCAN;
+            if(now - s_sleep_start_time >= s_sleep_target_ms) {
+                Serial.println("[MiThermo] wakeup from sleep");
+                s_got_temperature = false;
+                s_got_humidity = false;
+                s_scan_window_start_time = now;
+                s_next_scan_switch_time = now;
+                s_scan_state = MI_THERMO_SCAN_WINDOW_RUN;
             }
             break;
+        } 
+
+        default:
+        {
+            s_scan_state = MI_THERMO_SCAN_WINDOW_RUN;
+            break;
+        }
+    }
+    
+    // =====================================================
+    // 解码队列处理
+    // 不在BLE callback里面执行
+    // =====================================================
+    RawAdvItem rawItem;
+    while(xQueueReceive(xRawAdvQueue, &rawItem, 0) == pdTRUE)
+    {
+        float value = NAN, dummy1 = NAN, dummy2 = NAN;
+        uint8_t data_type = 0;
+        bool result = lywsd03_decrypt(rawItem.mac, g_bin_bindkey, rawItem.adv_data, rawItem.adv_len, value, dummy1, dummy2, data_type);
+        if(result)
+        {
+            Serial.println("[MiThermo] decrypt OK");
+            time_t ts = time(nullptr);
+            switch(data_type)
+            {
+                case 1: // temperature
+                    state_set_float(STATE_MI_THERMO_TEMP, value);
+                    state_set_long(STATE_MI_THERMO_TEMP_TS, ts);
+                    s_got_temperature = true;
+                    break;
+                case 2: // humidity
+                    state_set_float(STATE_MI_THERMO_HUMID, value);
+                    state_set_long(STATE_MI_THERMO_HUMID_TS, ts);
+                    s_got_humidity = true;
+                    break;
+                case 3: // battery
+                    state_set_float(STATE_MI_THERMO_BAT_V, value);
+                    state_set_long(STATE_MI_THERMO_BAT_TS, ts);
+                    break;
+            }
+            if(s_got_temperature && s_got_humidity) {
+                state_set_bool(STATE_MI_THERMO_VALID, true);
+                // 立即停止BLE扫描，但窗口计时继续
+                if(s_ble_scanning) {
+                    pBLEScan->stop();
+                    s_ble_scanning = false;
+                    Serial.println("[MiThermo] temp + humidity received, BLE scan stopped");
+                    s_scan_state = MI_THERMO_SCAN_WINDOW_WAIT;
+                }
+            }
         }
     }
 }
 
-static bool lywsd03_decrypt(const uint8_t mac[6],
-                            const uint8_t bindkey[16],
-                            const uint8_t* advData, size_t advLen,
-                            float &out_temp, float &out_hum, float &out_bat)
+
+static bool lywsd03_decrypt(const uint8_t mac[6], const uint8_t bindkey[16], const uint8_t* advData, size_t advLen, float &out_value, float &dummy1, float &dummy2, uint8_t &out_type)
 {
-    Serial.printf(
-        "[DEC] advLen=%d\n",
-        advLen
-        );
-    
-    Serial.printf(
-        "[Decrypt] MAC=%02X:%02X:%02X:%02X:%02X:%02X len=%d\n",
-        mac[0],
-        mac[1],
-        mac[2],
-        mac[3],
-        mac[4],
-        mac[5],
-        advLen
-    );
-    size_t offset = 0;
+    out_value = NAN;
+    out_type = 0;
+    // 搜索 FE95
+    size_t pos = 0;
     bool found = false;
-    while(offset + 5 < advLen)
-    {
-        uint8_t len = advData[offset];
-        if(len == 0) break;
-        uint8_t type = advData[offset+1];
-        if(type == 0xFF)
-        {
-            Serial.println("[DEC] found manufacturer");
-            if(advData[offset+2]==0x02 && advData[offset+3]==0x10)
-            {
-                offset +=4;
-                found = true;
-                break;
-            }
-        }
-        offset += (len+1);
+    while(pos + 1 < advLen) {
+        if(advData[pos] == 0x95 && advData[pos+1] == 0xFE) { found = true; break; }
+        pos++;
     }
-    if(!found) return false;
 
-    size_t payloadRemain = advLen - offset;
-    if(payloadRemain <13) return false;
-
-    const uint8_t* pMic = advData + offset + 11;
+    if(!found) { return false; }
+    /*
+        FE95之后结构：
+        58 58
+        type 2
+        pid 1
+        mac 6
+        cipher 5
+        counter 3
+        mic 4
+    */
+    size_t base = pos;
+    uint8_t type_id[2];
+    memcpy(type_id, advData + base + 4, 2);
+    uint8_t pid = advData[base + 6];
+    size_t cipher_len = advLen - base - 13 - 7;
+    if(cipher_len == 0 || cipher_len > 16) { return false; }
+    uint8_t cipher[16];
+    memcpy(cipher, advData + base + 13, cipher_len);
+    // 最后7字节固定: counter 3 + mic 4
+    uint8_t counter[3];
+    memcpy(counter, advData + advLen - 7, 3);
     uint8_t mic[4];
-    memcpy(mic, pMic,4);
+    memcpy(mic, advData + advLen - 4, 4);
+    // nonce: MAC + type + pid + counter
+    uint8_t nonce[12];
+    // 注意：LYWSD03MMC nonce使用广播payload中的倒序MAC，不是NimBLE扫描返回MAC
+    memcpy(nonce, advData + base + 7, 6);
+    memcpy(nonce + 6, type_id, 2);
+    nonce[8] = pid;
+    memcpy(nonce + 9, counter, 3);
 
-    uint8_t nonce[13];
-    memcpy(nonce, mac,6);
-    memcpy(nonce+6, advData+offset,7);
+    mbedtls_ccm_context ctx;
+    mbedtls_ccm_init(&ctx);
 
-    uint8_t cipherText[11];
-    memcpy(cipherText, advData+offset+6, 11);
 
-    mbedtls_ccm_context ccmCtx;
-    mbedtls_ccm_init(&ccmCtx);
+    int ret = mbedtls_ccm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, bindkey, 128);
 
-    int ret = mbedtls_ccm_setkey(&ccmCtx, MBEDTLS_CIPHER_ID_AES, bindkey, 128);
-    if(ret != 0)
-    {
-        mbedtls_ccm_free(&ccmCtx);
+    if(ret != 0) { mbedtls_ccm_free(&ctx); return false; }
+    uint8_t plain[12] = {0};
+    // LYWSD03MMC AES-CCM 固定AAD: b"\x11"
+    uint8_t aad = 0x11;
+    ret = mbedtls_ccm_auth_decrypt(&ctx, cipher_len, nonce, sizeof(nonce), &aad, 1, cipher, plain, mic, 4);
+    mbedtls_ccm_free(&ctx);
+    
+    if(ret != 0) { return false; }
+    /*
+        明文：
+        humidity: 06 10 xx xx xx
+        temp:     04 10 xx xx xx
+        battery:  0A 10 xx xx
+    */
+    if(plain[0] == 0x04 && plain[1] == 0x10) {
+        uint16_t raw = plain[3] | (plain[4] << 8);
+        out_value = raw / 10.0f;
+        out_type = 1;
+    } else if(plain[0] == 0x06 && plain[1] == 0x10) {
+        uint16_t raw = plain[3] | (plain[4] << 8);
+        out_value = raw / 10.0f;
+        out_type = 2;
+    } else if(plain[0] == 0x0A && plain[1] == 0x10) {
+        out_value = plain[3];
+        out_type = 3;
+    } else {
         return false;
     }
+    Serial.printf("[MiThermo] decode type=%d value=%.2f\n", out_type, out_value);
+    return true;
+}
 
-    uint8_t plain[11] = {0};
 
-    ret = mbedtls_ccm_auth_decrypt(
-        &ccmCtx,
-        sizeof(cipherText),   // 参数2：密文长度 11字节
-        nonce,                // 参数3：nonce(iv)指针
-        sizeof(nonce),        // 参数4：nonce长度 13字节
-        nullptr,              // 参数5：ad指针
-        0U,                   // 参数6：ad_len
-        cipherText,           // 参数7：input密文指针
-        plain,                // 参数8：output明文输出
-        mic,                  // 参数9：tag指针(mic)
-        4U                    // 参数10：tag_len
+//=====================================
+//action start scan
+//=====================================
+bool mi_thermo_start_scan()
+{
+    if(!config_get_mi_thermo_allow_collect()) {
+        Serial.println("[MiThermo] start rejected: collection disabled by config");
+        return false;
+    }
+    bool enable = state_get_bool(STATE_MI_THERMO_ENABLE);
+    if(enable) {
+        Serial.println("[MiThermo] already enabled");
+        return true;
+    }
+    Serial.println("[MiThermo] start scan");
+    state_set_bool(STATE_MI_THERMO_ENABLE, true);
+    s_scan_fail_count = 0;
+    s_thermo_level = MI_THERMO_LEVEL0;
+    s_got_temperature = false;
+    s_got_humidity = false;
+    s_scan_window_start_time = millis();
+    s_next_scan_switch_time = millis();
+    s_scan_state = MI_THERMO_BOOT_DELAY;
+    return true;
+}
+
+//workflow调用入口
+static void mi_thermo_start_scan_start(WorkflowActionInstance *action)
+{
+    if(action == nullptr) { return; }
+    action->result = mi_thermo_start_scan() ? ACTION_SUCCESS : ACTION_FAILED;
+}
+
+//=====================================
+//action stop scan
+//=====================================
+bool mi_thermo_stop_scan()
+{
+    bool enable = state_get_bool(STATE_MI_THERMO_ENABLE);
+    if(!enable) {
+        Serial.println("[MiThermo] already disabled");
+        return true;
+    }
+    Serial.println("[MiThermo] stop scan");
+    if(s_ble_scanning) {
+        pBLEScan->stop();
+        s_ble_scanning = false;
+    }
+    state_set_bool(STATE_MI_THERMO_ENABLE, false);
+    s_scan_state = MI_THERMO_DISABLED;
+    return true;
+}
+
+//workflow调用入口
+static void mi_thermo_stop_scan_start(WorkflowActionInstance *action)
+{
+    if(action == nullptr) { return; }
+    action->result = mi_thermo_stop_scan() ? ACTION_SUCCESS : ACTION_FAILED;
+}
+
+//=====================================
+//workflow调用：action运行状态清零
+//=====================================
+static void mi_thermo_action_reset(WorkflowActionInstance *action)
+{
+    if(action==nullptr)
+        return;
+    action->result=ACTION_IDLE;
+    action->running=false;
+    action->runtime=nullptr;
+}
+//=====================================
+//action poll，同步action，此函数做占位
+//=====================================
+static void mi_thermo_action_poll(WorkflowActionInstance *action)
+{
+    if(action == nullptr) { return; }
+    if(action->result == ACTION_IDLE) {
+        action->result = ACTION_FAILED;
+    }
+}
+//=====================================
+//空参数，此函数仅占位
+//=====================================
+static WorkflowParam mi_thermo_action_params[] ={};
+//=====================================
+//START_SCAN action注册
+//=====================================
+static WorkflowActionDescriptor mi_thermo_start_scan_desc =
+{
+    .id = "MI_THERMO_START_SCAN",
+    .name = "开启温湿度扫描",
+    .module = "mi_thermo",
+    .description = "启动米家温湿度计扫描",
+    .params = mi_thermo_action_params,
+    .param_count = 0,
+    .reset = mi_thermo_action_reset,
+    .start = mi_thermo_start_scan_start,
+    .poll = mi_thermo_action_poll
+};
+//=====================================
+//STOP_SCAN action注册
+//=====================================
+static WorkflowActionDescriptor mi_thermo_stop_scan_desc =
+{
+    .id = "MI_THERMO_STOP_SCAN",
+    .name = "关闭温湿度扫描",
+    .module = "mi_thermo",
+    .description = "停止米家温湿度计扫描",
+    .params = mi_thermo_action_params,
+    .param_count = 0,
+    .reset = mi_thermo_action_reset,
+    .start = mi_thermo_stop_scan_start,
+    .poll = mi_thermo_action_poll
+};
+
+//初始化注册action，由init调用
+void mi_thermo_workflow_register()
+{
+    workflow_register_action(
+        &mi_thermo_start_scan_desc
     );
 
 
-    mbedtls_ccm_free(&ccmCtx);
-
-    if(ret !=0)
-    {
-        return false;
-    }
-
-    uint16_t tempRaw = (plain[1] << 8) | plain[0];
-    int16_t  humRaw  = (int16_t)((plain[3] << 8) | plain[2]);
-    uint8_t battRaw = plain[4];
-
-    out_temp = static_cast<int16_t>(tempRaw) / 100.0f;
-    out_hum  = humRaw / 100.0f;
-    out_bat  = battRaw / 100.0f;
-
-
-    return true;
+    workflow_register_action(
+        &mi_thermo_stop_scan_desc
+    );
 }

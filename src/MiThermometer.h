@@ -3,13 +3,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
-// 温湿度计解析输出数据结构
-struct MiThermometerData
-{
-    float temp_c;
-    float humidity;
-    float battery_v;
-};
 
 /**
  * @brief 初始化米家LYWSD03MMC BLE被动扫描
@@ -24,3 +17,11 @@ extern QueueHandle_t xMiThermometerQueue;
 
 //主loop的task
 void MiThermometer_task(void);
+
+void MiThermometer_decode_test();
+
+void ble_init();
+
+//workflow调用action入口
+bool mi_thermo_start_scan();
+bool mi_thermo_stop_scan();
