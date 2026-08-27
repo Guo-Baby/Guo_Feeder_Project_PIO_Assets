@@ -111,4 +111,4 @@ void config_get_mithermometer_blekey(char *buf, size_t buf_size);
  */
 void config_get_mithermometer_mac(char *buf, size_t buf_size);
 
-bool config_get_mi_thermo_enable();
+bool config_get_mi_thermo_allow_collect();

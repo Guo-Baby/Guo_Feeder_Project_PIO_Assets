@@ -1,5 +1,5 @@
 锅氏自动猫粮机项目（Guo Feeder Project）｜正式开发文档
-项目简介
+## 项目简介
 本项目基于 ESP32-S3 开发，是一套全自动宠物投喂、供水智能设备。全程采用 模块化分层架构 + 非阻塞状态机 + 全局状态中心 设计，彻底摒弃阻塞延时、散乱全局变量、硬编码配置，支持长期稳定挂机运行。
 设备支持本地OLED界面显示、按键操作、局域网Web配置、NTP网络校时、断网RTC兜底、参数持久化存储，可扩展云端远程控制、异常故障检测、定时投喂供水业务。
 核心目标
@@ -10,8 +10,9 @@
 - 全程非阻塞运行，无卡死、无卡顿
 - 参数持久化保存，支持手机网页在线修改
 - 可扩展云端远程控制、设备状态上报、故障日志
-当前项目阶段
-软件架构定型、基础外设全部调通、核心分层架构落地，进入业务功能开发阶段。
+
+## 当前项目阶段
+v0.7  2026-08-27
 
 ---
 ## 一、硬件平台
@@ -25,49 +26,252 @@ ESP32-S3 N16R8
 - 驱动：SSD1315
 - 通信：I2C
 - 驱动库：U8G2
-外设预留
-功能模块
-GPIO
-状态
-OLED SDA
-GPIO4
-已启用
-OLED SCL
-GPIO5
-已启用
-电磁阀控水
-GPIO21
-预留
-震动电机投喂
-GPIO22
-预留
-温度传感器 DS18B20
-GPIO23
-预留
 
 ---
 ## 二、最新软件架构（最终定型版）
-本项目已完成架构迭代，确立 三层严格解耦架构，彻底杜绝模块耦合、变量散乱、逻辑混杂问题。
-1. 配置层（config_manager）
-负责用户静态配置参数持久化存储
-- 存储介质：LittleFS + 兼容NVS扩展
-- 存放内容：WiFi账号密码、OLED参数、业务阈值、定时配置等
-- 特性：断电不丢失、支持网页远程修改、只读不参与实时逻辑运算
-2. 运行状态中心（system_state）
-全局唯一运行时状态数据源（RAM常驻）
-核心规则：所有模块禁止互相 extern 变量，统一读写状态中心接口
-- 仅保存动态实时状态，断电清空
-- 包含：WiFi状态、系统时间、NTP同步状态、RTC状态、错误码、系统运行模式
-- 为OLED、云端、业务任务提供统一数据源
-3. 业务驱动层
-各功能模块独立、职责单一、非阻塞轮询调度
-- wifi_module：非阻塞状态机联网、自动重连、网络状态维护
-- time_manager：NTP校时、系统时间管理、后续对接RTC硬件
-- oled_module：界面刷新、状态展示、动画显示
-- 后续扩展：称重模块、供水模块、投喂模块、故障检测、MQTT云端
-架构数据流
-各业务模块 → 更新状态中心 → 显示/云端/控制层读取状态
-配置层仅提供初始参数，不干预运行逻辑
+
+本项目采用分层 + 模块化 + 全局状态中心 + 事件机制 + 非阻塞状态机的软件架构。
+
+随着设备功能逐渐增加，系统目前形成以下四个逻辑层：
+
+┌─────────────────────────────────────────────┐
+│                应用 / 能力层                │
+│                                             │
+│ Valve   Weight   Dispense Guard   Mijia     │
+│ OLED    Motor    其他未来业务模块           │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│                自动化 / 中间层              │
+│                                             │
+│ Workflow Manager                            │
+│   ├── Trigger                               │
+│   ├── Action                                │
+│   ├── Workflow                              │
+│   └── Temporary Action                      │
+│                                             │
+│ Capability Registry                         │
+│   ├── Action Registry                       │
+│   ├── Trigger Registry                      │
+│   ├── Workflow Registry                     │
+│   └── Stable ID                             │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│                  服务层                     │
+│                                             │
+│ System State                                │
+│ Config Manager                              │
+│ Event Manager                               │
+│ Time Manager                                │
+│ WiFi Module                                 │
+│ Command Manager                             │
+│ Log Manager                                 │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│                  云通信层                   │
+│                                             │
+│ Cloud Manager                               │
+│   ├── MQTT                                  │
+│   ├── Cloud Protocol                        │
+│   ├── JSON / CBOR                           │
+│   ├── ACK                                   │
+│   └── UP / DOWN                             │
+└─────────────────────────────────────────────┘
+
+注：以上为逻辑分层，不要求每一层对应一个实际文件夹。当前所有代码仍统一位于 src 目录。
+
+# 2.1 应用 / 能力层
+
+应用 / 能力层负责具体的设备功能和硬件能力。
+每个业务模块保持独立，原则上不直接依赖其他业务模块的内部变量，而是通过 System State、Event Manager 和统一接口进行数据交互。
+
+当前主要包括：
+Valve 电磁阀控制模块。
+HX711 称重模块。
+Dispense Guard 定量供水安全保护模块,这是一个独立的高优先级保护模块。
+米家蓝牙温湿度计模块。
+OLED 本地显示与人机交互模块。
+Motor 步进电机投喂模块,目前属于后续开发能力。
+
+# 2.2 Workflow 自动化层
+
+Workflow 是整个设备自动化能力的核心中间层。
+它不直接定义具体硬件，而是负责将各种设备能力组合成为可执行的工作流。
+
+# 2.3 Capability Registry
+
+Capability Registry 是设备能力的统一登记与对外描述层。
+它可以从 Workflow Framework 获取已经注册的能力，并为这些能力建立Stable ID
+
+# 2.4 服务层
+
+服务层负责提供整个设备运行所需要的基础服务。
+
+# 2.4.1 System State
+
+System State 是整个设备唯一的运行时状态中心。
+
+所有模块的动态运行状态统一由它维护。
+
+# 2.4.2 Config Manager
+
+Config Manager 负责用户配置数据的持久化管理。
+
+当前配置文件位于：
+
+data/
+├── config.json
+└── workflow.json
+
+Config Manager 负责：
+配置读取
+JSON 解析
+类型转换
+配置查询
+配置持久化
+支持云端/UI修改配置
+
+
+# 2.4.3 Event Manager
+
+Event Manager 是系统的一次性事件通信中心。
+与 System State 的区别：System State = 持久存在的状态, Event = 一次性发生的事件
+
+事件产生模块负责发布 Event。
+其他模块可以订阅 Event。
+
+支持：
+Event 发布
+Event 订阅
+多模块同时订阅同一个 Event
+
+# 2.4.4 WiFi Module
+
+负责设备网络连接。
+
+主要功能：
+WiFi 连接
+自动重连
+连接超时
+WiFi 状态维护
+信号强度查询
+WiFi 状态写入 System State
+WiFi Connected / Disconnected Event
+
+# 2.4.5 Time Manager
+
+负责系统时间管理。
+
+NTP 校时
+Unix Timestamp
+系统时间设置
+时间有效性管理
+时间查询
+NTP 同步状态维护
+NTP + RTC 双时间体系。
+
+其中 Time Valid 是非常重要的系统状态。
+如果时间不可信，则依赖准确时间的 Workflow 不应执行。
+
+# 2.4.6 Command Manager
+
+Command Manager 是设备内部的统一命令路由中心。
+所有来自云端、UI、本地的命令最终统一进入 Command Manager。
+
+基本链路：
+Cloud Manager
+      ↓
+Command Manager
+      ↓
+Command Routing
+      ↓
+目标模块 / Workflow / System Service
+
+# 2.5 云通信层 Cloud Manager
+
+Cloud Manager 是设备 MQTT 云通信的唯一入口。
+
+它负责：
+MQTT 连接
+MQTT 自动重连
+MQTT RX
+MQTT UP
+MQTT SET
+云协议解析
+JSON 消息转换
+ACK
+Command 转换
+云端消息上传
+云端命令下发
+
+# 2.6 Log Manager
+
+Log Manager 属于服务层，负责保存设备运行过程中重要的：
+系统事件
+错误
+状态变化
+关键运行数据
+故障信息
+业务运行记录
+
+目标是在不明显影响 ESP32 实时运行性能的前提下，实现可靠的本地日志记录，并Log Upload。
+
+# 2.7 系统整体数据流
+
+整个系统最终形成：
+
+                ┌──────────────┐
+                │ Cloud / UI   │
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │ Cloud Manager│
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │Command Manager│
+                └──────┬───────┘
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+       Workflow Manager      System Service
+             │                   │
+       ┌─────┴─────┐       ┌─────┴──────────┐
+       ▼           ▼       ▼                ▼
+    Trigger      Action  Config          System State
+       │           │
+       └─────┬─────┘
+             │
+             ▼
+       Application Modules
+
+同时系统状态和事件作为横向基础设施：
+
+Application Modules
+       │
+       ├──────────────→ System State
+       │
+       └──────────────→ Event Manager
+
+System State
+       ↑       ↑       ↑
+      OLED   Cloud   Command
+
+Event Manager
+       │
+       ├── Time Manager
+       ├── Cloud Manager
+       ├── Dispense Guard
+       └── Other Modules
+
+这种设计使得设备可以在保持模块独立的情况下不断增加新的硬件能力和业务能力。
 
 ---
 ## 三、当前工程目录结构
@@ -88,54 +292,510 @@ Guo_Feeder_Project
 
 ---
 ## 四、核心模块说明
-1. system_state 状态中心
-全项目核心数据中心，所有运行时状态统一托管，全部私有static变量，仅通过 set/get 接口访问，为后续加锁、RTOS多任务铺垫。
-管理内容：
-- WiFi连接状态
-- 系统时间戳、时间有效性
-- NTP同步状态、最后同步时间
-- RTC硬件可用状态
-- 系统错误码
-- 设备运行状态枚举（空闲/运行/故障）
-2. config_manager 配置管理
-负责读写 config.json，提供全局配置读取接口，支持后续网页在线修改、参数持久化。
-3. wifi_module 网络模块
-已完成全非阻塞状态机重构，彻底消除开机阻塞问题。
-- IDLE 空闲、CONNECTING 连接中、CONNECTED 已连接、DISCONNECTED 断开
-- 30s连接超时、10s自动重连机制
-- 不阻塞loop，不影响其他外设运行
-- 联网状态实时同步至 system_state
-4. time_manager 时间管理
-基于国内稳定NTP服务器校时，自动时区+8，维护系统合法时间状态，同步至状态中心，预留RTC硬件对接接口。
-5. oled 显示模块
-U8G2驱动稳定运行，支持清屏、文本显示、点阵动画，后续统一读取 system_state 数据渲染界面。
+# 4.1 System State
+
+整个项目的唯一运行时状态中心。
+负责保存所有需要跨模块共享的动态状态。
+
+核心原则：
+产生状态的模块
+        ↓
+state_set_xxx()
+        ↓
+System State
+        ↓
+state_get_xxx()
+        ↓
+其他模块
+
+禁止模块直接访问其他模块内部变量。
+
+支持：
+INT
+BOOL
+LONG
+FLOAT
+通用字符串查询
+状态有效性判断
+Enum → String 映射
+String → SystemStateKey 映射
+
+# 4.2 Config Manager
+负责用户配置参数的持久化管理。
+当前配置文件：
+data/config.json
+data/workflow.json
+
+负责：
+读取配置
+JSON解析
+类型转换
+参数查询
+参数保存
+远程修改
+
+
+# 4.3 WiFi Module
+
+负责设备网络连接和网络状态维护。
+主要功能：
+WiFi连接
+自动重连
+超时处理
+RSSI查询
+状态同步
+WiFi Event发布
+配置读取
+NVS历史账号兜底
+AP配网兜底
+全程采用非阻塞状态机。
+
+#4.4 Time Manager
+
+负责系统时间。
+主要功能：
+NTP同步
+Unix Timestamp
+系统时间设置
+时间有效性
+NTP状态
+时间查询
+NTP → RTC
+RTC → System Time
+
+实现断网、重启情况下的时间兜底。
+
+# 4.5 Event Manager
+
+负责一次性事件的发布与订阅。
+主要功能：
+Event 注册
+Event 发布
+Event 订阅
+多订阅者
+Event 回调
+
+用于降低模块之间的直接耦合。
+
+# 4.6 Valve
+
+负责电磁阀控制。
+提供：
+Valve Open
+Valve Close
+Valve Status
+Workflow Action
+是自动供水业务的基础执行模块。
+
+# 4.7 Weight
+负责 HX711 和称重系统。
+提供：
+实时重量
+重量状态
+调零
+校准
+重量异常检测
+Weight Event
+Weight Trigger
+重量数据统一进入 System State。
+
+# 4.8 Dispense Guard
+负责定量供水过程中的高优先级安全保护。
+
+核心逻辑：
+Weight Error
+     ↓
+Event
+     ↓
+Dispense Guard
+     ↓
+Valve Close
+
+用于防止重量传感器异常时继续进水。
+
+# 4.9 Workflow Manager
+
+负责自动化工作流。
+核心功能：
+Trigger 注册
+Action 注册
+Workflow 注册
+Step 调度
+Trigger 生命周期
+Action 生命周期
+Workflow JSON 解析
+Workflow 执行
+Temporary Action
+Action Instance 管理
+
+所有耗时任务采用：
+
+start()
+ ↓
+poll()
+ ↓
+SUCCESS / FAILED
+
+禁止：
+
+delay()
+while等待
+阻塞式执行
+
+# 4.10 Capability Registry
+
+负责设备能力统一登记和 Stable ID 管理。
+管理：
+Action
+Trigger
+Workflow
+
+主要作用：
+能力名称
+   ↓
+Stable ID
+   ↓
+云端/UI
+
+以及：
+Stable ID
+   ↓
+Capability Registry
+   ↓
+真实 Action / Trigger / Workflow
+
+减少云端通信报文长度，同时为未来 UI 自动生成设备能力界面提供基础。
+
+# 4.11 Command Manager
+负责设备命令的统一接收、分类和路由。
+
+主要负责：
+Command
+   ↓
+解析
+   ↓
+分类
+   ↓
+路由
+   ↓
+执行
+
+支持：
+Execute Command
+Query Command
+System Command
+Config Command
+Workflow Command
+
+Command Manager 不负责具体业务逻辑，而是调用对应模块提供的接口。
+
+# 4.12 Cloud Manager
+
+负责设备与 MQTT 云端之间的通信。
+
+主要功能：
+MQTT连接
+MQTT重连
+RX
+UP
+DOWN
+ACK
+Cloud Protocol
+JSON解析
+Command转换
+State上传
+
+核心原则：
+Cloud
+  ↕
+Cloud Manager
+  ↕
+Command Manager / State / Capability
+
+避免云通信代码直接侵入业务模块。
+
+整体通信链路：
+Cloud
+  ↓
+MQTT
+  ↓
+Cloud Manager
+  ↓
+Command Manager
+  ↓
+Device
+
+反向：
+Device
+  ↓
+Cloud Manager
+  ↓
+MQTT
+  ↓
+Cloud
+
+Cloud Manager 与设备业务模块保持解耦。
+
+云端原则上只通过 Cloud Manager 与设备 Command / State / Capability 等体系交互，不直接调用具体业务模块。
+
+Cloud Protocol
+
+当前已经形成统一 MQTT JSON 外壳：
+cmd
+ob
+id
+pl
+src
+ts
+
+采用topic：
+UP
+DOWN
+作为方向区分。
+
+同时已经实现：
+Command 压缩
+Object / Command 映射
+ACK
+Action Result
+Workflow Result
+State Report
+
+目前 MQTT JSON 协议已经基本进入冻结阶段。
+
+# 4.13 Mijia Temperature / Humidity
+
+负责米家蓝牙温湿度计。
+主要功能：
+BLE扫描
+广播解析
+加密报文解码
+温度读取
+湿度读取
+状态保存
+Config管理
+System State更新
+
+当前框架已经完成，下一阶段重点是完善广播报文解码算法。
+
+# 4.14 OLED
+
+负责本地显示和人机交互。
+
+SSD1315
+U8G2
+文本显示
+System State显示
+菜单
+状态页面
+故障页面
+四按键操作
+本地命令
+
+# 4.15 Log Manager
+
+目前尚未正式实现。
+
+未来负责：
+
+系统事件
+错误
+故障
+关键状态
+运行记录
+       ↓
+Log
+       ↓
+本地保存
+       ↓
+未来云端上传
+
+设计重点是降低 Flash 写入次数和对主循环性能的影响。
 
 ---
 ## 五、已完成功能清单
-- ✅ ESP32-S3 工程环境、Flash/PSRAM 适配完成
-- ✅ SSD1315 OLED 稳定驱动、动画显示
-- ✅ LittleFS 文件系统、config.json 配置体系
-- ✅ 全局配置管理层 config_manager
-- ✅ 全局运行状态中心 system_state（架构完全定型）
-- ✅ WiFi 完全非阻塞状态机、自动重连、超时机制
-- ✅ 国内多节点NTP网络校时、时间状态管理
+✅ ESP32-S3 N16R8 工程环境、Flash / PSRAM 适配完成
+✅ SSD1315 OLED 稳定驱动、U8G2 动画显示
+✅ LittleFS 文件系统
+✅ Config Manager 基础配置读取
+✅ System State 全局运行状态中心
+✅ Event Manager 事件发布 / 订阅框架
+✅ WiFi 非阻塞状态机、自动重连、连接超时机制
+✅ NTP 网络校时、Unix 时间戳及时间有效性管理
+✅ Time Manager 基础框架
+✅ Valve 阀门控制模块
+✅ Weight 称重模块基础框架、HX711 数据采集及重量状态管理
+✅ Weight 异常事件机制
+✅ Dispense Guard 重量异常自动关阀保护机制
+✅ Workflow Framework 基础架构
+✅ Workflow Action / Trigger 注册机制
+✅ Action / Trigger reset() / start() / poll() 生命周期机制
+✅ Workflow JSON 解析及工作流执行框架
+✅ Temporary Action 临时动作队列
+✅ Action Instance / Descriptor 生命周期及实例隔离规范
+✅ Timer / Delay Trigger
+✅ Valve Action
+✅ Command Manager 命令路由框架
+✅ Query / Execute / System Command 分类机制
+✅ Cloud Manager MQTT 通信框架
+✅ EMQX MQTT Broker 接入
+✅ MQTT QoS 1 + ACK 通信机制
+✅ MQTT UP / DOWN Topic 通信模型
+✅ Cloud Protocol JSON 消息格式
+✅ Command → Cloud Protocol → MQTT 上行链路
+✅ MQTT → Cloud Protocol → Command Manager 下行链路
+✅ 云端网页 → Worker → EMQX → ESP32 完整命令下发链路
+✅ Capability Registry 能力注册及 Stable ID 映射机制
+✅ Action / Trigger / Workflow 能力查询接口
+✅ 米家 BLE 温湿度计模块基础框架
+✅ 米家温湿度计 BLE 扫描及数据状态管理框架
+⏳ 米家温湿度计加密广播报文解码算法已完成分析，待正式集成
+✅ OLED 模块基础显示框架
+⏳ OLED UI 及四按键交互框架待完善
+✅ Cloudflare Worker 基础 MQTT 消息接收、解析及 D1 数据保存
+✅ Cloudflare Pages 基础调试页面
+✅ Pages → Worker → EMQX → ESP32 下行命令链路
+✅ EMQX → Pages → Worker → D1 上行消息链路
+✅ MQTTX 云端调试链路
+⏳ JSON → CBOR → MQTT Binary 压缩方案已完成验证，待正式整合进 Cloud Protocol
 
 ---
 ## 六、开发中 & 待开发计划
-🔹 下一阶段优先迭代
-- 优化 time_manager 联动 WiFi 状态、按需校时
-- OLED 界面对接 system_state，实现状态自动刷新
-- 完善WiFi异常状态识别、故障码上报
-🔹 中期功能
-- HX711 称重模块接入、重量校准
-- 电磁阀供水状态机、防溢出保护
-- 震动电机投喂定量控制
-- RTC硬件对接、断网时间兜底
-🔹 远期扩展
-- Web配置页面完善、参数在线保存下发
-- 巴法云MQTT云端通信、远程控制
-- 设备故障日志、运行日志存储
-- FreeRTOS精细化任务拆分
+🔴 第一阶段：设备基础能力完善
+
+1. System Command
+
+System Restart
+System Sync Time
+System Get Time
+完善系统级 Command 路由及执行结果返回
+
+↓
+
+2. Config Manager 重构
+
+Config JSON 拆分
+重新设计 LittleFS 配置文件结构
+模块级配置独立存储
+配置字段统一类型管理
+增加 Config 写入 / 更新接口
+增加配置完整性及异常恢复机制
+为云端 / UI 修改配置提供基础接口
+
+↓
+
+3. WiFi / MQTT 远程配置
+
+云端修改 WiFi SSID / Password
+云端修改 MQTT 配置
+Config Manager 持久化
+WiFi Manager / Cloud Manager 配置重新加载
+配置修改后的安全重连机制
+🟠 第二阶段：称重、时间及核心业务能力
+
+4. Weight 完善
+
+Weight Zero
+Weight Calibration
+重量有效性判断
+完善 Weight Error
+完善重量异常 Event
+完善重量相关 System State
+
+↓
+
+5. RTC / Time Manager
+
+RTC 硬件接入
+NTP + RTC 双时间体系
+断网时间维持
+重启后的 RTC 时间恢复
+Time Trusted / 时间可信状态完善
+完全非阻塞 NTP 状态机
+
+↓
+
+6. Workflow 持久化管理
+
+Workflow JSON 持久化
+Workflow 文件独立存储
+Workflow 创建 / 修改 / 删除
+Workflow reload
+Workflow 数据校验
+Workflow 与 Capability Registry 联动
+
+暂不急于开发云端 Workflow 编辑器。
+
+必须先稳定：
+
+ConfigManager → LittleFS → Workflow 持久化 → Workflow reload
+
+再开发云端 Workflow 编辑，避免反复返工。
+
+↓
+
+7. Weight Trigger
+
+新增重量相关 Trigger，例如：
+
+WEIGHT_DECREASE
+后续可扩展 WEIGHT_ABOVE
+WEIGHT_BELOW
+其他重量条件
+
+最终实现：
+
+VALVE_OPEN → WEIGHT_DECREASE(20g) → VALVE_CLOSE
+
+形成完整的定量供水 Workflow。
+
+🟡 第三阶段：可靠性及设备化
+
+8. Log Manager
+
+ESP32 本地 Log 框架
+Event → Log
+Error → Log
+Command → Log
+Workflow → Log
+关键运行状态记录
+RAM Buffer
+LittleFS 持久化
+环形日志 / 日志容量控制
+降低 Flash 写入频率
+Log 上传云端
+
+↓
+
+9. Device State Heartbeat
+
+周期性设备状态上报
+System State → Cloud
+在线状态维护
+最后在线时间
+MQTT 心跳 / Device Heartbeat
+云端设备在线 / 离线判断
+🔵 第四阶段：UI、云端及完整产品功能
+OLED 完整 UI
+四按键本地操作
+OLED System State 可视化
+米家温湿度计解码算法正式集成
+温湿度 System State 完善
+温湿度数据云端上报
+Cloud Protocol CBOR 正式整合
+Cloudflare D1 数据结构完善
+System State 数据库
+MQTT Message / Message Log 数据库
+Device Log 数据库
+Cloudflare Worker API 完善
+Pages 完整 Web UI
+Capability Registry → Web UI 动态能力展示
+Action / Trigger / Workflow 可视化操作
+手机 App
+步进电机自动出粮
+定量猫粮粉末投喂
+投喂异常检测
+完整故障检测及远程诊断
 
 ---
 ## 七、项目开发规范
@@ -184,36 +844,6 @@ U8G2驱动稳定运行，支持清屏、文本显示、点阵动画，后续统�
 4. 禁止setup()/loop()重复定义
 5. 新功能必须先确定所属模块
 6. 修改架构必须同步更新README
-
----
-当前版本
-Version：V0.3 架构定型版
-更新时间：2026-07-22
-更新说明：完成全套分层架构、状态中心落地、WiFi非阻塞重构、NTP时间体系搭建、补充核心专属技术资产记录
-
-
-# time_manager优化计划
-
-- NTP同步采用低频触发
-- 同步等待存在短暂阻塞(max 5s)
-
-后续版本：
-- 改为完全非阻塞NTP状态机
-
-目标：
-
-TIME_SYNC_START
-        |
-        ↓
-TIME_SYNC_WAIT
-        |
-        ↓
-TIME_SYNC_SUCCESS
-
-禁止：
-while等待
-delay等待
-
 
 
 
@@ -496,7 +1126,7 @@ weight_value
 System State 是系统唯一状态中心，新模块只需要注册状态并通过统一接口读写。
 
 
-Workflow Action 编码规范（精简强制执行版）
+# Workflow Action 编码规范（精简强制执行版）
 适用范围：系统所有 WorkflowActionDescriptor、Action Handler、临时 Command Action
 一、实例所有权规则（最高优先级）
 WorkflowActionInstance = 运行状态载体，所有权唯一

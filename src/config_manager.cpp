@@ -448,9 +448,9 @@ void config_get_mithermometer_mac(char *buf, size_t buf_size)
     buf[copy_len] = '\0';
 }
 
-bool config_get_mi_thermo_enable()
+bool config_get_mi_thermo_allow_collect()
 {
-    return config["mi_thermo_enable"]
+    return config["mi_thermo_allow_collect"]
            |
            true;
 }
