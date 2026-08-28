@@ -34,6 +34,8 @@ void setup()
     } else {
         Serial.println("[System] LittleFS mounted");
     }
+    Serial.printf("PSRAM size: %u\n", ESP.getPsramSize());
+    Serial.printf("PSRAM free: %u\n", ESP.getFreePsram());
     system_state_init();
     config_init();
     event_manager_init();

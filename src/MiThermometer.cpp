@@ -96,20 +96,14 @@ public:
         addr[2] != s_target_mac_bin[3] || addr[3] != s_target_mac_bin[2] ||
         addr[4] != s_target_mac_bin[1] || addr[5] != s_target_mac_bin[0]) {return;}
         // =====================================================
-        // 2. 获取payload（使用引用，不复制vector）
+        // 2. 获取payload
         // =====================================================
         const std::vector<uint8_t>& payload = advertisedDevice->getPayload();
         if(payload.empty()) { return; }
         // =====================================================
-        // 3. 查找FE95
+        // 3. 长度过滤
         // =====================================================
-        size_t fe95_pos = 0;
-        bool found_fe95 = false;
-        while(fe95_pos + 1 < payload.size()) {
-            if(payload[fe95_pos] == 0x95 && payload[fe95_pos + 1] == 0xFE) { found_fe95 = true; break; }
-            fe95_pos++;
-        }
-        if(!found_fe95) { return; }
+        if(payload.size()<29){return;}
         // =====================================================
         // 4. 构造RawAdvItem
         // =====================================================
@@ -120,12 +114,18 @@ public:
         item.adv_len = static_cast<uint8_t>(len);
         memcpy(item.adv_data, payload.data(), len);
         item.timestamp = millis();
-        // =====================================================
-        // 5. 入队（callback不解码、不打印）
-        // =====================================================
-        if(xQueueSend(xRawAdvQueue, &item, 0) != pdTRUE) {
-            Serial.println("[MiThermo] RAW queue full");
+        Serial.printf("[MiThermo] ADV len=%d : ", payload.size());
+        
+        //debug
+        for(size_t i = 0; i < payload.size(); i++) {
+            Serial.printf("%02X ", payload[i]);
         }
+        Serial.println();
+        // =====================================================
+        // 5. 入队
+        // =====================================================
+        xQueueSend(xRawAdvQueue, &item, 0);
+        
     }
 };
 
@@ -166,8 +166,6 @@ static bool lywsd03_decrypt(
     const uint8_t* advData,
     size_t advLen,
     float &out_temp,
-    float &out_hum,
-    float &out_bat,
     uint8_t &out_type
 );
 
@@ -273,7 +271,7 @@ static void mi_enter_sleep()
 {
     s_sleep_start_time = millis();
     s_sleep_target_ms = mi_random_sleep_ms();
-    Serial.printf("[MiThermo] enter sleep %lu sec\n", s_sleep_target_ms / 1000);
+    Serial.printf("[MiThermo] enter sleep %u sec\n", s_sleep_target_ms / 1000);
     s_scan_state = MI_THERMO_SLEEP;
 }
 
@@ -421,9 +419,9 @@ void MiThermometer_task()
     RawAdvItem rawItem;
     while(xQueueReceive(xRawAdvQueue, &rawItem, 0) == pdTRUE)
     {
-        float value = NAN, dummy1 = NAN, dummy2 = NAN;
+        float value = NAN;
         uint8_t data_type = 0;
-        bool result = lywsd03_decrypt(rawItem.mac, g_bin_bindkey, rawItem.adv_data, rawItem.adv_len, value, dummy1, dummy2, data_type);
+        bool result = lywsd03_decrypt(rawItem.mac, g_bin_bindkey, rawItem.adv_data, rawItem.adv_len, value, data_type);
         if(result)
         {
             Serial.println("[MiThermo] decrypt OK");
@@ -459,84 +457,68 @@ void MiThermometer_task()
     }
 }
 
-
-static bool lywsd03_decrypt(const uint8_t mac[6], const uint8_t bindkey[16], const uint8_t* advData, size_t advLen, float &out_value, float &dummy1, float &dummy2, uint8_t &out_type)
+//=====================================
+//解码函数
+//=====================================
+static bool lywsd03_decrypt(const uint8_t mac[6], const uint8_t bindkey[16], const uint8_t* advData, size_t advLen, float &out_value, uint8_t &out_type)
 {
     out_value = NAN;
     out_type = 0;
-    // 搜索 FE95
-    size_t pos = 0;
-    bool found = false;
-    while(pos + 1 < advLen) {
-        if(advData[pos] == 0x95 && advData[pos+1] == 0xFE) { found = true; break; }
-        pos++;
-    }
-
-    if(!found) { return false; }
-    /*
-        FE95之后结构：
-        58 58
-        type 2
-        pid 1
-        mac 6
-        cipher 5
-        counter 3
-        mic 4
-    */
-    size_t base = pos;
+    // LYWSD03MMC 加密广播最短长度 29 字节
+    if(advLen < 29) { return false; }
+    // 固定协议头检查: index 5=0x95, 6=0xFE, 7=0x58, 8=0x58
+    if(advData[5] != 0x95 || advData[6] != 0xFE) { return false; }
+    if(advData[7] != 0x58 || advData[8] != 0x58) { return false; }
+    // FE95作为base，固定偏移
+    const size_t base = 5;
     uint8_t type_id[2];
-    memcpy(type_id, advData + base + 4, 2);
+    type_id[0] = advData[base + 4];
+    type_id[1] = advData[base + 5];
     uint8_t pid = advData[base + 6];
+    // cipher长度动态计算: advLen - base - 13 - 7
     size_t cipher_len = advLen - base - 13 - 7;
     if(cipher_len == 0 || cipher_len > 16) { return false; }
-    uint8_t cipher[16];
+    uint8_t cipher[16] = {0};
     memcpy(cipher, advData + base + 13, cipher_len);
-    // 最后7字节固定: counter 3 + mic 4
+    // counter: 最后7字节前3字节
     uint8_t counter[3];
     memcpy(counter, advData + advLen - 7, 3);
+    // mic: 最后4字节
     uint8_t mic[4];
     memcpy(mic, advData + advLen - 4, 4);
-    // nonce: MAC + type + pid + counter
+    // nonce: MAC(6) + type(2) + pid(1) + counter(3)
     uint8_t nonce[12];
-    // 注意：LYWSD03MMC nonce使用广播payload中的倒序MAC，不是NimBLE扫描返回MAC
     memcpy(nonce, advData + base + 7, 6);
     memcpy(nonce + 6, type_id, 2);
     nonce[8] = pid;
     memcpy(nonce + 9, counter, 3);
-
+    // AES-CCM 解密
     mbedtls_ccm_context ctx;
     mbedtls_ccm_init(&ctx);
-
-
     int ret = mbedtls_ccm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, bindkey, 128);
-
     if(ret != 0) { mbedtls_ccm_free(&ctx); return false; }
     uint8_t plain[12] = {0};
-    // LYWSD03MMC AES-CCM 固定AAD: b"\x11"
-    uint8_t aad = 0x11;
+    uint8_t aad = 0x11; // LYWSD03MMC 固定AAD
     ret = mbedtls_ccm_auth_decrypt(&ctx, cipher_len, nonce, sizeof(nonce), &aad, 1, cipher, plain, mic, 4);
     mbedtls_ccm_free(&ctx);
-    
     if(ret != 0) { return false; }
-    /*
-        明文：
-        humidity: 06 10 xx xx xx
-        temp:     04 10 xx xx xx
-        battery:  0A 10 xx xx
-    */
-    if(plain[0] == 0x04 && plain[1] == 0x10) {
-        uint16_t raw = plain[3] | (plain[4] << 8);
-        out_value = raw / 10.0f;
-        out_type = 1;
-    } else if(plain[0] == 0x06 && plain[1] == 0x10) {
-        uint16_t raw = plain[3] | (plain[4] << 8);
-        out_value = raw / 10.0f;
-        out_type = 2;
-    } else if(plain[0] == 0x0A && plain[1] == 0x10) {
-        out_value = plain[3];
-        out_type = 3;
-    } else {
-        return false;
+    // 明文解析: temp(04 10), humidity(06 10), battery(0A 10)
+    switch(plain[0])
+    {
+        case 0x04:
+            out_value = (plain[3] | (plain[4] << 8)) * 0.1f;
+            out_type = 1;
+            break;
+        case 0x06:
+            out_value = (plain[3] | (plain[4] << 8)) * 0.1f;
+            out_type = 2;
+            break;
+        case 0x0A:
+            out_value = plain[3];
+            out_type = 3;
+            break;
+        default:
+            return false;
     }
     Serial.printf("[MiThermo] decode type=%d value=%.2f\n", out_type, out_value);
     return true;
