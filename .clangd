@@ -1,2 +1,10 @@
 CompileFlags:
-  CompilationDatabase: ./compile_commands.json
+  Add:
+    - "-isystemD:/Guo_Feeder_Project/PIO_Assets/Guo_Feeder_Project/.pio/libdeps/esp32-s3-devkitc-1/NimBLE-Arduino/src"
+  Remove:
+    - "-mlongcalls"
+    - "-fstrict-volatile-bitfields"
+    - "-fno-tree-switch-conversion"
+Diagnostics:
+  Suppress:
+    - "access_ctor"
