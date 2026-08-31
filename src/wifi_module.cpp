@@ -109,6 +109,9 @@ static void wifi_update_signal()
 // ==========================
 // WiFi初始化
 // ==========================
+// 前向声明：定义在文件下方，init 阶段需要提前调用一次发起连接
+static void wifi_start_connect();
+
 void wifi_init()
 {
     Serial.println();
@@ -142,6 +145,10 @@ void wifi_init()
         STATE_WIFI_SIGNAL,
         0
     );
+
+    // 初始化阶段直接发起一次 WiFi 连接（按 config 中的 ssid / password）。
+    // loop 中的 wifi_task 仍负责状态轮询与断线后的重连，此处只提前"开一次头"。
+    wifi_start_connect();
 }
 
 // ==========================
