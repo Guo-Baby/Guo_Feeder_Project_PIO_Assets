@@ -9,6 +9,7 @@
 #include "capability_registry.h"
 #include "config_manager.h"
 #include "weight.h"
+#include "system_command.h"
 
 // =====================================================
 // 统一错误码（command_send_error 使用）
@@ -166,6 +167,10 @@ static void command_system_reboot(const CommandMessage &cmd);
 static bool command_system_set_time(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_weight_zero(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &response);
+// ---- SystemCommand（V1）----
+static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 
 // Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
 static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
@@ -379,6 +384,9 @@ void command_manager_init()
     // 真正的执行结果由 ConfigManager 在 config_task() 中
     // 经该回调交回，再由本模块上报云端。
     config_set_completion_callback(command_config_completion);
+
+    // 初始化 SystemCommand（V1：系统资源查询 + 安全重启）
+    system_command_init();
 }
 
 // =====================================================
@@ -461,6 +469,8 @@ bool command_manager_execute(const CommandMessage &cmd)
     // =====================================================
     // 路由分发
     // =====================================================
+    // ArduinoJson 7 的 JsonDocument 使用堆分配、按需自动增长，
+    // 足以容纳 system.flash 的文件列表，无需指定固定容量。
     JsonDocument response;
     bool success = false;
     if (command_is_execute(command)) {
@@ -1269,6 +1279,17 @@ static bool system_router(
         return command_config_backup(cmd, response);
     }
 
+    // ---- SystemCommand（V1）：系统资源查询 + 安全重启 ----
+    if (object == "memory") {
+        return command_system_memory(cmd, response);
+    }
+    if (object == "flash") {
+        return command_system_flash(cmd, response);
+    }
+    if (object == "restart") {
+        return command_system_restart(cmd, response);
+    }
+
     String msg = "Unknown system object: ";
     msg += object;
     command_send_error(
@@ -2005,6 +2026,115 @@ static bool command_config_backup(
 
     response["status"] = "accepted";
     response["message"] = "config backup queued";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// =====================================================
+// system: memory（V1）
+//
+// object: memory
+// 同步查询 Internal RAM / External PSRAM，结果写入 response["data"]。
+// 框架统一包装 cmd=result / id / command / timestamp 后上报。
+// =====================================================
+static bool command_system_memory(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_memory(response))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "memory query failed");
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: flash（V1，合并原 system.files）
+//
+// object: flash
+// 同步查询 Internal Flash / External Flash + 递归文件列表，结果写入 response["data"]。
+// 文件列表只读：不影响 ConfigManager 的 Active / Backup / Factory 文件。
+// =====================================================
+static bool command_system_flash(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_flash(response))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_SYSTEM,
+            "flash query failed (storage/filesystem unavailable)"
+        );
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: restart（V1）
+//
+// object: restart
+// 复用 ConfigManager 既有安全重启窗口（config_cmd_enqueue_restart），
+// 其倒计时由 CONFIG_RESTART_SAFE_DELAY_MS 控制（当前 10s），
+// 倒计时结束后由 ConfigManager 执行 ESP.restart()。
+//
+// 不重建第二套重启机制；本 handler 只负责入队并立即返回 accepted，
+// 真正的重启在倒计时后才发生（满足"completion callback 在重启前完成"）。
+//
+// 架构备注（未来保护，本版不实现）：
+//   真正的"系统忙时禁止重启"保护应落在 ConfigManager 的重启执行路径，
+//   例如引入 system_busy 标志（Flash 写 / RTC 写等关键区置位），
+//   config_cmd_enqueue_restart 在窗口到期前检查该标志，忙则顺延窗口。
+//   本模块仅暴露命令，不持有该状态。
+//
+// 可选参数: {"cancel":true} 取消待重启。
+// =====================================================
+static bool command_system_restart(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    JsonDocument pl;
+    bool has_payload = config_parse_payload(cmd, pl);
+    bool cancel = false;
+    if (has_payload)
+    {
+        cancel = pl["cancel"] | false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart runtime alloc failed");
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_restart(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        cancel
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart enqueue failed");
+        return false;
+    }
+
+    response["status"] = "accepted";
+    response["message"] = cancel
+                        ? "restart cancel queued"
+                        : "restart queued (safe delay 10s)";
     response["command_id"] = rt->cmd_id;
     last_result = CMD_RESULT_ACCEPTED;
     return true;
