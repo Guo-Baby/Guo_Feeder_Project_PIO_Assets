@@ -22,9 +22,11 @@
 // 例如 BIN / OTA / Log / 设备档案 / 校准数据。
 // =====================================================
 
+
 // =====================================================
 // 日志回调（可选）
 // =====================================================
+//
 // level 取值：
 //   "E" = ERROR
 //   "W" = WARN
@@ -35,6 +37,7 @@
 //   未来 Log Manager 完成后，由上层注册回调统一接管。
 //
 // 不注册回调时，模块静默运行，不影响任何功能。
+
 typedef void (*JsonStorageLogCallback)(
     const char *level,
     const char *message
@@ -45,22 +48,45 @@ void json_storage_set_log_callback(
     JsonStorageLogCallback callback
 );
 
+
+// =====================================================
+// 创建目录
+// =====================================================
+//
+// LittleFS 不会在写文件时自动创建父目录。
+// 写入"非随固件烧录"的目录前必须先调用本函数，
+// 否则 write / write_atomic 会因无法创建 .tmp 文件而失败。
+//
+// 幂等: 目录已存在时直接返回 true，可安全重复调用。
+//
+// 返回：
+//   true  = 目录已存在或创建成功
+//   false = 参数非法 / 未初始化 / 创建失败
+
+bool json_storage_mkdir(const char *path);
+
+
 // =====================================================
 // 初始化
 // =====================================================
+//
 // 确认 LittleFS 可用并完成模块自身初始化。
 //
 // 说明：
 //   系统在 setup 阶段已完成 LittleFS 挂载（一次性）。
-//   本函数只做可用性确认，不在每次读写时重复 begin/end，
-//   也不负责决定整个系统何时初始化 / 卸载 LittleFS。
+//   本函数只做可用性确认，不负责挂载 / 卸载 LittleFS。
+//
+//   JsonStorage 不调用 LittleFS.begin()。
+//   LittleFS 的生命周期完全由系统初始化阶段统一管理。
 //
 //   重复调用是幂等的：已初始化则直接返回 true。
 //
 // 返回：
 //   true  = 文件系统可用
 //   false = 文件系统不可用，后续所有读写接口均会失败
+
 bool json_storage_init();
+
 
 // =====================================================
 // 文件基础操作
@@ -78,6 +104,7 @@ bool json_storage_exists(
 //
 // 用途：
 //   由调用方决定一次性读取还是分块读取，以及内存预算。
+
 size_t json_storage_size(
     const char *path
 );
@@ -88,6 +115,7 @@ size_t json_storage_size(
 //   幂等 —— 文件本就不存在时同样返回 true（"确保文件不存在"）。
 //   本函数不理解 backup / version / recovery，
 //   这些策略全部由上层 ConfigManager 决定。
+
 bool json_storage_remove(
     const char *path
 );
@@ -95,13 +123,42 @@ bool json_storage_remove(
 // 重命名文件
 //
 // 说明：
-//   目标文件已存在时由文件系统覆盖（littlefs 的 rename 语义）。
+//   目标文件已存在时由文件系统覆盖（LittleFS 的 rename 语义）。
 //   这是上层实现原子替换与备份轮换的基础能力，
 //   但本函数不理解"为什么 rename"。
+
 bool json_storage_rename(
     const char *from,
     const char *to
 );
+
+
+// =====================================================
+// 文件校验
+// =====================================================
+//
+// 计算整个文件的 CRC32。
+//
+// 特点：
+//   - 流式读取
+//   - 不会把整个文件加载到 RAM
+//   - 内部使用固定大小缓冲区
+//   - 可用于 Config / Workflow / BIN / OTA 等文件
+//
+// 返回：
+//   CRC32 值
+//
+// 错误：
+//   文件不存在、无法打开或读取失败时返回 0。
+//   注意：CRC32 本身可能合法地等于 0，
+//   因此调用方如需严格区分"错误"与"CRC=0"，
+//   应先调用 json_storage_exists() / json_storage_size()
+//   或使用文件读取接口确认文件有效。
+
+uint32_t json_storage_crc32(
+    const char *path
+);
+
 
 // =====================================================
 // 一次性读写
@@ -119,6 +176,7 @@ bool json_storage_rename(
 // 返回：
 //   true  = 读取成功，output 为文件完整内容
 //   false = 文件不存在 / 打开失败 / 文件过大 / 内存不足 / 长度不符
+
 bool json_storage_read(
     const char *path,
     String &output
@@ -129,6 +187,7 @@ bool json_storage_read(
 // 警告：
 //   这是直接覆盖写入，写入过程中断电会导致文件损坏。
 //   需要断电安全请用 json_storage_write_atomic()。
+
 bool json_storage_write(
     const char *path,
     const String &data
@@ -155,16 +214,20 @@ bool json_storage_write(
 // 失败时：
 //   会尽力清理残留的临时文件，并返回 false。
 //   正式文件保持替换前的完整内容，不会被破坏。
+
 bool json_storage_write_atomic(
     const char *path,
     const String &data
 );
 
+
 // =====================================================
 // 分块读写
 // =====================================================
+
 // 分块大小完全由调用方决定，本模块不写死任何数值：
-//   Config Manager 可用 512B，Cloud Transfer 可用 256B，OTA 可用 4096B。
+//   Config Manager 可用 512B，Cloud Transfer 可用 256B，
+//   OTA 可用 4096B。
 // Flash IO chunk 与 MQTT packet chunk 属于不同层，互不影响。
 
 // 分块读取
@@ -176,6 +239,7 @@ bool json_storage_write_atomic(
 //   true  = 调用成功，bytes_read 为实际读取字节数
 //           bytes_read == 0 表示已到文件末尾（EOF）
 //   false = 文件不存在 / 打开失败 / 定位失败 / 参数非法
+
 bool json_storage_read_chunk(
     const char *path,
     size_t offset,
@@ -197,6 +261,7 @@ bool json_storage_read_chunk(
 //   offset 超过当前文件大小时返回 false，而不是填充空洞。
 //   这样上层在分块接收（BEGIN / CHUNK / END）时能立刻察觉
 //   丢块或乱序，而不是得到一个中间填 0 的损坏文件。
+
 bool json_storage_write_chunk(
     const char *path,
     size_t offset,
@@ -204,13 +269,16 @@ bool json_storage_write_chunk(
     size_t length
 );
 
+
 // =====================================================
 // 流式接口
 // =====================================================
+//
 // 对 File 的薄封装，供大文件顺序处理使用
 // （大 JSON / BIN / OTA / Log / Cloud Transfer）。
 //
 // 使用方负责配对 open 与 close，不得长期持有句柄。
+
 struct JsonStorageFile
 {
     File file;
@@ -254,6 +322,7 @@ size_t json_storage_write(
 //   ESP32 的 File::flush() / close() 均无返回值，
 //   本接口无法感知底层落盘失败（分区写满、flash 写保护等）。
 //   需要可靠确认的场景，请改用 json_storage_write() 并校验返回字节数。
+
 bool json_storage_close(
     JsonStorageFile &file
 );

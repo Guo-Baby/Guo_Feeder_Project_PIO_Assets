@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <NimBLEDevice.h>
 #include "system_state.h"
+#include "json_storage.h"
 #include "config_manager.h"
 #include "event_manager.h"
 #include "oled.h"
@@ -36,6 +37,10 @@ void setup()
     }
     Serial.printf("PSRAM size: %u\n", ESP.getPsramSize());
     Serial.printf("PSRAM free: %u\n", ESP.getFreePsram());
+    // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
+    if (!json_storage_init()) {
+        Serial.println("[System] JsonStorage init failed!");
+    }
     system_state_init();
     config_init();
     event_manager_init();
@@ -76,6 +81,16 @@ void setup()
     // 第七层：capability registry（依赖所有注册完成）
     // =====================================================
     capability_registry_init();
+    // =====================================================
+    // 第八层：启动确认（必须位于 setup 最后）
+    //
+    // 只有完整走完 setup 才会写入启动标记。
+    // 若因配置错误导致 panic / 反复重启，标记不会被写入，
+    // 下次启动 ConfigManager 会自动从 Backup 恢复配置。
+    // =====================================================
+    if (!config_boot_validate()) {
+        Serial.println("[WARN] Config boot validate failed");
+    }
 }
 
 void serial_debug_command_process();
@@ -91,6 +106,7 @@ void loop()
     cloud_task();
 
     command_manager_task();
+    config_task();            // 配置修改后的自动重启倒计时
     // ---- 新增：Workflow 任务 ----
     workflow_task();          // 执行 Workflow 状态机
     oled_task();

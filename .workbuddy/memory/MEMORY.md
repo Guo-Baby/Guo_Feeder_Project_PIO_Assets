@@ -7,6 +7,8 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - `readme.md`：架构总纲、编码规范、MQTT 协议、System State / Trigger 注册规范
 - `需求文档.md`：V2.1，8 项待开发计划 + 推荐顺序
 - `config manager开发架构.md`：**Config 存储架构定版，当前行动基线**
+- `config_manager接口文档.md`：8 个云端命令参考 + 错误码 + 3 条踩坑规范（定版）
+- `json_storage接口文档.md`：JsonStorage 全部接口语义 / 幂等性 / EOF 语义 / 踩坑清单（定版）
 
 ## 软件架构（四层）
 应用/能力层（Valve / Weight / DispenseGuard / Mijia / OLED）→ 自动化层（Workflow Manager + Capability Registry）→ 服务层（System State / Config / Event / Time / WiFi / Command / Log）→ 云通信层（Cloud Manager / MQTT）。

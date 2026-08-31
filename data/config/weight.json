@@ -1,0 +1,8 @@
+{
+    "dt": 6,
+    "sck": 7,
+    "sample_interval": 50,
+    "scale": 741,
+    "zero_offset": -800750,
+    "filter_samples": 10
+}
