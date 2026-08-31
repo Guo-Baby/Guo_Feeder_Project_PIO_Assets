@@ -9,12 +9,8 @@
 // 内部常量
 // =====================================================
 
-// LittleFS 挂载参数：与 main.cpp 保持一致
-//   main.cpp: LittleFS.begin(true, "/littlefs", 10, "littlefs")
-//
-// 注意此处 formatOnFail 固定为 false：
-//   格式化是破坏性操作，不应由底层存储模块自行决定。
-//   系统在 setup 阶段已完成挂载，本模块只做可用性确认。
+// LittleFS 挂载参数仅作为文件系统识别信息保留。
+// JsonStorage 不负责挂载 LittleFS。
 #define JS_BASE_PATH        "/littlefs"
 #define JS_MAX_OPEN_FILES   10
 #define JS_PARTITION_LABEL  "littlefs"
@@ -25,14 +21,14 @@
 // 内部读取块大小：栈上缓冲，避免堆分配与内存碎片
 #define JS_BLOCK_SIZE       512
 
-// 路径缓冲区大小（LittleFS 路径通常远小于此值）
+// 路径缓冲区大小
 #define JS_PATH_MAX         256
 
 // 一次性读取的体积上限（32 KB）
 //
 // json_storage_read() 只服务小型 JSON。超过此值一律拒绝，
 // 强制调用方改用 json_storage_read_chunk() 分块处理，
-// 避免大文件被整体灌进 RAM 造成 OOM。
+// 避免大文件整体灌进 RAM 造成 OOM。
 #define JS_MAX_FULL_READ    32768
 
 // 单条日志上限，超长截断，避免栈溢出
@@ -41,6 +37,7 @@
 // =====================================================
 // 内部状态
 // =====================================================
+
 static bool s_ready = false;
 static JsonStorageLogCallback s_log_cb = nullptr;
 
@@ -101,6 +98,7 @@ static bool js_make_tmp_path(
 // =====================================================
 // 日志回调
 // =====================================================
+
 void json_storage_set_log_callback(
     JsonStorageLogCallback callback
 )
@@ -111,6 +109,7 @@ void json_storage_set_log_callback(
 // =====================================================
 // 初始化
 // =====================================================
+
 bool json_storage_init()
 {
     // 幂等：已初始化直接返回
@@ -119,29 +118,23 @@ bool json_storage_init()
         return true;
     }
 
-    // 系统在 setup() 阶段已完成 LittleFS 挂载，本模块默认直接使用，
-    // 不在每次读写时重复 begin/end。
+    // =================================================
+    // 重要：
+    // JsonStorage 不负责 LittleFS.begin()
     //
-    // totalBytes() 在未挂载时返回 0，因此只有当探测到尚未挂载时，
-    // 才做一次兜底挂载尝试。
-    // 兜底挂载同样使用 formatOnFail=false：
-    //   格式化是破坏性操作，不应由底层存储模块自行决定。
+    // LittleFS 的挂载生命周期由系统 setup() 统一管理。
+    // 这里仅确认文件系统已经可用。
+    // =================================================
+
     if (LittleFS.totalBytes() == 0)
     {
-        if (!LittleFS.begin(
-                false,
-                JS_BASE_PATH,
-                JS_MAX_OPEN_FILES,
-                JS_PARTITION_LABEL
-            ))
-        {
-            s_ready = false;
-            js_log("E", "LittleFS unavailable (mount failed)");
-            return false;
-        }
+        s_ready = false;
+        js_log("E", "LittleFS unavailable (not mounted)");
+        return false;
     }
 
     s_ready = true;
+
     js_log("I", "ready");
 
     return true;
@@ -150,15 +143,13 @@ bool json_storage_init()
 // =====================================================
 // 文件基础操作
 // =====================================================
+
 bool json_storage_exists(
     const char *path
 )
 {
     if (!s_ready)
     {
-        // 未初始化时必须留下痕迹：
-        // 若直接静默返回 false，上层可能误读成"配置文件不存在"，
-        // 进而用默认值覆盖掉真实存在的配置。
         js_log("E", "exists: not initialized");
         return false;
     }
@@ -187,12 +178,14 @@ size_t json_storage_size(
     }
 
     File file = LittleFS.open(path, "r");
+
     if (!file)
     {
         return 0;
     }
 
     size_t size = file.size();
+
     file.close();
 
     return size;
@@ -228,6 +221,42 @@ bool json_storage_remove(
     return true;
 }
 
+// =====================================================
+// 创建目录
+//
+// LittleFS 不会在写文件时自动创建父目录。
+// 写入任何"非随固件烧录"的目录之前，必须先调用本函数。
+//
+// 幂等: 目录已存在时直接返回 true。
+// =====================================================
+bool json_storage_mkdir(const char *path)
+{
+    if (!s_ready)
+    {
+        js_log("E", "mkdir: not initialized");
+        return false;
+    }
+
+    if (path == nullptr || path[0] == '\0')
+    {
+        return false;
+    }
+
+    // 幂等：目录已存在视为目标已达成
+    if (LittleFS.exists(path))
+    {
+        return true;
+    }
+
+    if (!LittleFS.mkdir(path))
+    {
+        js_log("E", "mkdir failed: %s", path);
+        return false;
+    }
+
+    return true;
+}
+
 bool json_storage_rename(
     const char *from,
     const char *to
@@ -255,7 +284,7 @@ bool json_storage_rename(
         return false;
     }
 
-    // 目标存在时由文件系统覆盖（littlefs rename 语义）。
+    // 目标存在时由文件系统覆盖（LittleFS rename 语义）。
     // 本函数不理解"为什么 rename"，轮换策略由上层决定。
     if (!LittleFS.rename(from, to))
     {
@@ -267,8 +296,82 @@ bool json_storage_rename(
 }
 
 // =====================================================
+// 文件校验
+// =====================================================
+
+uint32_t json_storage_crc32(
+    const char *path
+)
+{
+    if (!s_ready)
+    {
+        js_log("E", "crc32: not initialized");
+        return 0;
+    }
+
+    if (path == nullptr || path[0] == '\0')
+    {
+        return 0;
+    }
+
+    File file = LittleFS.open(path, "r");
+
+    if (!file)
+    {
+        js_log("W", "crc32: open failed: %s", path);
+        return 0;
+    }
+
+    // 标准 CRC-32 初始值
+    uint32_t crc = 0xFFFFFFFF;
+
+    uint8_t buffer[JS_BLOCK_SIZE];
+
+    while (file.available())
+    {
+        int n = file.read(buffer, sizeof(buffer));
+
+        if (n < 0)
+        {
+            js_log("E", "crc32: read error: %s", path);
+            file.close();
+            return 0;
+        }
+
+        if (n == 0)
+        {
+            break;
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            crc ^= buffer[i];
+
+            for (uint8_t bit = 0; bit < 8; ++bit)
+            {
+                if (crc & 1U)
+                {
+                    crc = (crc >> 1) ^ 0xEDB88320UL;
+                }
+                else
+                {
+                    crc >>= 1;
+                }
+            }
+        }
+    }
+
+    file.close();
+
+    crc ^= 0xFFFFFFFF;
+
+    return crc;
+}
+
+// =====================================================
 // 一次性读写
 // =====================================================
+
 bool json_storage_read(
     const char *path,
     String &output
@@ -288,6 +391,7 @@ bool json_storage_read(
     }
 
     File file = LittleFS.open(path, "r");
+
     if (!file)
     {
         js_log("W", "read: open failed: %s", path);
@@ -296,8 +400,7 @@ bool json_storage_read(
 
     size_t total = file.size();
 
-    // 防御：一次性读取只服务小型文件。超限直接拒绝，
-    // 强制调用方改用分块读取，避免大文件整体进 RAM 造成 OOM。
+    // 防御：一次性读取只服务小型文件。
     if (total > JS_MAX_FULL_READ)
     {
         js_log(
@@ -307,7 +410,9 @@ bool json_storage_read(
             (unsigned int)JS_MAX_FULL_READ,
             path
         );
+
         file.close();
+
         return false;
     }
 
@@ -324,6 +429,7 @@ bool json_storage_read(
                 (unsigned int)total,
                 path
             );
+
             ok = false;
         }
         else
@@ -346,7 +452,10 @@ bool json_storage_read(
                     break;
                 }
 
-                if (!output.concat((const char *)block, (unsigned int)n))
+                if (!output.concat(
+                        (const char *)block,
+                        (unsigned int)n
+                    ))
                 {
                     js_log("E", "read: concat failed: %s", path);
                     ok = false;
@@ -368,6 +477,7 @@ bool json_storage_read(
             (unsigned int)total,
             path
         );
+
         ok = false;
     }
 
@@ -396,6 +506,7 @@ bool json_storage_write(
     }
 
     File file = LittleFS.open(path, "w");
+
     if (!file)
     {
         js_log("W", "write: open failed: %s", path);
@@ -407,7 +518,10 @@ bool json_storage_write(
 
     if (want > 0)
     {
-        written = file.write((const uint8_t *)data.c_str(), want);
+        written = file.write(
+            (const uint8_t *)data.c_str(),
+            want
+        );
     }
 
     file.flush();
@@ -423,6 +537,7 @@ bool json_storage_write(
             (unsigned int)want,
             path
         );
+
         return false;
     }
 
@@ -456,9 +571,11 @@ bool json_storage_write_atomic(
     // 1) 完整写入临时文件
     if (!json_storage_write(tmp, data))
     {
-        // 清理可能残留的半截文件，不留垃圾
+        // 清理可能残留的半截文件
         json_storage_remove(tmp);
+
         js_log("E", "atomic: tmp write failed: %s", tmp);
+
         return false;
     }
 
@@ -466,17 +583,44 @@ bool json_storage_write_atomic(
     if (json_storage_size(tmp) != data.length())
     {
         json_storage_remove(tmp);
+
         js_log("E", "atomic: tmp size mismatch: %s", tmp);
+
         return false;
     }
 
     // 3) 原子替换
-    //    替换前后，正式文件始终是完整内容（旧或新），
-    //    不存在"写了一半"的中间状态。
+    //
+    // 依赖 LittleFS rename 的原子替换语义。
+    // backup / recovery 由上层 ConfigManager 管理，本模块不参与。
     if (!LittleFS.rename(tmp, path))
     {
         json_storage_remove(tmp);
-        js_log("E", "atomic: rename failed: %s -> %s", tmp, path);
+
+        js_log(
+            "E",
+            "atomic: rename failed: %s -> %s",
+            tmp,
+            path
+        );
+
+        return false;
+    }
+
+    // 4) 落盘确认
+    //
+    //    ESP32 Arduino 的 File::flush() 返回 void，
+    //    无法直接确认数据是否真正写达物理存储。
+    //
+    //    这里改用"重新打开正式文件读回大小"做最终校验:
+    //    rename 之后再次读取，若大小与原始数据不一致，
+    //    说明落盘异常，必须让调用方知道本次写入并不可信。
+    //
+    //    校验只读回大小，不分配任何缓冲区。
+    if (json_storage_size(path) != data.length())
+    {
+        js_log("E", "atomic: final verify failed: %s", path);
+
         return false;
     }
 
@@ -486,6 +630,7 @@ bool json_storage_write_atomic(
 // =====================================================
 // 分块读写
 // =====================================================
+
 bool json_storage_read_chunk(
     const char *path,
     size_t offset,
@@ -513,6 +658,7 @@ bool json_storage_read_chunk(
     }
 
     File file = LittleFS.open(path, "r");
+
     if (!file)
     {
         js_log("W", "read_chunk: open failed: %s", path);
@@ -521,16 +667,14 @@ bool json_storage_read_chunk(
 
     size_t total = file.size();
 
-    // 恰好位于文件末尾：EOF，以 bytes_read == 0 表示
+    // 恰好位于文件末尾：EOF
     if (offset == total)
     {
         file.close();
         return true;
     }
 
-    // 越过文件末尾：属于调用错误（分片乱序 / offset 计算错误）。
-    // 与 write_chunk 保持同样的严格性，立刻暴露失败，
-    // 而不是静默返回空数据让上层误以为传输完成。
+    // 越过文件末尾：调用错误
     if (offset > total)
     {
         js_log(
@@ -540,7 +684,9 @@ bool json_storage_read_chunk(
             (unsigned int)total,
             path
         );
+
         file.close();
+
         return false;
     }
 
@@ -552,11 +698,14 @@ bool json_storage_read_chunk(
             (unsigned int)offset,
             path
         );
+
         file.close();
+
         return false;
     }
 
     int n = file.read(buffer, buffer_size);
+
     file.close();
 
     if (n < 0)
@@ -605,7 +754,7 @@ bool json_storage_write_chunk(
     {
         // 从头写入：以 "w" 打开，新建或截断已有文件。
         //
-        // 必须截断。若沿用 "r+" 从头部覆写，当新数据短于旧内容时，
+        // 必须截断。若沿用 "r+" 从头部覆写，当新数据短于旧文件时，
         // 尾部会残留旧字节，产出半新半旧的损坏文件。
         file = LittleFS.open(path, "w");
     }
@@ -622,13 +771,10 @@ bool json_storage_write_chunk(
                 (unsigned int)offset,
                 path
             );
+
             return false;
         }
 
-        // 拒绝越界 offset：
-        //   分块接收出现丢块或乱序时应当立刻暴露失败，
-        //   而不是生成一个中间填 0 的损坏文件。
-        //   文件大小直接从已打开的句柄读取，避免重复开关文件。
         size_t total = file.size();
 
         if (offset > total)
@@ -640,21 +786,34 @@ bool json_storage_write_chunk(
                 (unsigned int)total,
                 path
             );
+
             file.close();
+
             return false;
         }
 
         if (!file.seek(offset))
         {
-            js_log("E", "write_chunk: seek failed: %s", path);
+            js_log(
+                "E",
+                "write_chunk: seek failed: %s",
+                path
+            );
+
             file.close();
+
             return false;
         }
     }
 
     if (!file)
     {
-        js_log("W", "write_chunk: open failed: %s", path);
+        js_log(
+            "W",
+            "write_chunk: open failed: %s",
+            path
+        );
+
         return false;
     }
 
@@ -672,6 +831,7 @@ bool json_storage_write_chunk(
             (unsigned int)length,
             path
         );
+
         return false;
     }
 
@@ -681,6 +841,7 @@ bool json_storage_write_chunk(
 // =====================================================
 // 流式接口
 // =====================================================
+
 bool json_storage_open_read(
     const char *path,
     JsonStorageFile &file
@@ -697,8 +858,7 @@ bool json_storage_open_read(
         return false;
     }
 
-    // 防止复用同一个 JsonStorageFile 造成句柄泄漏：
-    // LittleFS 的句柄数量有限，耗尽后所有 open 都会失败且难以定位。
+    // 防止复用同一个 JsonStorageFile 造成句柄泄漏
     if (file.file)
     {
         js_log("E", "open_read: handle already open");
@@ -827,10 +987,7 @@ bool json_storage_close(
         return true;
     }
 
-    // 注意：ESP32 Arduino 的 File::flush() 与 close() 均无返回值，
-    // 因此本接口无法感知底层落盘失败（分区写满、flash 写保护等）。
-    // 这是框架限制。需要可靠确认落盘的场景，请改用
-    // json_storage_write() 并校验其返回的字节数。
+    // ESP32 Arduino 的 File::flush() 与 close() 均无返回值
     file.file.flush();
     file.file.close();
 

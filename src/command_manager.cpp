@@ -166,6 +166,29 @@ static void command_system_reboot(const CommandMessage &cmd);
 static bool command_system_set_time(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_weight_zero(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &response);
+
+// Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
+static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_set(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_save(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_restart(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_delete(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_module(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_reset(const CommandMessage &cmd, JsonDocument &response);
+static bool command_config_backup(const CommandMessage &cmd, JsonDocument &response);
+
+// ConfigManager 异步完成回调（定义在文件后段，此处前向声明以便注册）
+static void command_config_completion(
+    const char *cmd_id,
+    const char *command,
+    const char *object,
+    const char *source,
+    ConfigCommandType type,
+    bool success,
+    ConfigCommandError error,
+    const JsonDocument &result,
+    const char *message
+);
 static bool command_system_wifi_ap(const CommandMessage &cmd, JsonDocument &response);
 static bool command_is_execute(const String &command);
 static bool command_is_query(const String &command);
@@ -349,6 +372,13 @@ void command_manager_init()
         command_runtime_release(&runtime_queue[i]);
     }
     last_scan_ms = 0;
+
+    // 注册 ConfigManager 完成回调。
+    //
+    // 配置命令是异步的: 本模块入队后立即返回 accepted，
+    // 真正的执行结果由 ConfigManager 在 config_task() 中
+    // 经该回调交回，再由本模块上报云端。
+    config_set_completion_callback(command_config_completion);
 }
 
 // =====================================================
@@ -1213,6 +1243,31 @@ static bool system_router(
     if (object == "wifi_ap") {
         return command_system_wifi_ap(cmd, response);
     }
+    // ---- Config 异步命令（入队后立即返回 accepted）----
+    if (object == "config_query") {
+        return command_config_query(cmd, response);
+    }
+    if (object == "config_set") {
+        return command_config_set(cmd, response);
+    }
+    if (object == "config_save") {
+        return command_config_save(cmd, response);
+    }
+    if (object == "config_restart") {
+        return command_config_restart(cmd, response);
+    }
+    if (object == "config_delete") {
+        return command_config_delete(cmd, response);
+    }
+    if (object == "config_module") {
+        return command_config_module(cmd, response);
+    }
+    if (object == "config_reset") {
+        return command_config_reset(cmd, response);
+    }
+    if (object == "config_backup") {
+        return command_config_backup(cmd, response);
+    }
 
     String msg = "Unknown system object: ";
     msg += object;
@@ -1366,4 +1421,697 @@ static bool command_system_wifi_ap(
     response["message"] = "wifi_ap reserved (not implemented)";
     last_result = CMD_RESULT_OK;
     return true;
+}
+
+// =====================================================
+// Config 异步命令（system 命令族）
+//
+// 完整链路:
+//   MQTT RX
+//     -> CommandManager 解析
+//     -> 创建 CommandRuntime
+//     -> config_cmd_enqueue_xxx()        （只入队，不执行文件 IO）
+//     -> 立即上报 accepted
+//     -> ConfigManager::config_task() 真正执行
+//     -> command_config_completion()
+//     -> 上报最终 result -> CloudManager -> MQTT UP
+//
+// 本文件严禁直接调用:
+//   config_set_xxx() / config_save() / ESP.restart()
+// 配置修改与落盘一律走 config_cmd_enqueue_xxx()。
+// =====================================================
+
+// 配置命令的运行时超时。
+// ConfigManager 队列最多 8 个任务、单次 IO 为毫秒级，1 分钟足够宽松。
+static const unsigned long COMMAND_CONFIG_TIMEOUT_MS = 60000UL;
+
+// 入队失败 -> 统一错误上报
+static bool config_enqueue_report_error(
+    const CommandMessage &cmd,
+    ConfigEnqueueResult ret
+)
+{
+    switch (ret)
+    {
+        case CONFIG_ENQUEUE_QUEUE_FULL:
+            command_send_error(
+                cmd,
+                CMD_ERROR_QUEUE_FULL,
+                "config command queue full"
+            );
+            return false;
+
+        case CONFIG_ENQUEUE_INVALID:
+            command_send_error(
+                cmd,
+                CMD_ERROR_PARAM,
+                "invalid config param or unsupported value type"
+            );
+            return false;
+
+        case CONFIG_ENQUEUE_UNAVAILABLE:
+            command_send_error(
+                cmd,
+                CMD_ERROR_SYSTEM,
+                "config manager unavailable"
+            );
+            return false;
+
+        default:
+            command_send_error(
+                cmd,
+                CMD_ERROR_SYSTEM,
+                "config enqueue failed"
+            );
+            return false;
+    }
+}
+
+// 解析 payload（允许为空）
+static bool config_parse_payload(
+    const CommandMessage &cmd,
+    JsonDocument &pl
+)
+{
+    if (cmd.payload.length() == 0)
+    {
+        return true;   // 无参数，合法
+    }
+
+    if (deserializeJson(pl, cmd.payload))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config payload is not valid JSON"
+        );
+        return false;
+    }
+
+    return true;
+}
+
+// system: config_query
+//
+// payload:
+//   {}                              -> 查询全部模块
+//   {"module":"wifi"}               -> 查询整个模块
+//   {"module":"wifi","key":"ssid"}  -> 查询单个字段
+//   {"keys_only":true}              -> 只返回模块名/字段名（不含值）
+static bool command_config_query(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+    String key    = pl["key"] | "";
+    bool keys_only = pl["keys_only"] | false;
+
+    // 先占 runtime 槽位（内部处理 cmd_id 去重与队列满）
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;   // 错误已由 command_runtime_insert 统一上报
+    }
+
+    ConfigEnqueueResult ret;
+
+    if (module.length() == 0)
+    {
+        ret = config_cmd_enqueue_query_all(
+            rt->cmd_id.c_str(),
+            cmd.command.c_str(),
+            cmd.object.c_str(),
+            cmd.source.c_str(),
+            keys_only
+        );
+    }
+    else if (key.length() == 0)
+    {
+        ret = config_cmd_enqueue_query_module(
+            rt->cmd_id.c_str(),
+            cmd.command.c_str(),
+            cmd.object.c_str(),
+            cmd.source.c_str(),
+            module.c_str(),
+            keys_only
+        );
+    }
+    else
+    {
+        ret = config_cmd_enqueue_query_field(
+            rt->cmd_id.c_str(),
+            cmd.command.c_str(),
+            cmd.object.c_str(),
+            cmd.source.c_str(),
+            module.c_str(),
+            key.c_str()
+        );
+    }
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        // 入队失败：立即归还槽位，并上报明确错误
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    // 第一阶段：只表示"已收下"，不是最终成功
+    response["status"] = "accepted";
+    response["message"] = "config query queued";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_set
+//
+// payload: {"module":"wifi","key":"ssid","value":"new_ssid"}
+//
+// value 只支持标量 (int / bool / float / string)；
+// null / object / array 会在入队阶段被 ConfigManager 拒绝。
+static bool command_config_set(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+    String key    = pl["key"] | "";
+    JsonVariantConst value = pl["value"];
+
+    // 乐观锁: expect_version 缺省时（is<int> 为 false）→ -1 表示不校验
+    int expect_version = pl["expect_version"].is<int>()
+                       ? pl["expect_version"].as<int>()
+                       : -1;
+
+    if (module.length() == 0 || key.length() == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_set requires module and key"
+        );
+        return false;
+    }
+
+    if (value.isNull() || value.isUnbound())
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_set requires a non-null value"
+        );
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_set_field(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        module.c_str(),
+        key.c_str(),
+        value,
+        expect_version
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config set queued, restart required";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_save
+//
+// payload: {}（无参数）
+static bool command_config_save(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_save(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str()
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config save queued";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_restart
+//
+// payload:
+//   {}               -> 安排重启（ConfigManager 先回调成功，再重启）
+//   {"cancel":true}  -> 取消待重启
+static bool command_config_restart(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    bool cancel = pl["cancel"] | false;
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_restart(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        cancel
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = cancel
+                        ? "restart cancel queued"
+                        : "restart queued";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_delete
+//
+// payload: {"module":"weight","key":"skc"}
+//
+// 真正从配置中移除该字段（不是置默认值）。
+// 字段不存在会在执行阶段返回 key not found。
+static bool command_config_delete(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+    String key    = pl["key"] | "";
+
+    int expect_version = pl["expect_version"].is<int>()
+                       ? pl["expect_version"].as<int>()
+                       : -1;
+
+    if (module.length() == 0 || key.length() == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_delete requires module and key"
+        );
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_delete_field(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        module.c_str(),
+        key.c_str(),
+        expect_version
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config delete queued, restart required";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_module
+//
+// payload: {"module":"weight","value":{"dt":6,"sck":7,...}}
+//
+// 批量写入模块字段。value 必须是 object。
+// 执行阶段做严格校验：传入的每个字段都必须已存在，
+// 任一不存在则整体拒绝（result 中返回原因）。
+static bool command_config_module(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+    JsonVariantConst value = pl["value"];
+
+    int expect_version = pl["expect_version"].is<int>()
+                       ? pl["expect_version"].as<int>()
+                       : -1;
+
+    if (module.length() == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_module requires module"
+        );
+        return false;
+    }
+
+    if (value.isNull() || value.isUnbound())
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_module requires a non-null value"
+        );
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_set_module(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        module.c_str(),
+        value,
+        expect_version
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config module queued, restart required";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_reset
+//
+// payload: {"module":"weight"}
+//
+// 从 factory 副本恢复模块（完全替换为 factory 内容）。
+// factory 不存在时返回 CONFIG_ERR_FACTORY_MISSING。
+static bool command_config_reset(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+
+    if (module.length() == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_reset requires module"
+        );
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_reset_module(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        module.c_str()
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config reset queued, restart required";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// system: config_backup
+//
+// payload: {"module":"weight"}
+//
+// 把当前模块备份为 factory 副本（覆盖原有副本）。
+// 只写 /factory/<module>.json，不改动当前配置。
+static bool command_config_backup(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!config_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    String module = pl["module"] | "";
+
+    if (module.length() == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "config_backup requires module"
+        );
+        return false;
+    }
+
+    CommandRuntime *rt =
+        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
+    if (rt == nullptr)
+    {
+        return false;
+    }
+
+    ConfigEnqueueResult ret = config_cmd_enqueue_backup_module(
+        rt->cmd_id.c_str(),
+        cmd.command.c_str(),
+        cmd.object.c_str(),
+        cmd.source.c_str(),
+        module.c_str()
+    );
+
+    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    {
+        command_runtime_release(rt);
+        return config_enqueue_report_error(cmd, ret);
+    }
+
+    response["status"] = "accepted";
+    response["message"] = "config backup queued";
+    response["command_id"] = rt->cmd_id;
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+// =====================================================
+// ConfigManager 完成回调
+//
+// 在 ConfigManager::config_task() 上下文中被调用。
+//
+// 生命周期（重要）:
+//   result 与 message 仅在本次回调期间有效。
+//   需要留存的数据必须深拷贝进本文档 —— 下面的
+//   doc["data"].set(...) 即为深拷贝。
+//   严禁把 result 的引用或指针保存到回调之外。
+// =====================================================
+static void command_config_completion(
+    const char *cmd_id,
+    const char *command,
+    const char *object,
+    const char *source,
+    ConfigCommandType type,
+    bool success,
+    ConfigCommandError error,
+    const JsonDocument &result,
+    const char *message
+)
+{
+    // 结果一律以 runtime 中保存的原始 CommandMessage 为准，
+    // 回调自带的参数仅用于日志与兜底。
+    (void)command;
+    (void)object;
+    (void)source;
+    (void)type;
+
+    CommandRuntime *rt = command_runtime_find_by_cmd_id(String(cmd_id));
+
+    if (rt == nullptr)
+    {
+        // runtime 已被超时清理，迟到回调只能忽略
+        command_log("WARN", "Config callback for unknown cmd_id, ignored");
+        return;
+    }
+
+    JsonDocument doc;
+    doc["cmd"] = "result";
+    doc["id"] = rt->cmd_id;
+    doc["type"] = "config_result";
+    doc["command"] = rt->message.command;
+    doc["object"] = rt->message.object;
+    doc["command_id"] = rt->cmd_id;
+    doc["status"] = success ? "success" : "failed";
+    doc["error_code"] = (int)error;
+    doc["message"] = (message != nullptr) ? message : "";
+
+    // 深拷贝结果数据。
+    // set() 会把字符串拷进 doc 自己的内存池，
+    // 因此 doc 与 ConfigManager 内部文档互不依赖。
+    JsonVariantConst rv = result.as<JsonVariantConst>();
+
+    if (!rv.isNull() && !rv.isUnbound())
+    {
+        // 查询类结果使用 {data:..., version/versions:...} 结构。
+        // 拆到顶层，避免云端收到 data.data 这种嵌套。
+        JsonVariantConst inner = rv["data"];
+
+        if (!inner.isNull())
+        {
+            if (!doc["data"].set(inner))
+            {
+                command_log("ERROR", "config result: data copy failed");
+            }
+
+            JsonVariantConst ver = rv["version"];
+
+            if (!ver.isNull() && !doc["version"].set(ver))
+            {
+                command_log("ERROR", "config result: version copy failed");
+            }
+
+            JsonVariantConst vers = rv["versions"];
+
+            if (!vers.isNull() && !doc["versions"].set(vers))
+            {
+                command_log("ERROR", "config result: versions copy failed");
+            }
+        }
+        else
+        {
+            if (!doc["data"].set(rv))
+            {
+                command_log("ERROR", "config result: data copy failed");
+            }
+        }
+    }
+
+    time_t ts = get_unix_timestamp();
+    if (ts > 0)
+    {
+        doc["timestamp"] = ts;
+    }
+
+    rt->state = success ? COMMAND_STATE_SUCCESS : COMMAND_STATE_FAILED;
+
+    String json;
+    serializeJson(doc, json);
+    command_report_result(json);
+
+    command_runtime_release(rt);
 }

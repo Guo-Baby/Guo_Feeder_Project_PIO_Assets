@@ -1,0 +1,8 @@
+{
+    "timezone": 8,
+    "ntp_server1": "ntp.aliyun.com",
+    "ntp_server2": "cn.pool.ntp.org",
+    "sync_interval_day": 7,
+    "sync_hour": 4,
+    "sync_minute": 10
+}

@@ -180,3 +180,15 @@ enum FragmentType
 1. 纯头文件 cloud_protocol_enum.h（可直接粘贴进工程）
 2. 报文合法性校验伪代码（入参检查函数）
 3. CBOR 序列化 / 反序列化标准封装模板
+
+
+
+## 9 新增config相关命令
+命令	紧凑 payload
+查询单条    {"c":"system","i":"1003","p":{"o":"config_query","module":"weight","key":"skc"}}
+查询模块	{"c":"system","i":"1002","p":{"o":"config_query","module":"wifi"}}
+查询全部	{"c":"system","i":"1003","p":{"o":"config_query"}}
+修改配置	{"c":"system","i":"1004","p":{"o":"config_set","module":"wifi","key":"ssid","value":"MyHome"}}
+保存	{"c":"system","i":"1005","p":{"o":"config_save"}}
+重启	{"c":"system","i":"1006","p":{"o":"config_restart"}}
+取消重启	{"c":"system","i":"1007","p":{"o":"config_restart","cancel":true}}
