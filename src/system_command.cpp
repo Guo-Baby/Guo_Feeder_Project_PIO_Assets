@@ -1,16 +1,130 @@
 // =====================================================
-// SystemCommand 模块（V1 实现）
+// SystemCommand 模块（V2 实现）
 //
-// 仅负责设备自身基础系统控制与资源查询。
-// 详见 system_command.h 顶部说明与需求文档。
+// 仅负责设备自身基础系统控制与资源查询，
+// 并作为全系统唯一的 Restart 执行点。
+//
+// 详见 system_command.h 顶部说明与 AI_TASK.md。
 // =====================================================
 #include "system_command.h"
 
 #include <LittleFS.h>
-#include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() 等片上资源 API
+#include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() / ESP.restart()
+#include <stdarg.h>
+#include <stdio.h>      // vsnprintf
+
+// FreeRTOS：提供 portMUX_TYPE / portMUX_INITIALIZE / portENTER_CRITICAL。
+//
+// 为什么必须用真正的自旋锁:
+//   cloud_manager 使用 esp-mqtt，命令在 mqtt_event_handler() 中同步执行
+//   （cloud_manager.cpp:1095 调用 command_manager_execute），
+//   该回调运行在 esp-mqtt 任务上下文，而不是 Arduino loop 任务。
+//   因此 acquire()/release()/request_restart() 可能与 system_command_task()
+//   在不同核心上并发执行，普通变量自增自减并不安全（需求文档 §11）。
+//
+// portmacro.h 内部已包含 soc/spinlock.h 与 esp_system.h，
+// 因此 Reset Reason 相关 API 也随之可用。
+#include <freertos/FreeRTOS.h>
+#include <esp_system.h>
 
 // =====================================================
-// 内部辅助
+// 内部状态
+// =====================================================
+
+// 保护下面全部共享状态的 SMP 自旋锁。
+//
+// 不使用 portMUX_INITIALIZER_UNLOCKED 静态初始化：
+// 该宏展开为 C99 指示式初始化器，而本项目以 gnu++11 编译，
+// 这里改为在 system_command_init() 中显式调用 portMUX_INITIALIZE()，
+// 避免依赖 GNU 扩展行为。
+static portMUX_TYPE s_lock;
+
+static volatile RestartState s_restart_state = RESTART_IDLE;
+static volatile uint32_t s_critical_count = 0;
+static volatile unsigned long s_pending_since_ms = 0;
+
+// 本次启动的 Reset Reason 缓存（esp_reset_reason() 结果随运行可能变化，
+// 启动时取一次即可代表"本次为什么重启"）
+static uint8_t s_reset_reason = 0;
+
+// =====================================================
+// 日志
+//
+// 本阶段不引入 Log 模块（需求文档 §15），仅做串口输出。
+// Restart 是低频事件，输出量很小。
+//
+// 严禁在自旋锁临界区内调用本函数：串口输出可能阻塞。
+// =====================================================
+static void syscmd_log(const char *level, const char *fmt, ...)
+{
+    char buf[160];
+
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    if (n < 0)
+    {
+        return;
+    }
+
+    Serial.printf("[SYSCMD][%s] %s\n", level, buf);
+}
+
+// =====================================================
+// 状态名 / Reset Reason 名
+// =====================================================
+const char *system_command_restart_state_name(RestartState st)
+{
+    switch (st)
+    {
+        case RESTART_IDLE:
+            return "idle";
+        case RESTART_REQUESTED:
+            return "requested";
+        case RESTART_PENDING:
+            return "pending";
+        case RESTARTING:
+            return "restarting";
+        default:
+            return "unknown";
+    }
+}
+
+const char *system_command_reset_reason_name()
+{
+    switch ((esp_reset_reason_t)s_reset_reason)
+    {
+        case ESP_RST_UNKNOWN:
+            return "unknown";
+        case ESP_RST_POWERON:
+            return "power_on";
+        case ESP_RST_EXT:
+            return "external_pin";
+        case ESP_RST_SW:
+            return "software";
+        case ESP_RST_PANIC:
+            return "panic";
+        case ESP_RST_INT_WDT:
+            return "interrupt_watchdog";
+        case ESP_RST_TASK_WDT:
+            return "task_watchdog";
+        case ESP_RST_WDT:
+            return "other_watchdog";
+        case ESP_RST_DEEPSLEEP:
+            return "deep_sleep";
+        case ESP_RST_BROWNOUT:
+            return "brownout";
+        case ESP_RST_SDIO:
+            return "sdio";
+        default:
+            return "unknown";
+    }
+}
+
+// =====================================================
+// 内部辅助（资源查询部分）
 // =====================================================
 
 // 填充单个 RAM 区块的 5 个指标
@@ -31,7 +145,7 @@ static void fill_ram_block(
 
 // 递归收集 LittleFS 的目录与文件，写入 files 数组。
 //
-// 只读约束（需求文档 §8）：
+// 只读约束（需求文档 §8）:
 //   - 仅 open 取元数据（name/isDirectory/size），不读写文件内容
 //   - 不创建 / 删除 / 重命名任何文件
 //   - 不修改 ConfigManager 的 Active / Backup / Factory 文件
@@ -88,13 +202,328 @@ static void files_collect(const String &dir_path, JsonArray files)
 }
 
 // =====================================================
-// 公开接口
+// 生命周期
 // =====================================================
-
 void system_command_init()
 {
-    // 当前无状态；LittleFS 由 main.cpp 在 setup 中挂载，这里不重复挂载。
-    // 保留此函数以便未来扩展（如缓存句柄）。
+    // 显式把自旋锁置为 unlocked。
+    //
+    // 必须在任何 acquire()/release() 之前完成。
+    // system_command_init() 由 setup() 阶段调用，早于一切业务。
+    portMUX_INITIALIZE(&s_lock);
+
+    portENTER_CRITICAL(&s_lock);
+    s_restart_state = RESTART_IDLE;
+    s_critical_count = 0;
+    s_pending_since_ms = 0;
+    portEXIT_CRITICAL(&s_lock);
+
+    // Reset Reason 必须在早期读取：代表"本次为什么启动"。
+    s_reset_reason = (uint8_t)esp_reset_reason();
+
+    syscmd_log(
+        "I",
+        "init done, reset reason=%s, safe delay=%lu ms",
+        system_command_reset_reason_name(),
+        (unsigned long)SYSTEM_RESTART_SAFE_DELAY_MS
+    );
+}
+
+// =====================================================
+// Restart 状态机（由主循环驱动）
+//
+// 唯一允许调用 ESP.restart() 的地方。
+//
+// 状态推进:
+//   RESTART_IDLE       -> 无事可做
+//   RESTART_REQUESTED  -> 当 critical_count == 0 时进入 RESTART_PENDING
+//   RESTART_PENDING    -> 倒计时满 SYSTEM_RESTART_SAFE_DELAY_MS 后真正重启
+//   RESTARTING         -> 不可达（ESP.restart() 不会返回）
+// =====================================================
+void system_command_task()
+{
+    unsigned long now = millis();
+
+    // 先在锁内取快照，之后所有判断与日志都在锁外进行。
+    portENTER_CRITICAL(&s_lock);
+    RestartState st = s_restart_state;
+    uint32_t cnt = s_critical_count;
+    unsigned long since = s_pending_since_ms;
+    portEXIT_CRITICAL(&s_lock);
+
+    switch (st)
+    {
+        case RESTART_REQUESTED:
+        {
+            // 等待所有 Critical Operation 完成。
+            //
+            // 注意（需求文档 §7）: 等待期间【允许】新的 Critical Operation 开始，
+            // 这是刻意设计 —— 例如用户连续改多个 Config 参数时，
+            // 已经发出的 Restart 不应该阻止后续参数修改，
+            // 只需要等计数自然归零。
+            if (cnt != 0)
+            {
+                return;
+            }
+
+            // 二次确认：cnt 是锁外快照，真正切换前必须重新判断，
+            // 避免与并发的 acquire() 产生竞态。
+            bool entered = false;
+
+            portENTER_CRITICAL(&s_lock);
+            if (s_restart_state == RESTART_REQUESTED && s_critical_count == 0)
+            {
+                s_restart_state = RESTART_PENDING;
+                s_pending_since_ms = now;
+                entered = true;
+            }
+            portEXIT_CRITICAL(&s_lock);
+
+            if (entered)
+            {
+                syscmd_log(
+                    "W",
+                    "critical operations drained, restart pending %lu ms",
+                    (unsigned long)SYSTEM_RESTART_SAFE_DELAY_MS
+                );
+            }
+            return;
+        }
+
+        case RESTART_PENDING:
+        {
+            // 用无符号差值计算，天然兼容 millis() 溢出回绕
+            unsigned long elapsed = now - since;
+
+            if (elapsed < SYSTEM_RESTART_SAFE_DELAY_MS)
+            {
+                return;
+            }
+
+            // 进入 RESTARTING 之后再重启，保证状态可见。
+            // ESP.restart() 必须在临界区外调用。
+            portENTER_CRITICAL(&s_lock);
+            s_restart_state = RESTARTING;
+            portEXIT_CRITICAL(&s_lock);
+
+            syscmd_log("W", "safe window elapsed, restarting now");
+            Serial.flush();
+
+            ESP.restart();
+            return;
+        }
+
+        case RESTART_IDLE:
+        case RESTARTING:
+        default:
+            return;
+    }
+}
+
+// =====================================================
+// Restart Request API
+// =====================================================
+bool system_command_request_restart()
+{
+    bool accepted = false;
+    bool first_request = false;
+
+    portENTER_CRITICAL(&s_lock);
+
+    if (s_restart_state == RESTART_IDLE)
+    {
+        s_restart_state = RESTART_REQUESTED;
+        accepted = true;
+        first_request = true;
+    }
+    else if (s_restart_state == RESTART_REQUESTED ||
+             s_restart_state == RESTART_PENDING)
+    {
+        // 幂等（需求文档 §13）: 已经在等待 / 倒计时中。
+        // 不取消、不重置倒计时、不重复触发。
+        accepted = true;
+    }
+    else
+    {
+        // RESTARTING：系统正在关闭，无法再接受请求。
+        accepted = false;
+    }
+
+    RestartState st = s_restart_state;
+    uint32_t cnt = s_critical_count;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (first_request)
+    {
+        syscmd_log(
+            "W",
+            "restart requested (critical=%lu), waiting for drain",
+            (unsigned long)cnt
+        );
+    }
+    else if (accepted)
+    {
+        syscmd_log(
+            "I",
+            "restart already requested (state=%s), ignored",
+            system_command_restart_state_name(st)
+        );
+    }
+    else
+    {
+        syscmd_log("W", "restart request rejected, system is restarting");
+    }
+
+    return accepted;
+}
+
+RestartState system_command_restart_state()
+{
+    portENTER_CRITICAL(&s_lock);
+    RestartState st = s_restart_state;
+    portEXIT_CRITICAL(&s_lock);
+
+    return st;
+}
+
+bool system_command_restart_pending(unsigned long &remain_ms)
+{
+    remain_ms = 0;
+
+    portENTER_CRITICAL(&s_lock);
+    RestartState st = s_restart_state;
+    unsigned long since = s_pending_since_ms;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (st == RESTART_PENDING || st == RESTARTING)
+    {
+        unsigned long elapsed = millis() - since;
+        remain_ms = (elapsed >= SYSTEM_RESTART_SAFE_DELAY_MS)
+                  ? 0
+                  : (SYSTEM_RESTART_SAFE_DELAY_MS - elapsed);
+        return true;
+    }
+
+    if (st == RESTART_REQUESTED)
+    {
+        // 还在等 Critical Operation 归零，剩余时间未知，不能用 0 理解。
+        remain_ms = 0;
+        return true;
+    }
+
+    return false;
+}
+
+// =====================================================
+// Critical Operation API
+// =====================================================
+bool system_command_critical_operation_acquire()
+{
+    bool ok = false;
+
+    portENTER_CRITICAL(&s_lock);
+
+    // 进入 RESTART_PENDING 后禁止新的 Critical Operation（需求文档 §14）。
+    // 原因: 系统已经确认当时没有 Critical 操作并准备重启，
+    // 若此刻允许新的不可中断操作开始，重启就永远无法收敛。
+    if (s_restart_state != RESTART_PENDING &&
+        s_restart_state != RESTARTING &&
+        s_critical_count < 0xFFFFFFFFUL)
+    {
+        s_critical_count++;
+        ok = true;
+    }
+
+    RestartState st = s_restart_state;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (!ok)
+    {
+        syscmd_log(
+            "W",
+            "critical op acquire rejected (state=%s)",
+            system_command_restart_state_name(st)
+        );
+    }
+
+    return ok;
+}
+
+bool system_command_critical_operation_release()
+{
+    bool ok = false;
+
+    portENTER_CRITICAL(&s_lock);
+    if (s_critical_count > 0)
+    {
+        s_critical_count--;
+        ok = true;
+    }
+    portEXIT_CRITICAL(&s_lock);
+
+    if (!ok)
+    {
+        // 下溢保护（需求文档 §10）。
+        // 计数已经是 0 还调用 release() 属于调用方配对错误，
+        // 这里绝不递减，避免 uint32 回绕成巨大数值导致系统永久无法重启。
+        syscmd_log(
+            "E",
+            "critical op release underflow: count already 0, "
+            "acquire/release not paired"
+        );
+    }
+
+    return ok;
+}
+
+uint32_t system_command_critical_operation_count()
+{
+    portENTER_CRITICAL(&s_lock);
+    uint32_t cnt = s_critical_count;
+    portEXIT_CRITICAL(&s_lock);
+
+    return cnt;
+}
+
+uint8_t system_command_reset_reason()
+{
+    return s_reset_reason;
+}
+
+// =====================================================
+// 指令实现
+// =====================================================
+
+bool syscmd_restart_status(JsonDocument &out)
+{
+    JsonObject data = out["data"].to<JsonObject>();
+    if (data.isNull())
+    {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_lock);
+    RestartState st = s_restart_state;
+    uint32_t cnt = s_critical_count;
+    unsigned long since = s_pending_since_ms;
+    portEXIT_CRITICAL(&s_lock);
+
+    unsigned long remain_ms = 0;
+    if (st == RESTART_PENDING || st == RESTARTING)
+    {
+        unsigned long elapsed = millis() - since;
+        remain_ms = (elapsed >= SYSTEM_RESTART_SAFE_DELAY_MS)
+                  ? 0
+                  : (SYSTEM_RESTART_SAFE_DELAY_MS - elapsed);
+    }
+
+    data["state"] = system_command_restart_state_name(st);
+    data["critical_operations"] = cnt;
+    data["restart_pending"] = (st != RESTART_IDLE);
+    data["remain_ms"] = remain_ms;
+    data["safe_delay_ms"] = (unsigned long)SYSTEM_RESTART_SAFE_DELAY_MS;
+
+    return true;
 }
 
 bool syscmd_memory(JsonDocument &out)

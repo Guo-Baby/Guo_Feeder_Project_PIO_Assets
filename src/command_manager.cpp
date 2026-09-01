@@ -54,10 +54,11 @@ static const unsigned long COMMAND_RUNTIME_SCAN_INTERVAL_MS = 1000UL;
 static CommandRuntime runtime_queue[MAX_COMMAND_RUNTIME];
 
 static unsigned long last_scan_ms = 0;
-static bool reboot_pending = false;
-static unsigned long reboot_start_ms = 0;
 
-#define REBOOT_WAIT_TIMEOUT_MS 10000UL
+// 注: 原 reboot_pending / reboot_start_ms / REBOOT_WAIT_TIMEOUT_MS
+// （legacy reboot 的等待后 ESP.restart() 机制）已随 V2 迁移移除。
+// 所有重启统一由 SystemCommand 的安全重启状态机执行。
+
 // =====================================================
 // 日志与结果回调
 // =====================================================
@@ -167,10 +168,11 @@ static void command_system_reboot(const CommandMessage &cmd);
 static bool command_system_set_time(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_weight_zero(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &response);
-// ---- SystemCommand（V1）----
+// ---- SystemCommand（V2：资源查询 + 统一 Safe Restart）----
 static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
 
 // Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
 static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
@@ -397,12 +399,9 @@ void command_manager_init()
 // =====================================================
 void command_manager_task()
 {
-    if(reboot_pending){
-        if(millis() - reboot_start_ms >= REBOOT_WAIT_TIMEOUT_MS){
-            ESP.restart();
-        }
-    }
-    
+    // 注: 原 legacy reboot 的"等待后 ESP.restart()"已移除，
+    // 现在由 SystemCommand 的安全重启状态机统一执行。
+
     unsigned long now = millis();
     if (now - last_scan_ms >= COMMAND_RUNTIME_SCAN_INTERVAL_MS) {
         last_scan_ms = now;
@@ -1237,7 +1236,9 @@ static bool system_router(
     const String &object = cmd.object;
 
     if (object == "reboot") {
-        // reboot 流程内部上报 result 并立即 ESP.restart()，正常不可达
+        // reboot（legacy 别名）：内部自行上报 result 并请求
+        // SystemCommand 安全重启，随后返回 false（已自管上报，
+        // 框架不再二次包装）。真正的重启由状态机在安全窗口后执行。
         command_system_reboot(cmd);
         return false;
     }
@@ -1279,7 +1280,7 @@ static bool system_router(
         return command_config_backup(cmd, response);
     }
 
-    // ---- SystemCommand（V1）：系统资源查询 + 安全重启 ----
+    // ---- SystemCommand（V2）：系统资源查询 + 统一 Safe Restart ----
     if (object == "memory") {
         return command_system_memory(cmd, response);
     }
@@ -1288,6 +1289,9 @@ static bool system_router(
     }
     if (object == "restart") {
         return command_system_restart(cmd, response);
+    }
+    if (object == "restart_status") {
+        return command_system_restart_status(cmd, response);
     }
 
     String msg = "Unknown system object: ";
@@ -1301,15 +1305,17 @@ static bool system_router(
 }
 
 // =====================================================
-// system: reboot
+// system: reboot（legacy 别名）
 //
 // 流程:
-//   1. 上报 result: status=rebooting
-//   2. MQTT publish（当前 PubSubClient QoS0；QoS1 为后续独立任务）
-//   3. 不等待云端 ACK
-//   4. 立即执行 ESP.restart()
+//   1. 上报 result: status=rebooting（保留原有上报格式）
+//   2. 请求 SystemCommand 执行安全重启
 //
-// 禁止使用 delay 模拟等待。
+// V2 迁移: 本命令不再自己持有等待定时器、也不再直接 ESP.restart()。
+// 与 restart 的区别仅在于上报文案，重启机制完全相同 ——
+// 都会等 Critical Operation 归零后进入 10s 安全窗口再重启。
+//
+// 新代码请优先使用 restart。
 // =====================================================
 static void command_system_reboot(const CommandMessage &cmd)
 {
@@ -1328,8 +1334,9 @@ static void command_system_reboot(const CommandMessage &cmd)
     serializeJson(doc, json);
     command_report_result(json);
     command_log("INFO", "System reboot requested");
-    reboot_pending = true;
-    reboot_start_ms = millis();
+
+    // 交给 SystemCommand，由它决定何时真正重启。
+    system_command_request_restart();
 }
 
 // =====================================================
@@ -1733,8 +1740,14 @@ static bool command_config_save(
 // system: config_restart
 //
 // payload:
-//   {}               -> 安排重启（ConfigManager 先回调成功，再重启）
-//   {"cancel":true}  -> 取消待重启
+//   {}               -> 请求重启（经 ConfigManager 落盘后转交 SystemCommand）
+//   {"cancel":true}  -> 仅取消 ConfigManager 的 5 分钟自动重启倒计时
+//
+// V2 迁移说明:
+//   Restart 的真正执行已收回 SystemCommand。
+//   cancel=true 只能取消"尚未发生的自动重启倒计时"；
+//   已交给 SystemCommand 的重启请求不可取消（需求文档 §13）。
+//   新代码请优先使用 system / restart。
 static bool command_config_restart(
     const CommandMessage &cmd,
     JsonDocument &response
@@ -1771,8 +1784,8 @@ static bool command_config_restart(
 
     response["status"] = "accepted";
     response["message"] = cancel
-                        ? "restart cancel queued"
-                        : "restart queued";
+                        ? "config auto-restart timer cancel queued"
+                        : "restart queued via SystemCommand";
     response["command_id"] = rt->cmd_id;
     last_result = CMD_RESULT_ACCEPTED;
     return true;
@@ -2078,23 +2091,23 @@ static bool command_system_flash(
 }
 
 // =====================================================
-// system: restart（V1）
+// system: restart（V2：统一 Safe Restart）
 //
 // object: restart
-// 复用 ConfigManager 既有安全重启窗口（config_cmd_enqueue_restart），
-// 其倒计时由 CONFIG_RESTART_SAFE_DELAY_MS 控制（当前 10s），
-// 倒计时结束后由 ConfigManager 执行 ESP.restart()。
 //
-// 不重建第二套重启机制；本 handler 只负责入队并立即返回 accepted，
-// 真正的重启在倒计时后才发生（满足"completion callback 在重启前完成"）。
+// V2 变更: Restart 能力已从 ConfigManager 收回，改由 SystemCommand 统一执行。
+// 系统内不再存在第二套重启机制，本命令只做一件事 —— 请求重启。
 //
-// 架构备注（未来保护，本版不实现）：
-//   真正的"系统忙时禁止重启"保护应落在 ConfigManager 的重启执行路径，
-//   例如引入 system_busy 标志（Flash 写 / RTC 写等关键区置位），
-//   config_cmd_enqueue_restart 在窗口到期前检查该标志，忙则顺延窗口。
-//   本模块仅暴露命令，不持有该状态。
+// 时序:
+//   本 handler 立即返回 success
+//     -> system_command_task() 等待 Critical Operation Count 归零
+//     -> 进入 SYSTEM_RESTART_SAFE_DELAY_MS（10s）安全窗口
+//     -> 窗口到点才执行 ESP.restart()
 //
-// 可选参数: {"cancel":true} 取消待重启。
+// 先回包再重启，保证云端能收到本次命令的成功应答。
+//
+// 不再支持 {"cancel":true}（需求文档 §13：Restart 一旦请求不可取消）。
+// 若要取消 ConfigManager 的 5 分钟自动重启倒计时，请使用 config_restart。
 // =====================================================
 static bool command_system_restart(
     const CommandMessage &cmd,
@@ -2108,35 +2121,62 @@ static bool command_system_restart(
         cancel = pl["cancel"] | false;
     }
 
-    CommandRuntime *rt =
-        command_runtime_insert(cmd, COMMAND_CONFIG_TIMEOUT_MS);
-    if (rt == nullptr)
+    if (cancel)
     {
-        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart runtime alloc failed");
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "restart cannot be cancelled once requested"
+        );
         return false;
     }
 
-    ConfigEnqueueResult ret = config_cmd_enqueue_restart(
-        rt->cmd_id.c_str(),
-        cmd.command.c_str(),
-        cmd.object.c_str(),
-        cmd.source.c_str(),
-        cancel
-    );
-
-    if (ret != CONFIG_ENQUEUE_ACCEPTED)
+    if (!system_command_request_restart())
     {
-        command_runtime_release(rt);
-        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart enqueue failed");
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart request rejected");
         return false;
     }
 
-    response["status"] = "accepted";
-    response["message"] = cancel
-                        ? "restart cancel queued"
-                        : "restart queued (safe delay 10s)";
-    response["command_id"] = rt->cmd_id;
-    last_result = CMD_RESULT_ACCEPTED;
+    JsonObject data = response["data"].to<JsonObject>();
+    if (!data.isNull())
+    {
+        unsigned long remain_ms = 0;
+        system_command_restart_pending(remain_ms);
+
+        data["state"] = system_command_restart_state_name(
+                            system_command_restart_state());
+        data["critical_operations"] =
+            system_command_critical_operation_count();
+        data["safe_delay_ms"] =
+            (unsigned long)SYSTEM_RESTART_SAFE_DELAY_MS;
+        data["remain_ms"] = remain_ms;
+    }
+
+    response["status"] = "success";
+    response["message"] = "restart accepted (safe delay 10s)";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: restart_status（只读诊断）
+//
+// object: restart_status
+//
+// 用于观察 Safe Restart 状态机:
+//   state / critical_operations / restart_pending / remain_ms / safe_delay_ms
+// =====================================================
+static bool command_system_restart_status(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_restart_status(response))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "restart status build failed");
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
     return true;
 }
 

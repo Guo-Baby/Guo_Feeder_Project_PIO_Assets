@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <NimBLEDevice.h>
 #include "system_state.h"
+#include "system_command.h"
 #include "json_storage.h"
 #include "config_manager.h"
 #include "event_manager.h"
@@ -99,6 +100,11 @@ void serial_debug_command_process();
 // =====================================================
 void loop()
 {
+    // ---- Safe Restart 状态机（SystemCommand）----
+    // 必须每轮调用：它是全系统唯一的 Restart 执行点。
+    // 放在最前面，保证已进入的 10 秒安全窗口不被其他任务拖长。
+    system_command_task();
+
     // ---- 原有任务（保持不变） ----
     wifi_task();
     event_dispatch();
