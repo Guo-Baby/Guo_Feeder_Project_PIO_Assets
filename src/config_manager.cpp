@@ -9,6 +9,16 @@
 // PSRAM 分配接口（heap_caps_malloc / heap_caps_free）
 #include <esp_heap_caps.h>
 
+// Restart 能力已收回 SystemCommand（V2 迁移）。
+//
+// 本模块不再执行 ESP.restart()，也不再维护自己的重启安全窗口。
+// 需要重启时统一调用 system_command_request_restart()，
+// 由 SystemCommand 等待 Critical Operation 归零后进入 10s 安全窗口并执行。
+//
+// 本模块仍负责自己的业务逻辑：改配置后的 5 分钟自动重启倒计时
+// （SystemCommand 不知道也不关心这个计时，见需求文档 §8）。
+#include "system_command.h"
+
 // =====================================================
 // 内部常量
 // =====================================================
@@ -73,15 +83,10 @@ static bool s_ready = false;
 static bool s_table_ready = false;
 
 // 修改配置后的自动重启倒计时起点（millis 快照）。0 表示无待重启。
-static unsigned long s_restart_since_ms = 0;
-
-// 重启命令的请求时刻（millis 快照）。0 表示无待处理的重启请求。
 //
-// 与 s_restart_since_ms 的区别:
-//   s_restart_since_ms   —— 改配置后 5 分钟自动重启的倒计时
-//   s_restart_request_ms —— 收到重启命令后的安全延迟，
-//                           用于给 MQTT 结果留出发送时间
-static unsigned long s_restart_request_ms = 0;
+// 注意: 这只是本模块自己的 5 分钟业务倒计时（需求文档 §8）。
+// 重启命令的"安全延迟窗口"已移交给 SystemCommand，本模块不再维护。
+static unsigned long s_restart_since_ms = 0;
 
 // 最近一次提交状态
 //
@@ -182,7 +187,6 @@ static uint8_t s_cmd_count = 0;   // 当前排队数量
 // 前向声明（实现位于文件后段）
 static void config_cmd_process_one();
 static void restart_timer_check();
-static void restart_safe_delay_check();
 
 // =====================================================
 // 内部工具
@@ -887,38 +891,26 @@ static void restart_timer_check()
         // Last Known Good Config，回到上一份可信配置同样是安全结果。
         if (!config_save())
         {
-            cfg_log("E", "pre-restart save failed, rebooting anyway");
+            cfg_log("E", "pre-restart save failed, requesting restart anyway");
         }
 
-        ESP.restart();
+        // 本模块不执行重启。
+        //
+        // 5 分钟倒计时只是"什么时候该重启"的业务判断，
+        // "怎么安全地重启"由 SystemCommand 统一负责:
+        //   等 Critical Operation 归零 -> 10s 安全窗口 -> ESP.restart()
+        s_restart_since_ms = 0;
+
+        if (!system_command_request_restart())
+        {
+            cfg_log("E", "restart request rejected");
+        }
     }
 }
 
-// 重启命令的安全延迟
-//
-// 收到重启命令后不立即 ESP.restart()，而是:
-//   1. 先把 SUCCESS 经 completion callback 交给上层
-//   2. 进入 pending 窗口，等待 CONFIG_RESTART_SAFE_DELAY_MS
-//   3. 到点后才真正重启
-//
-// 这样 MQTT 的结果消息有机会被真正发出去，
-// 避免出现"命令明明成功、云端却永远收不到应答"的情况。
-static void restart_safe_delay_check()
-{
-    if (s_restart_request_ms == 0)
-    {
-        return;
-    }
-
-    // 同样使用无符号差值，兼容 millis() 溢出回绕
-    unsigned long elapsed = millis() - s_restart_request_ms;
-
-    if (elapsed >= CONFIG_RESTART_SAFE_DELAY_MS)
-    {
-        cfg_log("W", "restart safe delay elapsed, rebooting");
-        ESP.restart();
-    }
-}
+// 注: 原 restart_safe_delay_check()（重启命令的 10 秒安全延迟窗口）
+// 已随 V2 迁移整体移除，该职责由 SystemCommand 的状态机承担。
+// 本模块不再维护 s_restart_request_ms，也不再直接调用 ESP.restart()。
 
 // =====================================================
 // 日志回调
@@ -1169,14 +1161,14 @@ ConfigCommitState config_commit_state()
 
 void config_task()
 {
-    // 1) 重启命令的安全延迟：
-    //    放在最前面，保证 pending 窗口不被命令处理拖长。
-    restart_safe_delay_check();
-
-    // 2) 改配置后的 5 分钟自动重启倒计时
+    // 1) 改配置后的 5 分钟自动重启倒计时。
+    //
+    //    注意: 这里只判断"是否该请求重启"，真正的重启由
+    //    SystemCommand 的状态机执行（main.cpp 的 loop 中
+    //    system_command_task() 已在本函数之前调用）。
     restart_timer_check();
 
-    // 3) 每次 loop 最多处理一个配置命令。
+    // 2) 每次 loop 最多处理一个配置命令。
     //    即使队列积压，也不会在一个 loop 内连续执行多次文件 IO。
     config_cmd_process_one();
 }
@@ -2524,17 +2516,34 @@ static ExecResult exec_restart(const ConfigCommandTask &t)
 {
     if (t.cancel)
     {
+        // 取消的只是本模块自己的 5 分钟自动重启倒计时。
+        //
+        // 真正的 Restart 请求一旦交给 SystemCommand 就不可取消
+        //（需求文档 §13）。这里能取消的仅是"尚未发生的自动重启"。
         config_cancel_restart();
-        return result_ok("restart cancelled");
+        return result_ok("config auto-restart timer cancelled");
     }
 
-    // 本函数不执行重启。
+    // 重启前先落盘，避免未保存的修改丢失。
     //
-    // 流程由 process_one 接续:
-    //   1. 先把 SUCCESS 回调给上层
-    //   2. 再置 s_restart_request_ms，进入安全延迟窗口
-    //   3. 由 config_task → restart_safe_delay_check() 到点后真正重启
-    return result_ok("restart scheduled after callback");
+    // 保存失败也照常请求重启: config_save() 失败会回滚到
+    // Last Known Good Config，回到上一份可信配置同样是安全结果。
+    if (!config_save())
+    {
+        cfg_log("E", "pre-restart save failed, requesting restart anyway");
+    }
+
+    // 本模块不执行重启，只发出请求。
+    //
+    // SystemCommand 会先等 Critical Operation 归零，再进入 10s 安全窗口。
+    // 这个窗口足以让本函数的 SUCCESS 经 completion callback 交给上层、
+    // 并由 MQTT 真正发出，到点后才执行 ESP.restart()。
+    if (!system_command_request_restart())
+    {
+        return result_fail(CONFIG_ERR_UNAVAILABLE, "restart request rejected");
+    }
+
+    return result_ok("restart requested via SystemCommand");
 }
 
 // =====================================================
@@ -2638,8 +2647,6 @@ static void config_cmd_process_one()
     source[CONFIG_CMD_SOURCE_MAX - 1] = '\0';
 
     ConfigCommandType type = t.type;
-    bool request_restart =
-        (t.type == CONFIG_CMD_RESTART && !t.cancel && r.success);
 
     // 释放大 value 占用的 PSRAM。
     //
@@ -2670,27 +2677,9 @@ static void config_cmd_process_one()
         );
     }
 
-    // ---- 重启命令：回调之后进入安全延迟，不立即重启 ----
-    //
-    // 先把 SUCCESS 交给上层，再等 CONFIG_RESTART_SAFE_DELAY_MS，
-    // 让 MQTT 结果有机会真正发出，由 restart_safe_delay_check() 收尾。
-    if (request_restart)
-    {
-        // 重启前先落盘，避免未保存的修改丢失。
-        // 与倒计时重启保持一致的处理。
-        if (!config_save())
-        {
-            cfg_log("E", "pre-restart save failed, rebooting anyway");
-        }
-
-        s_restart_request_ms = millis();
-
-        cfg_log(
-            "W",
-            "restart scheduled in %lu ms",
-            (unsigned long)CONFIG_RESTART_SAFE_DELAY_MS
-        );
-    }
+    // 注: 原"回调之后进入安全延迟并在到点后 ESP.restart()"的逻辑已移除。
+    // Restart 请求在 exec_restart() 内已直接交给 SystemCommand，
+    // 由其状态机统一等待 Critical Operation 并执行安全窗口。
 }
 
 // =====================================================
@@ -3089,21 +3078,19 @@ void config_set_completion_callback(
 
 // =====================================================
 // 重启管理
+//
+// V2 迁移: 本模块不再执行 ESP.restart()。
+//   - 真正的重启窗口由 SystemCommand 持有，这里优先反映它的状态
+//   - 本模块只额外报告自己的 5 分钟自动重启倒计时
 // =====================================================
 bool config_restart_pending(unsigned long &remain_ms)
 {
-    // 重启命令的安全延迟窗口优先 —— 它时间更近、更紧急。
+    // SystemCommand 的重启窗口优先 —— 它时间更近、更紧急。
     //
     // 若只检查 5 分钟倒计时，那么
-    // "已收到重启命令、10 秒内即将重启" 会被错误地报成"无待重启"。
-    if (s_restart_request_ms != 0)
+    // "已请求重启、即将进入 10 秒窗口" 会被错误地报成"无待重启"。
+    if (system_command_restart_pending(remain_ms))
     {
-        unsigned long elapsed = millis() - s_restart_request_ms;
-
-        remain_ms = (elapsed >= CONFIG_RESTART_SAFE_DELAY_MS)
-                  ? 0
-                  : (CONFIG_RESTART_SAFE_DELAY_MS - elapsed);
-
         return true;
     }
 
@@ -3129,19 +3116,23 @@ bool config_restart_pending(unsigned long &remain_ms)
 
 bool config_restart_now()
 {
-    cfg_log("W", "restart requested by caller");
-    ESP.restart();
+    // 语义变更（V2）: 不再立即重启。
+    //
+    // 全系统唯一的重启执行点是 SystemCommand。本函数只发出请求，
+    // 实际重启会等 Critical Operation 归零并经过 10s 安全窗口后发生。
+    // 调用方若需要"确认重启已发生"，应观察 system.restart_status。
+    cfg_log("W", "restart requested by caller, delegating to SystemCommand");
 
-    return true;
+    return system_command_request_restart();
 }
 
 void config_cancel_restart()
 {
-    // 同时取消两种待重启状态:
-    //   s_restart_since_ms   —— 改配置后的 5 分钟自动重启倒计时
-    //   s_restart_request_ms —— 重启命令的安全延迟窗口
+    // 只取消本模块自己的 5 分钟自动重启倒计时。
+    //
+    // 注意: 已经交给 SystemCommand 的 Restart 请求【无法】取消
+    //（需求文档 §13：Restart 不可取消，只能被 Critical Operation 延迟）。
     s_restart_since_ms = 0;
-    s_restart_request_ms = 0;
 }
 
 // =====================================================
