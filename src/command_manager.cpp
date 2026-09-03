@@ -173,6 +173,8 @@ static bool command_system_memory(const CommandMessage &cmd, JsonDocument &respo
 static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
+// system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
+static bool command_system_get_time(const CommandMessage &cmd, JsonDocument &response);
 
 // Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
 static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
@@ -1224,7 +1226,7 @@ static bool query_router(
 // 消息格式:
 // {
 //   "cmd":"system",
-//   "ob":"reboot|set_time|weight_zero|wifi_config|wifi_ap",
+//   "ob":"reboot|set_time|time|weight_zero|wifi_config|wifi_ap|memory|flash|restart|restart_status|config_*",
 //   "pl":{}
 // }
 // =====================================================
@@ -1292,6 +1294,9 @@ static bool system_router(
     }
     if (object == "restart_status") {
         return command_system_restart_status(cmd, response);
+    }
+    if (object == "time") {
+        return command_system_get_time(cmd, response);
     }
 
     String msg = "Unknown system object: ";
@@ -2176,6 +2181,60 @@ static bool command_system_restart_status(
         return false;
     }
     response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// =====================================================
+// system: time（TimeManager V2 新增查询）
+//
+// object: time
+// 返回 ESP 系统时间 + PCF8563T RTC 时间，非阻塞。
+// 所有时间读取/转换逻辑在 time_manager 内部完成，
+// 本 handler 只做结构填充（不直接访问 RTC / SNTP）。
+//
+// 响应 data 结构:
+//   system_valid / system_unix(UTC) / system_str(本地时区)
+//   rtc_present / rtc_valid / rtc_unix(UTC) / rtc_str(本地时区)
+//   source (INVALID|RTC|SNTP) / last_ntp_sync / ntp_started
+//   timezone_offset_h
+// =====================================================
+static bool command_system_get_time(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    (void)cmd;
+
+    TimeQueryResult r;
+    if (!time_query(r))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "time query failed");
+        return false;
+    }
+
+    JsonObject data = response["data"].to<JsonObject>();
+    if (data.isNull())
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "time query data alloc failed");
+        return false;
+    }
+
+    data["system_valid"] = r.system_valid;
+    data["system_unix"] = (int64_t)r.system_unix;
+    data["system_str"] = r.system_local;
+
+    data["rtc_present"] = r.rtc_present;
+    data["rtc_valid"] = r.rtc_valid;
+    data["rtc_unix"] = (int64_t)r.rtc_unix;
+    data["rtc_str"] = r.rtc_local;
+
+    data["source"] = r.source;
+    data["last_ntp_sync"] = (int64_t)r.last_ntp_sync;
+    data["ntp_started"] = r.ntp_started;
+    data["timezone_offset_h"] = r.timezone_offset_h;
+
+    response["status"] = "success";
+    response["message"] = "get_time ok";
     last_result = CMD_RESULT_OK;
     return true;
 }
