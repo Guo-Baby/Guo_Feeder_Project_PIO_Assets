@@ -282,12 +282,16 @@ bool rtc_read_time(time_t &timestamp)
         return false;
     }
 
+    // 连续读 7 字节的寄存器顺序（PCF8563 memory map 0x02..0x08）：
+    //   raw[0]=seconds(0x02) raw[1]=minutes(0x03) raw[2]=hours(0x04)
+    //   raw[3]=days(0x05)    raw[4]=weekdays(0x06)  raw[5]=months(0x07)
+    //   raw[6]=years(0x08)
     uint8_t sec   = rtc_bcd2bin(raw[0] & 0x7F);
     uint8_t min   = rtc_bcd2bin(raw[1] & 0x7F);
     uint8_t hour  = rtc_bcd2bin(raw[2] & 0x3F);
     uint8_t day   = rtc_bcd2bin(raw[3] & 0x3F);
-    uint8_t month = rtc_bcd2bin(raw[4] & 0x1F);   // bit7 = century，忽略
-    uint8_t year  = rtc_bcd2bin(raw[5]);          // 0-99 → 2000-2099
+    uint8_t month = rtc_bcd2bin(raw[5] & 0x1F);   // bit7 = century，忽略
+    uint8_t year  = rtc_bcd2bin(raw[6]);          // 0-99 → 2000-2099
 
     // BCD 解码合法性兜底
     if (month < 1 || month > 12 ||
