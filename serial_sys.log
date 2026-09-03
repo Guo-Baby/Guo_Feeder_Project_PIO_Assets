@@ -1,0 +1,235 @@
+--- Terminal on COM8 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0xb (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (248) esp_core_dump_flash: No core dump partition found!
+E (248) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[CFG][I] init done, loaded 7/7 modules
+Event manager init OK
+[BLE] init OK
+
+WiFi init...
+
+Connecting to:wqs1
+
+Time manager init...
+RTC init placeholder
+RTC time invalid
+Time manager ready
+[Weight] Init...
+[Weight] Init OK (dt=6 sck=7 scale=741.0 zero_offset=-800750)
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+
+Cloud manager init...
+MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+MQTT port=8883
+MQTT client_id=guo_feeder_001
+MQTT username=GuoFeederDevice
+MQTT password=GuoBaby
+MQTT subscribe=guo_feeder/down
+MQTT publish=guo_feeder/up
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[OK] Workflow loaded from /workflow.json
+[  2164][E][vfs_api.cpp:105] open(): /littlefs/registry/action.bin.bak does not exist, no permits for creation
+[CapRegistry] ACTION rebuild version=3 count=6 checksum=2166190647
+[CapRegistry] TRIGGER reuse version=23 count=3
+[CapRegistry] WORKFLOW reuse version=22 count=3
+capability_registry_init: OK
+[CFG][I] boot validated
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=n302933b.ala.cn-hangzhou.emqxsl.cn
+port=8883
+client_id=guo_feeder_001
+username=GuoFeederDevice
+password=GuoBaby
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] MQTT subscribe QoS=1 msg_id=18614
+[Cloud] MQTT connected outbox=22
+[Cloud] enqueue OK id=63512 qos=1 store=1 len=45
+[Cloud] MQTT subscribed msg_id=18614
+[Cloud] MQTT published/ack msg_id=63512 outbox=0 t=3637
+NTP syncing...
+RTC updated
+NTP sync OK
+当前时间：2026-08-31 21:56:31
+[MiThermo] enter scan window
+=================
+[Cloud] MQTT RX
+{"c": "system", "i": "2001", "p": {"o": "memory"}}
+[Cloud] UP-ACK id=2001 obj=memory t=23635
+[Cloud UP JSON]
+{"c":"ack","i":"2001","o":"memory","p":{"result":"received"},"t":1788184608}
+[Cloud] enqueue OK id=38833 qos=1 store=1 len=76
+[Cloud UP] OK
+[Cloud] UP-RESULT len=311 t=23657
+[Cloud UP JSON]
+{"s":0,"c":"result","i":"2001","t":1788184608,"data":{"internal":{"total":256620,"free":76752,"used":179868,"largest_free_block":65524,"minimum_free":74880},"external":{"total":8385815,"free":8131175,"used":254640,"largest_free_block":8126452,"minimum_free":8121863}},"command":"system"}
+[Cloud] enqueue OK id=2715 qos=1 store=1 len=287
+[Cloud UP] OK
+[Cloud] MQTT published/ack msg_id=38833 outbox=307 t=24988
+[Cloud] MQTT published/ack msg_id=2715 outbox=0 t=25085
+=================
+[Cloud] MQTT RX
+{"c": "system", "i": "2002", "p": {"o": "flash"}}
+[Cloud] UP-ACK id=2002 obj=flash t=38676
+[Cloud UP JSON]
+{"c":"ack","i":"2002","o":"flash","p":{"result":"received"},"t":1788184623}
+[Cloud] enqueue OK id=32424 qos=1 store=1 len=75
+[Cloud UP] OK
+[Cloud] UP-RESULT len=1410 t=39176
+[Cloud UP JSON]
+{"s":0,"c":"result","i":"2002","t":1788184623,"data":{"external":{"total":12517376,"used":73728,"free":12443648},"internal":{"total":4259840,"used":1278832,"free":2981008},"files":[{"path":"/config-tempalte.json","type":"file","size":1238},{"path":"/config.json","type":"file","size":1576},{"path":"/config","type":"directory","size":0},{"path":"/config/.bootok","type":"file","size":1},{"path":"/config/.commit","type":"file","size":4},{"path":"/config/mi_thermo.json","type":"file","size":123},{"path":"/config/mqtt.json","type":"file","size":407},{"path":"/config/oled.json","type":"file","size":98},{"path":"/config/time.json","type":"file","size":168},{"path":"/config/valve.json","type":"file","size":124},{"path":"/config/version.json","type":"file","size":13},{"path":"/config/weight.json.bak","type":"file","size":91},{"path":"/config/weight.json","type":"file","size":91},{"path":"/config/wifi.json","type":"file","size":117},{"path":"/emqxsl-ca.crt","type":"file","size":1316},{"path":"/factory","type":"directory","size":0},{"path":"/factory/weight.json","type":"file","size":91},{"path":"/registry","type":"directory","size":0},{"path":"/registry/action.bin","type":"file","size":106},{"path":"/registry/trigger.bin","type":"file","size":45},{"path":"/registry/workflow.bin","type":"file","size":63},{"path":"/workflow.json","type":"file","size":2911}]},"command":"system"}
+[Cloud] enqueue OK id=2323 qos=1 store=1 len=1386
+[Cloud UP] OK
+[Cloud] MQTT published/ack msg_id=32424 outbox=1406 t=39724
+[Cloud] MQTT published/ack msg_id=2323 outbox=0 t=39865
+=================
+[Cloud] MQTT RX
+{"c": "system", "i": "2003", "p": {"o": "restart"}}
+[Cloud] UP-ACK id=2003 obj=restart t=53640
+[Cloud UP JSON]
+{"c":"ack","i":"2003","o":"restart","p":{"result":"received"},"t":1788184638}
+[Cloud] enqueue OK id=50117 qos=1 store=1 len=77
+[Cloud UP] OK
+[CFG][I] enqueue accepted, pending=1
+[Cloud] UP-RESULT len=154 t=53662
+[Cloud UP JSON]
+{"s":1,"c":"result","i":"2003","t":1788184638,"m":"restart queued (safe delay 10s)","command":"system"}
+[Cloud] enqueue OK id=7357 qos=1 store=1 len=103
+[Cloud UP] OK
+[Cloud] UP-RESULT len=211 t=53685
+[Cloud UP JSON]
+{"s":0,"c":"result","i":"2003","o":"restart","t":1788184638,"m":"restart scheduled after callback","e":0,"type":"config_result","command":"system"}
+[Cloud] enqueue OK id=12834 qos=1 store=1 len=147
+[Cloud UP] OK
+[CFG][W] restart scheduled in 10000 ms
+[Cloud] MQTT published/ack msg_id=50117 outbox=289 t=54741
+[Cloud] MQTT published/ack msg_id=7357 outbox=167 t=54814
+[Cloud] MQTT published/ack msg_id=12834 outbox=0 t=54928
+[CFG][W] restart safe delay elapsed, rebooting
+E (63460) TRANSPORT_BASE: poll_read select error 113, errno = Software caused connection abort, fd = 48
+E (63460) MQTT_CLIENT: Poll read error: 119, aborting connection
+[Cloud] MQTT disconnected outbox=0
+�␀�ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0xb (SPI_FAST_FLASH_BOOT)
+Saved PC:0x420df456
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (254) esp_core_dump_flash: No core dump partition found!
+E (254) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[CFG][I] init done, loaded 7/7 modules
+Event manager init OK
+[BLE] init OK
+
+WiFi init...
+
+Connecting to:wqs1
+
+Time manager init...
+RTC init placeholder
+RTC time invalid
+Time manager ready
+[Weight] Init...
+[Weight] Init OK (dt=6 sck=7 scale=741.0 zero_offset=-800750)
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+
+Cloud manager init...
+MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+MQTT port=8883
+MQTT client_id=guo_feeder_001
+MQTT username=GuoFeederDevice
+MQTT password=GuoBaby
+MQTT subscribe=guo_feeder/down
+MQTT publish=guo_feeder/up
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[OK] Workflow loaded from /workflow.json
+[  2240][E][vfs_api.cpp:105] open(): /littlefs/registry/action.bin.bak does not exist, no permits for creation
+[CapRegistry] ACTION rebuild version=4 count=6 checksum=2865028606
+[CapRegistry] TRIGGER reuse version=23 count=3
+[CapRegistry] WORKFLOW reuse version=22 count=3
+capability_registry_init: OK
+[CFG][I] boot validated
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=n302933b.ala.cn-hangzhou.emqxsl.cn
+port=8883
+client_id=guo_feeder_001
+username=GuoFeederDevice
+password=GuoBaby
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=38374
+[Cloud] MQTT connected outbox=22
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=2695 qos=1 store=1 len=45
+[Cloud] MQTT subscribed msg_id=38374
+[Cloud] MQTT published/ack msg_id=2695 outbox=0 t=3725
+NTP syncing...
+RTC updated
+NTP sync OK
+当前时间：2026-08-31 21:57:35
+[MiThermo] enter scan window
+[MiThermo] ADV len=30 : 02 01 06 1A 16 95 FE 58 58 5B 05 46 17 D4 31 38 C1 A4 18 8A 7C 0B 2D 4F 00 00 12 C4 9A A1 
+[MiThermo] decode type=2 value=50.30
+[MiThermo] decrypt OK

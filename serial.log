@@ -1,0 +1,132 @@
+--- Terminal on COM8 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0xb (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (248) esp_core_dump_flash: No core dump partition found!
+E (248) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[CFG][I] init done, loaded 7/7 modules
+Event manager init OK
+[BLE] init OK
+
+WiFi init...
+
+Connecting to:wqs1
+
+Time manager init...
+RTC init placeholder
+RTC time invalid
+Time manager ready
+[Weight] Init...
+[Weight] Init OK (dt=6 sck=7 scale=741.0 zero_offset=-800750)
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+
+Cloud manager init...
+MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+MQTT port=8883
+MQTT client_id=guo_feeder_001
+MQTT username=GuoFeederDevice
+MQTT password=GuoBaby
+MQTT subscribe=guo_feeder/down
+MQTT publish=guo_feeder/up
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[OK] Workflow loaded from /workflow.json
+[CapRegistry] ACTION reuse version=2 count=6
+[CapRegistry] TRIGGER reuse version=23 count=3
+[CapRegistry] WORKFLOW reuse version=22 count=3
+capability_registry_init: OK
+[CFG][I] boot validated
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=n302933b.ala.cn-hangzhou.emqxsl.cn
+port=8883
+client_id=guo_feeder_001
+username=GuoFeederDevice
+password=GuoBaby
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=49544
+[Cloud] MQTT connected outbox=22
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=62749 qos=1 store=1 len=45
+[Cloud] MQTT subscribed msg_id=49544
+[Cloud] MQTT published/ack msg_id=62749 outbox=0 t=3126
+NTP syncing...
+RTC updated
+NTP sync OK
+当前时间：2026-08-31 20:20:44
+[MiThermo] enter scan window
+=================
+[Cloud] MQTT RX
+{"c": "system", "i": "1001", "p": {"o": "config_query", "keys_only": true}}
+[Cloud] UP-ACK id=1001 obj=config_query t=27000
+[Cloud UP JSON]
+{"c":"ack","i":"1001","o":"config_query","p":{"result":"received"},"t":1788178859}
+[Cloud] enqueue OK id=9505 qos=1 store=1 len=82
+[Cloud UP] OK
+[CFG][I] enqueue accepted, pending=1
+[Cloud] UP-RESULT len=142 t=27023
+[Cloud UP JSON]
+{"s":1,"c":"result","i":"1001","t":1788178859,"m":"config query queued","command":"system"}
+[Cloud] enqueue OK id=50895 qos=1 store=1 len=91
+[Cloud UP] OK
+[Cloud] UP-RESULT len=282 t=27045
+[Cloud UP JSON]
+{"s":0,"c":"result","i":"1001","o":"config_query","t":1788178859,"m":"query module list ok","e":0,"type":"config_result","command":"system","data":{"modules":["wifi","oled","valve","time","weight","mqtt","mi_thermo"]}}
+[Cloud] enqueue OK id=26492 qos=1 store=1 len=218
+[Cloud UP] OK
+[Cloud] MQTT published/ack msg_id=9505 outbox=348 t=28013
+[Cloud] MQTT published/ack msg_id=50895 outbox=238 t=28055
+[Cloud] MQTT published/ack msg_id=26492 outbox=0 t=28097
+=================
+[Cloud] MQTT RX
+{"c": "system", "i": "10011", "p": {"o": "config_query", "keys_only": true}}
+[Cloud] UP-ACK id=10011 obj=config_query t=45004
+[Cloud UP JSON]
+{"c":"ack","i":"10011","o":"config_query","p":{"result":"received"},"t":1788178877}
+[Cloud] enqueue OK id=41315 qos=1 store=1 len=83
+[Cloud UP] OK
+[CFG][I] enqueue accepted, pending=1
+[Cloud] UP-RESULT len=144 t=45027
+[Cloud UP JSON]
+{"s":1,"c":"result","i":"10011","t":1788178877,"m":"config query queued","command":"system"}
+[Cloud] enqueue OK id=5749 qos=1 store=1 len=92
+[Cloud UP] OK
+[Cloud] UP-RESULT len=284 t=45049
+[Cloud UP JSON]
+{"s":0,"c":"result","i":"10011","o":"config_query","t":1788178877,"m":"query module list ok","e":0,"type":"config_result","command":"system","data":{"modules":["wifi","oled","valve","time","weight","mqtt","mi_thermo"]}}
+[Cloud] enqueue OK id=65442 qos=1 store=1 len=219
+[Cloud UP] OK
+[Cloud] MQTT published/ack msg_id=41315 outbox=350 t=46050
+[Cloud] MQTT published/ack msg_id=5749 outbox=239 t=46088
+[Cloud] MQTT published/ack msg_id=65442 outbox=0 t=46127
