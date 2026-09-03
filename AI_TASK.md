@@ -1,435 +1,690 @@
-# Computer Reset Action 功能需求文档
+# TimeManager V2：PCF8563T RTC + ESP-IDF SNTP 升级需求文档
 
-## 1. 功能目标
+## 一、升级目标
 
-新增 `Computer Reset` 硬件 Action，用于通过 ESP32-S3 的 GPIO8 控制外部继电器，从而模拟电脑主板 Reset Switch 的一次按键操作。
+在保持现有 TimeManager 对外接口和系统行为兼容的前提下，为 TimeManager 增加 PCF8563T 外部 RTC 支持，并将现有自行实现的 NTP 获取逻辑替换为 ESP-IDF 官方 SNTP 机制。
 
-执行 `computer_reset` Action 时：
+本次升级遵循：
 
-1. GPIO8 输出 HIGH。
-2. 保持 HIGH **800 ms**。
-3. 800 ms 到达后 GPIO8 恢复 LOW。
-4. Action 完成。
-
-该功能必须采用现有 WorkflowManager / Temporary Action 架构执行，不新增独立的 Command 执行机制。
-
----
-
-## 2. 系统架构
-
-必须遵循现有项目架构：
-
-```text
-MQTT
-  ↓
-CloudManager
-  ↓
-CommandManager
-  ↓
-WorkflowManager
-  ↓
-Temporary Action
-  ↓
-Computer Reset Action
-  ↓
-GPIO8
-```
-
-`CommandManager` 不直接调用 `computer_reset()` 硬件函数。
-
-`computer_reset` 必须作为一个标准 Action 注册到 WorkflowManager / Capability Registry 所使用的现有 Action 体系中。
-
-这样既可以支持：
-
-* 云端直接执行 `computer_reset` Action
-* Workflow 中调用 `computer_reset` Action
-* 未来其他 Trigger 调用 `computer_reset`
-
-所有执行路径最终都必须进入同一个 Computer Reset Action 实现。
+1. 最小侵入现有架构。
+2. 保留现有 `SystemState.time_valid` Boolean，不修改其类型和现有使用方式。
+3. 不新增对外的 `TIME_RTC / TIME_NTP` 可信度等级接口。
+4. TimeManager 内部可以记录当前时间来源用于日志和调试，但不影响现有公共接口。
+5. 不自行实现 NTP 协议。
+6. 使用 ESP-IDF 提供的 SNTP 能力。
+7. 使用 ESP-IDF I2C Master Driver 与 PCF8563T 通信。
+8. 不实现 RTC 漂移估算。
+9. RTC 是本地持久化时间来源，NTP 是更高可信度的校准来源。
+10. 保持现有 TimeManager 的时区、DST 和对外统一时间接口。
 
 ---
 
-## 3. 新增文件
+# 二、时间来源和可信度模型
 
-建议新增：
+系统实际存在两个时间来源：
 
-```text
-src/computer_reset.h
-src/computer_reset.cpp
-```
+### 1. RTC
 
-具体接口名称应遵循项目现有 Action 的接口规范，不要为了本功能重新设计一套 Action API。
+PCF8563T：
 
-如果现有项目已经存在类似硬件 Action 的实现，应优先按照现有实现模式编写。
+* 本地持久化时间来源。
+* 设备断电后仍可继续计时。
+* 用于设备启动时快速恢复 System Time。
+* RTC 本身不作为最终最高可信度时间来源。
+
+### 2. SNTP/NTP
+
+网络时间：
+
+* 设备连接 Wi-Fi 后使用 ESP-IDF SNTP 获取。
+* 作为更高可信度的时间来源。
+* 每次成功 SNTP 同步后，以同步后的 System Time 为准。
+* 必要时使用该时间校准 RTC。
 
 ---
 
-## 4. GPIO 定义
+# 三、SystemState.time_valid
 
-Computer Reset 使用：
-
-```text
-GPIO8
-```
-
-建议定义为：
+必须保留现有：
 
 ```cpp
-constexpr uint8_t COMPUTER_RESET_PIN = 8;
+bool time_valid;
 ```
 
-不要在多个位置直接硬编码 `8`。
+禁止将其修改为 enum、字符串或其他类型。
 
----
-
-## 5. 初始化要求
-
-Computer Reset 模块初始化时必须将 GPIO8 设置为安全状态 LOW。
-
-要求：
-
-```cpp
-pinMode(COMPUTER_RESET_PIN, OUTPUT);
-digitalWrite(COMPUTER_RESET_PIN, LOW);
-```
-
-初始化完成后，GPIO8 必须保持 LOW。
-
-### 安全原则
-
-GPIO8 的 HIGH 状态只能由 Computer Reset Action 的执行流程产生。
-
-除 Computer Reset 模块之外，不应存在其他模块主动控制 GPIO8。
-
----
-
-## 6. Action 执行行为
-
-`computer_reset` Action 的执行逻辑：
+现有时间有效性规则继续保持：
 
 ```text
-START
-  ↓
-GPIO8 = HIGH
-  ↓
-记录开始时间
-  ↓
-进入 RUNNING / WAIT 状态
-  ↓
-持续非阻塞检查 elapsed time
-  ↓
-elapsed >= 800 ms
-  ↓
-GPIO8 = LOW
-  ↓
-ACTION COMPLETE
+System Time >= 2026-07-01
+        ↓
+time_valid = true
 ```
 
-严禁使用：
-
-```cpp
-delay(800);
-```
-
-不得阻塞主循环、WorkflowManager、CommandManager 或其他系统任务。
-
-必须使用现有项目的非阻塞 Action / Workflow 状态机机制，例如基于 `millis()` 的时间判断。
-
----
-
-## 7. HIGH 持续时间
-
-固定持续：
+否则：
 
 ```text
-800 ms
+time_valid = false
 ```
 
-本版本不需要从 Command Payload 或 ConfigManager 获取该时间。
+TimeManager 负责根据当前 System Time 的有效性更新 `SystemState.time_valid`。
 
-不要增加可配置参数。
+RTC 或 NTP 都可以使 System Time 进入有效范围。
 
-不要修改 ConfigManager。
-
----
-
-## 8. Action Reset / 完成 / 异常安全要求
-
-无论 Action 因为什么原因离开执行状态，都必须确保 GPIO8 最终为 LOW。
-
-至少包括：
+TimeManager 内部可以维护时间来源状态，例如用于日志：
 
 ```text
-正常完成
-Action reset
-Workflow reset
-Action 被取消
-异常退出
+INVALID
+RTC
+NTP
 ```
 
-所有这些路径都必须确保：
+但该状态不得替换或修改现有 `SystemState.time_valid` 公共接口。
+
+其他模块继续使用：
 
 ```cpp
-digitalWrite(COMPUTER_RESET_PIN, LOW);
+system_state.time_valid
 ```
 
-不得出现 Action 已经结束但 GPIO8 仍保持 HIGH 的情况。
+进行原有 Boolean 判断，不要求任何现有调用方修改。
 
 ---
 
-## 9. Critical Operation 要求
+# 四、启动时 RTC 恢复
 
-本 Action **不需要使用 System Command 的 Critical Operation 机制**。
+TimeManager 初始化后，应尽早尝试读取 PCF8563T。
 
-不要调用：
+流程：
 
-```cpp
-system_command_critical_operation_acquire();
+```text
+TimeManager init
+    ↓
+RTC Read
+    ↓
+判断 RTC 时间是否有效
 ```
 
-也不要调用：
+### RTC 有效
 
-```cpp
-system_command_critical_operation_release();
+如果 RTC 时间有效：
+
+```text
+RTC → System Time
+```
+
+直接使用硬同步方式设置 System Time。
+
+此时：
+
+```text
+time_valid = true
+```
+
+不等待 Wi-Fi，也不等待 SNTP。
+
+设备可以立即获得一个可用的时间。
+
+### RTC 无效
+
+如果 RTC 无效：
+
+```text
+不修改 System Time
+time_valid = false
+```
+
+等待 Wi-Fi 和 SNTP。
+
+RTC 无效本身不是系统错误，不得导致设备异常或阻塞系统启动。
+
+---
+
+# 五、RTC 无效的处理原则
+
+RTC 无效时不需要尝试复杂恢复。
+
+直接：
+
+```text
+RTC invalid
+    ↓
+time_valid = false
+    ↓
+等待 SNTP
+```
+
+连接 Wi-Fi 后：
+
+```text
+SNTP 成功
+    ↓
+System Time 有效
+    ↓
+time_valid = true
+```
+
+之后再通过正常的 RTC 校准流程尝试向 RTC 写入正确时间。
+
+如果 RTC Write 失败：
+
+* 不影响当前 System Time。
+* 不将 `time_valid` 设置为 false。
+* 不认为 SNTP 失败。
+* 等下一次 SNTP 同步时重新尝试。
+
+---
+
+# 六、SNTP 实现
+
+禁止继续使用现有自行实现的 NTP UDP 请求、NTP 数据包解析以及手工计算服务器时间的代码。
+
+改用 ESP-IDF 官方 SNTP/esp_netif SNTP API。
+
+优先使用：
+
+```text
+esp_netif_sntp_init()
+esp_netif_sntp_start()
+```
+
+以及 ESP-IDF 提供的同步事件/状态机制。
+
+TimeManager 负责：
+
+* SNTP 初始化。
+* SNTP 启动。
+* NTP Server 配置。
+* SNTP 同步状态管理。
+* 同步完成后的后续 RTC 校准。
+* 定期同步策略。
+
+ESP-IDF 负责：
+
+* NTP 协议。
+* 网络通信。
+* 系统时间同步。
+
+禁止 TimeManager 自己重复实现 NTP 协议。
+
+---
+
+# 七、SNTP 同步周期
+
+正常运行状态下：
+
+```text
+每 24 小时进行一次 SNTP 校时。
+```
+
+不需要进行 RTC 漂移率计算。
+
+不需要根据 RTC 漂移速度动态调整 SNTP 周期。
+
+24 小时作为固定周期。
+
+系统时间的长期精度主要依赖网络 SNTP 校准。
+
+---
+
+# 八、NTP 校时后的 System Time
+
+SNTP 成功后，系统时间以 ESP-IDF SNTP 同步后的 System Time 为准。
+
+禁止：
+
+```text
+自己读取 NTP Server timestamp
+→ 自己计算网络延迟
+→ 自己 settimeofday()
+```
+
+应让 ESP-IDF SNTP 完成系统时间同步。
+
+TimeManager 在 SNTP 同步完成后读取当前 System Time，作为后续 RTC 校准的基准。
+
+---
+
+# 九、System Time 同步策略
+
+### 开机 RTC → System Time
+
+使用硬同步。
+
+原因：
+
+开机时 System Time 可能仍然处于 1970 年附近，属于明显无效状态，不需要 Smooth Sync。
+
+### 有效 System Time → SNTP
+
+使用 ESP-IDF Smooth Sync 机制。
+
+例如：
+
+```text
+RTC/System Time = 12:00:00
+NTP 校准时间   = 12:00:04
+```
+
+允许 ESP-IDF 平滑调整 System Time。
+
+TimeManager 不自行实现平滑校时算法。
+
+---
+
+# 十、SNTP 同步完成后的 RTC 校准
+
+每次 SNTP 成功同步后，都必须进行 RTC 校准检查。
+
+流程：
+
+```text
+SNTP Sync Success
+       ↓
+读取当前 System Time
+       ↓
+读取 RTC
+       ↓
+计算时间差
+```
+
+定义：
+
+```text
+difference = abs(System Time - RTC)
+```
+
+### 差值 ≤ 2 秒
+
+```text
+不写 RTC
 ```
 
 原因：
 
-Computer Reset 只是一个持续 800 ms 的 GPIO 脉冲。
+避免没有必要的 RTC 写操作。
 
-它不像以下操作：
-
-* Flash 写入
-* Config 持久化
-* RTC 写入
-* 阀门保持开启
-* 电机持续运行
-* 其他可能因 ESP32 Restart 而造成危险状态或数据损坏的操作
-
-Computer Reset 本身不属于需要阻止 ESP32 Restart 的 Critical Operation。
-
-因此：
+### 差值 > 2 秒
 
 ```text
-Computer Reset Action
-        │
-        └── 不占用 Critical Operation
+System Time → RTC
 ```
+
+将当前可信的 System Time 写入 RTC。
+
+注意：
+
+这里的写入目标必须是**当前 System Time**，而不是直接使用 SNTP Server 原始 timestamp。
 
 ---
 
-## 10. Restart 场景
+# 十一、RTC Write 失败处理
 
-ESP32 Restart 与 Computer Reset 是两个完全不同的概念。
+RTC Write 失败属于可恢复错误。
 
-本模块不得修改 System Command 的 Restart 机制。
+如果：
 
-不得调用：
+```text
+RTC Write Failed
+```
+
+则：
+
+1. 保留当前 System Time。
+2. 保留 `time_valid = true`（如果当前 System Time 已经有效）。
+3. 记录错误日志。
+4. 不进行连续快速重试。
+5. 等待下一次 24 小时 SNTP 同步。
+6. 下一次 SNTP 同步后再次比较 RTC 和 System Time。
+7. 如果差值仍然 > 2 秒，再次尝试 RTC Write。
+
+不得因为 RTC Write 失败而让整个 TimeManager 进入故障状态。
+
+---
+
+# 十二、RTC Read 与 RTC Write 的 Critical Operation
+
+RTC Read：
+
+```text
+非 Critical Operation
+```
+
+RTC Write：
+
+```text
+Critical Operation
+```
+
+RTC Write 前：
 
 ```cpp
-ESP.restart();
+system_command_critical_operation_acquire()
 ```
 
-Computer Reset Action 只负责：
+RTC Write 完成后：
 
-```text
-GPIO8 HIGH → 800 ms → GPIO8 LOW
+```cpp
+system_command_critical_operation_release()
 ```
+
+无论 RTC Write 成功还是失败，都必须保证 Acquire/Release 配对。
+
+RTC Write 的 Critical Operation 生命周期仅覆盖实际写入操作，不应覆盖普通 RTC Read。
 
 ---
 
-## 11. Action 注册
+# 十三、PCF8563T I2C
 
-必须将 Computer Reset 注册为现有 Action。
+PCF8563T 使用标准 I2C。
 
-Action 的 Stable ID / Runtime ID / capability mapping 必须遵循项目现有 Capability Registry 机制。
-
-不要为 Computer Reset 创建独立的 ID 系统。
-
-不要绕过 Capability Registry。
-
-Action 名称使用：
+本项目只需要：
 
 ```text
-computer_reset
+SDA
+SCL
 ```
 
-具体注册 API 和 ID 分配方式按照当前项目已有 Action 注册模式实现。
+两个 ESP32 GPIO。
+
+以下引脚第一版不使用：
+
+```text
+INT
+CLKOUT
+```
+
+连接：
+
+```text
+ESP32 SDA → PCF8563 SDA
+ESP32 SCL → PCF8563 SCL
+ESP32 GND → PCF8563 GND
+电源       → PCF8563 VCC
+```
+
+使用 ESP-IDF I2C Master Driver。
+
+禁止自行 bit-bang I2C。
 
 ---
 
-## 12. Temporary Action
+# 十四、PCF8563T 与 OLED 共用 I2C
 
-云端收到：
+PCF8563T 可以与现有 OLED 共用同一组 SDA/SCL。
 
-```text
-computer_reset
-```
-
-后，应按照当前 CommandManager 已有的 Action 执行流程进入 WorkflowManager 的 Temporary Action 机制。
-
-不要为 `computer_reset` 新增：
+推荐结构：
 
 ```text
-CommandManager → computer_reset()
+ESP32-S3 I2C Bus
+    │
+    ├── OLED
+    │
+    └── PCF8563T
 ```
 
-这种独立执行路径。
+不要因为增加 RTC 而额外占用两个 GPIO。
 
-也不要修改现有 CommandManager 的整体架构。
+I2C Bus 上通过不同 I2C Address 区分 OLED 和 RTC。
+
+实现时必须避免：
+
+* 重复初始化同一个 I2C Controller。
+* OLED 和 RTC 分别创建互相冲突的 I2C Bus。
+* 一个模块初始化 Bus 后另一个模块再次破坏该 Bus。
+
+优先复用现有 OLED 使用的 I2C Bus。
+
+如果当前项目的 OLED 驱动结构不支持复用，则在最小改动范围内解决，不进行无必要的大规模架构重构。
 
 ---
 
-## 13. 非阻塞要求
+# 十五、I2C GPIO 配置
 
-Computer Reset Action 必须完全非阻塞。
+SDA/SCL GPIO 必须支持通过 ConfigManager 配置。
 
-执行过程中：
+配置写入：
 
 ```text
-GPIO8 = HIGH
+config.json
 ```
 
-但 ESP32 仍然必须能够正常执行：
+不得把 GPIO 永久硬编码在 TimeManager.cpp 中。
 
-* MQTT
-* WiFi
-* WorkflowManager
-* EventManager
-* OLED
-* 其他后台任务
+具体字段命名应遵循当前项目 ConfigManager 的命名规范。
 
-不得使用 800 ms 的 `delay()`。
+至少需要支持：
+
+```text
+RTC SDA GPIO
+RTC SCL GPIO
+```
+
+如果最终确认 RTC 与 OLED 共用同一 I2C Bus，优先考虑将 SDA/SCL 作为 I2C Bus 配置，而不是让每个 I2C Device 各自拥有一份重复的 GPIO 配置。
+
+不要为了本次 RTC 改造大幅修改现有 ConfigManager 架构。
 
 ---
 
-## 14. 并发 / 重复执行
+# 十六、Time Zone / DST
 
-应遵循现有 WorkflowManager / Temporary Action 对 Action 并发和重复执行的既有规则。
+继续保留现有 TimeManager 的：
 
-不要在 Computer Reset 模块内部重新设计一套队列、线程或任务系统。
+* Time Zone
+* DST
+* 本地时间转换
+* Unix Timestamp
+* 人类可读时间转换
 
-如果现有 Temporary Action 机制已经负责 Action 生命周期，则 Computer Reset 只负责正确实现 Action 本身。
+RTC 与 System Time 均建议使用 UTC/Unix Time 作为内部基准。
 
-如果现有框架规定 Action Start 时必须先检查 Busy 状态，则遵循现有框架，不重复实现。
+Time Zone 和 DST 只用于：
+
+```text
+UTC → Local Time
+```
+
+禁止将本地时间直接写入 RTC 作为 RTC 内部时间基准。
+
+这样可以避免修改 Time Zone 或 DST 后 RTC 时间整体发生错误偏移。
 
 ---
 
-## 15. GPIO 安全边界
+# 十七、TimeManager 对外接口
 
-GPIO8 的控制权只属于 Computer Reset 模块。
+保持现有 TimeManager 对外统一时间接口。
 
-初始化：
+其他模块不应该：
 
-```text
-LOW
-```
+* 直接访问 PCF8563T。
+* 直接访问 SNTP。
+* 直接 `settimeofday()`。
+* 直接修改 RTC。
+* 自己判断 RTC 是否有效。
 
-Action 开始：
-
-```text
-HIGH
-```
-
-800 ms 后：
-
-```text
-LOW
-```
-
-Action Reset / Cancel / Error：
-
-```text
-LOW
-```
-
-最终必须满足：
-
-```text
-正常空闲状态 = LOW
-```
+所有时间相关操作统一经过 TimeManager。
 
 ---
 
-## 16. 不允许的修改
+# 十八、离线运行
 
-本任务是新增 Computer Reset 功能。
+如果设备长期没有 Wi-Fi：
 
-除非为了接入现有 Action 注册机制确实需要，否则不要修改以下模块的核心逻辑：
+### RTC 有效
 
 ```text
-CloudManager
-CommandManager
-WorkflowManager
-SystemCommand
+RTC → System Time
+        ↓
+设备继续正常运行
+```
+
+System Time 保持运行。
+
+即使 RTC 长期没有 NTP 校准，也不进行漂移估算。
+
+### RTC 无效
+
+```text
+RTC invalid
+    ↓
+time_valid = false
+```
+
+直到：
+
+```text
+SNTP 成功
+```
+
+才恢复：
+
+```text
+time_valid = true
+```
+
+如果设备长期离线且用户通过未来的本地 OLED/UI 手动修改时间，则使用现有 TimeManager 的统一时间设置接口修改 System Time，并按设计需要同步 RTC。
+
+---
+
+# 十九、错误边界
+
+必须明确以下行为：
+
+| 情况                    | 系统行为                        |
+| --------------------- | --------------------------- |
+| RTC Read 成功且时间有效      | RTC → System Time           |
+| RTC Read 失败           | time_valid=false，等待 SNTP    |
+| RTC 时间无效              | time_valid=false，等待 SNTP    |
+| Wi-Fi 未连接             | 使用 RTC/System Time 继续运行     |
+| SNTP 失败               | 保留当前 System Time，不影响已经有效的时间 |
+| SNTP 成功               | 以 SNTP 校准后的 System Time 为准  |
+| RTC 与 System Time ≤2秒 | 不写 RTC                      |
+| RTC 与 System Time >2秒 | System Time → RTC           |
+| RTC Write 失败          | 保留 System Time，下次 SNTP 再试   |
+| RTC Write 成功          | RTC 被校准                     |
+| I2C RTC 临时异常          | 不影响当前 System Time           |
+| 长期无 Wi-Fi             | 不做漂移估算                      |
+| 用户手动修改时间              | 通过 TimeManager 统一接口处理       |
+
+---
+
+# 二十、不要实现的功能
+
+本次升级明确禁止加入以下复杂机制：
+
+1. 不实现 RTC 漂移率估算。
+2. 不实现 RTC 自动老化补偿。
+3. 不建立 `TIME_INVALID / TIME_RTC / TIME_NTP` 公共状态接口。
+4. 不修改 `SystemState.time_valid` 的 Boolean 类型。
+5. 不修改现有大量依赖 `time_valid` 的业务代码。
+6. 不自行实现 NTP 协议。
+7. 不自行实现 Smooth Sync。
+8. 不增加 RTC Alarm。
+9. 不使用 PCF8563T CLKOUT。
+10. 不使用 PCF8563T INT，除非后续业务明确需要。
+11. 不因为增加 RTC 而重构整个 TimeManager。
+12. 不因为 RTC Write 失败而使整个时间系统失效。
+
+---
+
+# 二十一、最终总体流程
+
+```text
+                    ┌───────────────┐
+                    │ Device Boot   │
+                    └───────┬───────┘
+                            ↓
+                     Read PCF8563T
+                            ↓
+                    ┌───────┴───────┐
+                    │ RTC Valid ?   │
+                    └───┬────────┬──┘
+                       YES       NO
+                        │         │
+                        ↓         ↓
+                 RTC → System   time_valid
+                     Time          = false
+                        │         │
+                        ↓         │
+                 time_valid=true  │
+                        │         │
+                        └────┬────┘
+                             ↓
+                       Wait Wi-Fi
+                             ↓
+                      Wi-Fi Connected
+                             ↓
+                           SNTP
+                             ↓
+                    NTP Sync Successful
+                             ↓
+                 System Time corrected
+                             ↓
+                    time_valid = true
+                             ↓
+                  Read current System Time
+                             ↓
+                        Read RTC
+                             ↓
+                 abs(System - RTC)
+                             ↓
+                    ┌────────┴────────┐
+                    │                 │
+                  ≤ 2 sec           > 2 sec
+                    │                 │
+                    ↓                 ↓
+                No RTC Write    Critical Acquire
+                                      ↓
+                              System Time → RTC
+                                      ↓
+                                  Release
+                                      ↓
+                               success/failure
+                                      ↓
+                               wait next SNTP
+                                      ↓
+                                  24 hours
+                                      ↓
+                                    SNTP
+```
+
+## 二十二、实现原则
+
+本次代码修改必须遵循现有项目已经验证的架构。
+
+优先修改：
+
+```text
+TimeManager
 ConfigManager
-EventManager
-SystemState
+SystemState（仅在确有必要时，且不得修改 time_valid 类型）
 ```
 
-尤其不要修改：
+如现有 I2C/OLED 初始化结构需要适配，只进行必要的最小修改。
 
-* CommandManager 的 Command 架构
-* Temporary Action 的执行机制
-* WorkflowManager 的状态机
-* System Command Restart 机制
-* Critical Operation 机制
-
-应该最大限度复用现有接口。
-
----
-
-## 17. 代码质量要求
-
-要求：
-
-1. GPIO8 使用统一常量定义。
-2. 不使用 `delay()`。
-3. HIGH 持续时间固定为 800 ms。
-4. 所有退出路径确保 GPIO8 为 LOW。
-5. 初始化时明确设置 GPIO8 为 LOW。
-6. 不新增独立 Command 执行体系。
-7. 不使用 Critical Operation。
-8. 不修改现有 Restart 机制。
-9. 遵循现有 Action / Temporary Action / Capability Registry 的代码风格。
-10. 不改变已有公开 API，除非现有 Action 注册机制本身要求增加注册代码。
-
----
-
-## 18. 最终设计原则
-
-Computer Reset 是一个标准 Hardware Action，而不是一个特殊 Command。
-
-因此最终结构必须保持：
+不得修改：
 
 ```text
 CloudManager
-    ↓
 CommandManager
-    ↓
 WorkflowManager
-    ↓
-Temporary Action
-    ↓
-ComputerReset Action
-    ↓
-GPIO8
+Capability Registry
+System Command
+EventManager
 ```
 
-ComputerReset 模块只负责：
+除非编译或接口依赖确实要求，否则不要扩大修改范围。
 
-```text
-GPIO8 初始化为 LOW
-        ↓
-Action Start
-        ↓
-GPIO8 HIGH
-        ↓
-非阻塞等待 800 ms
-        ↓
-GPIO8 LOW
-        ↓
-Action Complete
-```
+完成后必须：
 
-不要因为这个功能简单而绕过现有 Workflow / Action 架构。
+1. 编译通过。
+2. 检查所有现有 TimeManager 调用方。
+3. 确认 `SystemState.time_valid` 的所有现有调用方式无需修改。
+4. 确认 RTC Read 不持有 Critical Operation。
+5. 确认 RTC Write 所有路径都正确 Release Critical Operation。
+6. 确认 SNTP 不使用自定义 NTP 实现。
+7. 确认 OLED 与 RTC 的 I2C Bus 不发生重复初始化或资源冲突。
+8. 确认 RTC 无效不会阻塞设备启动。
+9. 确认 RTC Write 失败不会导致 `time_valid=false`。
+10. 确认下一次 SNTP 同步能够重新尝试 RTC 校准。
+11. 确认 24 小时周期使用单调时间计时机制，不依赖可跳变的 System Time 计算周期。
