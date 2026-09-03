@@ -1627,9 +1627,28 @@ static void workflow_notify_finish(Workflow &wf)
 // Workflow 终止统一收口（Critical Operation 的唯一释放点）
 //
 // Workflow 的所有结束路径（FINISHED / TIMEOUT / ERROR）都必须走这里:
-//   1) 写入最终状态
-//   2) 释放本 Workflow 持有的 Critical Operation（无论成功 / 失败 / 超时）
+//   1) 释放本 Workflow 持有的 Critical Operation（无论成功 / 失败 / 超时）
+//   2) 写入最终状态
 //   3) 回调 CommandManager 上报结果
+//
+// ========================= 顺序说明（勿调换）=========================
+// 必须【先 Release，后置 state】。
+//
+// 原因: workflow_start() 由 CommandManager 调用，运行在 esp-mqtt 任务；
+//       本函数运行在 Arduino loop 任务，两者可能在不同核上并发。
+//
+// 若先置 state 再 Release，会存在一个竞争窗口:
+//   loop  : wf.state = WORKFLOW_ERROR   ← 状态已非 RUNNING
+//   mqtt  : workflow_start() 的 "state != RUNNING" 守卫通过
+//           → acquire()（count+1）→ flag=true → state=RUNNING
+//   loop  : Release → 读到 flag==true → count-1 → flag=false
+//   结果  : Workflow 处于 RUNNING 但 flag=false、count 残留 +1
+//           → Critical Operation 永久泄漏，系统再也无法重启。
+//
+// 先 Release 后置 state 可彻底闭合该窗口:
+//   Release 之后、state 改写之前，wf.state 仍是 WORKFLOW_RUNNING，
+//   workflow_start() 的 RUNNING 守卫会直接拒绝新启动，无法插入。
+// ====================================================================
 //
 // 为什么不把 release 写进 workflow_notify_finish() 内部:
 //   该函数在 finish_callback == nullptr 时会提前 return，而事件触发 /
@@ -1644,12 +1663,15 @@ static void workflow_terminate(
     WorkflowState state
 )
 {
-    wf.state = state;
-
+    // ---- 1) 先释放 Critical Operation（早于 state 改写）----
     workflow_critical_release_by_index(
         workflow_index_of(&wf)
     );
 
+    // ---- 2) 再写最终状态（workflow_notify_finish 会读取它）----
+    wf.state = state;
+
+    // ---- 3) 最后回调上报 ----
     workflow_notify_finish(wf);
 }
 
