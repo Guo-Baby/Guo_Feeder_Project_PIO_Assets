@@ -6,6 +6,7 @@
 #include <new>
 #include "system_state.h"
 #include "time_manager.h"
+#include "system_command.h"
 #include "workflow.h"
 // =====================================================
 // 注册表
@@ -64,6 +65,74 @@ static void workflow_action_callback(
 );
 
 // =====================================================
+// Critical Operation 保护
+//
+// 依据: critical_operation接入规范.md §3 / §5
+//
+// 判定: Workflow 与临时 Action 执行期间会驱动阀门 / 电机等外部设备，
+//       并可能写入持久化数据；中途重启会让硬件与 Flash 数据处于
+//       不可预期状态，因此属于 Critical Operation。
+//
+// 计数模型: 每个执行体（一个 Workflow / 一个临时 Action）各 acquire 一次，
+//       结束时各 release 一次。因此并发运行的多个 Workflow 与多个
+//       临时 Action 会各自计数，只有全部结束 critical count 才会归零，
+//       系统才允许进入重启安全窗口。
+//
+// 持有标记: 用与 workflows[] 下标一一对应的静态数组记录，避免修改
+//       workflow.h 的 Workflow 结构（本次改动限定在 workflow.cpp）。
+//       标记的作用有三个:
+//         1) release 幂等 —— 未持有就不调用 release，避免
+//            system_command 打印 "release underflow" 配对错误日志；
+//         2) 覆盖"无 finish_callback 的 Workflow"（事件 / 定时器触发），
+//            这类 Workflow 同样持有 Critical Operation，必须能被释放；
+//         3) 覆盖 workflow_stop() / workflow_disable() / workflow_clear()
+//            等强制终止路径，防止计数泄漏导致系统永久无法重启。
+// =====================================================
+static bool workflow_critical_held[WORKFLOW_MAX_COUNT];
+
+// 由 Workflow 指针反查其在 workflows[] 中的下标，越界返回 -1
+static int workflow_index_of(const Workflow *wf)
+{
+    if(wf == nullptr)
+    {
+        return -1;
+    }
+
+    long idx = (long)(wf - workflows);
+
+    if(idx < 0 || idx >= (long)WORKFLOW_MAX_COUNT)
+    {
+        return -1;
+    }
+
+    return (int)idx;
+}
+
+// 释放指定 Workflow 持有的 Critical Operation（幂等）
+static void workflow_critical_release_by_index(int idx)
+{
+    if(idx < 0 || idx >= (int)WORKFLOW_MAX_COUNT)
+    {
+        return;
+    }
+
+    if(!workflow_critical_held[idx])
+    {
+        return;
+    }
+
+    workflow_critical_held[idx] = false;
+
+    system_command_critical_operation_release();
+
+    Serial.printf(
+        "[Workflow] critical op released (workflow idx=%d, count=%u)\n",
+        idx,
+        (unsigned)system_command_critical_operation_count()
+    );
+}
+
+// =====================================================
 // 临时 Action 任务队列（用于 Command 调用）
 // =====================================================
 #define MAX_TEMP_ACTIONS 8 //实际可用7个位置
@@ -80,6 +149,8 @@ struct TempActionItem {
     String cmd_id;   // CommandManager 关联 ID（仅保存关联，不理解命令业务）
     CommandTempActionCallback callback;   // CommandManager 契约回调
     unsigned long timeout_ms;
+    // 本 Item 是否已 acquire 了 Critical Operation（acquire/release 配对标记）
+    bool critical_held;
 };
 
 static TempActionItem temp_action_queue[MAX_TEMP_ACTIONS];
@@ -128,6 +199,62 @@ inst->runtime = nullptr;
         inst->params[i].float_value = 0.0f;
     }
 }
+
+// =====================================================
+// 释放临时 Action 持有的 Critical Operation（幂等）
+//
+// 只有此前 acquire() 成功的 Item 才会真正 release，
+// 避免触发 system_command 的 "release underflow" 配对错误日志。
+// =====================================================
+static void temp_action_critical_release(TempActionItem &item)
+{
+    if(!item.critical_held)
+    {
+        return;
+    }
+
+    item.critical_held = false;
+
+    system_command_critical_operation_release();
+
+    Serial.printf(
+        "[Workflow] critical op released (temp action id=%u, count=%u)\n",
+        (unsigned)item.instance_id,
+        (unsigned)system_command_critical_operation_count()
+    );
+}
+
+// =====================================================
+// 临时 Action 结束统一收口
+//
+// 所有结束路径（SUCCESS / FAILED / 等待超时）都必须走这里:
+//   1) 标记完成 + 写入最终 result
+//   2) 释放本 Item 持有的 Critical Operation（无论成败与超时）
+//   3) 回调 CommandManager 上报结果
+//
+// 集中收口是为了杜绝"某条分支忘记 release"导致的
+// critical count 永不归零、系统永久无法重启。
+// =====================================================
+static void temp_action_complete(
+    TempActionItem &item,
+    WorkflowActionResult result
+)
+{
+    item.completed = true;
+    item.result = result;
+
+    temp_action_critical_release(item);
+
+    if(item.callback != nullptr)
+    {
+        item.callback(
+            item.cmd_id,
+            item.instance_id,
+            item.result
+        );
+    }
+}
+
 // =====================================================
 // 内部查找函数
 // =====================================================
@@ -600,6 +727,18 @@ bool workflow_init()
     json_state = WORKFLOW_JSON_EMPTY;
     workflow_json_cache = "";
 
+    // 仅重置本模块内部的"持有 Critical Operation"标记。
+    //
+    // 注意：workflow_init() 在 setup() 中早于 system_command_init()
+    // （后者由 command_manager_init() 调用），此刻不可能有进行中的
+    // 操作，因此这里【不】调用 system_command_critical_operation_release()
+    // —— 避免在自旋锁初始化之前触碰 system_command 内部状态。
+    memset(
+        workflow_critical_held,
+        0,
+        sizeof(workflow_critical_held)
+    );
+
     for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
     {
         new (&workflows[i]) Workflow();
@@ -918,6 +1057,9 @@ void workflow_clear()
     // 1. 清理所有 Workflow
     // =====================================================
     for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++) {
+        // 清空会丢弃所有运行态，必须先释放可能持有的
+        // Critical Operation（reload 路径会走到这里）
+        workflow_critical_release_by_index(i);
         workflows[i].id = "";
         workflows[i].name = "";
         workflows[i].enable = false;
@@ -1390,6 +1532,45 @@ bool workflow_start(
         return false;
     if(workflow->state == WORKFLOW_RUNNING)
         return false;
+
+    // ============================================
+    // Critical Operation 保护（接入规范 §3）
+    //
+    // Workflow 执行期间（含 Step0 Trigger 的等待阶段）会驱动外部设备
+    // 并可能修改持久化数据，不可被重启打断，因此开始前必须获得许可。
+    //
+    // 系统已进入 RESTART_PENDING（10s 安全窗口）时 acquire() 返回 false，
+    // 按规范此时【不得】开始本次 Workflow，直接放弃并返回 false。
+    // 绝不能在 acquire 失败的情况下继续执行 —— 否则重启可能正好落在
+    // 阀门开启 / 电机运转的过程中。
+    //
+    // 配对: 释放统一由 workflow_terminate() 负责（以及
+    //       workflow_stop / workflow_disable / workflow_clear 强制终止路径）。
+    // ============================================
+    int wf_index = workflow_index_of(workflow);
+
+    if(wf_index < 0)
+        return false;
+
+    if(!system_command_critical_operation_acquire())
+    {
+        Serial.printf(
+            "[Workflow] critical op acquire rejected, "
+            "workflow start aborted: %s\n",
+            workflow->id.c_str()
+        );
+        return false;
+    }
+
+    workflow_critical_held[wf_index] = true;
+
+    Serial.printf(
+        "[Workflow] critical op acquired (workflow idx=%d, id=%s, count=%u)\n",
+        wf_index,
+        workflow->id.c_str(),
+        (unsigned)system_command_critical_operation_count()
+    );
+
     // ============================================
     // Reset所有Step运行状态    //    // Trigger:       descriptor->reset()     // Action:    descriptor->reset()   // 不关心具体类型    // ============================================
     for(uint8_t i = 0;
@@ -1440,6 +1621,36 @@ static void workflow_notify_finish(Workflow &wf)
     wf.cmd_id = "";
 
     cb(cmd_id, state);
+}
+
+// =====================================================
+// Workflow 终止统一收口（Critical Operation 的唯一释放点）
+//
+// Workflow 的所有结束路径（FINISHED / TIMEOUT / ERROR）都必须走这里:
+//   1) 写入最终状态
+//   2) 释放本 Workflow 持有的 Critical Operation（无论成功 / 失败 / 超时）
+//   3) 回调 CommandManager 上报结果
+//
+// 为什么不把 release 写进 workflow_notify_finish() 内部:
+//   该函数在 finish_callback == nullptr 时会提前 return，而事件触发 /
+//   定时器触发的 Workflow 没有回调。若放在那里，这类 Workflow 会漏掉
+//   release，critical count 永不归零，系统将永久无法重启（严重 bug）。
+//
+// 幂等保证: workflow_critical_release_by_index() 依赖持有标记，
+//   同一 Workflow 被重复收口也只会 release 一次。
+// =====================================================
+static void workflow_terminate(
+    Workflow &wf,
+    WorkflowState state
+)
+{
+    wf.state = state;
+
+    workflow_critical_release_by_index(
+        workflow_index_of(&wf)
+    );
+
+    workflow_notify_finish(wf);
 }
 
 
@@ -1536,6 +1747,30 @@ static bool enqueue_temp_action(
         return false;
     }
 
+    // ================================================
+    // Critical Operation 保护（接入规范 §3）
+    //
+    // 临时 Action 由 CommandManager 直接下发，执行期间驱动硬件，
+    // 不可被重启打断，因此入队前必须获得许可。
+    //
+    // acquire 失败（系统已进入 10s 安全窗口）时【不得】开始该 Action:
+    // 归还刚申请到的实例后放弃，避免实例池泄漏。
+    //
+    // 放在申请实例之后、写队列之前,是为了让失败路径只需回收实例,
+    // 不产生任何需要 release 的中间状态。
+    // ================================================
+    if(!system_command_critical_operation_acquire())
+    {
+        Serial.printf(
+            "[Workflow] critical op acquire rejected, "
+            "temp action aborted: %s\n",
+            id.c_str()
+        );
+
+        temp_action_free_instance(inst);
+        return false;
+    }
+
     // 初始化 Action Instance
 
     inst->descriptor = desc;
@@ -1614,7 +1849,18 @@ static bool enqueue_temp_action(
     item.cmd_id = cmd_id;
     item.callback = callback;
     item.timeout_ms = timeout_ms;
+    // 标记本 Item 持有 Critical Operation，由 temp_action_complete()
+    // 在结束（成功 / 失败 / 超时）时配对释放
+    item.critical_held = true;
     queue_wr_ptr = next_wr;
+
+    Serial.printf(
+        "[Workflow] critical op acquired (temp action id=%u, act=%s, count=%u)\n",
+        (unsigned)item.instance_id,
+        id.c_str(),
+        (unsigned)system_command_critical_operation_count()
+    );
+
     return true;
 }
 // =====================================================
@@ -1659,6 +1905,12 @@ static void workflow_temp_action_cleanup()
             break;
         }
 
+        // 防御性兜底：正常路径下 Item 完成时已由 temp_action_complete()
+        // 释放过（标记已置 false，此处为空操作）。若将来新增了绕过
+        // temp_action_complete() 的结束分支，这里保证 Item 被回收时
+        // 不会带着未释放的 Critical Operation 消失。
+        temp_action_critical_release(item);
+
         // 清理 instance
         if(item.instance != nullptr)
         {
@@ -1678,6 +1930,7 @@ static void workflow_temp_action_cleanup()
         item.instance_id = 0;
         item.result = ACTION_IDLE;
         item.completed = false;
+        item.critical_held = false;
 
         queue_rd_ptr =
             (queue_rd_ptr + 1) % MAX_TEMP_ACTIONS;
@@ -1718,15 +1971,20 @@ void workflow_task()
         // Workflow 超时
         if((uint32_t)(now - wf.start_time) > wf.timeout_ms)
         {
-            wf.state = WORKFLOW_TIMEOUT;
-            workflow_notify_finish(wf);
+            // 超时属于"结束"的一种，同样必须释放 Critical Operation
+            workflow_terminate(
+                wf,
+                WORKFLOW_TIMEOUT
+            );
             continue;
         }
         // 全部完成
         if(wf.current_step >= wf.step_count)
         {
-            wf.state = WORKFLOW_FINISHED;
-            workflow_notify_finish(wf);
+            workflow_terminate(
+                wf,
+                WORKFLOW_FINISHED
+            );
             continue;
         }
         WorkflowStep &step =
@@ -1740,8 +1998,10 @@ void workflow_task()
                 step.instance.trigger;
             if(trigger == nullptr)
             {
-                wf.state = WORKFLOW_ERROR;
-                workflow_notify_finish(wf);
+                workflow_terminate(
+                    wf,
+                    WORKFLOW_ERROR
+                );
                 continue;
             }
             if(!trigger->running)
@@ -1781,8 +2041,11 @@ void workflow_task()
             else if(trigger->state == TRIGGER_FAILED)
             {
                 trigger->running = false;
-                wf.state = WORKFLOW_ERROR;
-                workflow_notify_finish(wf);
+
+                workflow_terminate(
+                    wf,
+                    WORKFLOW_ERROR
+                );
             }
             continue;
         }
@@ -1796,9 +2059,10 @@ void workflow_task()
 
             if(action == nullptr)
             {
-                wf.state =
-                    WORKFLOW_ERROR;
-                workflow_notify_finish(wf);
+                workflow_terminate(
+                    wf,
+                    WORKFLOW_ERROR
+                );
                 continue;
             }
 
@@ -1826,9 +2090,10 @@ void workflow_task()
             {
                 action->running = false;
 
-                wf.state =
-                    WORKFLOW_ERROR;
-                workflow_notify_finish(wf);
+                workflow_terminate(
+                    wf,
+                    WORKFLOW_ERROR
+                );
             }
         }
     }
@@ -1858,18 +2123,12 @@ void workflow_task()
                 item.instance->running = false;
             }
 
-            item.completed = true;
-            item.result =
-                ACTION_FAILED;
-
-            if(item.callback != nullptr)
-            {
-                item.callback(
-                    item.cmd_id,
-                    item.instance_id,
-                    ACTION_FAILED
-                );
-            }
+            // 等待超时同样属于"执行完毕"，必须释放 Critical Operation
+            // 并回调上报 ACTION_FAILED
+            temp_action_complete(
+                item,
+                ACTION_FAILED
+            );
         }
         else
         {
@@ -1877,9 +2136,13 @@ void workflow_task()
                 item.instance;
             if(action == nullptr)
             {
-                item.completed = true;
-                item.result =
-                    ACTION_FAILED;
+                // 实例缺失，Action 不可能执行。
+                // 走统一收口：释放 Critical Operation 并上报失败，
+                // 避免命令既不上报、计数又泄漏。
+                temp_action_complete(
+                    item,
+                    ACTION_FAILED
+                );
             }
             else
             {
@@ -1917,17 +2180,12 @@ void workflow_task()
                 if(action->result == ACTION_SUCCESS ||
                    action->result == ACTION_FAILED)
                 {
-                    item.completed = true;
-                    item.result =
-                        action->result;
-                    if(item.callback != nullptr)
-                    {
-                        item.callback(
-                            item.cmd_id,
-                            item.instance_id,
-                            item.result
-                        );
-                    }
+                    // 执行完毕（成功或失败）统一收口：
+                    // 释放 Critical Operation + 回调上报结果
+                    temp_action_complete(
+                        item,
+                        action->result
+                    );
                 }
             }
         }
@@ -2065,6 +2323,9 @@ bool workflow_disable(const String &id)
 {
     for(uint8_t i = 0; i < workflow_count; i++) {
         if(workflows[i].id == id) {
+            // 禁用会强制结束正在运行的 Workflow，
+            // 必须释放其持有的 Critical Operation
+            workflow_critical_release_by_index(i);
             workflows[i].enable = false;
             workflows[i].state = WORKFLOW_IDLE;
             workflows[i].cmd_id = "";
@@ -2082,6 +2343,9 @@ bool workflow_stop(const String &id)
 {
     for(uint8_t i = 0; i < workflow_count; i++) {
         if(workflows[i].id == id) {
+            // 强制停止是"结束"的一种：无论当前处于哪一步都要释放
+            // Critical Operation，否则计数永不归零，系统永久无法重启
+            workflow_critical_release_by_index(i);
             workflows[i].state = WORKFLOW_IDLE;
             workflows[i].current_step = 0;
             workflows[i].start_time = 0;

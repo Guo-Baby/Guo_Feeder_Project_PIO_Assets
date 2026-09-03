@@ -88,6 +88,17 @@ static bool s_table_ready = false;
 // 重启命令的"安全延迟窗口"已移交给 SystemCommand，本模块不再维护。
 static unsigned long s_restart_since_ms = 0;
 
+// 是否存在"已修改、尚未落盘"的配置事务（需求文档 §3.2 / §4）。
+//
+// 语义:
+//   配置修改开始        -> 首次 Acquire Critical Operation（连续修改不重复 Acquire）
+//   配置 Save 成功落盘  -> Release + Request Restart（见 pending_save_finalize）
+//   Save 失败           -> 不得 Release、不得 Request Restart
+//
+// 该标志用于保证"一个 Pending Save 事务对应一个 Critical Operation"，
+// 避免连续 config_set 造成 Critical Operation Count 永久增加。
+static bool s_pending_save = false;
+
 // 最近一次提交状态
 //
 // 一次完整提交 = Data 成功 + Version 成功 + 收尾成功。
@@ -187,6 +198,7 @@ static uint8_t s_cmd_count = 0;   // 当前排队数量
 // 前向声明（实现位于文件后段）
 static void config_cmd_process_one();
 static void restart_timer_check();
+static void pending_save_finalize();
 
 // =====================================================
 // 内部工具
@@ -867,6 +879,43 @@ static void restart_timer_start()
     );
 }
 
+// 配置事务收尾：Save 已确认落盘 -> Release + Request Restart
+//
+// 只在 config_save() 确认 Flash 写入成功【之后】调用（需求文档 §四）:
+//   1) Release Critical Operation —— 配置已安全落盘，不再需要阻塞重启
+//   2) 请求重启 —— 交由 SystemCommand 状态机执行，不直接 ESP.restart()
+//
+// 失败路径严禁调用本函数（需求文档 §九）:
+//   保持 Critical Operation 占用、保持 Pending Save 事务，
+//   等待下一次成功 Save 再收尾。
+//
+// 无待收尾事务时是安全的幂等空操作：
+//   例如业务模块仅落盘"不需要重启"的修改时，s_pending_save 为 false。
+static void pending_save_finalize()
+{
+    if (!s_pending_save)
+    {
+        return;
+    }
+
+    // 1) Release: acquire/release 严格配对，见 set_begin() 中的首次 Acquire。
+    //    只有 Save 成功才走到这里，count 必然 >= 1，不会触发下溢保护。
+    system_command_critical_operation_release();
+    s_pending_save = false;
+
+    cfg_log(
+        "I",
+        "config saved, critical op released, requesting restart"
+    );
+
+    // 2) 请求重启。request_restart() 幂等（需求文档 §13）:
+    //    已在 REQUESTED / PENDING 时重复调用返回 true，不会重置倒计时。
+    if (!system_command_request_restart())
+    {
+        cfg_log("E", "restart request rejected after save");
+    }
+}
+
 // 检查倒计时是否到期（由 config_task 调用）
 static void restart_timer_check()
 {
@@ -886,25 +935,29 @@ static void restart_timer_check()
         //
         // 配置修改默认只改 RAM（便于连续改多个字段只写一次 Flash），
         // 若这里不保存，倒计时一到重启就会丢掉全部未保存的修改。
-        //
-        // 保存失败也照常重启: config_save() 失败会回滚到
-        // Last Known Good Config，回到上一份可信配置同样是安全结果。
         if (!config_save())
         {
-            cfg_log("E", "pre-restart save failed, requesting restart anyway");
+            // 需求文档 §九: Save 落盘失败 -> 不得 Release、不得 Request Restart。
+            //
+            // 保持 Critical Operation 占用与 Pending Save 事务，
+            // 重新开始完整的 5 分钟倒计时，等待下一次自动重试。
+            // 不在此处请求重启，避免"配置尚未确认落盘"时进入重启流程。
+            cfg_log(
+                "E",
+                "pre-restart save failed; critical op kept, "
+                "restart timer re-armed"
+            );
+            s_restart_since_ms = millis();
+            return;
         }
 
-        // 本模块不执行重启。
+        // 落盘成功 -> Release + Request Restart（需求文档 §四 / §七）。
         //
-        // 5 分钟倒计时只是"什么时候该重启"的业务判断，
-        // "怎么安全地重启"由 SystemCommand 统一负责:
+        // 本模块不执行重启。"怎么安全地重启"由 SystemCommand 统一负责:
         //   等 Critical Operation 归零 -> 10s 安全窗口 -> ESP.restart()
-        s_restart_since_ms = 0;
+        pending_save_finalize();
 
-        if (!system_command_request_restart())
-        {
-            cfg_log("E", "restart request rejected");
-        }
+        s_restart_since_ms = 0;
     }
 }
 
@@ -1098,6 +1151,12 @@ bool config_save()
 
     if (!any_dirty)
     {
+        // 幂等成功（无变化不写 Flash）。
+        //
+        // 若仍存在待收尾事务（例如上次 Save 失败已回滚、dirty 被清空），
+        // 在此收尾，避免 Critical Operation 被永久占用、阻塞一切后续重启。
+        // 无事务时为空操作（需求文档 §四 的 Release 只针对真实事务）。
+        pending_save_finalize();
         return true;
     }
 
@@ -1145,7 +1204,20 @@ bool config_save()
     }
 
     // ---- 4) 标记提交完成 ----
-    return commit_mark_done();
+    if (!commit_mark_done())
+    {
+        return false;
+    }
+
+    // ---- 5) 事务收尾 ----
+    //
+    // 只有走到这里才确认 Data + Version + 提交状态【全部】落盘成功。
+    // 此时才允许 Release Critical Operation 并请求重启（需求文档 §四 / §七）。
+    // 前面任何一步失败都会走 commit_fail_and_rollback() 提前返回，
+    // 不会执行到本行 —— 失败路径保持占用、不请求重启（需求文档 §九）。
+    pending_save_finalize();
+
+    return true;
 }
 
 // 查询最近一次提交状态
@@ -1395,12 +1467,43 @@ static bool set_begin(
         m->loaded = true;
     }
 
-    m->dirty = true;
-
     if (schedule_restart)
     {
+        // Critical Operation 生命周期（需求文档 §3.2 / §七）:
+        //
+        //   配置修改事务开始 -> 首次 Acquire，连续修改不重复 Acquire。
+        //   一个 Pending Save 事务只对应一个 Critical Operation，
+        //   避免连续 config_set 造成 Count 永久增加。
+        //
+        //   Acquire 失败 = 系统已进入 RESTART_PENDING / RESTARTING
+        //   （10 秒安全窗口），此时禁止新的配置修改（需求文档 §14），
+        //   因此本函数直接拒绝本次修改，调用方收到 false。
+        if (!s_pending_save)
+        {
+            if (!system_command_critical_operation_acquire())
+            {
+                cfg_log(
+                    "E",
+                    "set rejected: critical op acquire failed "
+                    "(restart pending?) module=%s",
+                    module
+                );
+                return false;
+            }
+
+            s_pending_save = true;
+
+            cfg_log(
+                "I",
+                "critical op acquired (pending save transaction), module=%s",
+                module
+            );
+        }
+
         restart_timer_start();
     }
+
+    m->dirty = true;
 
     out = m;
 
@@ -2432,6 +2535,10 @@ static ExecResult exec_save(JsonDocument &out)
             return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
         }
 
+        // 幂等成功。若仍存在待收尾事务（如上次 Save 失败回滚后无 dirty 残留），
+        // 在此收尾，避免 Critical Operation 被永久占用（需求文档 §四 / §九 恢复路径）。
+        pending_save_finalize();
+
         return result_ok("no dirty module, nothing to save");
     }
 
@@ -2509,6 +2616,13 @@ static ExecResult exec_save(JsonDocument &out)
         return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
     }
 
+    // 落盘成功 -> Release + Request Restart（需求文档 §四 / §七）。
+    //
+    // 只有 Data + Version + 提交状态全部写入成功才走到这里；
+    // 前面的任何失败都已 commit_fail_and_rollback() 提前返回，
+    // 保持 Critical Operation 占用、不请求重启（需求文档 §九）。
+    pending_save_finalize();
+
     return result_ok("config saved");
 }
 
@@ -2526,12 +2640,24 @@ static ExecResult exec_restart(const ConfigCommandTask &t)
 
     // 重启前先落盘，避免未保存的修改丢失。
     //
-    // 保存失败也照常请求重启: config_save() 失败会回滚到
-    // Last Known Good Config，回到上一份可信配置同样是安全结果。
+    // 需求文档 §九: Save 写入 Flash 失败 -> 不得 Release、不得 Request Restart。
+    // 配置已回滚到 Last Known Good，本次重启请求直接拒绝，
+    // 由调用方决定是否重试（可再次下发 save / restart）。
     if (!config_save())
     {
-        cfg_log("E", "pre-restart save failed, requesting restart anyway");
+        cfg_log("E", "pre-restart save failed, restart request aborted");
+        return result_fail(
+            CONFIG_ERR_IO_FAILED,
+            "save failed, restart aborted"
+        );
     }
+
+    // 落盘成功 -> Release + Request Restart（需求文档 §四）。
+    //
+    // pending_save_finalize() 只处理"真实存在的待收尾事务"；
+    // 这里再显式请求一次以覆盖无事务场景（例如无修改直接 restart），
+    // request_restart() 幂等，重复调用安全（需求文档 §13）。
+    pending_save_finalize();
 
     // 本模块不执行重启，只发出请求。
     //
