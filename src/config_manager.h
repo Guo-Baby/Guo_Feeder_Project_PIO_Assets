@@ -54,6 +54,7 @@
 #define CONFIG_MODULE_WEIGHT    "weight"
 #define CONFIG_MODULE_MQTT      "mqtt"
 #define CONFIG_MODULE_MITHERMO  "mi_thermo"
+#define CONFIG_MODULE_RTC       "rtc"
 
 // 配置目录与后缀
 #define CONFIG_DIR              "/config"
@@ -602,9 +603,7 @@ int config_get_valve_safety_timeout_sec(); // 阀门最大开启时间，默认 
 int config_get_timezone();
 String config_get_ntp_server1();
 String config_get_ntp_server2();
-int config_get_ntp_sync_interval_day();
-int config_get_ntp_sync_hour();
-int config_get_ntp_sync_minute();
+int config_get_ntp_sync_interval_sec(); // SNTP 校时周期，单位秒，默认 86400（24 小时）
 
 // ==========================
 // HX711 称重模块配置
@@ -647,6 +646,21 @@ bool config_update_wifi(
     const String &ssid,
     const String &password
 );
+
+// ==========================
+// PCF8563T RTC 配置（rtc.json）
+//
+// 只保存"芯片接口"本身，不涉及任何时间语义。
+// 时间与校时策略仍归 time 模块。
+//
+// 与 OLED 共用同一组 I2C Bus（SDA/SCL 配置值须与 oled 一致），
+// 由不同 I2C Address 区分设备，不额外占用 GPIO。
+// ==========================
+bool config_get_rtc_enable();         // 是否启用 RTC 芯片
+int config_get_rtc_sda();             // RTC 所在 I2C Bus 的 SDA 引脚
+int config_get_rtc_scl();             // RTC 所在 I2C Bus 的 SCL 引脚
+int config_get_rtc_i2c_addr();        // PCF8563T 7bit I2C 地址，默认 0x51(81)
+int config_get_rtc_calibrate_threshold_sec(); // System 与 RTC 差值超过该秒数才写 RTC，默认 2
 
 // ==========================
 // 米家 LYWSD03MMC 温湿度计配置

@@ -1,0 +1,7 @@
+{
+    "enable": true,
+    "sda": 4,
+    "scl": 5,
+    "i2c_addr": 81,
+    "calibrate_threshold_sec": 2
+}

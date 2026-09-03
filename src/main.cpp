@@ -51,7 +51,6 @@ void setup()
     // =====================================================
     ble_init();
     wifi_init();
-    time_init();
     // =====================================================
     // 第三层：Workflow 框架（依赖基础系统）
     // =====================================================
@@ -65,6 +64,10 @@ void setup()
     dispense_guard_init();
     oled_init();
     oled_event_init();
+    // ---- TimeManager V2：必须在 oled_init() 之后 ----
+    // RTC(PCF8563T) 复用 OLED 建立的 Wire I2C Bus，绝不在本模块重复
+    // Wire.begin()；故 time_init() 从第二层移到此处。
+    time_init();
     test_mqtt_init();
     bool ok = MiThermometerInit();
     // =====================================================

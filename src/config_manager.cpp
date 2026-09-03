@@ -24,7 +24,7 @@
 // =====================================================
 
 // 模块数量（与 kModuleNames 一致）
-#define CONFIG_MODULE_COUNT     7
+#define CONFIG_MODULE_COUNT     8
 
 // 路径缓冲区大小
 // 最长路径形如 /config/mi_thermo.json.bak
@@ -63,7 +63,8 @@ static const char *const kModuleNames[CONFIG_MODULE_COUNT] = {
     CONFIG_MODULE_TIME,
     CONFIG_MODULE_WEIGHT,
     CONFIG_MODULE_MQTT,
-    CONFIG_MODULE_MITHERMO
+    CONFIG_MODULE_MITHERMO,
+    CONFIG_MODULE_RTC
 };
 
 // =====================================================
@@ -3360,19 +3361,38 @@ String config_get_ntp_server2()
            | String("cn.pool.ntp.org");
 }
 
-int config_get_ntp_sync_interval_day()
+int config_get_ntp_sync_interval_sec()
 {
-    return module_ro(CONFIG_MODULE_TIME)["sync_interval_day"] | 7;
+    return module_ro(CONFIG_MODULE_TIME)["sync_interval_sec"] | 86400;
 }
 
-int config_get_ntp_sync_hour()
+// ---------------- PCF8563T RTC ----------------
+//
+// 与 OLED 共用同一组 I2C Bus，默认引脚与 oled.json 保持一致。
+// RTC 模块只描述"芯片怎么接"，不描述时间怎么用。
+bool config_get_rtc_enable()
 {
-    return module_ro(CONFIG_MODULE_TIME)["sync_hour"] | 4;
+    return module_ro(CONFIG_MODULE_RTC)["enable"] | true;
 }
 
-int config_get_ntp_sync_minute()
+int config_get_rtc_sda()
 {
-    return module_ro(CONFIG_MODULE_TIME)["sync_minute"] | 10;
+    return module_ro(CONFIG_MODULE_RTC)["sda"] | 4;
+}
+
+int config_get_rtc_scl()
+{
+    return module_ro(CONFIG_MODULE_RTC)["scl"] | 5;
+}
+
+int config_get_rtc_i2c_addr()
+{
+    return module_ro(CONFIG_MODULE_RTC)["i2c_addr"] | 0x51;
+}
+
+int config_get_rtc_calibrate_threshold_sec()
+{
+    return module_ro(CONFIG_MODULE_RTC)["calibrate_threshold_sec"] | 2;
 }
 
 // ---------------- HX711 称重 ----------------
