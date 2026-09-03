@@ -1,815 +1,435 @@
-# System Command — Safe Restart 需求文档
+# Computer Reset Action 功能需求文档
 
-## 1. 本次开发范围
+## 1. 功能目标
 
-本次仅修改：
+新增 `Computer Reset` 硬件 Action，用于通过 ESP32-S3 的 GPIO8 控制外部继电器，从而模拟电脑主板 Reset Switch 的一次按键操作。
 
-* `System Command` 模块
-* `system_command.cpp`
-* `system_command.h`
-* 以及该模块内部为实现 Safe Restart 所必需的代码
+执行 `computer_reset` Action 时：
 
-**禁止修改其他业务模块。**
+1. GPIO8 输出 HIGH。
+2. 保持 HIGH **800 ms**。
+3. 800 ms 到达后 GPIO8 恢复 LOW。
+4. Action 完成。
 
-本次核心目标：
-
-1. 将 Restart 能力从 Config Manager 收回。
-2. 在 System Command 中建立统一的 Safe Restart 机制。
-3. Restart 不区分来源：
-
-   * 用户下发 Restart
-   * Config Manager 自动请求 Restart
-   * 未来其他模块请求 Restart
-4. 建立全局 `Critical Operation` 计数机制。
-5. 输出后续其他模块接入 `Critical Operation` 的规范，但本阶段不要修改其他模块。
+该功能必须采用现有 WorkflowManager / Temporary Action 架构执行，不新增独立的 Command 执行机制。
 
 ---
 
-# 2. Safe Restart 核心模型
+## 2. 系统架构
 
-系统只允许存在一个统一的 Restart 执行机制。
-
-Restart 的最终执行条件：
+必须遵循现有项目架构：
 
 ```text
-Restart 已被请求
-        ↓
-Critical Operation Count == 0
-        ↓
-进入 Restart Pending
-        ↓
-10 秒安全倒计时
-        ↓
-执行 ESP Restart
+MQTT
+  ↓
+CloudManager
+  ↓
+CommandManager
+  ↓
+WorkflowManager
+  ↓
+Temporary Action
+  ↓
+Computer Reset Action
+  ↓
+GPIO8
 ```
 
-Restart 一旦被请求，**不可被普通操作取消**。
+`CommandManager` 不直接调用 `computer_reset()` 硬件函数。
 
-普通操作不能撤销 Restart Request。
+`computer_reset` 必须作为一个标准 Action 注册到 WorkflowManager / Capability Registry 所使用的现有 Action 体系中。
+
+这样既可以支持：
+
+* 云端直接执行 `computer_reset` Action
+* Workflow 中调用 `computer_reset` Action
+* 未来其他 Trigger 调用 `computer_reset`
+
+所有执行路径最终都必须进入同一个 Computer Reset Action 实现。
 
 ---
 
-# 3. Critical Operation Counter
+## 3. 新增文件
 
-System Command 内部维护一个全局的 Critical Operation 计数器：
+建议新增：
+
+```text
+src/computer_reset.h
+src/computer_reset.cpp
+```
+
+具体接口名称应遵循项目现有 Action 的接口规范，不要为了本功能重新设计一套 Action API。
+
+如果现有项目已经存在类似硬件 Action 的实现，应优先按照现有实现模式编写。
+
+---
+
+## 4. GPIO 定义
+
+Computer Reset 使用：
+
+```text
+GPIO8
+```
+
+建议定义为：
 
 ```cpp
-uint32_t critical_operation_count;
+constexpr uint8_t COMPUTER_RESET_PIN = 8;
 ```
 
-语义：
+不要在多个位置直接硬编码 `8`。
+
+---
+
+## 5. 初始化要求
+
+Computer Reset 模块初始化时必须将 GPIO8 设置为安全状态 LOW。
+
+要求：
+
+```cpp
+pinMode(COMPUTER_RESET_PIN, OUTPUT);
+digitalWrite(COMPUTER_RESET_PIN, LOW);
+```
+
+初始化完成后，GPIO8 必须保持 LOW。
+
+### 安全原则
+
+GPIO8 的 HIGH 状态只能由 Computer Reset Action 的执行流程产生。
+
+除 Computer Reset 模块之外，不应存在其他模块主动控制 GPIO8。
+
+---
+
+## 6. Action 执行行为
+
+`computer_reset` Action 的执行逻辑：
 
 ```text
-0
-    → 当前没有 Critical Operation
-    → 允许进入 Restart
-
-> 0
-    → 当前存在 Critical Operation
-    → 禁止开始 Restart
+START
+  ↓
+GPIO8 = HIGH
+  ↓
+记录开始时间
+  ↓
+进入 RUNNING / WAIT 状态
+  ↓
+持续非阻塞检查 elapsed time
+  ↓
+elapsed >= 800 ms
+  ↓
+GPIO8 = LOW
+  ↓
+ACTION COMPLETE
 ```
 
-## 3.1 开始 Critical Operation
+严禁使用：
 
-其他模块开始执行不可安全中断的操作时：
+```cpp
+delay(800);
+```
+
+不得阻塞主循环、WorkflowManager、CommandManager 或其他系统任务。
+
+必须使用现有项目的非阻塞 Action / Workflow 状态机机制，例如基于 `millis()` 的时间判断。
+
+---
+
+## 7. HIGH 持续时间
+
+固定持续：
+
+```text
+800 ms
+```
+
+本版本不需要从 Command Payload 或 ConfigManager 获取该时间。
+
+不要增加可配置参数。
+
+不要修改 ConfigManager。
+
+---
+
+## 8. Action Reset / 完成 / 异常安全要求
+
+无论 Action 因为什么原因离开执行状态，都必须确保 GPIO8 最终为 LOW。
+
+至少包括：
+
+```text
+正常完成
+Action reset
+Workflow reset
+Action 被取消
+异常退出
+```
+
+所有这些路径都必须确保：
+
+```cpp
+digitalWrite(COMPUTER_RESET_PIN, LOW);
+```
+
+不得出现 Action 已经结束但 GPIO8 仍保持 HIGH 的情况。
+
+---
+
+## 9. Critical Operation 要求
+
+本 Action **不需要使用 System Command 的 Critical Operation 机制**。
+
+不要调用：
 
 ```cpp
 system_command_critical_operation_acquire();
 ```
 
-内部：
-
-```text
-critical_operation_count++
-```
-
-## 3.2 Critical Operation 完成
-
-操作安全完成后：
+也不要调用：
 
 ```cpp
 system_command_critical_operation_release();
 ```
 
-内部：
-
-```text
-critical_operation_count--
-```
-
-必须保证：
-
-```text
-acquire() 与 release() 成对出现
-```
-
-禁止出现：
-
-```text
-acquire()
-...
-忘记 release()
-```
-
-否则系统可能永久无法 Restart。
-
----
-
-# 4. Critical Operation 的定义
-
-Critical Operation 指：
-
-> 如果此操作在执行过程中被 ESP32 强制重启，可能导致系统状态、持久化数据、外部设备状态或硬件状态处于不可预期状态。
-
-当前确认属于 Critical Operation 的操作：
-
-### Config
-
-Config Manager 修改配置并进入延迟保存阶段时：
-
-```text
-Critical Operation Count +1
-```
-
-直到：
-
-```text
-Config Save 完成
-```
-
-才：
-
-```text
-Critical Operation Count -1
-```
-
-注意：
-
-**5 分钟 Config 延迟计时属于 Config Manager 自己的业务逻辑，不属于 Restart 模块。**
-
-System Command 不知道也不关心这个 5 分钟倒计时。
-
----
-
-### Workflow JSON
-
-Workflow 执行过程中涉及必须完整完成的 JSON 文件写操作时，由 Workflow/相关业务模块负责声明 Critical Operation。
-
-JSON Storage 本身不是 Critical Operation。
-
-也就是说：
-
-```text
-JSON Storage
-    ↓
-只是底层工具
-    ↓
-不自行 acquire/release
-```
-
-真正决定是否 Critical 的是调用它的业务模块。
-
----
-
-### WOF
-
-WOF 的开/关动作属于 Critical Operation。
-
-例如：
-
-```text
-WOF 开启
-    acquire
-    ↓
-执行硬件动作
-    ↓
-操作完成
-    ↓
-release
-```
-
-开发状态下，如果 WOF 正在执行不可中断的物理动作，则 Restart 必须等待。
-
----
-
-### RTC 写操作
-
-未来 Time Manager 对 RTC 芯片执行写操作时：
-
-```text
-RTC Write
-    acquire
-    ↓
-RTC 写入
-    ↓
-release
-```
-
-RTC Read 不属于 Critical Operation。
-
----
-
-# 5. 非 Critical Operation
-
-以下操作默认不需要 Critical Operation：
-
-* 普通 RAM 读取
-* Flash 容量查询
-* Flash 使用量查询
-* LittleFS 文件列表
-* LittleFS 文件读取
-* System State 查询
-* Wi-Fi 状态查询
-* MQTT 状态查询
-* 时间读取
-* JSON Storage 普通读写接口本身
-* 普通 Command 查询
-* 普通 MQTT 操作
-
-原则：
-
-**只有业务层明确认为“被 Restart 中断会产生危险状态”的操作，才声明 Critical Operation。**
-
----
-
-# 6. Restart 状态机
-
-System Command 内部实现以下状态：
-
-```cpp
-enum RestartState
-{
-    RESTART_IDLE,
-    RESTART_REQUESTED,
-    RESTART_PENDING,
-    RESTARTING
-};
-```
-
-## RESTART_IDLE
-
-系统正常运行。
-
-此状态下：
-
-* 可以接受 Critical Operation
-* 可以接受 Restart Request
-
-如果没有 Restart Request：
-
-```text
-Critical Operation Count
-可以自由变化
-```
-
----
-
-## RESTART_REQUESTED
-
-收到 Restart Request。
-
-此状态下：
-
-* 不执行立即 Restart
-* 继续等待 Critical Operation 完成
-* 允许新的 Critical Operation
-* 持续检查：
-
-```text
-critical_operation_count == 0
-```
-
-只有 Count 归零：
-
-```text
-RESTART_REQUESTED
-        ↓
-RESTART_PENDING
-```
-
-注意：
-
-**Restart Request 不能因为 Critical Operation 出现而取消。**
-
-如果新的 Critical Operation 在等待期间开始：
-
-```text
-Count > 0
-```
-
-则继续等待。
-
----
-
-## RESTART_PENDING
-
-进入最终 Restart 安全窗口。
-
-进入条件：
-
-```text
-Restart Requested
-AND
-Critical Operation Count == 0
-```
-
-此时：
-
-```text
-启动 10 秒倒计时
-```
-
-从这一刻开始：
-
-**禁止新的 Critical Operation 开始。**
-
-也就是说：
-
-```text
-RESTART_PENDING
-    ↓
-任何新的 Critical Operation 请求
-    ↓
-必须被拒绝 / 不允许开始
-```
-
 原因：
 
-系统已经确认当前没有 Critical Operation，并准备执行 Restart。
+Computer Reset 只是一个持续 800 ms 的 GPIO 脉冲。
+
+它不像以下操作：
+
+* Flash 写入
+* Config 持久化
+* RTC 写入
+* 阀门保持开启
+* 电机持续运行
+* 其他可能因 ESP32 Restart 而造成危险状态或数据损坏的操作
+
+Computer Reset 本身不属于需要阻止 ESP32 Restart 的 Critical Operation。
+
+因此：
+
+```text
+Computer Reset Action
+        │
+        └── 不占用 Critical Operation
+```
 
 ---
 
-## RESTARTING
+## 10. Restart 场景
 
-10 秒倒计时结束：
+ESP32 Restart 与 Computer Reset 是两个完全不同的概念。
+
+本模块不得修改 System Command 的 Restart 机制。
+
+不得调用：
 
 ```cpp
 ESP.restart();
 ```
 
-进入：
+Computer Reset Action 只负责：
 
 ```text
-RESTARTING
+GPIO8 HIGH → 800 ms → GPIO8 LOW
 ```
-
-之后不再执行其他业务逻辑。
 
 ---
 
-# 7. 为什么 RESTART_REQUESTED 允许 Critical Operation
+## 11. Action 注册
 
-这是设计中的重要规则。
+必须将 Computer Reset 注册为现有 Action。
 
-例如：
+Action 的 Stable ID / Runtime ID / capability mapping 必须遵循项目现有 Capability Registry 机制。
 
-```text
-Config Set A
-    ↓
-Critical Count = 1
+不要为 Computer Reset 创建独立的 ID 系统。
 
-Config Set B
-    ↓
-Critical Count = 2
+不要绕过 Capability Registry。
 
-Config Set C
-    ↓
-Critical Count = 3
-```
-
-此时即使用户已经发送：
+Action 名称使用：
 
 ```text
-Restart
+computer_reset
 ```
 
-也不能阻止 Config Manager 继续修改参数。
-
-Restart 只需要等待：
-
-```text
-3 → 2 → 1 → 0
-```
-
-当：
-
-```text
-Critical Count == 0
-```
-
-才进入：
-
-```text
-RESTART_PENDING
-```
-
-因此用户可以连续修改多个 Config 参数。
+具体注册 API 和 ID 分配方式按照当前项目已有 Action 注册模式实现。
 
 ---
 
-# 8. 5 分钟 Config Save 与 Restart 的关系
+## 12. Temporary Action
 
-Restart 模块**不负责** Config 的 5 分钟计时。
-
-Config Manager 自己负责：
+云端收到：
 
 ```text
-Config Set
-    ↓
-修改 RAM
-    ↓
-Critical Operation Count++
-    ↓
-5 分钟计时
-    ↓
-Config Save
-    ↓
-Critical Operation Count--
+computer_reset
 ```
 
-如果此时用户发送 Restart：
+后，应按照当前 CommandManager 已有的 Action 执行流程进入 WorkflowManager 的 Temporary Action 机制。
+
+不要为 `computer_reset` 新增：
 
 ```text
-Restart Request
-    ↓
-RESTART_REQUESTED
-    ↓
-等待 Config Manager
-    ↓
-Config Save
-    ↓
-Critical Count = 0
-    ↓
-RESTART_PENDING
-    ↓
-10 秒
-    ↓
-ESP.restart()
+CommandManager → computer_reset()
 ```
 
-因此 Config Manager 不再拥有自己的 Restart 实现。
+这种独立执行路径。
+
+也不要修改现有 CommandManager 的整体架构。
 
 ---
 
-# 9. Restart Request API
+## 13. 非阻塞要求
 
-System Command 应提供统一的 Restart Request 接口，例如：
+Computer Reset Action 必须完全非阻塞。
 
-```cpp
-void system_command_request_restart();
+执行过程中：
+
+```text
+GPIO8 = HIGH
 ```
 
-具体命名可根据当前项目代码风格调整，但必须满足：
+但 ESP32 仍然必须能够正常执行：
 
-* 所有 Restart 来源统一调用该接口
-* 不允许其他模块直接调用 `ESP.restart()`
-* 不允许其他模块实现自己的 Restart Timer
-* 不允许 Config Manager 自己 Restart
+* MQTT
+* WiFi
+* WorkflowManager
+* EventManager
+* OLED
+* 其他后台任务
+
+不得使用 800 ms 的 `delay()`。
 
 ---
 
-# 10. Critical Operation API
+## 14. 并发 / 重复执行
 
-System Command 对外提供两个基础接口：
+应遵循现有 WorkflowManager / Temporary Action 对 Action 并发和重复执行的既有规则。
 
-```cpp
-bool system_command_critical_operation_acquire();
-bool system_command_critical_operation_release();
-```
+不要在 Computer Reset 模块内部重新设计一套队列、线程或任务系统。
 
-建议：
+如果现有 Temporary Action 机制已经负责 Action 生命周期，则 Computer Reset 只负责正确实现 Action 本身。
 
-### acquire
-
-返回：
-
-```text
-true
-    → Critical Operation 成功获得
-
-false
-    → 当前已经进入 RESTART_PENDING / 不允许开始
-```
-
-### release
-
-只有此前成功 acquire 的操作才能 release。
-
-必须防止：
-
-```text
-Count == 0
-release()
-```
-
-造成无符号整数下溢。
-
-因此 release 必须进行保护。
+如果现有框架规定 Action Start 时必须先检查 Busy 状态，则遵循现有框架，不重复实现。
 
 ---
 
-# 11. Critical Operation 的并发安全
+## 15. GPIO 安全边界
 
-Critical Operation Counter 是全局共享资源。
+GPIO8 的控制权只属于 Computer Reset 模块。
 
-必须考虑：
+初始化：
 
-* MQTT Command
-* Workflow
-* Config Manager
-* Timer
-* 其他业务模块
-
-可能在不同执行路径中调用。
-
-因此：
-
-**Counter 的读写必须保证原子性/并发安全。**
-
-不要让业务模块直接访问：
-
-```cpp
-critical_operation_count
+```text
+LOW
 ```
 
-业务模块只能通过 System Command 提供的 API：
+Action 开始：
 
-```cpp
-acquire()
-release()
+```text
+HIGH
 ```
 
-访问。
+800 ms 后：
+
+```text
+LOW
+```
+
+Action Reset / Cancel / Error：
+
+```text
+LOW
+```
+
+最终必须满足：
+
+```text
+正常空闲状态 = LOW
+```
 
 ---
 
-# 12. Critical Operation 风暴
+## 16. 不允许的修改
 
-系统不需要在 Restart 模块内部解决 Critical Operation 无限增加的问题。
+本任务是新增 Computer Reset 功能。
 
-理论上：
+除非为了接入现有 Action 注册机制确实需要，否则不要修改以下模块的核心逻辑：
 
 ```text
-Restart Request
+CloudManager
+CommandManager
+WorkflowManager
+SystemCommand
+ConfigManager
+EventManager
+SystemState
+```
+
+尤其不要修改：
+
+* CommandManager 的 Command 架构
+* Temporary Action 的执行机制
+* WorkflowManager 的状态机
+* System Command Restart 机制
+* Critical Operation 机制
+
+应该最大限度复用现有接口。
+
+---
+
+## 17. 代码质量要求
+
+要求：
+
+1. GPIO8 使用统一常量定义。
+2. 不使用 `delay()`。
+3. HIGH 持续时间固定为 800 ms。
+4. 所有退出路径确保 GPIO8 为 LOW。
+5. 初始化时明确设置 GPIO8 为 LOW。
+6. 不新增独立 Command 执行体系。
+7. 不使用 Critical Operation。
+8. 不修改现有 Restart 机制。
+9. 遵循现有 Action / Temporary Action / Capability Registry 的代码风格。
+10. 不改变已有公开 API，除非现有 Action 注册机制本身要求增加注册代码。
+
+---
+
+## 18. 最终设计原则
+
+Computer Reset 是一个标准 Hardware Action，而不是一个特殊 Command。
+
+因此最终结构必须保持：
+
+```text
+CloudManager
     ↓
-Critical Count 一直 > 0
+CommandManager
     ↓
-Restart 永远等待
-```
-
-这是允许存在的。
-
-Restart 模块只负责正确执行：
-
-```text
-Request
+WorkflowManager
     ↓
-等待 Count == 0
+Temporary Action
     ↓
-10 秒安全窗口
+ComputerReset Action
     ↓
-Restart
+GPIO8
 ```
 
-Critical Operation 的正确 acquire/release 由各业务模块负责。
-
----
-
-# 13. Restart 不可取消
-
-一旦：
-
-```cpp
-system_command_request_restart();
-```
-
-成功接受：
-
-禁止提供：
-
-```cpp
-cancel_restart()
-```
-
-之类的普通取消接口。
-
-Restart 可以被延迟：
+ComputerReset 模块只负责：
 
 ```text
-Critical Count > 0
-```
-
-但不能被取消。
-
----
-
-# 14. Restart 安全窗口
-
-进入：
-
-```text
-RESTART_PENDING
-```
-
-以后：
-
-```text
-critical_operation_count == 0
-```
-
-并启动：
-
-```text
-10 秒倒计时
-```
-
-此时必须禁止新的 Critical Operation。
-
-如果某个模块尝试：
-
-```cpp
-system_command_critical_operation_acquire();
-```
-
-必须失败。
-
-该模块不能开始自己的 Critical Operation。
-
----
-
-# 15. ESP Reset Reason
-
-本阶段不要求 System Command 自己实现完整 Log 模块。
-
-Restart 后如果需要判断：
-
-```text
-为什么发生 Reset
-```
-
-优先使用 ESP32/ESP-IDF 提供的 Reset Reason 机制。
-
-System Command 可以预留接口，但：
-
-**不要在本阶段为了 Reset Reason 引入新的 Log 系统。**
-
-未来 Log Module 建立后，再决定是否将 Restart Request / Restart 执行过程纳入 Log。
-
----
-
-# 16. Shutdown Handler
-
-本阶段不需要单独实现 Shutdown Handler。
-
-原因：
-
-ESP32 的 Restart 并不是传统意义上的操作系统 Shutdown。
-
-当前目标只是：
-
-```text
-安全等待 Critical Operation
+GPIO8 初始化为 LOW
         ↓
-10 秒安全窗口
+Action Start
         ↓
-ESP.restart()
+GPIO8 HIGH
+        ↓
+非阻塞等待 800 ms
+        ↓
+GPIO8 LOW
+        ↓
+Action Complete
 ```
 
-不增加额外 Shutdown 抽象层。
-
-如果未来出现真正需要统一执行的：
-
-```text
-停止电机
-关闭 WOF
-Flush Log
-保存状态
-关闭外设
-```
-
-再单独评估是否需要 Shutdown/Pre-reset Handler。
-
----
-
-# 17. 本阶段禁止事项
-
-AI 实现本需求时：
-
-### 禁止
-
-```text
-❌ 修改 Config Manager 的业务逻辑
-❌ 保留 Config Manager 自己的 Restart 实现
-❌ 让 System Command 调用 Config Manager Restart
-❌ 其他模块直接调用 ESP.restart()
-❌ System Command 实现 Config 的 5 分钟计时
-❌ System Command 判断“Restart 是谁发起的”
-❌ 区分 User Restart / Config Restart / Automatic Restart
-❌ 引入完整 Log Module
-❌ 修改 Workflow / WOF / Time Manager / JSON Storage
-```
-
-本阶段只建立：
-
-```text
-System Command
-    │
-    ├── Restart State Machine
-    ├── Critical Operation Counter
-    ├── Restart Request API
-    └── Critical Operation Acquire/Release API
-```
-
----
-
-# 18. 后续其他模块接入规范
-
-System Command 完成并测试通过后，其他模块按照以下模式接入。
-
-### 开始 Critical Operation
-
-```cpp
-if (!system_command_critical_operation_acquire())
-{
-    // Restart 已进入 RESTART_PENDING
-    // 当前操作不得开始
-    return;
-}
-```
-
-### 执行 Critical Operation
-
-```cpp
-// critical operation
-```
-
-### 完成
-
-```cpp
-system_command_critical_operation_release();
-```
-
-完整生命周期：
-
-```text
-Acquire
-   ↓
-Critical Operation
-   ↓
-Release
-```
-
-必须保证任何成功的：
-
-```cpp
-acquire()
-```
-
-最终一定对应：
-
-```cpp
-release()
-```
-
-即使执行过程中出现异常/错误路径，也必须保证 release。
-
----
-
-# 19. 最终架构
-
-最终系统形成：
-
-```text
-                 ┌──────────────────────┐
-                 │    System Command    │
-                 │                      │
-                 │ Restart State       │
-                 │ Critical Counter    │
-                 │ Restart Request     │
-                 │ Acquire / Release   │
-                 └──────────┬───────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-             ▼              ▼              ▼
-       Config Manager     Workflow        WOF
-             │              │              │
-       acquire/release acquire/release acquire/release
-             │              │              │
-             └──────────────┼──────────────┘
-                            │
-                            ▼
-                  Critical Count == 0
-                            │
-                            ▼
-                   Restart Pending
-                            │
-                          10 sec
-                            │
-                            ▼
-                       ESP.restart()
-```
-
-核心原则只有一句话：
-
-> **业务模块负责声明“什么时候不能重启”，System Command 只负责判断“什么时候可以重启”，并执行唯一的 Restart。**
+不要因为这个功能简单而绕过现有 Workflow / Action 架构。

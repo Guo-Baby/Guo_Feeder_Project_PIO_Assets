@@ -13,6 +13,7 @@
 #include "cloud_manager.h"
 #include "weight.h"
 #include "valve.h"
+#include "computer_reset.h"
 #include "workflow.h"
 #include "dispense_guard.h"
 #include "test_mqtt.h"
@@ -60,6 +61,7 @@ void setup()
     // =====================================================
     weight_init();
     valve_init();
+    computer_reset_init();     // GPIO8 脉冲（电脑重启），注册 COMPUTER_RESET Action
     dispense_guard_init();
     oled_init();
     oled_event_init();
@@ -118,6 +120,7 @@ void loop()
     oled_task();
     weight_task();
     valve_task();
+    computer_reset_task();     // 手动脉冲回收 + GPIO8 安全兜底
     MiThermometer_task();
     test_mqtt_task();//测试代码，需要删除
     serial_debug_command_process();
@@ -161,6 +164,19 @@ void serial_debug_command_process(void)
             else if (serial_cmd_buffer == "valve_status")
             {
                 Serial.printf("Valve current open state: %d\n", valve_is_open());
+            }
+            else if (serial_cmd_buffer == "computer_reset")
+            {
+                // 手动触发一次 800ms 脉冲（绕过 MQTT，用于本地验证 GPIO8）
+                bool ok = computer_reset_trigger();
+                Serial.printf("computer_reset trigger ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "computer_reset_status")
+            {
+                Serial.printf("ComputerReset active state: %d (pin=%d, hold=%lu ms)\n",
+                    computer_reset_is_active(),
+                    COMPUTER_RESET_PIN,
+                    COMPUTER_RESET_HOLD_MS);
             }
             else
             {
