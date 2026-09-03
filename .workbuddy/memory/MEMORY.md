@@ -64,9 +64,15 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 | 模块 | 状态 | 接入方式 |
 |---|---|---|
 | ConfigManager | ✅ 已接入 | `set_begin()` acquire（`s_pending_save` 去重）→ Save 落盘成功后 `pending_save_finalize()` release + request_restart；**Save 失败不 release、不重启** |
-| Workflow | ✅ 已接入（2026-09-03） | 每个 Workflow / 每个临时 Action 各自 +1 / -1；统一收口函数 `workflow_terminate()` / `temp_action_complete()`；报告见 `workflow_critical_operation接入报告.md` |
+| Workflow | ✅ 已接入并通过自查（2026-09-03） | 每个 Workflow / 每个临时 Action 各自 +1 / -1；统一收口函数 `workflow_terminate()` / `temp_action_complete()`；接入报告 `workflow_critical_operation接入报告.md`，自查报告 `workflow_critical_operation自查报告.md` |
 | WOF（阀门） | ❌ 未接入 | 计划：动作开始前 acquire → 完成后 release |
 | TimeManager / RTC | ❌ 未接入 | 仅 RTC **写**需要，读不需要 |
+| ComputerReset | ⛔ **明确不接入** | AI_TASK §9：只是 800ms GPIO 脉冲，非 Flash 写 / 阀门保持 / 电机运行类危险操作，不阻止重启 |
+
+**Action 引擎调用时机差异（写异步 Action 必看）**：
+- 临时 Action（workflow.cpp:2172-2201）：`start()` 后**同轮立即** `poll()`
+- Workflow Step Action（workflow.cpp:2093-2100）：`if/else`，首轮只 start，次轮起才 poll
+- 两种引擎下 `poll()` 都可能带 `result != RUNNING` 被调用（如 start 已置 FAILED），**不得**在此情况下做全局强制复位，否则误伤并发实例
 
 **接入铁律**（踩过/规避过的坑）：
 - release **不能**放进会在中途 `return` 的函数里（如 `workflow_notify_finish()` 在 callback 为空时提前返回）→ 会漏 release 导致**系统永久无法重启**
@@ -75,7 +81,30 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - 用"持有标记"（bool）实现 release 幂等，避免触发 `critical op release underflow` 错误日志
 - 变更 init 顺序前务必复查上述时序
 
+**跨任务并发铁律（P0 级，务必遵守）**：
+- `workflow_start()` 经 `command_manager_execute()` 由 **esp-mqtt 任务**调用；`workflow_task()` 在 **loop 任务**。两者可能在不同核并发。
+- 收口函数必须**先 Release、后置 state**。若先置 state，会打开窗口让 mqtt 侧的新 `workflow_start()` 通过 `state != RUNNING` 守卫并 acquire，随后被 loop 侧的 Release 把 flag 清成 false → **count 永久泄漏，系统再也无法重启**。
+- 通式：**"释放"必须早于"让对象对外可见地变为可重新开始"**。任何"先改状态、后释放"的写法都有同类风险。
+- 同理，`enqueue_temp_action()` 中 `critical_held = true` 必须早于 `queue_wr_ptr` 提交。
+
+**已知遗留隐患（待独立立项）**：
+- P2：Temp Action 环形队列 `queue_wr_ptr` / `queue_rd_ptr` 跨任务无 volatile / 原子 / 临界区保护（**既有问题**，非 Critical Operation 引入）。修复需为队列加临界区，但入队路径要跑 JSON 反序列化，需评估持锁时长与死锁风险。
+
 ## 冲突与依赖
 - 协议冲突：README 记 `{cmd,ob,id,pl,src,ts}`，Cloud Manager 已重构为 `{c,i,v,k,p}`；以代码 + 需求文档为准
 - Config 是全局底座：米家参数、Log 等级、RTC 参数都要进 Config
 - 需求文档聚焦饮水系统；README 含投喂 / 出粮 / App 等远期目标，排期以需求文档为准
+
+## 云端下发命令的两种格式（cloud_manager.cpp:1048 起）
+- `compact = !doc["c"].isNull()` —— 带 `c` 走新格式，否则走旧格式透传
+- **旧格式（无需 version/stable_id，调试首选）**：`{"cmd":"execute_action","id":"8010","ob":"<RUNTIME_ID>"}`
+- **新格式**：`{"c":"action","i":"...","v":<action_version>,"k":<stable_id>}`；`v`/`k` 不匹配 → `ERROR_VERSION_MISMATCH` / `ERROR_INVALID_OBJECT`
+- 查 registry：`{"c":"registry","i":"...","k":0}`（k: 0=ACTION / 1=TRIGGER / 2=WORKFLOW，见 cloud_manager.h:82）
+- **Capability Registry 陷阱**：新增/删除任何 Action 都会令 **version+1 且全部 stable_id 按 runtime_id 升序重排**（capability_registry.h:56），云端缓存的 mapping 必须重新拉取
+- 命令 `id`（或新格式 `i`）每条必须唯一，设备按 cmd_id 去重
+
+## 新增硬件 Action 模块速查
+- 模板见 `新增动作模板.md`；参照实现 `src/valve.cpp`（即时完成）/ `src/computer_reset.cpp`（异步 + 单例 GPIO 仲裁）
+- 接入点：main.cpp `setup()` 第四层（必须在 `workflow_init()` 之后）+ `loop()`
+- Capability Registry **自动扫描** workflow 注册表，新增 Action 无需改动任何既有模块
+- Action runtime id 惯例：全大写下划线（`COMPUTER_RESET` / `VALVE_OPEN` / `WEIGHT_ZERO` / `MI_THERMO_START_SCAN`）
