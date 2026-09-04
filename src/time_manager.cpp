@@ -36,6 +36,16 @@
 // SNTP 周期下限（RFC 4330 强制 >= 15 秒；本项目固定 24h）
 #define SNTP_MIN_INTERVAL_MS 15000UL
 
+// Smooth Sync（adjtime）稳定窗口：
+//   SNTP callback 触发后，再观察该时长确认 System Time 已收敛，才允许写 RTC。
+//   典型 24h 漂移远小于 1 秒，3 秒窗口足以让 adjtime 收敛。
+#define SNTP_SMOOTH_SETTLE_MS 3000UL
+
+// Smooth Sync 等待上限：
+//   SNTP_SYNC_STATUS_IN_PROGRESS 持续超过该时长则放弃等待并进入后续流程，
+//   避免 adjtime 迟迟不收敛时 RTC 永远得不到校准。
+#define SNTP_SMOOTH_TIMEOUT_MS 30000UL
+
 // =====================================================
 // 配置缓存（config 只读一次）
 // =====================================================
@@ -65,13 +75,16 @@ static uint8_t dbg_state = 0;
 // sntp_sync_seq：SNTP 每完成一次同步自增（回调运行在 lwip 上下文，
 // 只能写易失标记，不得执行 I2C / 长耗时操作）。
 // time_task（loop 任务）轮询该序列号，决定何时做 RTC 校准。
+//
+// sntp_sync_notify_ms：记录 callback 触发时刻，供 loop 做“延迟确认”，
+// 即确认 Smooth Sync（adjtime）已收敛后才允许写 RTC。
 // =====================================================
 static bool sntp_configured = false;
 static bool sntp_started = false;
-static unsigned long sntp_start_ms = 0;
 static bool prev_wifi = false;
 static volatile uint32_t sntp_sync_seq = 0;
 static volatile time_t sntp_sync_tv_sec = 0;
+static volatile uint32_t sntp_sync_notify_ms = 0;
 
 // =====================================================
 // RTC 状态（PCF8563T）
@@ -157,10 +170,20 @@ static void time_apply_timezone()
 
 static void time_on_sntp_sync(struct timeval *tv)
 {
+    // 本 SDK 下该 callback 可能被调用多次：
+    //   1) 时间更新完成后调用，此时 tv != NULL，携带 SNTP 服务器给出的时间；
+    //   2) 同步状态被置为 COMPLETED 时调用，此时 tv == NULL。
+    // 因此仅在 tv != NULL 时更新 sntp_sync_tv_sec，避免用 NULL 覆盖真实值。
+    //
+    // sntp_sync_tv_sec 语义：最近一次 SNTP 获得的 Unix 时间（服务器侧时间），
+    // 并非“本地完成同步的时刻”。对外由 time_get_last_ntp_sync() 暴露。
     if (tv != nullptr) {
         sntp_sync_tv_sec = tv->tv_sec;
     }
-    sntp_sync_seq++;           // 通知 loop 侧"完成了一次同步"
+    sntp_sync_notify_ms = millis();
+    sntp_sync_seq++;           // 通知 loop 侧“发生了一次同步”
+
+    // 严禁在此执行：rtc_read_time() / rtc_write_time() / Wire.* / Serial / 长耗时操作。
 }
 
 // =====================================================
@@ -178,7 +201,6 @@ static void sntp_do_start()
     }
     esp_sntp_init();
     sntp_started = true;
-    sntp_start_ms = millis();
     synced_once = false;      // 重新开始一轮同步
     Serial.println("[Time] SNTP started (waiting first sync)");
 }
@@ -190,7 +212,6 @@ static void sntp_do_restart()
         return;
     }
     esp_sntp_restart();
-    sntp_start_ms = millis();
     synced_once = false;
     Serial.println("[Time] SNTP restarted");
 }
@@ -408,6 +429,13 @@ static void time_rtc_calibrate()
         return;
     }
 
+    // 校准写入值必须取 System Time（time(nullptr)），不得使用 sntp_sync_tv_sec。
+    //
+    // 原因：
+    //   - SNTP callback 的参数表示“服务器给出的时间”，是同步时刻的瞬时值；
+    //   - Smooth Sync 模式下 System Time 会由 adjtime 逐步逼近该值，
+    //     callback 触发瞬间 System Time 可能尚未收敛；
+    //   - RTC 最终应当跟随已经稳定之后的 System Time。
     time_t sys = time(nullptr);
     if (!time_validate(sys)) {
         return;   // System Time 还没进入有效区间，等下次
@@ -425,7 +453,8 @@ static void time_rtc_calibrate()
             return;
         }
     } else {
-        Serial.println("[Time] RTC read failed, try to (re)init via write");
+        Serial.println("[Time] RTC read failed, try to write current "
+                       "System Time");
     }
 
     // ---- Critical Operation：只覆盖 RTC 写入 ----
@@ -484,7 +513,6 @@ void time_init()
     // 初始化 RTC 并从 RTC 恢复系统时间
     // -------------------------
     rtc_enabled = config_get_rtc_enable();
-    bool rtc_restored = false;
     if (rtc_enabled && rtc_init()) {
         time_t rtc_now = 0;
         if (rtc_read_time(rtc_now) && time_validate(rtc_now)) {
@@ -492,7 +520,6 @@ void time_init()
             time_set_system_clock(rtc_now);
             state_set_bool(STATE_TIME_VALID, true);
             time_source = "RTC";
-            rtc_restored = true;
             Serial.printf("[Time] RTC boot restore OK: %s\n",
                           time_get_string(rtc_now).c_str());
         } else {
@@ -568,14 +595,45 @@ void time_task()
     // -------------------------
     // 2) 处理 SNTP 同步完成
     //    （回调只自增 seq，这里在 loop 上下文消费）
+    //
+    // 本 SDK 状态机特性（见 SDK 头文件 esp_sntp.h 的说明）：
+    //   - 时间同步完成后状态为 SNTP_SYNC_STATUS_COMPLETED，
+    //     但 COMPLETED 是**瞬时状态**，随后会被自动重置为
+    //     SNTP_SYNC_STATUS_RESET 等待下一个同步周期；
+    //   - 尚未完成同步时状态同样是 SNTP_SYNC_STATUS_RESET。
+    //
+    // 因此：
+    //   禁止用 "status != IN_PROGRESS" 判定成功
+    //   ——那等价于把 RESET（含"从未同步"与"已同步后回落"）误判为成功。
+    //   同时 loop 每 500ms 才采样一次，几乎不可能稳定捕捉到瞬时的 COMPLETED。
+    //
+    // 采用「callback 通知 + loop 延迟确认」方案：
+    //   a) seq 变化 = callback 已通知，确实发生过一次同步（可靠证据）；
+    //   b) 排除 IN_PROGRESS，避免 Smooth Sync（adjtime）未收敛就写 RTC；
+    //   c) 再经过一个稳定窗口（或超时兜底）后，才执行后续动作与 RTC 校准。
     // -------------------------
     if (sntp_sync_seq != 0 && sntp_sync_seq != rtc_last_calibrate_seq) {
-        // 平滑同步进行中（adjtime 尚未结束）→ 等结束再校准 RTC
-        bool in_progress =
-            (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_IN_PROGRESS);
-        if (!in_progress) {
+        sntp_sync_status_t st = esp_sntp_get_sync_status();
+        unsigned long waited_ms = (unsigned long)(millis() - sntp_sync_notify_ms);
+
+        bool settled = false;
+        if (st == SNTP_SYNC_STATUS_IN_PROGRESS) {
+            // adjtime 仍在工作，System Time 还在逐步调整：继续等待。
+            // 超时则放弃等待，避免 RTC 永不校准。
+            settled = (waited_ms >= SNTP_SMOOTH_TIMEOUT_MS);
+        } else if (st == SNTP_SYNC_STATUS_COMPLETED) {
+            // 瞬时窗口内被采到：明确完成。
+            settled = true;
+        } else {
+            // RESET：能走到此处的前提是 callback 已经通知过（seq 已变化），
+            // 说明本轮同步已结束并回到等待态；再等一个稳定窗口，
+            // 确保 adjtime 收敛后再写 RTC。
+            settled = (waited_ms >= SNTP_SMOOTH_SETTLE_MS);
+        }
+
+        if (settled) {
             rtc_last_calibrate_seq = sntp_sync_seq;
-            last_ntp_sync_time = sntp_sync_tv_sec;
+            last_ntp_sync_time = sntp_sync_tv_sec;   // SNTP 获得的 Unix 时间
             synced_once = true;
             time_source = "SNTP";
 
@@ -584,7 +642,11 @@ void time_task()
             event_push(EVENT_NTP_SYNC_OK, "", "time_manager",
                        EVENT_PRIORITY_NORMAL, EVENT_POLICY_NORMAL, 0);
 
-            // SNTP 成功后：校准 RTC（差值 > 阈值才写）
+            // SNTP 成功后：校准 RTC
+            //   顺序固定为 callback → 标记 → loop 确认 → 读 time(nullptr)
+            //   → 读 RTC → 比较 → 必要时写 RTC。
+            //   校准写入值在 time_rtc_calibrate() 内取 time(nullptr)，
+            //   不使用 sntp_sync_tv_sec（见该函数注释）。
             time_rtc_calibrate();
         }
     }
