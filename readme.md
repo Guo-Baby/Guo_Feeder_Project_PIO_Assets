@@ -165,15 +165,32 @@ WiFi Connected / Disconnected Event
 
 # 2.4.5 Time Manager
 
-负责系统时间管理。
+负责系统时间管理（TimeManager V2）。
 
-NTP 校时
-Unix Timestamp
-系统时间设置
-时间有效性管理
-时间查询
-NTP 同步状态维护
-NTP + RTC 双时间体系。
+双时间体系：
+
+SNTP（最高可信时间源）
+  - ESP-IDF esp_sntp（非自实现 NTP、非 configTime）
+  - Smooth Sync 平滑同步，固定 24h 校时周期（单调时钟计时）
+
+PCF8563T RTC（启动恢复 / 断网兜底时间源）
+  - I2C 7-bit 地址 0x51
+  - 与 OLED 共用同一 I2C 总线（SDA/SCL 由 oled.json 决定）
+
+主要功能：
+SNTP 校时
+RTC 读写（PCF8563T）
+上电 RTC → System Time 硬同步恢复
+SNTP 成功后按阈值校准 RTC（Write 走 Critical Operation）
+Unix Timestamp 内部统一基准
+时间有效性管理（STATE_TIME_VALID 保持 bool）
+时间查询（ESP 系统时间 + RTC 时间，非阻塞）
+
+时间基准约定：
+RTC 与 System Time 内部一律使用 UTC / Unix Timestamp
+时区（config time.timezone，默认 GMT+8）仅用于 UTC → Local 显示
+本地时间禁止直接写入 RTC
+SNTP 为最高可信源，RTC 为启动恢复 / 离线源
 
 其中 Time Valid 是非常重要的系统状态。
 如果时间不可信，则依赖准确时间的 Workflow 不应执行。
@@ -285,9 +302,12 @@ Guo_Feeder_Project
 │   ├── wifi_module.cpp/.h    // WiFi非阻塞状态机
 │   ├── config_manager.cpp/.h // 配置文件管理
 │   ├── system_state.cpp/.h   // 全局运行状态中心
-│   └── time_manager.cpp/.h   // NTP时间管理
+│   └── time_manager.cpp/.h   // SNTP + PCF8563T RTC 时间管理
 ├── data                  // LittleFS配置文件目录
-│   └── config.json
+│   └── config            // 模块级配置（按模块拆分）
+│       ├── time.json     // 时区 / NTP 服务器 / 校时周期
+│       ├── rtc.json      // RTC 使能 / SDA / SCL / I2C 地址 / 校准阈值
+│       └── oled.json     // OLED I2C 引脚（RTC 复用同一总线）
 └── backup                // 历史测试代码备份
 
 ---
@@ -352,16 +372,40 @@ AP配网兜底
 
 #4.4 Time Manager
 
-负责系统时间。
+负责系统时间（TimeManager V2）。
 主要功能：
-NTP同步
+SNTP 同步（ESP-IDF esp_sntp，平滑同步，24h 周期）
+PCF8563T RTC 读写（I2C 0x51，复用 OLED 总线）
 Unix Timestamp
 系统时间设置
-时间有效性
-NTP状态
-时间查询
-NTP → RTC
-RTC → System Time
+时间有效性（STATE_TIME_VALID，bool）
+SNTP 状态
+时间查询（系统时间 + RTC 时间，非阻塞）
+SNTP → RTC（校准）
+RTC → System Time（上电恢复）
+
+硬件与配置：
+RTC 芯片：PCF8563T，I2C 7-bit 地址 0x51
+配置文件：data/config/rtc.json、data/config/time.json
+RTC 禁止调用 Wire.begin() / Wire.setClock()，I2C 总线由 OLED 初始化
+
+RTC 寄存器布局（PCF8563T）：
+0x00 Control_status_1
+0x01 Control_status_2
+0x02 VL_seconds
+0x03 Minutes
+0x04 Hours
+0x05 Days
+0x06 Weekdays
+0x07 Century_months
+0x08 Years
+
+读：0x02 起连续 7 bytes
+写：0x00 起连续写入
+seconds bit7 = VL，置位表示 RTC 时间不可信
+
+初始化顺序约束：
+time_init() 必须晚于 oled_init()（否则 I2C 总线尚未建立，RTC 探测必失败）
 
 实现断网、重启情况下的时间兜底。
 
@@ -623,6 +667,11 @@ Log
 ✅ WiFi 非阻塞状态机、自动重连、连接超时机制
 ✅ NTP 网络校时、Unix 时间戳及时间有效性管理
 ✅ Time Manager 基础框架
+✅ TimeManager V2：ESP-IDF SNTP 平滑同步（固定 24h 周期，单调时钟计时）
+✅ TimeManager V2：PCF8563T RTC 驱动（I2C 0x51，与 OLED 共用总线）
+✅ TimeManager V2：上电 RTC → System Time 硬同步恢复、SNTP 成功后按阈值校准 RTC
+✅ TimeManager V2：RTC Write 接入 Critical Operation（Acquire/Release 配对）
+✅ TimeManager V2：system.time 时间查询命令（系统时间 + RTC 时间，非阻塞）
 ✅ Valve 阀门控制模块
 ✅ Weight 称重模块基础框架、HX711 数据采集及重量状态管理
 ✅ Weight 异常事件机制
@@ -704,14 +753,17 @@ Weight Calibration
 
 ↓
 
-5. RTC / Time Manager
+5. RTC / Time Manager【软件部分已完成，待上板验证】
 
-RTC 硬件接入
-NTP + RTC 双时间体系
-断网时间维持
-重启后的 RTC 时间恢复
-Time Trusted / 时间可信状态完善
-完全非阻塞 NTP 状态机
+✅ RTC 硬件接入（PCF8563T 驱动已实现，I2C 0x51，复用 OLED 总线）
+✅ NTP + RTC 双时间体系（SNTP 为最高可信源，RTC 为启动恢复 / 离线源）
+✅ 断网时间维持
+✅ 重启后的 RTC 时间恢复（上电硬同步）
+✅ 时间可信状态（STATE_TIME_VALID 保持 bool）
+✅ 完全非阻塞 SNTP 状态机（callback + loop 延迟确认）
+
+⏳ 待上板验证：当前实测 rtc_present = false，需确认 PCF8563T 接线 / 供电 / 地址
+   （串口会打印 [Time] RTC probe failed (addr=0x51 err=N)，凭 err 码定位）
 
 ↓
 
@@ -823,16 +875,86 @@ Action / Trigger / Workflow 可视化操作
 - JSON配置异常、联网失败时，自动读取NVS存储的历史成功联网账号重试
 - 所有账号重试失败后，自动开启设备热点，进入AP配网模式，供手机在线重新配置参数
 8.3 系统时间同步兜底策略
-采用 NTP网络校准 + RTC硬件兜底 双时间体系，保障设备全天候时间精准有效，断网不失效：
-- 首次联网：WiFi连接成功、DNS就绪后，立即发起NTP校时，初始化系统标准时间
-- 断线重连：网络中断恢复后，自动重新同步NTP时间，修正运行漂移
-- 长期运行：设备在线稳定运行时，7天自动周期同步一次NTP，长期校准时间误差
-- 断网兜底：后续接入RTC硬件，断网、重启、无NTP场景下，由RTC硬件持续维持精准时间，保障定时业务正常运行
+采用 SNTP网络校准 + PCF8563T RTC硬件兜底 双时间体系，保障设备全天候时间精准有效，断网不失效：
+- 上电恢复：启动阶段（time_init，须晚于 oled_init）读取 RTC，时间有效则硬同步设置 System Time 并置 time_valid = true；RTC 无效不是错误，不阻塞启动，等 SNTP
+- 首次联网：WiFi 连接成功后启动 SNTP，采用平滑同步（Smooth Sync），不产生时间跳变
+- 长期运行：固定 24h 校时周期，用单调时钟计时，不依赖可跳变的 System Time
+- 断线重连：尚未同步成功过则立即重启 SNTP 拉取；已同步过则交给 lwip 按周期自行校时
+- RTC 校准：SNTP 成功后，|System Time − RTC| > 阈值（config rtc.calibrate_threshold_sec，默认 2s）才写 RTC；写入值取 time(nullptr)（已稳定的系统时间），不使用 SNTP callback 参数
+- 断网兜底：断网、重启、无 SNTP 场景下，由 PCF8563T 维持时间，保障定时业务正常运行
+- 时间基准：RTC 与 System Time 内部统一 UTC / Unix Timestamp，时区只用于显示
 8.4 系统状态中心硬性接口规范
 为保障项目架构统一、无耦合、可长期维护，确立全局唯一数据交互规范，所有模块严格遵守：
 - 绝对禁止：各业务模块之间直接 extern 跨模块变量、直接读写对方内部状态
 - 强制规范：所有状态交互必须经过 system_state 状态中心
 - 标准数据流：业务模块更新状态中心数据 → 显示/云端/控制模块读取状态中心数据，单向流动、互不干扰
+8.5 TimeManager V2 硬性规范（SNTP 状态机 / RTC 校准 / 时间查询）
+本章为 TimeManager V2 定版规范，后续修改时间模块必须严格遵守。
+
+8.5.1 SNTP 完成判定：禁止用 status != IN_PROGRESS
+本项目基于 ESP-IDF v4.4（Arduino core 2.x），SNTP API 为 esp_sntp_*（esp_netif_sntp_* 是 IDF v5.0 才引入，本 SDK 不存在）。
+SDK 头文件 esp_sntp.h 明确说明：
+  时间同步完成后状态为 SNTP_SYNC_STATUS_COMPLETED，
+  但 COMPLETED 是瞬时状态，随后会被自动重置为 SNTP_SYNC_STATUS_RESET 等待下一个同步周期。
+同时「尚未同步」的初始状态也是 RESET，且 loop 每 500ms 才采样一次，几乎不可能稳定捕捉到瞬时的 COMPLETED。
+结论：
+  ✗ 禁止 status != IN_PROGRESS —— 等价于把 RESET（含「从未同步」与「已同步后回落」）误判为成功
+  ✓ 采用「callback 通知 + loop 延迟确认」三重判据：
+      a) sntp_sync_seq 变化 = callback 已通知，确实发生过一次同步（可靠证据）
+      b) 排除 IN_PROGRESS，避免 Smooth Sync（adjtime）未收敛就写 RTC；超时兜底防挂死
+      c) RESET 需再经过稳定窗口，确保 adjtime 收敛
+
+8.5.2 SNTP callback 约束（运行在 lwip 上下文）
+  - callback 只做轻量标记：记录 tv / 通知时刻 / 自增 seq
+  - 严禁在 callback 中执行 I2C（Wire.*）、rtc_read_time()、rtc_write_time()
+  - 严禁在 callback 中执行长耗时操作
+  正确顺序：
+    SNTP callback（只置标记）
+      ↓
+    loop 检测 + 确认 Smooth Sync 已完成
+      ↓
+    读取 time(nullptr) → 读取 RTC → 比较 → 必要时写 RTC
+
+8.5.3 RTC 校准写入值必须是 time(nullptr)
+  - sntp_sync_tv_sec 表示「服务器给出的时间」，是同步时刻的瞬时值
+  - Smooth Sync 模式下 System Time 由 adjtime 逐步逼近，callback 触发瞬间可能尚未收敛
+  - RTC 应最终跟随已稳定后的 System Time，故写入值一律取 time(nullptr)
+
+8.5.4 RTC 校准规则
+  RTC 读取成功：
+    |SystemTime − RTCTime| <= threshold  → 不写 RTC
+    |SystemTime − RTCTime| >  threshold  → System Time → RTC
+  RTC 读取失败（I2C 失败 / VL bit 置位 / BCD 非法）：
+    尝试用当前 System Time 写入 RTC
+  RTC 写入失败：
+    不得置 STATE_TIME_VALID = false；只记录错误，等待下一次 SNTP 同步重试
+
+8.5.5 Critical Operation 边界
+  RTC Read  → 非 Critical
+  RTC Write → Critical（Acquire → rtc_write_time() → Release）
+  硬性要求：
+    - Acquire 失败直接 return，不得 Release
+    - 写入成功与失败路径都必须 Release
+    - 禁止扩大 Critical Operation 范围
+
+8.5.6 I2C 总线归属
+  - I2C 总线由 OLED 初始化（Wire.begin / setClock），RTC 只复用，禁止重复初始化
+  - rtc.json 的 sda/scl 仅作校验提示，实际引脚以 oled.json 为准（不一致会打印 WARN）
+  - 本项目所有业务模块均在同一个 loop() 中轮询运行，不存在多 FreeRTOS Task 并发访问 I2C，
+    因此不引入 Mutex / Semaphore；只需保证每次 Wire 操作都是完整、正常结束的 I2C transaction
+
+8.5.7 时间查询命令（system.time）
+  云端下发（新格式）：
+    {"c":"system","i":"<唯一命令 id>","p":{"o":"time"}}
+  旧格式（调试透传）：
+    {"cmd":"system","ob":"time","id":"<唯一命令 id>"}
+  返回 data 字段：
+    system_valid / system_unix / system_str   ESP 系统时间（本地时区字符串）
+    rtc_present / rtc_valid / rtc_unix / rtc_str   RTC 芯片时间（无芯片时 rtc_str = "No Time"）
+    source          当前时间来源（RTC / SNTP / INVALID）
+    last_ntp_sync   最近一次 SNTP 获得的 Unix 时间
+    ntp_started / timezone_offset_h
+  约束：非阻塞，立即返回；禁止在命令执行路径中做 I2C 重试等待
 
 
 ## 九、工程开发约束（长期维护）
