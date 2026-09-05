@@ -6,7 +6,7 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 ## 关键文档（改架构必须同步更新）
 - `readme.md`：架构总纲、编码规范、MQTT 协议、System State / Trigger 注册规范
 - `需求文档.md`：V2.1，8 项待开发计划 + 推荐顺序
-- `config manager开发架构.md`：**Config 存储架构定版，当前行动基线**
+- `jsonstorage开发架构.md` + `config_manager接口文档.md`：**Config 存储架构定版，当前行动基线**（⚠️ 旧笔记里的 `config manager开发架构.md` 文件名不存在，以此为准）
 - `config_manager接口文档.md`：8 个云端命令参考 + 错误码 + 3 条踩坑规范（定版）
 - `json_storage接口文档.md`：JsonStorage 全部接口语义 / 幂等性 / EOF 语义 / 踩坑清单（定版）
 - `system_command接口文档.md`：SystemCommand V1 定位/边界/交互/3 条指令 + restart 保护规划（⚠️ restart 行为已被 V2 取代，以代码为准）
@@ -66,7 +66,7 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 | ConfigManager | ✅ 已接入 | `set_begin()` acquire（`s_pending_save` 去重）→ Save 落盘成功后 `pending_save_finalize()` release + request_restart；**Save 失败不 release、不重启** |
 | Workflow | ✅ 已接入并通过自查（2026-09-03） | 每个 Workflow / 每个临时 Action 各自 +1 / -1；统一收口函数 `workflow_terminate()` / `temp_action_complete()`；接入报告 `workflow_critical_operation接入报告.md`，自查报告 `workflow_critical_operation自查报告.md` |
 | WOF（阀门） | ❌ 未接入 | 计划：动作开始前 acquire → 完成后 release |
-| TimeManager / RTC | ❌ 未接入 | 仅 RTC **写**需要，读不需要 |
+| TimeManager / RTC | ✅ 已接入（2026-09-04） | 仅 RTC **写**是 Critical（`time_rtc_calibrate()` / `time_set_manual()`），读不是；acquire 被拒直接 return 不 release，成功/失败都 release |
 | ComputerReset | ⛔ **明确不接入** | AI_TASK §9：只是 800ms GPIO 脉冲，非 Flash 写 / 阀门保持 / 电机运行类危险操作，不阻止重启 |
 
 **Action 引擎调用时机差异（写异步 Action 必看）**：
@@ -89,6 +89,17 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 
 **已知遗留隐患（待独立立项）**：
 - P2：Temp Action 环形队列 `queue_wr_ptr` / `queue_rd_ptr` 跨任务无 volatile / 原子 / 临界区保护（**既有问题**，非 Critical Operation 引入）。修复需为队列加临界区，但入队路径要跑 JSON 反序列化，需评估持锁时长与死锁风险。
+
+## TimeManager V2（已定版，2026-09-04）
+- **双时间源**：SNTP 最高可信（ESP-IDF `esp_sntp_*`，平滑同步，固定 24h 周期，单调计时）；PCF8563T RTC 为启动恢复 / 离线兜底（I2C 0x51，**复用 OLED 的 Wire 总线，绝不 `Wire.begin()` / `setClock()`**）。
+- **初始化顺序铁律**：`time_init()` 必须晚于 `oled_init()`（main.cpp 65/70），否则 I2C 总线未建立，RTC 探测必失败。
+- **SNTP 状态机陷阱（最重要）**：IDF v4.4 `esp_sntp.h` 明确 COMPLETED 是**瞬时状态**并自动回落 RESET，而"从未同步"也是 RESET ⇒ **禁止用 `status != IN_PROGRESS` 判成功**。现用「callback 通知 + loop 延迟确认」：seq 变化（可靠证据）+ 排除 IN_PROGRESS（adjtime 未收敛，30s 超时兜底）+ RESET 需过 3s 稳定窗口。
+- **callback 只做轻量标记**（tv / 时刻 / seq++），严禁 I2C / Serial / 长耗时。
+- **RTC 校准写入值一律取 `time(nullptr)`**（已稳定的系统时间），不用 `sntp_sync_tv_sec`（服务器给出的瞬时值）。阈值 2s（`rtc.calibrate_threshold_sec`）；写失败不置 `time_valid=false`，等下次 SNTP 重试。
+- **RTC 寄存器**：读 0x02 起连续 7 字节（顺序 sec,min,hour,day,weekday,month,year ⇒ month=raw[5]&0x1F、year=raw[6]）；写 0x00 起；sec bit7=VL 置位即时间不可信。
+- **内部统一 UTC/Unix**，时区（默认 GMT+8）仅用于显示；本地时间禁止写 RTC。
+- **查询命令**：`{"c":"system","i":"<唯一>","p":{"o":"time"}}` → 返回 system_* / rtc_* / source / last_ntp_sync / timezone_offset_h，非阻塞。
+- 上板状态：SNTP 已实测通过；**RTC 仍 `rtc_present=false`**（硬件接线 / 供电 / 地址待查，串口看 `[Time] RTC probe failed (addr=0x51 err=N)`）。
 
 ## 冲突与依赖
 - 协议冲突：README 记 `{cmd,ob,id,pl,src,ts}`，Cloud Manager 已重构为 `{c,i,v,k,p}`；以代码 + 需求文档为准
