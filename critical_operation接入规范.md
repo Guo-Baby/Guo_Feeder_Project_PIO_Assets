@@ -97,7 +97,7 @@ return OK;
 | **ConfigManager** | 配置修改后处于「延迟保存」期间（RAM 已改、尚未落盘） | `config_set_*` 成功修改后 acquire → `config_save()` 完成后 release。**5 分钟倒计时本身不属于 Critical Operation**，System Command 不关心 |
 | **Workflow** | 执行过程中涉及「必须完整完成的 JSON 文件写操作」时 | 由 Workflow 业务层在写文件前 acquire、写完后 release。**JsonStorage 本身不是 Critical Operation**，只是底层工具，不自行 acquire/release |
 | **WOF** | 开 / 关的物理动作执行期间 | 动作开始前 acquire → 动作完成后 release |
-| **TimeManager（未来）** | RTC 芯片写操作 | 写入前 acquire → 写入完成后 release。**RTC 读不属于 Critical Operation** |
+| **TimeManager（已接入）** | RTC 芯片写操作（SNTP 成功后校准、手动设置时间写 RTC） | `time_rtc_calibrate()` / `time_set_manual()`：写入前 acquire → 写入完成后 release，成功与失败路径都 release；acquire 被拒直接 return（不 release）。**RTC 读不属于 Critical Operation** |
 
 ### 判断是否 Critical 的通用标准
 
