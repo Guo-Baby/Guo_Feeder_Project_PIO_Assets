@@ -35,17 +35,20 @@ LittleFS（文件系统）
 
 ---
 
-## 2. 配置模块清单（7 个，编译期固定）
+## 2. 配置模块清单（8 个，编译期固定）
 
 | 模块名 | 常量 | 说明 |
 |---|---|---|
 | `wifi` | `CONFIG_MODULE_WIFI` | WiFi SSID / 密码 / 超时 |
 | `oled` | `CONFIG_MODULE_OLED` | I2C 引脚 / 帧率 / 旋转 |
 | `valve` | `CONFIG_MODULE_VALVE` | 阀门 GPIO / 电平 / 安全超时 |
-| `time` | `CONFIG_MODULE_TIME` | 时区 / NTP / 同步周期 |
+| `time` | `CONFIG_MODULE_TIME` | 时区 / NTP 服务器 / 同步周期（秒） |
 | `weight` | `CONFIG_MODULE_WEIGHT` | HX711 引脚 / 比例 / 零点 |
 | `mqtt` | `CONFIG_MODULE_MQTT` | 服务器 / 端口 / 主题 / CA |
 | `mi_thermo` | `CONFIG_MODULE_MITHERMO` | 米家 BLE key / MAC |
+| `rtc` | `CONFIG_MODULE_RTC` | PCF8563T 使能 / SDA / SCL / I2C 地址 / 校准阈值（秒） |
+
+> `rtc` 的 sda / scl 供人阅读与一致性校验，实际 I2C 总线由 `oled` 初始化（RTC 复用同一总线，不重复 `Wire.begin()`）。
 
 **模块集合是固定的，不支持运行时新增模块**（动态新增没有 getter 支撑，属于死数据）。
 workflow 的增删改查属 WorkflowManager 职责，不在本模块。
