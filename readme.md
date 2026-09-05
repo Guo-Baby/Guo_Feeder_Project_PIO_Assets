@@ -714,9 +714,9 @@ Log
 
 1. System Command
 
-System Restart
-System Sync Time
-System Get Time
+✅ System Restart（含 Safe Restart V2 / Critical Operation）
+⏳ System Sync Time（set_time 目前为预留接口，尚未实现写入逻辑）
+✅ System Get Time（已实现：system.time，返回 ESP 系统时间 + RTC 时间，非阻塞）
 完善系统级 Command 路由及执行结果返回
 
 ↓
