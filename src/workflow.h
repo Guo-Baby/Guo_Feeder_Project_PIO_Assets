@@ -378,6 +378,53 @@ WorkflowStepDef *workflow_step_def_at(
 );
 
 // =====================================================
+// Dirty Bitmap + 保存事务
+// =====================================================
+//
+// Dirty Transaction 模型：
+//   一批尚未持久化的 Workflow 修改，共享【一个】Critical Operation。
+//   不是每个 Step 一个 Critical。
+//
+//   Clean -> Dirty（首次）  Critical +1
+//   Dirty -> Dirty（后续）  不再 +1
+//   Save 事务全部成功      清 Dirty + Critical -1
+//   Save 任一环节失败      不清 Dirty、不 release
+//
+// 延迟保存：首次修改启动 5 分钟窗口，后续修改刷新窗口；
+// 显式 workflow_save_transaction() 立即触发，不再等待。
+
+// 标记 Step Definition 已被修改（Clean -> Dirty）
+//
+// 返回 false 表示本次修改被拒绝：
+//   索引越界，或系统已进入 RESTART_PENDING / RESTARTING（Critical acquire 失败）
+bool workflow_mark_step_dirty(
+    uint8_t workflow_index,
+    uint8_t step_index
+);
+
+// 是否存在任何未持久化的修改
+bool workflow_has_any_dirty();
+
+// 执行完整保存事务
+//
+//   所有 Dirty Workflow → 逐个原子写 Step BIN → 提交 Meta
+//   → 全部成功 → 清 Dirty → Critical release
+//
+// 任一环节失败：返回 false，Dirty 与 Critical 都保留，允许后续重试。
+bool workflow_save_transaction();
+
+// 请求延迟保存（启动 / 刷新 5 分钟窗口）
+void workflow_request_save();
+
+// 删除 Workflow
+//
+// 只置 meta.valid = false，【不删除任何 Step BIN】。
+// 正在运行时不销毁 Runtime：当前运行继续执行，仅禁止下一次启动。
+bool workflow_delete(
+    uint8_t workflow_index
+);
+
+// =====================================================
 // Workflow Step
 // =====================================================
 
