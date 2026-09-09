@@ -5,6 +5,7 @@
 #include "system_command.h"
 #include "json_storage.h"
 #include "bin_storage.h"
+#include "workflow_storage.h"
 #include "config_manager.h"
 #include "event_manager.h"
 #include "oled.h"
@@ -52,6 +53,13 @@ void setup()
     //   WorkflowManager(后续) → BinStorage → FileStorage → LittleFS
     if (!bin_storage_init()) {
         Serial.println("[System] BinStorage init failed!");
+    }
+    // ===== 初始化 Workflow Storage（Workflow 定义持久化，依赖 BinStorage）=====
+    //
+    // 内部会创建 /workflow 目录并加载 meta.bin。
+    // 本阶段只初始化存储层，Workflow.cpp 仍走原有 JSON 加载路径，行为不变。
+    if (!workflow_storage_init()) {
+        Serial.println("[System] WorkflowStorage init failed!");
     }
     system_state_init();
     config_init();
