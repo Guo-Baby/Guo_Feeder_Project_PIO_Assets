@@ -95,7 +95,7 @@ commit：**`7ed5b51`**（3 files, +335 / -7）
 
 ### Phase 5/6/7 — Dirty Bitmap + Critical Transaction + Save Transaction ✅ 已提交
 
-commit：**`0c13f7a`（待替换为实际 hash）**
+commit：**`50879ff`**（3 files, +422 / -4）
 编译：SUCCESS 149.15s，0 error，0 新增 warning；RAM 129200 → 129240 B（+40 B）
 
 `workflow.h` 新增 5 个对外 API（bool 语义，不 include workflow_storage.h，保持分层）：
@@ -130,6 +130,38 @@ commit：**`0c13f7a`（待替换为实际 hash）**
 - **`workflow_delete()` 运行中保护**：`state == WORKFLOW_RUNNING` 时只置
   `enable=false` + meta invalid，**不清 Definition、不改 step_count**
   （改 step_count 会让在飞运行提前结束）；当前运行继续使用自己的 Runtime 快照跑完（§27）。
+
+### Phase 4 — Step BIN + Meta 加载接入 ✅ 已提交
+
+commit：**`待填`**
+编译：SUCCESS 154.39s，0 error，0 新增 warning；RAM 无变化（129240 B）
+
+- `workflow.h` 新增 `workflow_load_from_storage()`（bool，无 Valid Workflow 返回 false）
+- `workflow.cpp` 新增：
+  - `workflow_storage_to_def()` —— `WorkflowStepDefinition`(char[]) → `WorkflowStepDef`(String)
+  - `workflow_apply_step_definition(wf, step, sd)` —— 由 BIN 构建单个 Step Runtime
+  - `workflow_load_from_storage()` —— 遍历 meta.valid，只加载 0..step_count-1
+- `main.cpp`（+6 行）：**BIN 优先，无 Valid Workflow 时回退 JSON**
+
+```cpp
+if (workflow_load_from_storage())        { /* Flash BIN */ }
+else if (workflow_load_json_file("...")) { /* 首次启动回退 */ }
+else                                     { /* 无配置 */ }
+```
+
+`workflow_apply_step_definition()` 三步顺序（关键，不可调换）：
+
+1. 分配 Instance + 由 **ID** 解析并绑定 Descriptor（params 清空）
+2. BIN → `WorkflowStepDef`（Definition）
+3. 复用 `workflow_snapshot_step_definition()` 做 Definition → Runtime 快照
+
+第 3 步复用同一函数，保证 **BIN 路径与 JSON 路径落到 Runtime 的数据完全一致**。
+Descriptor 不存在时与 JSON 路径行为一致：不分配 Instance，`s.instance.* = nullptr`，
+Step 仍计入 step_count（不因单个 Step 失败而丢弃整个 Workflow）。
+
+`workflow_count` 取「最大 Valid Index + 1」，与 JSON 路径 `workflow_count = index` 语义一致。
+
+**尚未完成**：解析/CRUD 修改后未自动把 JSON 侧写回 BIN（见 Phase 8 待办）。
 
 ### Phase 3 — 统一 Runtime Pool `[未开始]`
 - 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`

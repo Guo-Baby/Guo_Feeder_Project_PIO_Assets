@@ -96,7 +96,11 @@ void setup()
     // =====================================================
     // 第六层：加载 Workflow 配置（依赖所有注册完成）
     // =====================================================
-    if (workflow_load_json_file("/workflow.json")) {
+    // 优先从 Flash BIN 加载（meta.bin + wfNN/stepNN.bin）；
+    // Flash 中没有任何 Valid Workflow 时（首次启动）回退到 JSON。
+    if (workflow_load_from_storage()) {
+        Serial.println("[OK] Workflow loaded from Flash BIN");
+    } else if (workflow_load_json_file("/workflow.json")) {
         Serial.println("[OK] Workflow loaded from /workflow.json");
     } else {
         Serial.println("[WARN] No workflow.json found");

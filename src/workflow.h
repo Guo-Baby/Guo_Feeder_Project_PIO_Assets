@@ -393,6 +393,15 @@ WorkflowStepDef *workflow_step_def_at(
 // 延迟保存：首次修改启动 5 分钟窗口，后续修改刷新窗口；
 // 显式 workflow_save_transaction() 立即触发，不再等待。
 
+// 从 Flash 加载全部 Valid Workflow（meta.bin + Step BIN）
+//
+// 只加载 meta.valid == true 的 Workflow，且每个 Workflow 只读 0..step_count-1。
+// 返回 false 表示 Flash 中没有任何 Valid Workflow（首次启动属正常），
+// 调用方应回退到 JSON 加载路径。
+//
+// 注意：本函数会先 workflow_clear()，会清空现有 RAM 状态。
+bool workflow_load_from_storage();
+
 // 标记 Step Definition 已被修改（Clean -> Dirty）
 //
 // 返回 false 表示本次修改被拒绝：
