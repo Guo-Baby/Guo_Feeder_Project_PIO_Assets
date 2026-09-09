@@ -66,9 +66,32 @@ commit：`8846aef`（5 files, +2239）
 
 ## 3. 待办（按文档2 Phase 顺序）
 
-### Phase 2 — Definition / Runtime Separation `[未开始]`
-- 现状：`WorkflowStep.instance` 在 `workflow_parse_json()` 加载期从 PSRAM 池分配，params（定义）与 state（运行时）混在同一对象；`workflow_start()` 不新建、不拷贝
-- 目标：`Workflow { Definition + Runtime }`，Runtime 持有 params **值拷贝快照**
+### Phase 2 — Definition / Runtime Separation ✅ 已提交
+
+commit：**`f0a1b2c`**（见下方 `git log`，2 files, +261）
+编译：SUCCESS 172.76s，0 error，0 新增 warning
+
+已实现（最小侵入）：
+
+- `workflow.h` 新增 `WorkflowStepDef` 结构（type / instance_type / id / param_count / params[8]）
+- `workflow.cpp` 新增 PSRAM 池 `step_definitions`（16×16=256 slot，优先 PSRAM，失败回退 DRAM）
+  - **刻意不放进 `WorkflowStep` 内部**：每个 Step 8 个参数 × 256 slot 内联会让常驻 DRAM 的
+    `workflows[]` 膨胀上百 KB（当前 DRAM 已用 129KB/327KB）
+- 新增三个内部函数（定义在 `workflow_clear()` 之前）：
+  - `workflow_step_def_at(wf, step)` —— 对外（.h 已声明），Slot 访问
+  - `workflow_clear_step_def(wf, step)` —— 清空 Definition
+  - `workflow_capture_step_def(wf, step, s)` —— 解析/CRUD 后写入 Definition
+  - `workflow_snapshot_step_def(wf, step, s)` —— **start 时 Definition → Runtime 值拷贝快照**
+- `workflow_parse_json()`：Trigger / Action 三个出口（成功 + 两个 desc==nullptr 分支）均调用 capture
+- `workflow_clear()`：逐 Step 调用 `workflow_clear_step_def()`
+- `workflow_start()`：`workflow_reset_step()` **之后**调用 snapshot
+  - 顺序理由：`descriptor->reset()` 可能改写 instance 内部字段，放在其后才能保证拿到 Definition 当前值
+- `workflow_init()`：分配 + placement new；`workflow_destroy_all_instances()`：析构 + free
+
+行为不变保证：
+- 解析期 instance 仍按原逻辑初始化并填入 params，Definition 只是**并行副本**
+- 首次 start 时 snapshot 写入的值与解析期完全一致 → 执行行为零变化
+- Temp Action 完全不经过此路径（`temp_action_instances[8]` 独立 DRAM 池）
 
 ### Phase 3 — 统一 Runtime Pool `[未开始]`
 - 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`
@@ -138,7 +161,39 @@ cd /d/Guo_Feeder_Project/PIO_Assets/Guo_Feeder_Project
 PLATFORMIO_BUILD_DIR=.pio/build/esp32-s3-devkitc-1 pio run
 ```
 
-全量约 70–130 秒。
+全量 **70–180 秒**（首次或工具链重装时更久，见 §7.1）。
+
+### 6.1 编译完成的可靠监控方式（**必须遵守**）
+
+> 背景：此前两次出现「看不到编译是否完成」——原因是 `pio run | tail -N` 的管道缓冲
+> 直到进程结束才刷出，加上 PlatformIO 偶发重装工具链，导致长时间无输出被误判为卡死。
+
+**正确做法：标记文件（marker file）+ 短轮询。** 不要用 `| tail`，不要用阻塞式长等待。
+
+启动（后台）：
+
+```bash
+cd /d/Guo_Feeder_Project/PIO_Assets/Guo_Feeder_Project
+rm -f build_out.log build_done.flag
+PLATFORMIO_BUILD_DIR=.pio/build/esp32-s3-devkitc-1 pio run > build_out.log 2>&1
+echo "EXIT=$?" > build_done.flag
+```
+
+轮询（每轮最多 100–110 秒，可重复调用直到出现标记）：
+
+```bash
+cd /d/Guo_Feeder_Project/PIO_Assets/Guo_Feeder_Project
+for i in $(seq 1 10); do [ -f build_done.flag ] && { cat build_done.flag; break; }; sleep 10; done
+tail -3 build_out.log
+```
+
+判定：
+
+- `build_done.flag` 存在且 `EXIT=0` → 编译成功
+- `EXIT!=0` → `grep -nE "error:" build_out.log`
+- 标记不存在 → 仍在编译，`tail -3 build_out.log` 看实时进度（能看见具体在编译哪个 .c/.cpp）
+
+收尾：`rm -f build_out.log build_done.flag`（不要提交这两个文件）
 
 ---
 
@@ -146,9 +201,21 @@ PLATFORMIO_BUILD_DIR=.pio/build/esp32-s3-devkitc-1 pio run
 
 - 仓库**无 remote-tracking 分支**（`git branch -r` 为空），push 前需先 `git fetch origin`
 - `.workbuddy/memory/` 下有本项目的长期笔记与日志，含大量已验证结论（Critical Operation 跨任务铁律等）
-- **编译曾出现"11 分钟无输出"的假死**：用 `pio run ... | tail -60` 时输出被管道缓冲直到结束，
-  看起来像卡死。正确做法：重定向到文件（`> /tmp/wfbuild.log 2>&1`）+ `timeout 200 pio run`，
-  实测正常全量编译 **56.70 秒**。
+
+### 7.1 已知坑：PlatformIO 偶发重装工具链
+
+现象：编译日志出现 `Tool Manager: Installing platformio/tool-scons @ ...` /
+`tool-esptoolpy ... has been installed!` 等，说明 PlatformIO 在重新下载安装工具链，
+耗时可达数分钟且**与代码无关**。
+
+诱因：强杀 `python.exe` 进程（如 `taskkill //F //IM python.exe //T`）会打断 PlatformIO
+的包管理状态。已发生过一次，重装后恢复正常。
+
+对策：
+
+1. 不要用 `taskkill //F //IM python.exe //T` 结束编译，只杀 `pio.exe` / `ninja.exe` / `cmake.exe`
+2. 看到工具链重装日志时，**耐心等它装完**（用 §6.1 的轮询方式），不要中断
+3. 装完后后续编译恢复正常速度
 
 ---
 

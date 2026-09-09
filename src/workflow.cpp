@@ -47,6 +47,12 @@ static String workflow_json_cache;
 // =====================================================
 static WorkflowTriggerInstance* trigger_instances = nullptr;
 static WorkflowActionInstance* action_instances = nullptr;
+// Step Definition 池（优先 PSRAM）
+//
+// Definition 与 Runtime 分离后，"下一次执行什么"单独存放，
+// 不进入 WorkflowStep，避免常驻 DRAM 的 workflows[] 膨胀。
+static WorkflowStepDef* step_definitions = nullptr;
+static bool step_definitions_psram = false;
 static bool trigger_instances_psram = false;
 static bool action_instances_psram = false;
 static uint16_t trigger_instance_index = 0;
@@ -328,6 +334,27 @@ void workflow_destroy_all_instances()
 
         action_instances = nullptr;
         action_instances_psram = false;
+    }
+
+    // ---- Step Definition 池 ----
+    if(step_definitions != nullptr)
+    {
+        for(uint16_t i = 0; i < count; i++)
+        {
+            step_definitions[i].~WorkflowStepDef();
+        }
+
+        if(step_definitions_psram)
+        {
+            heap_caps_free(step_definitions);
+        }
+        else
+        {
+            free(step_definitions);
+        }
+
+        step_definitions = nullptr;
+        step_definitions_psram = false;
     }
 }
 
@@ -794,10 +821,30 @@ bool workflow_init()
 
     uint16_t instance_count = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP;
 
+    // ---- Step Definition 池：优先 PSRAM，失败回退普通 RAM ----
+    size_t def_size = instance_count * sizeof(WorkflowStepDef);
+    step_definitions = (WorkflowStepDef*)heap_caps_malloc(def_size, MALLOC_CAP_SPIRAM);
+    if(step_definitions != nullptr)
+    {
+        step_definitions_psram = true;
+    }
+    else
+    {
+        step_definitions = (WorkflowStepDef*)malloc(def_size);
+        step_definitions_psram = false;
+    }
+
+    if(step_definitions == nullptr)
+    {
+        Serial.println("[Workflow] Step definition pool allocate fail");
+        return false;
+    }
+
     for(uint16_t i = 0; i < instance_count; i++)
     {
         new (&trigger_instances[i]) WorkflowTriggerInstance();
         new (&action_instances[i]) WorkflowActionInstance();
+        new (&step_definitions[i]) WorkflowStepDef();
     }
     // ===== 新增：注册内置 Timer Trigger =====
 static WorkflowParam timer_params[] = {
@@ -1051,6 +1098,159 @@ Workflow* workflow_get(uint8_t index)
 // =====================================================
 // 清空Workflow（只清空数据，不销毁实例池）
 // =====================================================
+// =====================================================
+// Step Definition 访问与快照（Definition / Runtime 分离核心）
+// =====================================================
+//
+// 铁律（需求文档 §10 / §43）：
+//   Runtime 绝不允许长期引用 Definition 的 params，一律【值拷贝】。
+//   禁止 runtime.params = definition.params; 这种写法。
+// =====================================================
+
+WorkflowStepDef *workflow_step_def_at(
+    uint8_t workflow_index,
+    uint8_t step_index
+)
+{
+    if(step_definitions == nullptr)
+        return nullptr;
+    if(workflow_index >= WORKFLOW_MAX_COUNT ||
+       step_index >= WORKFLOW_MAX_STEP)
+        return nullptr;
+
+    return &step_definitions[
+        (uint16_t)workflow_index * WORKFLOW_MAX_STEP + step_index
+    ];
+}
+
+static void workflow_clear_step_def(
+    uint8_t workflow_index,
+    uint8_t step_index
+)
+{
+    WorkflowStepDef *def =
+        workflow_step_def_at(workflow_index, step_index);
+    if(def == nullptr)
+        return;
+
+    def->type = WORKFLOW_STEP_ACTION;
+    def->instance_type = INSTANCE_ACTION;
+    def->id = "";
+    def->param_count = 0;
+
+    for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+    {
+        def->params[i].name = "";
+        def->params[i].type = PARAM_INT;
+        def->params[i].int_value = 0;
+        def->params[i].float_value = 0.0f;
+        def->params[i].bool_value = false;
+        def->params[i].string_value = "";
+    }
+}
+
+// 解析 / CRUD 之后：把 Step 当前的可持久化数据写入 Definition
+static void workflow_capture_step_def(
+    uint8_t workflow_index,
+    uint8_t step_index,
+    const WorkflowStep &step
+)
+{
+    WorkflowStepDef *def =
+        workflow_step_def_at(workflow_index, step_index);
+    if(def == nullptr)
+        return;
+
+    def->type = step.type;
+    def->instance_type = step.instance_type;
+    def->id = step.id;
+    def->param_count = 0;
+
+    const WorkflowParamValue *src = nullptr;
+    uint8_t count = 0;
+
+    if(step.instance_type == INSTANCE_TRIGGER &&
+       step.instance.trigger != nullptr)
+    {
+        src = step.instance.trigger->params;
+        count = step.instance.trigger->param_count;
+    }
+    else if(step.instance_type == INSTANCE_ACTION &&
+            step.instance.action != nullptr)
+    {
+        src = step.instance.action->params;
+        count = step.instance.action->param_count;
+    }
+    else
+    {
+        // Descriptor 不存在等异常：Definition 只保留 ID，参数为空
+        return;
+    }
+
+    if(count > WORKFLOW_MAX_PARAM)
+        count = WORKFLOW_MAX_PARAM;
+
+    def->param_count = count;
+    for(uint8_t i = 0; i < count; i++)
+    {
+        def->params[i] = src[i];
+    }
+}
+
+// workflow_start() 时调用：Definition → Runtime 参数快照（值拷贝）
+//
+// 快照生成后，运行期间对 Definition 的任何修改都不会影响本次运行。
+static void workflow_snapshot_step_def(
+    int workflow_index,
+    uint8_t step_index,
+    WorkflowStep &step
+)
+{
+    if(workflow_index < 0)
+        return;
+
+    const WorkflowStepDef *def = workflow_step_def_at(
+        (uint8_t)workflow_index,
+        step_index
+    );
+    if(def == nullptr)
+        return;
+
+    step.type = def->type;
+    step.instance_type = def->instance_type;
+
+    WorkflowParamValue *dst = nullptr;
+    uint8_t *dst_count = nullptr;
+    String *dst_id = nullptr;
+
+    if(def->instance_type == INSTANCE_TRIGGER &&
+       step.instance.trigger != nullptr)
+    {
+        dst = step.instance.trigger->params;
+        dst_count = &step.instance.trigger->param_count;
+        dst_id = &step.instance.trigger->id;
+    }
+    else if(def->instance_type == INSTANCE_ACTION &&
+            step.instance.action != nullptr)
+    {
+        dst = step.instance.action->params;
+        dst_count = &step.instance.action->param_count;
+        dst_id = &step.instance.action->id;
+    }
+    else
+    {
+        return;
+    }
+
+    *dst_id = def->id;
+    *dst_count = def->param_count;
+
+    for(uint8_t i = 0; i < def->param_count; i++)
+    {
+        dst[i] = def->params[i];
+    }
+}
+
 void workflow_clear()
 {
     // =====================================================
@@ -1076,6 +1276,7 @@ void workflow_clear()
             workflows[i].steps[j].instance.action = nullptr;
             workflows[i].steps[j].type = WORKFLOW_STEP_ACTION;
             workflows[i].steps[j].instance_type = INSTANCE_ACTION;
+            workflow_clear_step_def(i, j);
         }
     }
 
@@ -1235,6 +1436,7 @@ bool workflow_parse_json(JsonDocument &doc)
                 if(desc == nullptr)
                 {
                     s.instance.trigger = nullptr;
+                    workflow_capture_step_def(index, step_index, s);
                     step_index++;
                     continue;
                 }
@@ -1305,6 +1507,7 @@ bool workflow_parse_json(JsonDocument &doc)
                 if(desc == nullptr)
                 {
                     s.instance.action = nullptr;
+                    workflow_capture_step_def(index, step_index, s);
                     step_index++;
                     continue;
                 }
@@ -1354,6 +1557,8 @@ bool workflow_parse_json(JsonDocument &doc)
                 s.instance.action =
                     inst;
             }
+            // 解析完成后把可持久化数据写入 Definition（Definition/Runtime 分离）
+            workflow_capture_step_def(index, step_index, s);
             step_index++;
         }
         workflow.step_count =
@@ -1579,6 +1784,14 @@ bool workflow_start(
     {
         workflow_reset_step(
             workflow->steps[i]
+        );
+        // Definition → Runtime 参数快照（值拷贝）
+        //
+        // 必须先 reset 再快照：descriptor->reset() 可能改写 instance 内部字段，
+        // 放在其后可以保证本次运行拿到的一定是 Definition 的当前值。
+        // 快照生成后，运行期间对 Definition 的修改不会影响本次运行。
+        workflow_snapshot_step_def(
+            wf_index, i, workflow->steps[i]
         );
     }
     // ============================================
