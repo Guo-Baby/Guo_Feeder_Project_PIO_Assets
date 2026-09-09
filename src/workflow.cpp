@@ -1399,6 +1399,217 @@ static void workflow_build_definition(
     }
 }
 
+// =====================================================
+// BIN → RAM 加载（需求文档 §8 / §31）
+// =====================================================
+//
+// 与 JSON 解析路径平行：数据来源是 WorkflowStorage 而不是 JSON，
+// 但构建 Runtime 的规则完全一致（Descriptor 由 ID 重新解析）。
+
+static void workflow_storage_to_def(
+    const WorkflowStepDefinition *src,
+    WorkflowStepDef *dst
+)
+{
+    dst->type = (WorkflowStepType)src->type;
+    dst->instance_type = (WorkflowInstanceType)src->instance_type;
+    dst->id = String(src->id);
+    dst->param_count = src->param_count;
+
+    for(uint8_t i = 0; i < src->param_count; i++)
+    {
+        const WorkflowParamValueDefinition *s = &src->params[i];
+        WorkflowParamValue &d = dst->params[i];
+
+        d.name = String(s->name);
+        d.type = (WorkflowParamType)s->type;
+        d.int_value = (int)s->int_value;
+        d.float_value = s->float_value;
+        d.bool_value = s->bool_value != 0;
+        d.string_value = String(s->string_value);
+    }
+}
+
+// 由 BIN Step Definition 构建单个 Step 的 Runtime
+//
+// 顺序（关键）：
+//   1. 分配 Instance + 绑定 Descriptor（params 清空）
+//   2. BIN → WorkflowStepDef（Definition）
+//   3. Definition → Runtime 快照
+//
+// 第 3 步复用 workflow_snapshot_step_def()，保证 BIN 与 JSON 两条路径
+// 最终落到 Runtime 的数据完全一致。
+static void workflow_apply_step_definition(
+    uint8_t wf,
+    uint8_t step_index,
+    const WorkflowStepDefinition *sd
+)
+{
+    WorkflowStep &s = workflows[wf].steps[step_index];
+
+    s.id = String(sd->id);
+    s.type = (WorkflowStepType)sd->type;
+    s.instance_type = (WorkflowInstanceType)sd->instance_type;
+    s.instance.trigger = nullptr;
+    s.instance.action = nullptr;
+
+    uint16_t pool_max =
+        (uint16_t)WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP;
+
+    if(s.instance_type == INSTANCE_TRIGGER)
+    {
+        const WorkflowTriggerDescriptor *desc =
+            find_trigger_descriptor(s.id);
+
+        if(desc != nullptr && trigger_instance_index < pool_max)
+        {
+            WorkflowTriggerInstance *inst =
+                &trigger_instances[trigger_instance_index++];
+
+            inst->id = s.id;
+            inst->descriptor = desc;
+            inst->param_count = 0;
+            inst->state = TRIGGER_IDLE;
+            inst->running = false;
+            inst->callback = workflow_trigger_callback;
+
+            inst->timer_runtime.next_trigger_time = 0;
+            inst->timer_runtime.last_trigger_minute = -1;
+            inst->timer_runtime.triggered = false;
+            inst->timer_runtime.expired = false;
+            inst->timer_runtime.type = 0;
+            inst->delay_runtime.start_time = 0;
+            inst->delay_runtime.delay_ms = 0;
+            inst->delay_runtime.started = false;
+
+            for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+            {
+                inst->params[i].name = "";
+                inst->params[i].type = PARAM_INT;
+                inst->params[i].int_value = 0;
+                inst->params[i].float_value = 0.0f;
+                inst->params[i].bool_value = false;
+                inst->params[i].string_value = "";
+            }
+
+            s.instance.trigger = inst;
+        }
+    }
+    else
+    {
+        const WorkflowActionDescriptor *desc =
+            find_action_descriptor(s.id);
+
+        if(desc != nullptr && action_instance_index < pool_max)
+        {
+            WorkflowActionInstance *inst =
+                &action_instances[action_instance_index++];
+
+            inst->id = s.id;
+            inst->descriptor = desc;
+            inst->param_count = 0;
+            inst->result = ACTION_IDLE;
+            inst->running = false;
+            inst->runtime = nullptr;
+            inst->callback = workflow_action_callback;
+
+            for(uint8_t i = 0; i < WORKFLOW_MAX_PARAM; i++)
+            {
+                inst->params[i].name = "";
+                inst->params[i].type = PARAM_INT;
+                inst->params[i].int_value = 0;
+                inst->params[i].float_value = 0.0f;
+                inst->params[i].bool_value = false;
+                inst->params[i].string_value = "";
+            }
+
+            s.instance.action = inst;
+        }
+    }
+
+    // BIN → Definition
+    WorkflowStepDef *def = workflow_step_def_at(wf, step_index);
+    if(def != nullptr)
+    {
+        workflow_storage_to_def(sd, def);
+    }
+
+    // Definition → Runtime 快照
+    workflow_snapshot_step_def((int)wf, step_index, s);
+}
+
+bool workflow_load_from_storage()
+{
+    if(!workflow_storage_init())
+    {
+        return false;
+    }
+
+    if(!workflow_storage_load_meta())
+    {
+        return false;
+    }
+
+    workflow_clear();
+    trigger_instance_index = 0;
+    action_instance_index = 0;
+
+    bool any = false;
+    uint8_t max_index = 0;
+
+    for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+    {
+        if(!workflow_storage_get_valid(wf))
+        {
+            continue;
+        }
+
+        WorkflowDefinition def;
+        WorkflowStorageResult r = workflow_storage_load(wf, &def);
+
+        if(r != WF_STG_OK)
+        {
+            Serial.printf(
+                "[Workflow] bin load failed: wf=%u err=%s\n",
+                (unsigned)wf,
+                workflow_storage_result_name(r)
+            );
+            continue;
+        }
+
+        Workflow &w = workflows[wf];
+
+        w.id = String(def.id);
+        w.name = String(def.name);
+        w.enable = def.enable != 0;
+        w.timeout_ms = def.timeout_ms;
+        w.state = WORKFLOW_IDLE;
+        w.current_step = 0;
+        w.step_count = def.step_count;
+        w.cmd_id = "";
+        w.finish_callback = nullptr;
+        w.start_time = 0;
+
+        for(uint8_t s = 0; s < def.step_count; s++)
+        {
+            workflow_apply_step_definition(wf, s, &def.steps[s]);
+        }
+
+        max_index = wf;
+        any = true;
+    }
+
+    if(!any)
+    {
+        workflow_count = 0;
+        return false;
+    }
+
+    workflow_count = (uint8_t)(max_index + 1);
+
+    return true;
+}
+
 bool workflow_has_any_dirty()
 {
     return dirty_any();
