@@ -402,6 +402,24 @@ WorkflowStepDef *workflow_step_def_at(
 // 注意：本函数会先 workflow_clear()，会清空现有 RAM 状态。
 bool workflow_load_from_storage();
 
+// 修改 Step Definition 的单个参数（§13 / §45）
+//
+// 这是"运行中安全修改 Definition"的标准入口：
+//   - 只改 Definition（下一次执行什么）
+//   - 运行中的 Runtime 继续使用自己启动时拷贝的快照，本次运行不受影响
+//   - 自动 mark_dirty，首次产生 Dirty 时 Critical +1
+//
+// 顺序（关键）：先 mark_dirty 成功，再改 RAM。
+// 这样 Critical acquire 被拒时不会留下"改了但没标 Dirty"的不一致状态。
+//
+// 返回 false：索引越界 / param_index >= param_count / 修改被拒（RESTART_PENDING）
+bool workflow_update_step_param(
+    uint8_t workflow_index,
+    uint8_t step_index,
+    uint8_t param_index,
+    const WorkflowParamValue &value
+);
+
 // 标记 Step Definition 已被修改（Clean -> Dirty）
 //
 // 返回 false 表示本次修改被拒绝：
