@@ -165,7 +165,7 @@ Step 仍计入 step_count（不因单个 Step 失败而丢弃整个 Workflow）�
 
 ### Phase 8(部分) — Definition 修改 API `workflow_update_step_param` ✅ 已提交
 
-commit：**`dc16d27` 之后的 `待填`**
+commit：**`696bd60`**（3 files, +83 / -1）
 编译：SUCCESS 150.59s，0 error，0 新增 warning；RAM 无变化（129240 B）
 
 此前存在一个断点：Dirty Bitmap / Critical 事务已就绪（`50879ff`），
