@@ -330,6 +330,54 @@ union StepInstance
 };
 
 // =====================================================
+// Step Definition（RAM 中的"下一次执行什么"）
+// =====================================================
+//
+// 与 Runtime 彻底分离：
+//   Definition = 下一次执行什么（本结构）
+//   Runtime     = 这一次正在执行什么（WorkflowTriggerInstance /
+//                 WorkflowActionInstance，workflow_start 时值拷贝快照）
+//
+// 存储位置：PSRAM 的 step_definitions 池，
+// 刻意【不放进】WorkflowStep 内部 ——
+// 每个 Step 有 8 个参数，256 个 Slot 若内联进 WorkflowStep，
+// 会让常驻 DRAM 的 workflows[] 膨胀上百 KB。
+//
+// 只保存可持久化数据：
+//   type / instance_type / Action-Trigger 字符串 ID / 参数
+//
+// 禁止出现：
+//   函数指针 / Descriptor 指针 / runtime / callback / running / result
+//
+// 生命周期：
+//   解析 / 后续 CRUD 修改 → 写入 Definition
+//   workflow_start()      → 值拷贝到 Runtime（参数快照）
+//   运行期间              → Runtime 只读自己的快照，Definition 可安全修改
+// =====================================================
+
+struct WorkflowStepDef
+{
+    WorkflowStepType type;
+    WorkflowInstanceType instance_type;
+    String id;                  // Action / Trigger 字符串 ID
+    uint8_t param_count;
+    WorkflowParamValue params[WORKFLOW_MAX_PARAM];
+};
+
+// 取得指定 Slot 的 Step Definition
+//
+// 返回 nullptr 表示池未初始化或索引越界。
+//
+// 用途：
+//   后续 Workflow CRUD / WorkflowStorage 序列化读取 Definition。
+//   Definition 修改后必须调用 workflow_mark_step_dirty()（Phase 6）。
+
+WorkflowStepDef *workflow_step_def_at(
+    uint8_t workflow_index,
+    uint8_t step_index
+);
+
+// =====================================================
 // Workflow Step
 // =====================================================
 
