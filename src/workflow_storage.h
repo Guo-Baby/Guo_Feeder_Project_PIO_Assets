@@ -71,7 +71,13 @@
 
 #define WF_STG_META_MAGIC 0x57464D54u   // "WFMT"
 #define WF_STG_STEP_MAGIC 0x57465350u   // "WFSP"
+
+// Step BIN 格式版本（不变，v1 布局稳定）
 #define WF_STG_VERSION 1u
+// Meta 格式版本：
+//   v1 = 81B/entry（无 txn_id）
+//   v2 = 85B/entry（+txn_id，Workflow 级事务提交标识）
+#define WF_STG_META_VERSION 2u
 
 #define WF_STG_ID_MAX_LEN 32
 #define WF_STG_NAME_MAX_LEN 32
@@ -115,7 +121,8 @@ enum WorkflowStorageResult
     WF_STG_ERR_CRC_FAILED = 10,           // BIN 内容 CRC 校验失败
     WF_STG_ERR_VERSION_MISMATCH = 11,     // BIN 格式版本不兼容
     WF_STG_ERR_FORMAT_INVALID = 12,       // Magic 错误 / 长度非法
-    WF_STG_ERR_VERSION_TOO_NEW = 13       // BIN 版本高于本固件，拒绝解析
+    WF_STG_ERR_VERSION_TOO_NEW = 13,      // BIN 版本高于本固件，拒绝解析
+    WF_STG_ERR_TEST_ABORTED = 14          // 仅测试故障注入：模拟掉电中断点
 };
 
 // BinStorageResult → WorkflowStorageResult（数值对齐，无损）
@@ -184,6 +191,7 @@ struct WorkflowMetaEntry
     char name[WF_STG_NAME_MAX_LEN];
     uint8_t enable;
     uint32_t timeout_ms;
+    uint32_t txn_id;     // 最后已提交事务的标识（掉电恢复用，见 workflow_storage_recover）
 };
 
 
@@ -262,14 +270,26 @@ WorkflowStorageResult workflow_storage_load(
     WorkflowDefinition *definition
 );
 
-// 保存整个 Workflow（多 Step 事务）
+// 保存整个 Workflow —— Workflow 级多 Step 事务（掉电安全）
 //
-// 顺序（严格）：
-//   1. 逐个原子写 Step BIN（wfNN 目录不存在时创建）
-//   2. 全部成功 → 更新 RAM Meta（valid / step_count / crc32 / info）
-//   3. 最后原子提交 meta.bin
+// 事务过程（严格顺序）：
+//   1. 生成事务标识 X = Meta.txn_id + 1
+//   2. 逐个 Step 写入【暂存文件】stepNN.bin.tX（不触碰正式文件）
+//      - 写完即做 大小 + CRC 读回校验
+//   3. 全部暂存成功 → 原子提交 Meta（txn_id 更新为 X）—— 事务提交点
+//   4. 发布：逐个 rename 暂存文件 → 正式 stepNN.bin
+//   5. 清理其他事务残留的 .t* 暂存文件
 //
-// 任一 Step 写失败：立即返回，不动 Meta，Flash 保持旧版本。
+// 掉电保证（需求文档 §48）：
+//   - 第 2 步 / 第 3 步之间掉电（提交前）：
+//     正式文件与 Meta 都是旧版本 → 旧 Workflow 完整可读；
+//     残留 .tX 为垃圾，由下一次 save 或 recover 清理。
+//   - 第 3 步之后、第 4 步完成前掉电（提交后）：
+//     下次启动 workflow_storage_load_meta() 会自动调用
+//     workflow_storage_recover()，识别 txn_id == X 的 .tX 并发布。
+//
+// 任一 Step 暂存写失败：立即返回，清理本次 .tX，
+// 不提交 Meta、不触碰正式文件，旧版本保持可读。
 //
 // 注意：删除 Workflow 请使用 workflow_storage_delete()，
 //      本函数会把 valid 置为 true。
@@ -277,6 +297,17 @@ WorkflowStorageResult workflow_storage_save(
     uint8_t workflow_id,
     const WorkflowDefinition *definition
 );
+
+// 事务恢复（掉电后启动恢复 / 测试后手动恢复）
+//
+// 依赖已加载的 RAM Meta（调用方需先 load_meta）。
+// 对每个 valid Workflow：
+//   - 发现 txn_id == Meta.txn_id 的 .tX 暂存文件 → rename 发布为正式文件
+//   - 其他 .tX（事务未提交的残留）→ 删除
+// 对每个 invalid Workflow：删除其全部 .t* 残留（不复活已删除的 Workflow）。
+//
+// 幂等：可安全重复调用。自动在 load_meta() 成功后执行。
+bool workflow_storage_recover();
 
 // 删除 Workflow
 //
@@ -300,9 +331,40 @@ WorkflowStorageResult workflow_storage_load_step(
 
 // 原子保存单个 Step
 //
-// 不更新 Meta（Meta 由 workflow_storage_save() 在事务末尾统一提交）。
+// ⚠️ 语义边界：
+//   单 Step 写入【不代表】整个 Workflow 事务已提交 ——
+//   本函数不更新 Meta、不产生事务标识。
+//   真正的 Dirty 清理必须发生在整个 Workflow 保存事务
+//   （workflow_storage_save()）成功之后。
+//
+// 适用场景：Lazy Load 修复、调试、单点写入。
+// 不适用场景：作为多 Step 修改的持久化手段。
 WorkflowStorageResult workflow_storage_save_step(
     uint8_t workflow_id,
     uint8_t step_id,
     const WorkflowStepDefinition *step
+);
+
+
+// =====================================================
+// 故障注入（仅用于测试；生产代码不得调用）
+// =====================================================
+
+// 让下一次 workflow_storage_save() 的第 N 个 Step 暂存写失败。
+// step < 0 或 >= 16 表示关闭（默认）。
+// 触发后自动复位为关闭。
+void workflow_storage_test_fail_step(int step);
+
+// 在 workflow_storage_save() 的指定阶段模拟掉电中断：
+//   phase 0 = 关闭（默认）
+//   phase 1 = 预提交中断：全部暂存写完后、Meta 提交前返回
+//             WF_STG_ERR_TEST_ABORTED（正式文件与 Meta 保持旧版本）
+//   phase 2 = 提交后中断：Meta 已提交、发布开始前返回
+//             WF_STG_ERR_TEST_ABORTED（需 recover() 或重启完成发布）
+// 触发后自动复位为关闭。
+void workflow_storage_test_abort_phase(int phase);
+
+// 统计某 Workflow 目录下残留的 .t* 暂存文件数（测试断言用）
+int workflow_storage_test_staged_count(
+    uint8_t workflow_id
 );

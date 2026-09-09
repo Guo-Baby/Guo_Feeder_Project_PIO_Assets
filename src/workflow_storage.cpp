@@ -20,11 +20,26 @@ static_assert(WF_STG_MAX_PARAM == WORKFLOW_MAX_PARAM, "WF_STG_MAX_PARAM 与 WORK
 // =====================================================
 #define WF_STG_STEP_HEADER_SIZE 16u
 #define WF_STG_META_HEADER_SIZE 12u
-// 单个 MetaEntry 序列化后字节数：
-//   valid(1) version(1) step_count(2) update_time(4) crc32(4)
-//   id(32) name(32) enable(1) timeout_ms(4)
-#define WF_STG_META_ENTRY_SIZE 81u
-#define WF_STG_META_SIZE (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE * WF_STG_MAX_COUNT)
+
+// Meta Entry 序列化布局：
+//   v1（81B）：valid(1) version(1) step_count(2) update_time(4) crc32(4)
+//              id(32) name(32) enable(1) timeout_ms(4)
+//   v2（85B）：v1 布局 + txn_id(4)   —— Workflow 级事务提交标识
+#define WF_STG_META_ENTRY_SIZE_V1 81u
+#define WF_STG_META_ENTRY_SIZE_V2 85u
+
+#define WF_STG_META_SIZE_V1 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V1 * WF_STG_MAX_COUNT)
+#define WF_STG_META_SIZE_V2 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V2 * WF_STG_MAX_COUNT)
+
+// 事务暂存文件后缀：stepNN.bin.t<txn_id 十六进制>
+// 见 workflow_storage_save() 事务说明。
+#define WF_STG_STAGE_SUFFIX ".t"
+
+// =====================================================
+// 故障注入状态（仅测试用；生产默认全部关闭）
+// =====================================================
+static int8_t s_test_fail_step = -1;   // -1 = 关闭
+static int s_test_abort_phase = 0;     // 0 = 关闭, 1 = 预提交中断, 2 = 提交后中断
 
 // =====================================================
 // 模块内部状态
@@ -426,6 +441,7 @@ static size_t serialize_meta(
         put_fixed(out, pos, e.name, WF_STG_NAME_MAX_LEN);
         put_u8(out, pos, e.enable ? 1u : 0u);
         put_u32(out, pos, e.timeout_ms);
+        put_u32(out, pos, e.txn_id);
     }
 
     size_t entries_size = pos - WF_STG_META_HEADER_SIZE;
@@ -436,7 +452,7 @@ static size_t serialize_meta(
 
     size_t hp = 0;
     put_u32(out, hp, WF_STG_META_MAGIC);
-    put_u16(out, hp, WF_STG_VERSION);
+    put_u16(out, hp, WF_STG_META_VERSION);
     put_u16(out, hp, WF_STG_MAX_COUNT);
     put_u32(out, hp, crc);
 
@@ -448,7 +464,18 @@ static WorkflowStorageResult deserialize_meta(
     size_t size
 )
 {
-    if (size != WF_STG_META_SIZE)
+    // 版本 1 与版本 2 布局长度不同（v2 每 entry 多 txn_id 4 字节），
+    // 兼容读取：旧版固件写入的 v1 meta 仍可加载（txn_id 视为 0）。
+    bool is_v2;
+    if (size == WF_STG_META_SIZE_V2)
+    {
+        is_v2 = true;
+    }
+    else if (size == WF_STG_META_SIZE_V1)
+    {
+        is_v2 = false;
+    }
+    else
     {
         return WF_STG_ERR_FORMAT_INVALID;
     }
@@ -463,13 +490,18 @@ static WorkflowStorageResult deserialize_meta(
     {
         return WF_STG_ERR_FORMAT_INVALID;
     }
-    if (version > WF_STG_VERSION)
+    if (version > WF_STG_META_VERSION)
     {
         return WF_STG_ERR_VERSION_TOO_NEW;
     }
-    if (version != WF_STG_VERSION)
+    if (version < 1 || version > WF_STG_META_VERSION)
     {
         return WF_STG_ERR_VERSION_MISMATCH;
+    }
+    if ((is_v2 && version < 2) || (!is_v2 && version > 1))
+    {
+        // 头部版本与文件长度自相矛盾，视为损坏
+        return WF_STG_ERR_FORMAT_INVALID;
     }
     if (workflow_count != WF_STG_MAX_COUNT)
     {
@@ -497,6 +529,7 @@ static WorkflowStorageResult deserialize_meta(
         get_fixed(in, pos, e.name, WF_STG_NAME_MAX_LEN);
         e.enable = get_u8(in, pos) ? 1u : 0u;
         e.timeout_ms = get_u32(in, pos);
+        e.txn_id = is_v2 ? get_u32(in, pos) : 0u;
 
         if (e.step_count > WF_STG_MAX_STEP)
         {
@@ -513,8 +546,166 @@ static void reset_meta()
     memset(s_meta, 0, sizeof(s_meta));
     for (uint8_t i = 0; i < WF_STG_MAX_COUNT; i++)
     {
-        s_meta[i].version = WF_STG_VERSION;
+        s_meta[i].version = WF_STG_META_VERSION;
     }
+}
+
+// =====================================================
+// 事务辅助（暂存文件 / 恢复）
+// =====================================================
+
+// 把 uint32 显式折叠进 CRC 流（统一 little-endian 字节序，
+// 不依赖 (const uint8_t *)&value 直读内存 —— 直读在非小端平台会漂移）
+static void crc_append_u32_le(uint32_t &crc, uint32_t value)
+{
+    uint8_t le[4];
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        le[i] = (uint8_t)((value >> (i * 8)) & 0xFFu);
+    }
+    crc = wf_crc32_update(crc, le, sizeof(le));
+}
+
+// 事务暂存文件：/workflow/wfNN/stepMM.bin.t<txn_id>
+// txn_id 编码在文件名中，掉电后据此判断应发布还是丢弃。
+static bool build_stage_path(
+    uint8_t workflow_id,
+    uint8_t step_id,
+    uint32_t txn_id,
+    char *out,
+    size_t out_size
+)
+{
+    if (workflow_id >= WF_STG_MAX_COUNT || step_id >= WF_STG_MAX_STEP)
+    {
+        return false;
+    }
+    int n = snprintf(out, out_size, "%s/wf%02u/step%02u.bin.t%08lx",
+                     WF_STG_DIR, (unsigned)workflow_id, (unsigned)step_id,
+                     (unsigned long)txn_id);
+    return (n > 0 && (size_t)n < out_size);
+}
+
+// 解析暂存文件名中的 txn_id；非暂存文件返回 false。
+// name 形如 "step03.bin.t0000000a"。
+static bool parse_stage_txn_id(
+    const char *name,
+    uint32_t &txn_id
+)
+{
+    const char *dot_t = strstr(name, ".bin.t");
+    if (dot_t == nullptr)
+    {
+        return false;
+    }
+
+    const char *hex = dot_t + 6;  // 跳过 ".bin.t"
+    if (strlen(hex) == 0 || strlen(hex) > 8)
+    {
+        return false;
+    }
+
+    uint32_t v = 0;
+    for (const char *p = hex; *p != '\0'; p++)
+    {
+        uint8_t d;
+        if (*p >= '0' && *p <= '9')       d = (uint8_t)(*p - '0');
+        else if (*p >= 'a' && *p <= 'f')  d = (uint8_t)(*p - 'a' + 10);
+        else if (*p >= 'A' && *p <= 'F')  d = (uint8_t)(*p - 'A' + 10);
+        else return false;
+        v = (v << 4) | d;
+    }
+
+    txn_id = v;
+    return true;
+}
+
+struct StageScanCtx
+{
+    uint8_t wf;
+    uint32_t publish_txn;   // 匹配该 txn_id 的暂存文件被发布；其余删除
+    int matched_count;      // 已发布（或待发布）数量
+};
+
+static bool stage_scan_cb(
+    const char *name,
+    bool is_dir,
+    void *user
+)
+{
+    if (is_dir)
+    {
+        return true;
+    }
+
+    StageScanCtx *ctx = (StageScanCtx *)user;
+    uint32_t id;
+
+    if (!parse_stage_txn_id(name, id))
+    {
+        return true;  // 正式 step*.bin 文件，跳过
+    }
+
+    char full[64];
+    snprintf(full, sizeof(full), "%s/wf%02u/%s",
+             WF_STG_DIR, (unsigned)ctx->wf, name);
+
+    if (id == ctx->publish_txn)
+    {
+        // 已提交事务的暂存文件 → 发布（rename 覆盖正式文件，
+        // LittleFS rename 具备原子替换语义）
+        unsigned st = 0;
+        if (sscanf(name, "step%2u", &st) != 1 || st >= WF_STG_MAX_STEP)
+        {
+            return true;
+        }
+
+        char base[64];
+        snprintf(base, sizeof(base), "%s/wf%02u/step%02u.bin",
+                 WF_STG_DIR, (unsigned)ctx->wf, st);
+
+        if (bin_storage_rename(full, base) != BIN_STORAGE_OK)
+        {
+            Serial.printf("[WorkflowStorage] recover publish rename failed: %s\n", full);
+        }
+        else
+        {
+            ctx->matched_count++;
+        }
+    }
+    else
+    {
+        // 未提交事务的残留暂存文件 → 丢弃
+        bin_storage_remove(full);
+    }
+
+    return true;
+}
+
+// 处理单个 Workflow 目录下的全部暂存文件：
+//   publish_txn != UINT32_MAX：把 id == publish_txn 的发布、其余删除
+//   publish_txn == UINT32_MAX：全部删除（未提交残留 / 无效 Workflow）
+static void stage_process(
+    uint8_t wf,
+    uint32_t publish_txn
+)
+{
+    char dir[48];
+    if (!build_workflow_dir(wf, dir, sizeof(dir)))
+    {
+        return;
+    }
+    if (!bin_storage_exists(dir))
+    {
+        return;
+    }
+
+    StageScanCtx ctx;
+    ctx.wf = wf;
+    ctx.publish_txn = publish_txn;
+    ctx.matched_count = 0;
+
+    bin_storage_foreach(dir, stage_scan_cb, &ctx);
 }
 
 // =====================================================
@@ -561,6 +752,7 @@ const char *workflow_storage_result_name(
         case WF_STG_ERR_VERSION_MISMATCH:   return "VERSION_MISMATCH";
         case WF_STG_ERR_FORMAT_INVALID:     return "FORMAT_INVALID";
         case WF_STG_ERR_VERSION_TOO_NEW:    return "VERSION_TOO_NEW";
+        case WF_STG_ERR_TEST_ABORTED:       return "TEST_ABORTED";
         default:                            return "UNKNOWN";
     }
 }
@@ -592,6 +784,24 @@ bool workflow_storage_init()
 // Meta
 // -----------------------------------------------------
 
+// 依据 RAM Meta 处理全部 Workflow 的暂存文件：
+//   valid     → 发布 txn_id 匹配的暂存（提交后掉电恢复）
+//   invalid   → 删除全部暂存（不复活已删除的 Workflow）
+static void workflow_storage_recover_internal()
+{
+    for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
+    {
+        if (s_meta[wf].valid)
+        {
+            stage_process(wf, s_meta[wf].txn_id);
+        }
+        else
+        {
+            stage_process(wf, UINT32_MAX);
+        }
+    }
+}
+
 bool workflow_storage_load_meta()
 {
     if (!s_initialized)
@@ -603,7 +813,12 @@ bool workflow_storage_load_meta()
 
     if (!bin_storage_exists(WF_STG_META_PATH))
     {
-        // 首次启动：没有 meta.bin 属正常，全部 Workflow 视为 Invalid
+        // 首次启动：没有 meta.bin 属正常，全部 Workflow 视为 Invalid。
+        // 清掉可能的历史暂存残留（没有 Meta 就没有可恢复的事务）。
+        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
+        {
+            stage_process(wf, UINT32_MAX);
+        }
         s_meta_loaded = true;
         return true;
     }
@@ -611,6 +826,10 @@ bool workflow_storage_load_meta()
     size_t file_size = bin_storage_size(WF_STG_META_PATH);
     if (file_size == 0 || file_size > WF_STG_META_BIN_MAX)
     {
+        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
+        {
+            stage_process(wf, UINT32_MAX);
+        }
         s_meta_loaded = true;
         return false;
     }
@@ -631,8 +850,36 @@ bool workflow_storage_load_meta()
     WorkflowStorageResult r = deserialize_meta(buf, bytes_read);
     s_meta_loaded = true;
 
-    // 损坏时绝不猜测旧格式，全部保持 Invalid
-    return (r == WF_STG_OK);
+    if (r != WF_STG_OK)
+    {
+        // 损坏时绝不猜测旧格式，全部保持 Invalid，并清历史暂存
+        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
+        {
+            stage_process(wf, UINT32_MAX);
+        }
+        return false;
+    }
+
+    // 加载成功 → 自动完成"提交后掉电"的恢复发布
+    workflow_storage_recover_internal();
+
+    return true;
+}
+
+bool workflow_storage_recover()
+{
+    if (!s_initialized)
+    {
+        return false;
+    }
+
+    if (!s_meta_loaded)
+    {
+        workflow_storage_load_meta();
+    }
+
+    workflow_storage_recover_internal();
+    return true;
 }
 
 bool workflow_storage_save_meta()
@@ -669,7 +916,7 @@ void workflow_storage_set_valid(
         return;
     }
     s_meta[workflow_id].valid = valid ? 1u : 0u;
-    s_meta[workflow_id].version = WF_STG_VERSION;
+    s_meta[workflow_id].version = WF_STG_META_VERSION;
 }
 
 uint8_t workflow_storage_get_step_count(
@@ -736,7 +983,7 @@ void workflow_storage_set_info(
     e.name[WF_STG_NAME_MAX_LEN - 1] = '\0';
     e.enable = enable ? 1u : 0u;
     e.timeout_ms = timeout_ms;
-    e.version = WF_STG_VERSION;
+    e.version = WF_STG_META_VERSION;
 }
 
 // -----------------------------------------------------
@@ -863,11 +1110,13 @@ WorkflowStorageResult workflow_storage_load(
         {
             return r;
         }
-        crc = wf_crc32_update(crc, (const uint8_t *)&step_crc, sizeof(step_crc));
+        crc_append_u32_le(crc, step_crc);
     }
     crc = wf_crc32_final(crc);
 
-    if (e.crc32 != 0 && crc != e.crc32)
+    // CRC32 合法结果可能是 0，因此【始终】校验，
+    // 不得用 "crc32 != 0 &&" 表示"有没有 CRC"。
+    if (crc != e.crc32)
     {
         return WF_STG_ERR_CRC_FAILED;
     }
@@ -898,12 +1147,37 @@ WorkflowStorageResult workflow_storage_save(
         workflow_storage_load_meta();
     }
 
+    char dir[48];
+    if (!build_workflow_dir(workflow_id, dir, sizeof(dir)))
+    {
+        return WF_STG_ERR_INVALID_ARGUMENT;
+    }
+    if (bin_storage_mkdir(dir) != BIN_STORAGE_OK)
+    {
+        return WF_STG_ERR_OPEN_FAILED;
+    }
+
+    // 事务标识：基于当前 Meta.txn_id 递增。
+    // 文件名携带该标识 → 掉电后能判断暂存文件属于"已提交事务"还是"废弃残留"。
+    const uint32_t txn_id = s_meta[workflow_id].txn_id + 1u;
+
     uint8_t buf[WF_STG_STEP_BIN_MAX];
 
-    // ---- 1. 逐个原子写 Step BIN，并累加 Workflow 级 CRC ----
+    // ---- 1. 逐个 Step 写入【暂存文件】.tX（不触碰正式文件）----
     uint32_t crc = wf_crc32_init();
+
     for (uint8_t i = 0; i < definition->step_count; i++)
     {
+        // 故障注入：让第 N 步写入失败（仅测试）
+        if (s_test_fail_step == (int8_t)i)
+        {
+            s_test_fail_step = -1;
+            stage_process(workflow_id, UINT32_MAX);  // 清掉本次已写的暂存
+            Serial.printf("[WorkflowStorage] test: injected write failure at step %u\n",
+                          (unsigned)i);
+            return WF_STG_ERR_WRITE_FAILED;
+        }
+
         size_t payload_size = serialize_step_payload(
             &definition->steps[i], workflow_id, i, buf + WF_STG_STEP_HEADER_SIZE
         );
@@ -911,26 +1185,64 @@ WorkflowStorageResult workflow_storage_save(
         uint32_t step_crc = wf_crc32_final(
             wf_crc32_update(wf_crc32_init(), buf + WF_STG_STEP_HEADER_SIZE, payload_size)
         );
-        crc = wf_crc32_update(crc, (const uint8_t *)&step_crc, sizeof(step_crc));
+        crc_append_u32_le(crc, step_crc);
 
-        WorkflowStorageResult r = workflow_storage_save_step(
-            workflow_id, i, &definition->steps[i]
+        size_t pos = 0;
+        put_u32(buf, pos, WF_STG_STEP_MAGIC);
+        put_u16(buf, pos, WF_STG_VERSION);
+        put_u16(buf, pos, WF_STG_STEP_HEADER_SIZE);
+        put_u32(buf, pos, (uint32_t)payload_size);
+        put_u32(buf, pos, step_crc);
+
+        size_t total = WF_STG_STEP_HEADER_SIZE + payload_size;
+
+        char stage[72];
+        if (!build_stage_path(workflow_id, i, txn_id, stage, sizeof(stage)))
+        {
+            return WF_STG_ERR_INVALID_ARGUMENT;
+        }
+
+        WorkflowStorageResult r = workflow_storage_from_bin_result(
+            bin_storage_write(stage, buf, total)
         );
         if (r != WF_STG_OK)
         {
-            // 任一 Step 写失败：立即返回，不动 Meta，Flash 保持旧版本
+            stage_process(workflow_id, UINT32_MAX);
             return r;
+        }
+
+        // 读回校验：大小 + CRC（暂存文件必须完整，才允许进入提交）
+        if (bin_storage_size(stage) != total)
+        {
+            stage_process(workflow_id, UINT32_MAX);
+            return WF_STG_ERR_WRITE_FAILED;
+        }
+        uint32_t disk_crc = 0;
+        if (bin_storage_crc32(stage, disk_crc) != BIN_STORAGE_OK ||
+            disk_crc != step_crc)
+        {
+            stage_process(workflow_id, UINT32_MAX);
+            return WF_STG_ERR_WRITE_FAILED;
         }
     }
     crc = wf_crc32_final(crc);
 
-    // ---- 2. 更新 RAM Meta ----
+    // 故障注入：预提交中断（模拟"暂存写完、Meta 未提交"时掉电）
+    if (s_test_abort_phase == 1)
+    {
+        s_test_abort_phase = 0;
+        Serial.println("[WorkflowStorage] test: aborted PRE-COMMIT (power loss simulated)");
+        return WF_STG_ERR_TEST_ABORTED;
+    }
+
+    // ---- 2. 原子提交 Meta（事务提交点）----
     WorkflowMetaEntry &e = s_meta[workflow_id];
     e.valid = 1u;
-    e.version = WF_STG_VERSION;
+    e.version = WF_STG_META_VERSION;
     e.step_count = definition->step_count;
     e.update_time = (uint32_t)time(nullptr);
     e.crc32 = crc;
+    e.txn_id = txn_id;
     strncpy(e.id, definition->id, WF_STG_ID_MAX_LEN - 1);
     e.id[WF_STG_ID_MAX_LEN - 1] = '\0';
     strncpy(e.name, definition->name, WF_STG_NAME_MAX_LEN - 1);
@@ -938,11 +1250,43 @@ WorkflowStorageResult workflow_storage_save(
     e.enable = definition->enable ? 1u : 0u;
     e.timeout_ms = definition->timeout_ms;
 
-    // ---- 3. Meta 最后提交（掉电安全的关键顺序）----
     if (!workflow_storage_save_meta())
     {
+        // Meta 提交失败：事务未提交，清掉本次暂存，正式文件保持旧版本
+        stage_process(workflow_id, UINT32_MAX);
         return WF_STG_ERR_WRITE_FAILED;
     }
+
+    // 故障注入：提交后中断（模拟"Meta 已提交、尚未发布"时掉电）
+    if (s_test_abort_phase == 2)
+    {
+        s_test_abort_phase = 0;
+        Serial.println("[WorkflowStorage] test: aborted POST-COMMIT (power loss simulated)");
+        return WF_STG_ERR_TEST_ABORTED;
+    }
+
+    // ---- 3. 发布：逐个 rename 暂存 → 正式文件 ----
+    for (uint8_t i = 0; i < definition->step_count; i++)
+    {
+        char stage[72];
+        char final[64];
+        if (!build_stage_path(workflow_id, i, txn_id, stage, sizeof(stage)) ||
+            !build_step_path(workflow_id, i, final, sizeof(final)))
+        {
+            return WF_STG_ERR_INVALID_ARGUMENT;
+        }
+
+        if (bin_storage_rename(stage, final) != BIN_STORAGE_OK)
+        {
+            // 事务【已提交】，但发布未完成：
+            // 不清剩余暂存 —— 留给 recover()（下次启动自动执行）完成发布
+            Serial.printf("[WorkflowStorage] publish rename failed: %s\n", stage);
+            return WF_STG_ERR_RENAME_FAILED;
+        }
+    }
+
+    // ---- 4. 清理历史暂存残留（发布已全部完成，可安全删除）----
+    stage_process(workflow_id, UINT32_MAX);
 
     return WF_STG_OK;
 }
@@ -967,7 +1311,7 @@ WorkflowStorageResult workflow_storage_delete(
 
     // 只置 Invalid，不删除任何 Step BIN
     s_meta[workflow_id].valid = 0u;
-    s_meta[workflow_id].version = WF_STG_VERSION;
+    s_meta[workflow_id].version = WF_STG_META_VERSION;
 
     if (!workflow_storage_save_meta())
     {
@@ -975,4 +1319,61 @@ WorkflowStorageResult workflow_storage_delete(
     }
 
     return WF_STG_OK;
+}
+
+// =====================================================
+// 故障注入（仅测试用）
+// =====================================================
+
+void workflow_storage_test_fail_step(int step)
+{
+    s_test_fail_step = (step >= 0 && step < WF_STG_MAX_STEP) ? (int8_t)step : (int8_t)-1;
+}
+
+void workflow_storage_test_abort_phase(int phase)
+{
+    s_test_abort_phase = (phase == 1 || phase == 2) ? phase : 0;
+}
+
+int workflow_storage_test_staged_count(
+    uint8_t workflow_id
+)
+{
+    if (workflow_id >= WF_STG_MAX_COUNT)
+    {
+        return -1;
+    }
+
+    char dir[48];
+    if (!build_workflow_dir(workflow_id, dir, sizeof(dir)))
+    {
+        return -1;
+    }
+    if (!bin_storage_exists(dir))
+    {
+        return 0;
+    }
+
+    struct CountCtx
+    {
+        int count;
+    } ctx;
+    ctx.count = 0;
+
+    bin_storage_foreach(
+        dir,
+        [](const char *name, bool is_dir, void *user) -> bool
+        {
+            (void)is_dir;
+            uint32_t id;
+            if (parse_stage_txn_id(name, id))
+            {
+                ((CountCtx *)user)->count++;
+            }
+            return true;
+        },
+        &ctx
+    );
+
+    return ctx.count;
 }
