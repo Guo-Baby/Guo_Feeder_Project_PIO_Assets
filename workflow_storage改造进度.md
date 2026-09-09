@@ -1,22 +1,23 @@
 # Workflow Storage + Definition/Runtime Separation 改造进度
 
-> **给后续 AI 节点：本文件是断点续做唯一入口。**
-> 接手时请先读本文件，再读 `## 待办` 中标记 `[进行中]` / `[未开始]` 的章节，
+> **给后续 AI 节点：本文件是断点续做唯一入口。**  
+> 接手时请先读本文件，再读 `## 待办` 中标记 `[进行中]` / `[未开始]` 的章节，  
 > 对照 `## 已完成` 确认仓库实际状态（`git log`），不要重复已完成的工作。
 
-版本：V1
+版本：V1  
 基线 commit：`9a7fe2e`（feat(storage): 新增 FileStorage / BinStorage 通用二进制存储层）
 
 ---
 
 ## 0. 需求来源与交付范围
 
-| 文档 | 内容 |
-|---|---|
-| `workflowstorage需求文档.md` | **WorkflowStorage 模块**（BIN 格式 / Meta / CRC / 原子写 / Lazy Load / API） |
-| `workflow修改需求文档.md` | **Workflow.cpp Definition/Runtime 分离 + Dirty + Critical 事务 + CRUD**（50+ 节） |
+| 文档                       | 内容                                                                         |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `workflowstorage需求文档.md` | **WorkflowStorage 模块**（BIN 格式 / Meta / CRC / 原子写 / Lazy Load / API）        |
+| `workflow修改需求文档.md`      | **Workflow.cpp Definition/Runtime 分离 + Dirty + Critical 事务 + CRUD**（50+ 节） |
 
 用户要求：
+
 1. 修改前确保无未提交修改 ✅（已确认 `git status` 干净，基线 `9a7fe2e`）
 2. 完成后**编译通过**（不烧录）
 3. 完成后 commit
@@ -27,22 +28,39 @@
 
 ## 1. 两份需求文档的冲突与裁决
 
-| # | 冲突点 | 文档1（storage） | 文档2（workflow） | **裁决** |
-|---|---|---|---|---|
-| 1 | 文件布局 | `/workflow/wf00/step00.bin`（目录式） | `/workflow/W00S00.bin`（扁平，标注"建议"） | **采用文档1**（storage 专项文档；文档2 §3 明确写"建议"） |
-| 2 | step_count 归属 | 存于 `WorkflowMetaEntry.step_count`（§六 有完整论证） | 属于 Definition 不属于 Meta（§5） | **持久化放 Meta**（文档1 §六 论证：无 step_count 则加载时无法判断 Step 是否应读取）；RAM 中 `WorkflowDefinition.step_count` 同时存在，加载时以 Meta 为准并交叉校验 |
-| 3 | 错误码 | 复用 `BinStorageResult` + 增加 Workflow 语义错误 | — | **定义 `WorkflowStorageResult`**（数值对齐 `BinStorageResult`，额外 4 个语义码）。理由：验收标准"不修改 BinStorage 原则上禁止"优先，故不污染底层枚举 |
+| #  | 冲突点           | 文档1（storage）                                | 文档2（workflow）                     | **裁决**                                                                                                                 |
+| -- | ------------- | ------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 1  | 文件布局          | `/workflow/wf00/step00.bin`（目录式）            | `/workflow/W00S00.bin`（扁平，标注"建议"） | **采用文档1**（storage 专项文档；文档2 §3 明确写"建议"）                                                                                 |
+| 2  | step_count 归属 | 存于 `WorkflowMetaEntry.step_count`（§六 有完整论证） | 属于 Definition 不属于 Meta（§5）        | **持久化放 Meta**（文档1 §六 论证：无 step_count 则加载时无法判断 Step 是否应读取）；RAM 中 `WorkflowDefinition.step_count` 同时存在，加载时以 Meta 为准并交叉校验 |
+|  3 | 错误码           | 复用 `BinStorageResult` + 增加 Workflow 语义错误    | —                                 | **定义 `WorkflowStorageResult`**（数值对齐 `BinStorageResult`，额外 4 个语义码）。理由：验收标准"不修改 BinStorage 原则上禁止"优先，故不污染底层枚举             |
 
 ---
 
 ## 2. 已完成
 
+
+### Review 修正 — 三个存储模块（`a769d73`）✅ 已提交
+
+详见 **`workflow存储review修正0910.md`**（含逐条核对表 + 事务时序 + 掉电矩阵 + 10 项测试命令）。
+
+commit：`a769d73`（8 files, +1047/-35）
+编译：SUCCESS 157.14s，0 error，0 新增 warning，RAM +80 B。未烧录。
+
+修正内容速览：
+- **`workflow_storage_save()` 重写为真事务**：暂存 `.t<txn_id>` → 读回校验 → Meta 原子提交（提交点）→ rename 发布 → 清理。旧实现"逐个覆盖正式文件+最后写 Meta"在 N 步失败时已损坏前 N-1 步，已废弃。
+- **掉电恢复**：Meta entry 增加 `txn_id`（格式 v2，兼容读 v1）；`load_meta()` 成功后自动 `workflow_storage_recover()`（id 匹配→发布，否则→删除）。
+- **CRC**：删 `crc32 != 0 &&` 始终校验；聚合用 `crc_append_u32_le()` 显式小端。
+- **分层**：新增 `file_storage_foreach` + `bin_storage_foreach`（恢复扫描用，WorkflowStorage 不直调 FileStorage）。
+- **测试通道**：`workflow_storage_test_fail_step/abort_phase/staged_count` + main.cpp `wfst` 串口控制台（seed/dump/verify/ls/del/fail/abort1/abort2/recover）。
+- **对 workflow.cpp 影响 = 无**：其使用的 7 个存储 API 签名未变，编译通过即证明。
+
 ### Phase 1 — WorkflowStorage 模块（文档1 全部）✅ 已提交
 
-commit：`8846aef`（5 files, +2239）
+commit：`8846aef`（5 files, +2239）  
 编译：SUCCESS 56.70s，0 error，0 新增 warning（唯一告警是 `cloud_manager.cpp:1041` 既有 DynamicJsonDocument 弃用告警）
 
 新增文件：
+
 - `src/workflow_storage.h`
 - `src/workflow_storage.cpp`
 - `main.cpp` 接入 `workflow_storage_init()`（第一层，位于 `bin_storage_init()` 之后）
@@ -50,6 +68,7 @@ commit：`8846aef`（5 files, +2239）
 **未触碰**：`workflow.cpp` / `workflow.h` / `command_manager.*` / `config_manager.*` / `json_storage.*` / `bin_storage.*` / `file_storage.*`
 
 设计要点（后续改造必须遵守）：
+
 - 路径：`/workflow/meta.bin`、`/workflow/wf%02u/step%02u.bin`
 - Meta Header 12B：`magic(4) version(2) workflow_count(2) crc32(4)`
 - Meta Entry 12B × 16：`valid(1) version(1) step_count(2) update_time(4) crc32(4)`
@@ -66,16 +85,17 @@ commit：`8846aef`（5 files, +2239）
 
 ## 3. 待办（按文档2 Phase 顺序）
 
+
 ### Phase 2 — Definition / Runtime Separation ✅ 已提交
 
-commit：**`7ed5b51`**（3 files, +335 / -7）
+commit：**`7ed5b51`**（3 files, +335 / -7）  
 编译：SUCCESS 172.76s，0 error，0 新增 warning
 
 已实现（最小侵入）：
 
 - `workflow.h` 新增 `WorkflowStepDef` 结构（type / instance_type / id / param_count / params[8]）
 - `workflow.cpp` 新增 PSRAM 池 `step_definitions`（16×16=256 slot，优先 PSRAM，失败回退 DRAM）
-  - **刻意不放进 `WorkflowStep` 内部**：每个 Step 8 个参数 × 256 slot 内联会让常驻 DRAM 的
+  - **刻意不放进 `WorkflowStep` 内部**：每个 Step 8 个参数 × 256 slot 内联会让常驻 DRAM 的  
     `workflows[]` 膨胀上百 KB（当前 DRAM 已用 129KB/327KB）
 - 新增三个内部函数（定义在 `workflow_clear()` 之前）：
   - `workflow_step_def_at(wf, step)` —— 对外（.h 已声明），Slot 访问
@@ -89,13 +109,15 @@ commit：**`7ed5b51`**（3 files, +335 / -7）
 - `workflow_init()`：分配 + placement new；`workflow_destroy_all_instances()`：析构 + free
 
 行为不变保证：
+
 - 解析期 instance 仍按原逻辑初始化并填入 params，Definition 只是**并行副本**
 - 首次 start 时 snapshot 写入的值与解析期完全一致 → 执行行为零变化
 - Temp Action 完全不经过此路径（`temp_action_instances[8]` 独立 DRAM 池）
 
+
 ### Phase 5/6/7 — Dirty Bitmap + Critical Transaction + Save Transaction ✅ 已提交
 
-commit：**`50879ff`**（3 files, +422 / -4）
+commit：**`50879ff`**（3 files, +422 / -4）  
 编译：SUCCESS 149.15s，0 error，0 新增 warning；RAM 129200 → 129240 B（+40 B）
 
 `workflow.h` 新增 5 个对外 API（bool 语义，不 include workflow_storage.h，保持分层）：
@@ -112,7 +134,7 @@ commit：**`50879ff`**（3 files, +422 / -4）
 - `uint32_t dirty_bitmap[8]`（256 bit，`slot = wf*16 + step`）
 - 内部位操作 `dirty_mark / dirty_clear / dirty_is / dirty_any / dirty_workflow_has / dirty_workflow_clear`
 - `static bool wf_dirty_critical_held` —— 持有标记，release 幂等
-  - ⚠️ **不要改名成 `workflow_critical_held`**：该名字已被既有的
+  - ⚠️ **不要改名成 `workflow_critical_held`**：该名字已被既有的  
     `static bool workflow_critical_held[WORKFLOW_MAX_COUNT]`（运行体 Critical 标记）占用
 - `static unsigned long workflow_save_since_ms` —— 0 = 无待保存
 - `workflow_def_to_storage()` —— `WorkflowStepDef`(String) → `WorkflowStepDefinition`(char[])
@@ -121,19 +143,20 @@ commit：**`50879ff`**（3 files, +422 / -4）
 
 关键设计决策：
 
-- **保存粒度是整个 Workflow 而不是单个 Step**。原因：Meta Entry 的 `crc32` 覆盖该
-  Workflow **全部** Step payload，若只写 Dirty Step，CRC 会因缺失数据而不一致。
+- **保存粒度是整个 Workflow 而不是单个 Step**。原因：Meta Entry 的 `crc32` 覆盖该  
+  Workflow **全部** Step payload，若只写 Dirty Step，CRC 会因缺失数据而不一致。  
   故 Dirty 仍按 Step 记录（便于查询），保存时按 Workflow 聚合成整事务。
-- **延迟轮询不用于维护 Critical**。Critical 的 +1/-1 完全由 `mark_dirty` /
-  `save_transaction` 显式驱动，`workflow_delayed_save_poll()` 只负责窗口到期触发一次保存
+- **延迟轮询不用于维护 Critical**。Critical 的 +1/-1 完全由 `mark_dirty` /  
+  `save_transaction` 显式驱动，`workflow_delayed_save_poll()` 只负责窗口到期触发一次保存  
   （满足 §19/§47）。
-- **`workflow_delete()` 运行中保护**：`state == WORKFLOW_RUNNING` 时只置
-  `enable=false` + meta invalid，**不清 Definition、不改 step_count**
+- **`workflow_delete()` 运行中保护**：`state == WORKFLOW_RUNNING` 时只置  
+  `enable=false` + meta invalid，**不清 Definition、不改 step_count**  
   （改 step_count 会让在飞运行提前结束）；当前运行继续使用自己的 Runtime 快照跑完（§27）。
+
 
 ### Phase 4 — Step BIN + Meta 加载接入 ✅ 已提交
 
-commit：**`dc16d27`**（4 files, +258 / -2）
+commit：**`dc16d27`**（4 files, +258 / -2）  
 编译：SUCCESS 154.39s，0 error，0 新增 warning；RAM 无变化（129240 B）
 
 - `workflow.h` 新增 `workflow_load_from_storage()`（bool，无 Valid Workflow 返回 false）
@@ -155,8 +178,8 @@ else                                     { /* 无配置 */ }
 2. BIN → `WorkflowStepDef`（Definition）
 3. 复用 `workflow_snapshot_step_definition()` 做 Definition → Runtime 快照
 
-第 3 步复用同一函数，保证 **BIN 路径与 JSON 路径落到 Runtime 的数据完全一致**。
-Descriptor 不存在时与 JSON 路径行为一致：不分配 Instance，`s.instance.* = nullptr`，
+第 3 步复用同一函数，保证 **BIN 路径与 JSON 路径落到 Runtime 的数据完全一致**。  
+Descriptor 不存在时与 JSON 路径行为一致：不分配 Instance，`s.instance.* = nullptr`，  
 Step 仍计入 step_count（不因单个 Step 失败而丢弃整个 Workflow）。
 
 `workflow_count` 取「最大 Valid Index + 1」，与 JSON 路径 `workflow_count = index` 语义一致。
@@ -165,10 +188,10 @@ Step 仍计入 step_count（不因单个 Step 失败而丢弃整个 Workflow）�
 
 ### Phase 8(部分) — Definition 修改 API `workflow_update_step_param` ✅ 已提交
 
-commit：**`696bd60`**（3 files, +83 / -1）
+commit：**`696bd60`**（3 files, +83 / -1）  
 编译：SUCCESS 150.59s，0 error，0 新增 warning；RAM 无变化（129240 B）
 
-此前存在一个断点：Dirty Bitmap / Critical 事务已就绪（`50879ff`），
+此前存在一个断点：Dirty Bitmap / Critical 事务已就绪（`50879ff`），  
 但**没有任何代码会产生 Dirty**。本项补上第一个（也是"运行中安全修改"的标准入口）：
 
 - `workflow_update_step_param(wf, step, param_index, value)`（workflow.h:416 / workflow.cpp:1613）
@@ -184,40 +207,48 @@ if(!workflow_mark_step_dirty(workflow_index, step_index)) return false;
 def->params[param_index] = value;
 ```
 
-**反序的后果**：Critical acquire 被拒（系统已进入 RESTART_PENDING / 10s 窗口）时
-RAM 已改却没有 Dirty 标记 → 修改永不落盘且无人知晓。故必须先 mark_dirty 成功
+**反序的后果**：Critical acquire 被拒（系统已进入 RESTART_PENDING / 10s 窗口）时  
+RAM 已改却没有 Dirty 标记 → 修改永不落盘且无人知晓。故必须先 mark_dirty 成功  
 （acquire 成功）才允许写 RAM；acquire 失败则整次修改被拒、RAM 不变。
 
-**尚未实现**（不属本项）：CRUD 其余部分（create / 整条 update / 修改后自动
+**尚未实现**（不属本项）：CRUD 其余部分（create / 整条 update / 修改后自动  
 写回 BIN / CommandManager 命令路由）→ 等用户指令。
 
 ### Phase 3 — 统一 Runtime Pool `[未开始]`
+
 - 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`
 - 与 `temp_action_instances[8]`（DRAM）**必须继续物理隔离**（文档2 §41）
 
 ### Phase 4 — Definition RAM `[未开始]`
+
 - 建立独立 `WorkflowDefinition[]`，字段：id / name / enable / timeout_ms / step_count / steps[]
 
 ### Phase 5 — Step BIN + Meta 接入 `[未开始]`
+
 - 用 Phase 1 的 `workflow_storage_*` 替换现有 `workflow_load_json_file` / `workflow_save_json_file`
 - 启动加载：读 meta → 遍历 valid → 读 Step 0..step_count-1（文档2 §8）
 
 ### Phase 6 — Dirty Bitmap `[未开始]`
+
 - `uint32_t dirty_bitmap[8]`（256 bit），`slot = wf*16 + step`
 - `mark_dirty / clear_dirty / is_dirty / has_any_dirty`
 
 ### Phase 7 — Dirty Transaction + Critical `[未开始]`
+
 - Clean→Dirty 且 `has_any_dirty()==false` 时 `critical_operation_acquire()`（仅 +1 一次）
 - Save 全部成功（BIN + CRC + Meta + 清 Dirty）后 `release()`
 - 失败：不 release、不清 Dirty（文档2 §18/§25）
 
 ### Phase 8 — 延迟保存 `[未开始]`
+
 - 参考 ConfigManager 5 分钟窗口；显式 `workflow_save` 立即触发
 
 ### Phase 9 — Workflow CRUD `[未开始]`
+
 - create / update / delete；delete 只置 `meta.valid=false`，**不删 Step BIN**（文档2 §26）
 
 ### Phase 10 — 回归验证 `[未开始]`
+
 - 文档2 §50 列出 21 项测试
 
 ---
@@ -237,16 +268,16 @@ RAM 已改却没有 Dirty 标记 → 修改永不落盘且无人知晓。故必�
 
 ## 5. 关键代码位置（当前基线）
 
-| 内容 | 位置 |
-|---|---|
-| PSRAM 实例池 `trigger_instances` / `action_instances` 各 256 | `workflow.cpp:751-755` |
-| `workflow_parse_json()` 加载期分配并链接实例 | `workflow.cpp:1181` |
-| `workflow_start()` 复用池实例，不新建 | `workflow.cpp:1522`（内部 reset） |
-| `workflow_reload()` Running 守卫 | `workflow.cpp:1471-1478` |
-| 唯一写盘 `workflow_save_json_file`（整体覆盖 `/workflow.json`，直接 LittleFS） | `workflow.cpp:1432` |
-| `workflow_load_json_file`（不防运行中，会 `workflow_clear`） | `workflow.cpp:1450` 附近 |
-| 临时 Action 池 `temp_action_instances[8]`（DRAM） | `workflow.cpp:162` |
-| 全系统唯一 `ESP.restart()` | `system_command.cpp:312` |
+| 内容                                                                | 位置                            |
+| ----------------------------------------------------------------- | ----------------------------- |
+| PSRAM 实例池 `trigger_instances` / `action_instances` 各 256          | `workflow.cpp:751-755`        |
+| `workflow_parse_json()` 加载期分配并链接实例                                | `workflow.cpp:1181`           |
+| `workflow_start()` 复用池实例，不新建                                      | `workflow.cpp:1522`（内部 reset） |
+| `workflow_reload()` Running 守卫                                    | `workflow.cpp:1471-1478`      |
+| 唯一写盘 `workflow_save_json_file`（整体覆盖 `/workflow.json`，直接 LittleFS） | `workflow.cpp:1432`           |
+| `workflow_load_json_file`（不防运行中，会 `workflow_clear`）               | `workflow.cpp:1450` 附近        |
+| 临时 Action 池 `temp_action_instances[8]`（DRAM）                      | `workflow.cpp:162`            |
+| 全系统唯一 `ESP.restart()`                                             | `system_command.cpp:312`      |
 
 ---
 
@@ -280,7 +311,7 @@ echo "EXIT=$?" > build_done.flag
 
 ### 6.1 编译完成的可靠监控方式（**必须遵守**）
 
-> 背景：此前两次出现「看不到编译是否完成」——原因是 `pio run | tail -N` 的管道缓冲
+> 背景：此前两次出现「看不到编译是否完成」——原因是 `pio run | tail -N` 的管道缓冲  
 > 直到进程结束才刷出，加上 PlatformIO 偶发重装工具链，导致长时间无输出被误判为卡死。
 
 **正确做法：标记文件（marker file）+ 短轮询。** 不要用 `| tail`，不要用阻塞式长等待。
@@ -319,11 +350,11 @@ tail -3 build_out.log
 
 ### 7.1 已知坑：PlatformIO 偶发重装工具链
 
-现象：编译日志出现 `Tool Manager: Installing platformio/tool-scons @ ...` /
-`tool-esptoolpy ... has been installed!` 等，说明 PlatformIO 在重新下载安装工具链，
+现象：编译日志出现 `Tool Manager: Installing platformio/tool-scons @ ...` /  
+`tool-esptoolpy ... has been installed!` 等，说明 PlatformIO 在重新下载安装工具链，  
 耗时可达数分钟且**与代码无关**。
 
-诱因：强杀 `python.exe` 进程（如 `taskkill //F //IM python.exe //T`）会打断 PlatformIO
+诱因：强杀 `python.exe` 进程（如 `taskkill //F //IM python.exe //T`）会打断 PlatformIO  
 的包管理状态。已发生过一次，重装后恢复正常。
 
 对策：
@@ -338,7 +369,7 @@ tail -3 build_out.log
 
 ### 8.1 本阶段（Phase 1）实际可测内容
 
-WorkflowStorage **尚未接入 CommandManager**（需求文档1 明确"本阶段不实现 CommandManager 接口"），
+WorkflowStorage **尚未接入 CommandManager**（需求文档1 明确"本阶段不实现 CommandManager 接口"），  
 因此本阶段只能做**启动期观测 + 回归验证**，不能通过 MQTT 直接读写 Step BIN。
 
 串口预期（烧录后 115200）：
@@ -381,7 +412,7 @@ Capability Registry 查询（确认 Action / Trigger / Workflow 注册表未变�
 
 ### 8.3 Phase 5 之后需要新增的命令（当前尚未实现）
 
-CommandManager 分层要求：不得直接操作 BIN /不得直接调用 FileStorage，
+CommandManager 分层要求：不得直接操作 BIN /不得直接调用 FileStorage，  
 必须经 `WorkflowManager API`。建议命令格式（与现有 `system.time` 风格一致）：
 
 ```json
@@ -391,12 +422,12 @@ CommandManager 分层要求：不得直接操作 BIN /不得直接调用 FileSto
 {"c":"workflow","i":"<唯一>","p":{"o":"meta"}}
 ```
 
-| 字段 | 含义 |
-|---|---|
-| `c` | 固定 `"workflow"` |
-| `i` | 命令唯一 ID，设备按 cmd_id 去重 |
-| `p.o` | 操作：save / load / delete / meta |
-| `p.wf` | Workflow Index 0..15 |
+| 字段     | 含义                             |
+| ------ | ------------------------------ |
+| `c`    | 固定 `"workflow"`                |
+| `i`    | 命令唯一 ID，设备按 cmd_id 去重          |
+| `p.o`  | 操作：save / load / delete / meta |
+| `p.wf` | Workflow Index 0..15           |
 
 ### 8.4 Phase 10 回归测试清单
 
