@@ -8,6 +8,7 @@
 #include "time_manager.h"
 #include "system_command.h"
 #include "workflow.h"
+#include "workflow_storage.h"
 // =====================================================
 // 注册表
 // =====================================================
@@ -1251,6 +1252,317 @@ static void workflow_snapshot_step_def(
     }
 }
 
+// =====================================================
+// Dirty Bitmap（需求文档 §15）
+// =====================================================
+//
+// 256 bit = 16 Workflow × 16 Step
+//
+//   slot = workflow_index * WORKFLOW_MAX_STEP + step_index
+//   W00S00 -> bit 0    W00S15 -> bit 15
+//   W01S00 -> bit 16   W15S15 -> bit 255
+//
+// 之所以用 uint32_t[8] 而不是 uint8_t[256]：
+//   省 224 字节 RAM；且 has_any_dirty() 只需 8 次 32 位比较，
+//   不必遍历 256 次 —— 满足 §47 性能原则。
+
+#define WORKFLOW_DIRTY_WORDS \
+    ((WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP + 31) / 32)
+
+// 延迟保存窗口：与 ConfigManager 已验证的 5 分钟窗口对齐（§22）
+#define WORKFLOW_SAVE_DELAY_MS (5UL * 60UL * 1000UL)
+
+static uint32_t dirty_bitmap[WORKFLOW_DIRTY_WORDS];
+
+// Critical Operation 持有标记（幂等用，避免 release underflow）
+static bool wf_dirty_critical_held = false;
+
+// 0 = 无待保存；非 0 = 延迟保存窗口起点
+static unsigned long workflow_save_since_ms = 0;
+
+static inline void dirty_mark(uint8_t wf, uint8_t step)
+{
+    uint16_t slot = (uint16_t)wf * WORKFLOW_MAX_STEP + step;
+    dirty_bitmap[slot >> 5] |= (1UL << (slot & 31));
+}
+
+static inline void dirty_clear(uint8_t wf, uint8_t step)
+{
+    uint16_t slot = (uint16_t)wf * WORKFLOW_MAX_STEP + step;
+    dirty_bitmap[slot >> 5] &= ~(1UL << (slot & 31));
+}
+
+static inline bool dirty_is(uint8_t wf, uint8_t step)
+{
+    uint16_t slot = (uint16_t)wf * WORKFLOW_MAX_STEP + step;
+    return ((dirty_bitmap[slot >> 5] >> (slot & 31)) & 1UL) != 0;
+}
+
+static bool dirty_any()
+{
+    for(uint8_t i = 0; i < WORKFLOW_DIRTY_WORDS; i++)
+    {
+        if(dirty_bitmap[i] != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dirty_workflow_has(uint8_t wf)
+{
+    for(uint8_t s = 0; s < WORKFLOW_MAX_STEP; s++)
+    {
+        if(dirty_is(wf, s))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void dirty_workflow_clear(uint8_t wf)
+{
+    for(uint8_t s = 0; s < WORKFLOW_MAX_STEP; s++)
+    {
+        dirty_clear(wf, s);
+    }
+}
+
+// =====================================================
+// Definition(RAM,String) <-> WorkflowStorage(char[]) 转换
+// =====================================================
+//
+// 只转换可持久化数据：type / instance_type / ID / 参数。
+// 绝不写入：函数指针 / Descriptor 指针 / runtime / callback / result。
+
+static void workflow_def_to_storage(
+    const WorkflowStepDef *src,
+    WorkflowStepDefinition *dst
+)
+{
+    dst->type = (uint8_t)src->type;
+    dst->instance_type = (uint8_t)src->instance_type;
+
+    strncpy(dst->id, src->id.c_str(), WF_STG_ID_MAX_LEN - 1);
+    dst->id[WF_STG_ID_MAX_LEN - 1] = '\0';
+
+    dst->param_count = src->param_count;
+
+    for(uint8_t i = 0; i < src->param_count; i++)
+    {
+        WorkflowParamValueDefinition *d = &dst->params[i];
+        const WorkflowParamValue &s = src->params[i];
+
+        strncpy(d->name, s.name.c_str(), WF_STG_PARAM_NAME_LEN - 1);
+        d->name[WF_STG_PARAM_NAME_LEN - 1] = '\0';
+
+        d->type = (uint8_t)s.type;
+        d->int_value = (int32_t)s.int_value;
+        d->float_value = s.float_value;
+        d->bool_value = s.bool_value ? 1 : 0;
+
+        strncpy(d->string_value,
+                s.string_value.c_str(),
+                WF_STG_PARAM_STR_LEN - 1);
+        d->string_value[WF_STG_PARAM_STR_LEN - 1] = '\0';
+    }
+}
+
+// 由 RAM 状态构造完整 WorkflowDefinition
+//
+// 注意：保存粒度是【整个 Workflow】而不是单个 Step ——
+// Meta Entry 的 crc32 覆盖该 Workflow 全部 Step payload，
+// 若只写 Dirty Step，CRC 会因缺失数据而不一致。
+static void workflow_build_definition(
+    uint8_t wf,
+    WorkflowDefinition *out
+)
+{
+    memset(out, 0, sizeof(*out));
+
+    strncpy(out->id, workflows[wf].id.c_str(), WF_STG_ID_MAX_LEN - 1);
+    strncpy(out->name, workflows[wf].name.c_str(), WF_STG_NAME_MAX_LEN - 1);
+    out->enable = workflows[wf].enable ? 1 : 0;
+    out->timeout_ms = (uint32_t)workflows[wf].timeout_ms;
+    out->step_count = workflows[wf].step_count;
+
+    for(uint8_t s = 0; s < out->step_count; s++)
+    {
+        const WorkflowStepDef *def = workflow_step_def_at(wf, s);
+        if(def == nullptr)
+        {
+            continue;
+        }
+        workflow_def_to_storage(def, &out->steps[s]);
+    }
+}
+
+bool workflow_has_any_dirty()
+{
+    return dirty_any();
+}
+
+bool workflow_mark_step_dirty(
+    uint8_t workflow_index,
+    uint8_t step_index
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT ||
+       step_index >= WORKFLOW_MAX_STEP)
+    {
+        return false;
+    }
+
+    // Dirty Transaction 模型（§16 / §17）：
+    //   只有"当前不存在任何 Dirty"且本次修改产生第一个 Dirty 时才 +1
+    if(!dirty_any())
+    {
+        if(!system_command_critical_operation_acquire())
+        {
+            // Acquire 失败 = 系统已进入 RESTART_PENDING / RESTARTING
+            Serial.println(
+                "[Workflow] step modify rejected: critical op acquire failed"
+            );
+            return false;
+        }
+        wf_dirty_critical_held = true;
+    }
+
+    dirty_mark(workflow_index, step_index);
+
+    // 启动 / 刷新延迟保存窗口（§22）
+    workflow_save_since_ms = millis();
+
+    return true;
+}
+
+bool workflow_save_transaction()
+{
+    if(!dirty_any())
+    {
+        return true;
+    }
+
+    bool all_ok = true;
+
+    for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+    {
+        if(!dirty_workflow_has(wf))
+        {
+            continue;
+        }
+
+        WorkflowDefinition def;
+        workflow_build_definition(wf, &def);
+
+        WorkflowStorageResult r = workflow_storage_save(wf, &def);
+
+        if(r != WF_STG_OK)
+        {
+            Serial.printf(
+                "[Workflow] save transaction failed: wf=%u err=%s\n",
+                (unsigned)wf,
+                workflow_storage_result_name(r)
+            );
+            all_ok = false;
+            break;
+        }
+    }
+
+    if(!all_ok)
+    {
+        // §18 / §25：失败不 release、不清 Dirty，允许后续重新 Save
+        return false;
+    }
+
+    for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+    {
+        if(dirty_workflow_has(wf))
+        {
+            dirty_workflow_clear(wf);
+        }
+    }
+
+    workflow_save_since_ms = 0;
+
+    if(wf_dirty_critical_held)
+    {
+        system_command_critical_operation_release();
+        wf_dirty_critical_held = false;
+    }
+
+    return true;
+}
+
+void workflow_request_save()
+{
+    workflow_save_since_ms = millis();
+}
+
+bool workflow_delete(
+    uint8_t workflow_index
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+
+    WorkflowStorageResult r = workflow_storage_delete(workflow_index);
+
+    if(r != WF_STG_OK)
+    {
+        Serial.printf(
+            "[Workflow] delete failed: wf=%u err=%s\n",
+            (unsigned)workflow_index,
+            workflow_storage_result_name(r)
+        );
+        return false;
+    }
+
+    // 禁止下一次启动
+    workflows[workflow_index].enable = false;
+
+    // §27：正在运行时【不销毁 Runtime Snapshot】
+    //   运行中的 Runtime 持有自己的参数快照，继续执行到结束；
+    //   同时不清 Definition / 不改 step_count —— 否则会让在飞运行提前结束。
+    if(workflows[workflow_index].state == WORKFLOW_RUNNING)
+    {
+        return true;
+    }
+
+    for(uint8_t s = 0; s < WORKFLOW_MAX_STEP; s++)
+    {
+        workflow_clear_step_def(workflow_index, s);
+    }
+
+    workflows[workflow_index].step_count = 0;
+    workflows[workflow_index].current_step = 0;
+
+    return true;
+}
+
+// 延迟保存窗口到期检查（由 workflow_task() 调用）
+//
+// 注意：这里不是"为了维护 Critical 而持续轮询"，
+// Critical 的 +1/-1 完全由 mark_dirty / save_transaction 显式驱动，
+// 本函数只负责在窗口到期时触发一次保存。
+static void workflow_delayed_save_poll()
+{
+    if(workflow_save_since_ms == 0)
+    {
+        return;
+    }
+
+    if((unsigned long)(millis() - workflow_save_since_ms) >=
+       WORKFLOW_SAVE_DELAY_MS)
+    {
+        workflow_save_transaction();
+    }
+}
+
 void workflow_clear()
 {
     // =====================================================
@@ -2193,6 +2505,10 @@ uint8_t workflow_temp_action_pending_count()
 void workflow_task()
 {
     unsigned long now = millis();
+
+    // 延迟保存窗口到期 → 执行一次完整保存事务
+    workflow_delayed_save_poll();
+
     // =====================================================
     // 执行 Workflow
     // =====================================================

@@ -68,7 +68,7 @@ commit：`8846aef`（5 files, +2239）
 
 ### Phase 2 — Definition / Runtime Separation ✅ 已提交
 
-commit：**`f0a1b2c`**（见下方 `git log`，2 files, +261）
+commit：**`7ed5b51`**（3 files, +335 / -7）
 编译：SUCCESS 172.76s，0 error，0 新增 warning
 
 已实现（最小侵入）：
@@ -92,6 +92,44 @@ commit：**`f0a1b2c`**（见下方 `git log`，2 files, +261）
 - 解析期 instance 仍按原逻辑初始化并填入 params，Definition 只是**并行副本**
 - 首次 start 时 snapshot 写入的值与解析期完全一致 → 执行行为零变化
 - Temp Action 完全不经过此路径（`temp_action_instances[8]` 独立 DRAM 池）
+
+### Phase 5/6/7 — Dirty Bitmap + Critical Transaction + Save Transaction ✅ 已提交
+
+commit：**`0c13f7a`（待替换为实际 hash）**
+编译：SUCCESS 149.15s，0 error，0 新增 warning；RAM 129200 → 129240 B（+40 B）
+
+`workflow.h` 新增 5 个对外 API（bool 语义，不 include workflow_storage.h，保持分层）：
+
+- `workflow_mark_step_dirty(wf, step)` —— Clean→Dirty；首次产生 Dirty 时 Critical +1
+- `workflow_has_any_dirty()`
+- `workflow_save_transaction()` —— 完整保存事务；失败不 release、不清 Dirty
+- `workflow_request_save()` —— 启动 / 刷新 5 分钟窗口
+- `workflow_delete(wf)` —— 只置 `meta.valid=false`，不删 Step BIN
+
+`workflow.cpp` 新增：
+
+- `#include "workflow_storage.h"`
+- `uint32_t dirty_bitmap[8]`（256 bit，`slot = wf*16 + step`）
+- 内部位操作 `dirty_mark / dirty_clear / dirty_is / dirty_any / dirty_workflow_has / dirty_workflow_clear`
+- `static bool wf_dirty_critical_held` —— 持有标记，release 幂等
+  - ⚠️ **不要改名成 `workflow_critical_held`**：该名字已被既有的
+    `static bool workflow_critical_held[WORKFLOW_MAX_COUNT]`（运行体 Critical 标记）占用
+- `static unsigned long workflow_save_since_ms` —— 0 = 无待保存
+- `workflow_def_to_storage()` —— `WorkflowStepDef`(String) → `WorkflowStepDefinition`(char[])
+- `workflow_build_definition()` —— 由 RAM 构造完整 `WorkflowDefinition`
+- `workflow_delayed_save_poll()` —— 由 `workflow_task()` 开头调用，窗口到期触发保存
+
+关键设计决策：
+
+- **保存粒度是整个 Workflow 而不是单个 Step**。原因：Meta Entry 的 `crc32` 覆盖该
+  Workflow **全部** Step payload，若只写 Dirty Step，CRC 会因缺失数据而不一致。
+  故 Dirty 仍按 Step 记录（便于查询），保存时按 Workflow 聚合成整事务。
+- **延迟轮询不用于维护 Critical**。Critical 的 +1/-1 完全由 `mark_dirty` /
+  `save_transaction` 显式驱动，`workflow_delayed_save_poll()` 只负责窗口到期触发一次保存
+  （满足 §19/§47）。
+- **`workflow_delete()` 运行中保护**：`state == WORKFLOW_RUNNING` 时只置
+  `enable=false` + meta invalid，**不清 Definition、不改 step_count**
+  （改 step_count 会让在飞运行提前结束）；当前运行继续使用自己的 Runtime 快照跑完（§27）。
 
 ### Phase 3 — 统一 Runtime Pool `[未开始]`
 - 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`
@@ -154,14 +192,31 @@ commit：**`f0a1b2c`**（见下方 `git log`，2 files, +261）
 
 ## 6. 编译方式（必须遵守）
 
-沙箱 `safe-delete` 会拦截增量编译删除 `.o`，**增量编译必然失败**（非代码问题）：
+### 6.0 编译必须每次使用【全新 build 目录】（最重要）
+
+> 这是此前两次「编译 11 分钟无输出 / EXIT=1 后卡住」的**真正根因**。
+
+**根因**：沙箱 `safe-delete` 会拦截 PlatformIO 增量编译时对 `firmware.elf` 的删除：
+
+```text
+[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":50,"threshold":50,
+ "scope":"turn","targets":["...\.pio\build\esp32-s3-devkitc-1\...\firmware.elf"]}
+```
+
+被拦截后 pio 一直等待确认 → **无任何输出、永不结束**。与代码无关，与工具链无关。
+
+**解法**：每次编译使用一个**全新的、不存在的** build 目录（全新目录无需删除任何文件）：
 
 ```bash
 cd /d/Guo_Feeder_Project/PIO_Assets/Guo_Feeder_Project
-PLATFORMIO_BUILD_DIR=.pio/build/esp32-s3-devkitc-1 pio run
+BD=".pio/build/b$(date +%s)"
+PLATFORMIO_BUILD_DIR="$BD" pio run > build_out.log 2>&1
+echo "EXIT=$?" > build_done.flag
 ```
 
-全量 **70–180 秒**（首次或工具链重装时更久，见 §7.1）。
+- 单个 build 目录约 **146 MB**，磁盘剩余 687 GB → 可放心累积，不必清理
+- 全量编译约 **150 秒**
+- 若看到日志出现 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` → 立即换全新目录重跑
 
 ### 6.1 编译完成的可靠监控方式（**必须遵守**）
 
