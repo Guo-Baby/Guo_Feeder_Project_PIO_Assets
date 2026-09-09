@@ -37,9 +37,10 @@
 
 ## 2. 已完成
 
-### Phase 1 — WorkflowStorage 模块（文档1 全部）`[代码已写入，待编译/提交]`
+### Phase 1 — WorkflowStorage 模块（文档1 全部）✅ 已提交
 
-commit：**尚未提交**（代码已落盘，等待编译结果后提交）
+commit：`8846aef`（5 files, +2239）
+编译：SUCCESS 56.70s，0 error，0 新增 warning（唯一告警是 `cloud_manager.cpp:1041` 既有 DynamicJsonDocument 弃用告警）
 
 新增文件：
 - `src/workflow_storage.h`
@@ -145,3 +146,76 @@ PLATFORMIO_BUILD_DIR=.pio/build/esp32-s3-devkitc-1 pio run
 
 - 仓库**无 remote-tracking 分支**（`git branch -r` 为空），push 前需先 `git fetch origin`
 - `.workbuddy/memory/` 下有本项目的长期笔记与日志，含大量已验证结论（Critical Operation 跨任务铁律等）
+- **编译曾出现"11 分钟无输出"的假死**：用 `pio run ... | tail -60` 时输出被管道缓冲直到结束，
+  看起来像卡死。正确做法：重定向到文件（`> /tmp/wfbuild.log 2>&1`）+ `timeout 200 pio run`，
+  实测正常全量编译 **56.70 秒**。
+
+---
+
+## 8. 测试命令格式（Phase 1 阶段可用）
+
+### 8.1 本阶段（Phase 1）实际可测内容
+
+WorkflowStorage **尚未接入 CommandManager**（需求文档1 明确"本阶段不实现 CommandManager 接口"），
+因此本阶段只能做**启动期观测 + 回归验证**，不能通过 MQTT 直接读写 Step BIN。
+
+串口预期（烧录后 115200）：
+
+```text
+[System] JsonStorage init failed!      ← 不应出现
+[System] BinStorage init failed!       ← 不应出现
+[System] WorkflowStorage init failed!  ← 不应出现
+```
+
+三条都不出现即表示 `/workflow` 目录创建成功、BinStorage / FileStorage / LittleFS 链路正常。
+
+### 8.2 回归测试（确认未破坏既有 Workflow）
+
+MQTT 旧格式（**调试首选**，无需 version / stable_id）：
+
+```json
+{"cmd":"query_workflows","id":"9001"}
+```
+
+```json
+{"cmd":"execute_workflow","id":"9002","ob":"<workflow_id>"}
+```
+
+期望：行为与改造前完全一致（本阶段 Workflow 仍走原有 JSON 加载路径，零改动）。
+
+Capability Registry 查询（确认 Action / Trigger / Workflow 注册表未变）：
+
+```json
+{"c":"registry","i":"9003","k":0}
+```
+
+`k`：0=ACTION / 1=TRIGGER / 2=WORKFLOW
+
+临时 Action 执行（确认 Temp Action 不受影响）：
+
+```json
+{"cmd":"execute_action","id":"9004","ob":"<RUNTIME_ID>"}
+```
+
+### 8.3 Phase 5 之后需要新增的命令（当前尚未实现）
+
+CommandManager 分层要求：不得直接操作 BIN /不得直接调用 FileStorage，
+必须经 `WorkflowManager API`。建议命令格式（与现有 `system.time` 风格一致）：
+
+```json
+{"c":"workflow","i":"<唯一>","p":{"o":"save"}}
+{"c":"workflow","i":"<唯一>","p":{"o":"load","wf":0}}
+{"c":"workflow","i":"<唯一>","p":{"o":"delete","wf":0}}
+{"c":"workflow","i":"<唯一>","p":{"o":"meta"}}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `c` | 固定 `"workflow"` |
+| `i` | 命令唯一 ID，设备按 cmd_id 去重 |
+| `p.o` | 操作：save / load / delete / meta |
+| `p.wf` | Workflow Index 0..15 |
+
+### 8.4 Phase 10 回归测试清单
+
+见 `workflow修改需求文档.md` §50，共 21 项。
