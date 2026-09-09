@@ -4,6 +4,7 @@
 #include "system_state.h"
 #include "system_command.h"
 #include "json_storage.h"
+#include "bin_storage.h"
 #include "config_manager.h"
 #include "event_manager.h"
 #include "oled.h"
@@ -42,6 +43,15 @@ void setup()
     // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
+    }
+    // ===== 初始化 BIN Storage（底层二进制文件存储，Workflow BIN 持久化依赖它）=====
+    //
+    // 内部会级联初始化 FileStorage。
+    // 与 JsonStorage 平级，两条链路互不干扰：
+    //   ConfigManager → JsonStorage → LittleFS
+    //   WorkflowManager(后续) → BinStorage → FileStorage → LittleFS
+    if (!bin_storage_init()) {
+        Serial.println("[System] BinStorage init failed!");
     }
     system_state_init();
     config_init();
