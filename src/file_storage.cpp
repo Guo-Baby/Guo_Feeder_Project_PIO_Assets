@@ -18,6 +18,9 @@
 // 内部读取块大小：栈上缓冲，避免堆分配与内存碎片
 #define FS_BLOCK_SIZE       512
 
+// 目录遍历条目名上限（超过截断）
+#define FS_LIST_NAME_MAX    64
+
 // 单条日志上限，超长截断，避免栈溢出
 #define FS_LOG_BUF_SIZE     192
 
@@ -275,6 +278,78 @@ bool file_storage_rename(
         return false;
     }
 
+    return true;
+}
+
+bool file_storage_foreach(
+    const char *dir,
+    FileStorageListCallback callback,
+    void *user
+)
+{
+    if (!s_ready)
+    {
+        fs_log("E", "foreach: not initialized");
+        return false;
+    }
+
+    if (dir == nullptr || callback == nullptr || !fs_path_valid(dir))
+    {
+        return false;
+    }
+
+    if (!LittleFS.exists(dir))
+    {
+        return false;
+    }
+
+    File root = LittleFS.open(dir);
+
+    if (!root || !root.isDirectory())
+    {
+        if (root)
+        {
+            root.close();
+        }
+        fs_log("E", "foreach: not a directory: %s", dir);
+        return false;
+    }
+
+    while (true)
+    {
+        File entry = root.openNextFile();
+
+        if (!entry)
+        {
+            break;
+        }
+
+        // 先复制条目名并关闭句柄，再回调 ——
+        // 回调内可安全 remove / rename 该条目。
+        char name[FS_LIST_NAME_MAX];
+        const char *n = entry.name();
+        size_t len = (n != nullptr) ? strlen(n) : 0;
+
+        if (len >= sizeof(name))
+        {
+            len = sizeof(name) - 1;
+        }
+        if (len > 0)
+        {
+            memcpy(name, n, len);
+        }
+        name[len] = '\0';
+
+        bool is_dir = entry.isDirectory();
+        entry.close();
+
+        if (!callback(name, is_dir, user))
+        {
+            break;
+        }
+    }
+
+    root.close();
     return true;
 }
 

@@ -716,3 +716,18 @@ BinStorageResult bin_storage_crc32(
 
     return BIN_STORAGE_OK;
 }
+
+bool bin_storage_foreach(
+    const char *dir,
+    FileStorageListCallback callback,
+    void *user
+)
+{
+    if (!s_ready)
+    {
+        bin_log("E", "foreach: not initialized");
+        return false;
+    }
+
+    return file_storage_foreach(dir, callback, user);
+}

@@ -324,3 +324,19 @@ BinStorageResult bin_storage_crc32(
     const char *path,
     uint32_t &crc_out
 );
+
+
+// =====================================================
+// 目录遍历（只读）
+// =====================================================
+//
+// FileStorage 目录遍历的薄封装，供上层（WorkflowStorage）扫描 /
+// 清理暂存文件，维持严格分层：WorkflowStorage → BinStorage → FileStorage。
+//
+// 语义与 file_storage_foreach() 完全一致（见 file_storage.h）。
+
+bool bin_storage_foreach(
+    const char *dir,
+    FileStorageListCallback callback,
+    void *user
+);

@@ -122,6 +122,8 @@ void setup()
 }
 
 void serial_debug_command_process();
+// WorkflowStorage 独立测试控制台（wfst 命令，仅上板自测用）
+void wfst_console(const String &cmd);
 // =====================================================
 // loop
 // =====================================================
@@ -203,6 +205,11 @@ void serial_debug_command_process(void)
                     COMPUTER_RESET_PIN,
                     COMPUTER_RESET_HOLD_MS);
             }
+            else if (serial_cmd_buffer.startsWith("wfst "))
+            {
+                // WorkflowStorage 独立测试控制台（仅上板自测用）
+                wfst_console(serial_cmd_buffer);
+            }
             else
             {
                 Serial.println("unknown command");
@@ -214,4 +221,231 @@ void serial_debug_command_process(void)
             serial_cmd_buffer += ch;
         }
     }
+}
+// =====================================================
+// WorkflowStorage 独立测试控制台（仅上板自测用）
+//
+// 命令（wfst <op> ...）：
+//   help
+//   seed <wf> <steps> <base>       构造并保存一个 Workflow（param = base+step）
+//   overwrite <wf> <steps> <base>  换参重新保存（复用当前 wf）
+//   dump <wf>                      读取并打印 step_count / step id / param[0]
+//   verify <wf> <steps> <base>     读取并自动比对，PASS/FAIL
+//   ls <wf>                        打印 step bin 是否存在 + 暂存文件数
+//   del <wf>                       删除（只置 meta.valid=false）
+//   fail <wf> <failstep>           保存时注入第 N 步写失败（覆盖当前参数）
+//   abort1 <wf> <steps> <base>     模拟提交前掉电（返回 TEST_ABORTED）
+//   abort2 <wf> <steps> <base>     模拟提交后掉电（返回 TEST_ABORTED）
+//   recover                        执行事务恢复（发布/清理）
+//
+// 掉电场景测试方法：
+//   abort1 → staged>0 → recover → staged=0 → verify 仍为旧参数
+//   abort2 → staged>0 → recover → staged=0 → verify 为新参数
+// =====================================================
+
+static int g_wfst_steps = 0;
+static int g_wfst_base = 0;
+
+static void wfst_make_def(
+    WorkflowDefinition &def,
+    int wf,
+    int steps,
+    int base
+)
+{
+    memset(&def, 0, sizeof(def));
+    snprintf(def.id, sizeof(def.id), "wfst_wf%d", wf);
+    snprintf(def.name, sizeof(def.name), "wfst_test_%d", wf);
+    def.enable = 1;
+    def.timeout_ms = 10000;
+    def.step_count = (uint8_t)steps;
+
+    for (int i = 0; i < steps && i < (int)WF_STG_MAX_STEP; i++)
+    {
+        WorkflowStepDefinition &st = def.steps[i];
+        st.type = 0;                       // ACTION
+        st.instance_type = 1;              // ACTION
+        snprintf(st.id, sizeof(st.id), "act_%d_%d", wf, i);
+        st.param_count = 1;
+        snprintf(st.params[0].name, sizeof(st.params[0].name), "k");
+        st.params[0].type = 0;             // PARAM_INT
+        st.params[0].int_value = base + i;
+    }
+}
+
+static bool wfst_verify(
+    int wf,
+    int steps,
+    int base
+)
+{
+    WorkflowDefinition def;
+    WorkflowStorageResult r = workflow_storage_load((uint8_t)wf, &def);
+
+    if (r != WF_STG_OK)
+    {
+        Serial.printf("verify: load failed, r=%s\n", workflow_storage_result_name(r));
+        return false;
+    }
+    if ((int)def.step_count != steps)
+    {
+        Serial.printf("verify: step_count=%u expect=%d\n", def.step_count, steps);
+        return false;
+    }
+    for (int i = 0; i < steps; i++)
+    {
+        char expect_id[WF_STG_ID_MAX_LEN];
+        snprintf(expect_id, sizeof(expect_id), "act_%d_%d", wf, i);
+        if (strcmp(def.steps[i].id, expect_id) != 0)
+        {
+            Serial.printf("verify: step[%d] id=%s expect=%s\n",
+                          i, def.steps[i].id, expect_id);
+            return false;
+        }
+        if (def.steps[i].param_count < 1 ||
+            def.steps[i].params[0].int_value != base + i)
+        {
+            Serial.printf("verify: step[%d] param=%d expect=%d\n",
+                          i,
+                          def.steps[i].param_count ? (int)def.steps[i].params[0].int_value : -999,
+                          base + i);
+            return false;
+        }
+    }
+    return true;
+}
+
+void wfst_console(const String &cmd)
+{
+    String op = cmd.substring(5);
+    op.trim();
+
+    int a = 0, b = 0, c = 0;
+
+    if (op == "help")
+    {
+        Serial.println("wfst ops: seed overwrite dump verify ls del fail abort1 abort2 recover");
+        return;
+    }
+
+    if (op == "recover")
+    {
+        bool ok = workflow_storage_recover();
+        Serial.printf("recover ret=%d\n", ok ? 1 : 0);
+        for (int wf = 0; wf < (int)WF_STG_MAX_COUNT; wf++)
+        {
+            int n = workflow_storage_test_staged_count((uint8_t)wf);
+            if (n > 0)
+            {
+                Serial.printf("  wf%02d staged=%d\n", wf, n);
+            }
+        }
+        return;
+    }
+
+    if (sscanf(op.c_str(), "seed %d %d %d", &a, &b, &c) == 3 ||
+        sscanf(op.c_str(), "overwrite %d %d %d", &a, &b, &c) == 3 ||
+        sscanf(op.c_str(), "abort1 %d %d %d", &a, &b, &c) == 3 ||
+        sscanf(op.c_str(), "abort2 %d %d %d", &a, &b, &c) == 3)
+    {
+        if (a < 0 || a >= (int)WF_STG_MAX_COUNT || b <= 0 || b > (int)WF_STG_MAX_STEP)
+        {
+            Serial.println("bad args");
+            return;
+        }
+        g_wfst_steps = b;
+        g_wfst_base = c;
+
+        if (op.startsWith("abort1")) workflow_storage_test_abort_phase(1);
+        if (op.startsWith("abort2")) workflow_storage_test_abort_phase(2);
+
+        WorkflowDefinition def;
+        wfst_make_def(def, a, b, c);
+        WorkflowStorageResult r = workflow_storage_save((uint8_t)a, &def);
+        Serial.printf("%s -> r=%s staged=%d\n",
+                      op.substring(0, op.indexOf(' ')).c_str(),
+                      workflow_storage_result_name(r),
+                      workflow_storage_test_staged_count((uint8_t)a));
+
+        workflow_storage_test_abort_phase(0);
+        return;
+    }
+
+    if (sscanf(op.c_str(), "fail %d %d", &a, &b) == 2)
+    {
+        if (a < 0 || a >= (int)WF_STG_MAX_COUNT ||
+            b < 0 || b >= g_wfst_steps)
+        {
+            Serial.println("bad args");
+            return;
+        }
+        WorkflowDefinition def;
+        wfst_make_def(def, a, g_wfst_steps, g_wfst_base + 100);
+        workflow_storage_test_fail_step(b);
+        WorkflowStorageResult r = workflow_storage_save((uint8_t)a, &def);
+        workflow_storage_test_fail_step(-1);
+        Serial.printf("fail@%d -> r=%s staged=%d\n",
+                      b,
+                      workflow_storage_result_name(r),
+                      workflow_storage_test_staged_count((uint8_t)a));
+        return;
+    }
+
+    if (sscanf(op.c_str(), "dump %d", &a) == 1)
+    {
+        WorkflowDefinition def;
+        WorkflowStorageResult r = workflow_storage_load((uint8_t)a, &def);
+        Serial.printf("load r=%s staged=%d\n",
+                      workflow_storage_result_name(r),
+                      workflow_storage_test_staged_count((uint8_t)a));
+        if (r == WF_STG_OK)
+        {
+            Serial.printf("  wf%02d id=%s name=%s enable=%u count=%u\n",
+                          a, def.id, def.name, def.enable, def.step_count);
+            for (int i = 0; i < (int)def.step_count && i < (int)WF_STG_MAX_STEP; i++)
+            {
+                Serial.printf("    step%02d id=%s p0=%d\n",
+                              i, def.steps[i].id,
+                              def.steps[i].param_count
+                                  ? (int)def.steps[i].params[0].int_value
+                                  : -999);
+            }
+        }
+        return;
+    }
+
+    if (sscanf(op.c_str(), "verify %d %d %d", &a, &b, &c) == 3)
+    {
+        bool ok = wfst_verify(a, b, c);
+        Serial.printf("verify wf%02d steps=%d base=%d -> %s\n",
+                      a, b, c, ok ? "PASS" : "FAIL");
+        return;
+    }
+
+    if (sscanf(op.c_str(), "ls %d", &a) == 1)
+    {
+        int exist = 0;
+        for (int i = 0; i < (int)WF_STG_MAX_STEP; i++)
+        {
+            char p[64];
+            snprintf(p, sizeof(p), "/workflow/wf%02d/step%02d.bin", a, i);
+            if (bin_storage_exists(p))
+            {
+                exist++;
+            }
+        }
+        Serial.printf("wf%02d step-bin-exist=%d staged=%d\n",
+                      a, exist,
+                      workflow_storage_test_staged_count((uint8_t)a));
+        return;
+    }
+
+    if (sscanf(op.c_str(), "del %d", &a) == 1)
+    {
+        WorkflowStorageResult r = workflow_storage_delete((uint8_t)a);
+        Serial.printf("del wf%02d -> r=%s\n", a, workflow_storage_result_name(r));
+        return;
+    }
+
+    Serial.printf("unknown wfst op: %s\n", op.c_str());
 }
