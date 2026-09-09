@@ -133,7 +133,7 @@ commit：**`50879ff`**（3 files, +422 / -4）
 
 ### Phase 4 — Step BIN + Meta 加载接入 ✅ 已提交
 
-commit：**`待填`**
+commit：**`dc16d27`**（4 files, +258 / -2）
 编译：SUCCESS 154.39s，0 error，0 新增 warning；RAM 无变化（129240 B）
 
 - `workflow.h` 新增 `workflow_load_from_storage()`（bool，无 Valid Workflow 返回 false）
@@ -162,6 +162,34 @@ Step 仍计入 step_count（不因单个 Step 失败而丢弃整个 Workflow）�
 `workflow_count` 取「最大 Valid Index + 1」，与 JSON 路径 `workflow_count = index` 语义一致。
 
 **尚未完成**：解析/CRUD 修改后未自动把 JSON 侧写回 BIN（见 Phase 8 待办）。
+
+### Phase 8(部分) — Definition 修改 API `workflow_update_step_param` ✅ 已提交
+
+commit：**`dc16d27` 之后的 `待填`**
+编译：SUCCESS 150.59s，0 error，0 新增 warning；RAM 无变化（129240 B）
+
+此前存在一个断点：Dirty Bitmap / Critical 事务已就绪（`50879ff`），
+但**没有任何代码会产生 Dirty**。本项补上第一个（也是"运行中安全修改"的标准入口）：
+
+- `workflow_update_step_param(wf, step, param_index, value)`（workflow.h:416 / workflow.cpp:1613）
+  - 只改 Definition（"下一次执行什么"）
+  - 运行中的 Runtime 继续使用自己启动时的快照 → **本次运行不受影响**（§13/§45）
+  - 内部自动调 `workflow_mark_step_dirty()`，首次 Dirty 时 Critical +1
+
+关键顺序（写死注释，不可调换）：
+
+```cpp
+// 先取得 Dirty / Critical，成功后再改 RAM。
+if(!workflow_mark_step_dirty(workflow_index, step_index)) return false;
+def->params[param_index] = value;
+```
+
+**反序的后果**：Critical acquire 被拒（系统已进入 RESTART_PENDING / 10s 窗口）时
+RAM 已改却没有 Dirty 标记 → 修改永不落盘且无人知晓。故必须先 mark_dirty 成功
+（acquire 成功）才允许写 RAM；acquire 失败则整次修改被拒、RAM 不变。
+
+**尚未实现**（不属本项）：CRUD 其余部分（create / 整条 update / 修改后自动
+写回 BIN / CommandManager 命令路由）→ 等用户指令。
 
 ### Phase 3 — 统一 Runtime Pool `[未开始]`
 - 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`

@@ -1610,6 +1610,42 @@ bool workflow_load_from_storage()
     return true;
 }
 
+bool workflow_update_step_param(
+    uint8_t workflow_index,
+    uint8_t step_index,
+    uint8_t param_index,
+    const WorkflowParamValue &value
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT ||
+       step_index >= WORKFLOW_MAX_STEP ||
+       param_index >= WORKFLOW_MAX_PARAM)
+    {
+        return false;
+    }
+
+    WorkflowStepDef *def =
+        workflow_step_def_at(workflow_index, step_index);
+
+    if(def == nullptr || param_index >= def->param_count)
+    {
+        return false;
+    }
+
+    // 先取得 Dirty / Critical，成功后再改 RAM。
+    //
+    // 反序会导致：Critical acquire 被拒（RESTART_PENDING）时 RAM 已改
+    // 却没有 Dirty 标记 —— 这次修改永远不会落盘，且无人知晓。
+    if(!workflow_mark_step_dirty(workflow_index, step_index))
+    {
+        return false;
+    }
+
+    def->params[param_index] = value;
+
+    return true;
+}
+
 bool workflow_has_any_dirty()
 {
     return dirty_any();
