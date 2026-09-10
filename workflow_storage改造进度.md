@@ -214,40 +214,141 @@ RAM 已改却没有 Dirty 标记 → 修改永不落盘且无人知晓。故必�
 **尚未实现**（不属本项）：CRUD 其余部分（create / 整条 update / 修改后自动  
 写回 BIN / CommandManager 命令路由）→ 等用户指令。
 
-### Phase 3 — 统一 Runtime Pool `[未开始]`
+### P0 修复 — JSON/BIN 混源导致 Workflow 静默丢失 ✅ 已提交（`96d8174` 含）
 
-- 现有 `trigger_instances[256]` + `action_instances[256]`（PSRAM）→ 合并为单一 `StepRuntime Pool[256]`
-- 与 `temp_action_instances[8]`（DRAM）**必须继续物理隔离**（文档2 §41）
+**缺陷**：BIN 只保存 Dirty Workflow。JSON 回退加载后若只改了一个 Workflow，
+下次启动 BIN 已 Valid → `load_from_storage()` 返回 true → 只加载这一个，
+**其余从 JSON 来的 Workflow 全部丢失**。
 
-### Phase 4 — Definition RAM `[未开始]`
+**上板复现实测**：BIN 残留测试用 wf15 → `wfc list` 显示 `count=16`，
+3 个真实 Workflow（daily_valve_test / daily_valve_test1 / queue_test）**全空**。
 
-- 建立独立 `WorkflowDefinition[]`，字段：id / name / enable / timeout_ms / step_count / steps[]
+**修复**：新增 `workflow_migrate_to_storage()`（全部有效槽位标 Dirty +
+一次 `save_transaction()`）。两个调用点：
 
-### Phase 5 — Step BIN + Meta 接入 `[未开始]`
+- `main.cpp` JSON 回退加载成功后（首次启动迁移）
+- `workflow_reload()` 成功后（云端 JSON 更新同步回 BIN）
+
+配套修复：`workflow_delete()` 之前不清 Dirty，会导致
+（a）后续 `save_transaction()` 把已删 Workflow 重写回并置 `valid=true`（删除被撤销）；
+（b）`wf_dirty_critical_held` 永不释放 → 系统永久无法重启。
+现按跨任务铁律「**先 release，再清 Dirty**」处理（反向会开窗口导致 count 泄漏）。
+
+### Phase 8 — Workflow CRUD ✅ 已提交（`96d8174`）
+
+`workflow.h` / `workflow.cpp` 新增：
+
+| API                        | 语义                                        | 运行中 |
+| -------------------------- | ----------------------------------------- | --- |
+| `workflow_create()`        | 新建空 Workflow（清空全部 Step Definition）          | 拒绝  |
+| `workflow_update_meta()`   | 改 id / name / enable / timeout_ms（Definition 级） | 允许  |
+| `workflow_set_step()`      | 新建/改写 Step，自动扩展 step_count                    | 拒绝  |
+| `workflow_set_step_count()` | 截断/扩展，清空尾部 Definition                         | 拒绝  |
+| `workflow_delete()`        | 已有，只置 `meta.valid=false`                      | 允许  |
+| `workflow_migrate_to_storage()` | 全量迁移到 BIN                                  | —   |
+
+统一语义（每个 API 都必须满足）：
+
+1. 只写 **Definition**，不动运行中的 Runtime（§13 / §45）
+2. **先 mark_dirty（含 Critical acquire）成功，再改 RAM**
+3. 不立即落盘，由 5 分钟延迟窗口或显式 `save_transaction()` 成批提交
+
+**set_step 的 Instance 复用**：已有同类型 Instance 时只做 Definition → Runtime
+快照，不再从 256 槽池取新槽。池索引 `trigger/action_instance_index` 单调递增，
+每次修改都新分配会**耗尽 256 槽**。
+
+### Phase 9 — 运行中 Definition 修改隔离 ✅ 已上板验证
+
+`workflow_update_step_param()` 是唯一"运行中允许"的 Definition 修改入口，
+其余（create / set_step / set_step_count）在 `state == RUNNING` 时返回 false。
+
+上板实测（`wfc_run1.log`）：
+
+```text
+run wf10 skip=0 -> 1 state=1              ← 进入 RUNNING
+param wf10 s01 p0=999 -> 1                ← 参数修改被接受（§13）
+def wf10 s01 ... p0=999                   ← Definition 已改
+count wf10=1 -> 0                         ← 改 step_count 被拒
+step wf10 s01 a DELAY ms 1 -> 0           ← 重建 Step 被拒
+create 10 x y 1000 -> 0                   ← 重建 Workflow 被拒
+```
+
+### Phase 10 — 回归测试 ✅ 已上板执行（26/26 期望命中）
+
+测试台：`.pio/wfc_tests.txt` + `.pio/serial_batch.py`（只复位一次，保留 boot 日志）
+
+| 项           | 结果                                                                            |
+| ----------- | ----------------------------------------------------------------------------- |
+| 启动加载        | `[OK] Workflow loaded from Flash BIN`，count=3，3 个真实 Workflow 均 4 步完好            |
+| create      | `dirty=0 → 1`，Critical 自动 acquire                                              |
+| set_step ×2 | Definition 正确（trigger delay=90s / action DELAY=500ms）                            |
+| count / meta | 改名 + 改 timeout 生效                                                              |
+| save         | `save -> 1 (dirty=0)`；`wfst dump 10` 读回 wf10 id=wfc_test2 count=2 → **已落盘**       |
+| 运行中隔离       | 见 Phase 9                                                                      |
+| delete       | `del -> 1`，`dirty=0`（Critical 已释放，未泄漏）；重启后 wf10 **未复活**，3 个真实 Workflow 完好 |
+
+### 已知问题（cosmetic，已修）
+
+启动日志 13 条 `[E][vfs_api.cpp] /littlefs/workflow/wfNN does not exist`：
+ESP32 Arduino core 的 `FS::exists()` 内部实现是 `open(path,"r")`，
+路径不存在时 vfs_api 直接打 E 级日志。已改为一次遍历 `/workflow` 收集
+实际存在的 `wfNN` 目录再处理，不再逐个探测。
+
+修复后复测：boot 段 workflow 相关噪音 **0 条**。
+仍存在的其它 vfs_api 日志与本次改造无关：
+- `/littlefs/config/*`：ConfigManager（既有行为）
+- `/littlefs/workflow/wfNN/stepMM.bin`：测试台 `wfst ls` 自己遍历 16 个 Step 槽位探测存在性
+
+### Phase 3 — 统一 Runtime Pool `[已以现有结构满足，不单独实施]`
+
+需求原文是"把 Runtime 改为固定 Pool"。现状核查：
+
+- `trigger_instances[256]` / `action_instances[256]` 本就是**固定池**（解析/加载期
+  一次性分配，`workflow_start()` 复用不新建），已满足"固定 Pool"要求。
+- 合并为单一 `StepRuntime Pool[256]` 属大重构（两个 instance 结构字段不同，
+  合并后需 union 或公共头），收益有限、风险高 → **维持分离**。
+- 与 `temp_action_instances[8]`（DRAM）继续物理隔离（§41），未改变。
+
+### Phase 4 — Definition RAM `[已完成，见 Phase 2]`
+
+`step_definitions` PSRAM 池（16×16 slot）就是独立 Definition RAM。
+刻意不放进 `WorkflowStep` 内部：256 slot × 8 参数内联会让常驻 DRAM 的
+`workflows[]` 膨胀上百 KB（当前 DRAM 已 129KB/327KB）。
+
+### Phase 5 — Step BIN + Meta 接入 `[已完成]`
 
 - 用 Phase 1 的 `workflow_storage_*` 替换现有 `workflow_load_json_file` / `workflow_save_json_file`
 - 启动加载：读 meta → 遍历 valid → 读 Step 0..step_count-1（文档2 §8）
 
-### Phase 6 — Dirty Bitmap `[未开始]`
+### Phase 6 — Dirty Bitmap `[已完成]`
 
-- `uint32_t dirty_bitmap[8]`（256 bit），`slot = wf*16 + step`
-- `mark_dirty / clear_dirty / is_dirty / has_any_dirty`
+见上方「Phase 5/6/7 — Dirty Bitmap + Critical Transaction + Save Transaction」（`50879ff`）。
 
-### Phase 7 — Dirty Transaction + Critical `[未开始]`
+### Phase 7 — Dirty Transaction + Critical `[已完成]`
 
-- Clean→Dirty 且 `has_any_dirty()==false` 时 `critical_operation_acquire()`（仅 +1 一次）
-- Save 全部成功（BIN + CRC + Meta + 清 Dirty）后 `release()`
-- 失败：不 release、不清 Dirty（文档2 §18/§25）
+同上（`50879ff`）。
 
-### Phase 8 — 延迟保存 `[未开始]`
+### Phase 8 — 延迟保存 `[已完成]`
 
-- 参考 ConfigManager 5 分钟窗口；显式 `workflow_save` 立即触发
+`workflow_request_save()` + `workflow_delayed_save_poll()`，5 分钟窗口（§22）；
+`workflow_save_transaction()` 显式立即触发（§23）。
 
-### Phase 9 — Workflow CRUD `[未开始]`
+### Phase 9 — Workflow CRUD `[已完成]`
 
-- create / update / delete；delete 只置 `meta.valid=false`，**不删 Step BIN**（文档2 §26）
+见上方「Phase 8 — Workflow CRUD」（`96d8174`）。
 
-### Phase 10 — 回归验证 `[未开始]`
+### Phase 10 — 回归验证 `[已完成]`
+
+见上方「Phase 10 — 回归测试」（26/26 命中）。
+
+### 仍未实施（需用户决策）
+
+- **CommandManager / MQTT 命令路由**：`{"c":"workflow",...}` 尚未接入
+  CommandManager，当前只能通过 MQTT 既有命令 + 串口 `wfc` 测试台操作。
+  按 §36 要求接入时，必须只调 WorkflowManager API，不得直调 Storage。
+- **Phase 10 清单中未覆盖项**：16 Step / 16 Workflow 满载、多 Workflow 同时运行、
+  BIN CRC 错误、Meta CRC 错误、重启期间存在 Dirty、Timeout/Error、
+  Event Trigger / Timer Trigger —— 需构造专门用例，建议下一轮专项测试。
 
 - 文档2 §50 列出 21 项测试
 
