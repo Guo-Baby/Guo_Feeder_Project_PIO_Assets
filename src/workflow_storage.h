@@ -319,6 +319,25 @@ WorkflowStorageResult workflow_storage_delete(
 
 
 // =====================================================
+// WorkflowDefinition 缓冲分配
+// =====================================================
+//
+// WorkflowDefinition 约 8.6KB（steps[16] × ~548B），
+// Arduino loopTask 默认栈仅 8KB —— 该结构【禁止在栈上声明】，
+// 必须通过本分配器取缓冲（PSRAM 优先，回退内部 RAM）。
+//
+// ⚠️ 每次调用返回独立缓冲，调用方用完必须 free；
+//   并发路径（如 MQTT 任务与 loop 任务各自保存）天然隔离。
+//   分配失败返回 NULL，调用方需自行处理（打印日志并中止该次操作）。
+WorkflowDefinition *workflow_storage_alloc_definition(void);
+
+// 释放 workflow_storage_alloc_definition() 分配的缓冲（NULL 安全）
+void workflow_storage_free_definition(
+    WorkflowDefinition *definition
+);
+
+
+// =====================================================
 // Step
 // =====================================================
 

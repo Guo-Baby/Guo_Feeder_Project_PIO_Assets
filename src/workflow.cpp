@@ -1557,6 +1557,16 @@ bool workflow_load_from_storage()
     bool any = false;
     uint8_t max_index = 0;
 
+    // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+    WorkflowDefinition *def_buf =
+        workflow_storage_alloc_definition();
+
+    if (def_buf == NULL)
+    {
+        Serial.println("[Workflow] def alloc failed (load_from_storage)");
+        return false;
+    }
+
     for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
     {
         if(!workflow_storage_get_valid(wf))
@@ -1564,8 +1574,7 @@ bool workflow_load_from_storage()
             continue;
         }
 
-        WorkflowDefinition def;
-        WorkflowStorageResult r = workflow_storage_load(wf, &def);
+        WorkflowStorageResult r = workflow_storage_load(wf, def_buf);
 
         if(r != WF_STG_OK)
         {
@@ -1579,20 +1588,20 @@ bool workflow_load_from_storage()
 
         Workflow &w = workflows[wf];
 
-        w.id = String(def.id);
-        w.name = String(def.name);
-        w.enable = def.enable != 0;
-        w.timeout_ms = def.timeout_ms;
+        w.id = String(def_buf->id);
+        w.name = String(def_buf->name);
+        w.enable = def_buf->enable != 0;
+        w.timeout_ms = def_buf->timeout_ms;
         w.state = WORKFLOW_IDLE;
         w.current_step = 0;
-        w.step_count = def.step_count;
+        w.step_count = def_buf->step_count;
         w.cmd_id = "";
         w.finish_callback = nullptr;
         w.start_time = 0;
 
-        for(uint8_t s = 0; s < def.step_count; s++)
+        for(uint8_t s = 0; s < def_buf->step_count; s++)
         {
-            workflow_apply_step_definition(wf, s, &def.steps[s]);
+            workflow_apply_step_definition(wf, s, &def_buf->steps[s]);
         }
 
         max_index = wf;
@@ -1602,11 +1611,13 @@ bool workflow_load_from_storage()
     if(!any)
     {
         workflow_count = 0;
+        workflow_storage_free_definition(def_buf);
         return false;
     }
 
     workflow_count = (uint8_t)(max_index + 1);
 
+    workflow_storage_free_definition(def_buf);
     return true;
 }
 
@@ -1694,6 +1705,16 @@ bool workflow_save_transaction()
 
     bool all_ok = true;
 
+    // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+    WorkflowDefinition *def_buf =
+        workflow_storage_alloc_definition();
+
+    if (def_buf == NULL)
+    {
+        Serial.println("[Workflow] def alloc failed (save_transaction)");
+        return false;
+    }
+
     for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
     {
         if(!dirty_workflow_has(wf))
@@ -1701,10 +1722,9 @@ bool workflow_save_transaction()
             continue;
         }
 
-        WorkflowDefinition def;
-        workflow_build_definition(wf, &def);
+        workflow_build_definition(wf, def_buf);
 
-        WorkflowStorageResult r = workflow_storage_save(wf, &def);
+        WorkflowStorageResult r = workflow_storage_save(wf, def_buf);
 
         if(r != WF_STG_OK)
         {
@@ -1721,6 +1741,7 @@ bool workflow_save_transaction()
     if(!all_ok)
     {
         // §18 / §25：失败不 release、不清 Dirty，允许后续重新 Save
+        workflow_storage_free_definition(def_buf);
         return false;
     }
 
@@ -1740,6 +1761,7 @@ bool workflow_save_transaction()
         wf_dirty_critical_held = false;
     }
 
+    workflow_storage_free_definition(def_buf);
     return true;
 }
 

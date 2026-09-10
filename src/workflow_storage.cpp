@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 
 // =====================================================
 // 常量一致性校验
@@ -620,11 +621,16 @@ static bool parse_stage_txn_id(
     return true;
 }
 
+// 单个 Workflow 目录下暂存文件收集上限（防御异常残留撑爆数组）
+#define WF_STG_SCAN_MAX 40u
+
 struct StageScanCtx
 {
     uint8_t wf;
     uint32_t publish_txn;   // 匹配该 txn_id 的暂存文件被发布；其余删除
-    int matched_count;      // 已发布（或待发布）数量
+    int matched_count;      // 已发布数量
+    char names[WF_STG_SCAN_MAX][48];  // 暂存文件名副本
+    uint8_t count;
 };
 
 static bool stage_scan_cb(
@@ -646,37 +652,13 @@ static bool stage_scan_cb(
         return true;  // 正式 step*.bin 文件，跳过
     }
 
-    char full[64];
-    snprintf(full, sizeof(full), "%s/wf%02u/%s",
-             WF_STG_DIR, (unsigned)ctx->wf, name);
-
-    if (id == ctx->publish_txn)
+    // 只收集名字副本，不在遍历回调中 rename/remove：
+    // LittleFS readdir 在回调里 rename 会破坏目录游标
+    // （实测 6 个暂存只发布 1 个，剩余 5 个残留）。
+    if (ctx->count < WF_STG_SCAN_MAX)
     {
-        // 已提交事务的暂存文件 → 发布（rename 覆盖正式文件，
-        // LittleFS rename 具备原子替换语义）
-        unsigned st = 0;
-        if (sscanf(name, "step%2u", &st) != 1 || st >= WF_STG_MAX_STEP)
-        {
-            return true;
-        }
-
-        char base[64];
-        snprintf(base, sizeof(base), "%s/wf%02u/step%02u.bin",
-                 WF_STG_DIR, (unsigned)ctx->wf, st);
-
-        if (bin_storage_rename(full, base) != BIN_STORAGE_OK)
-        {
-            Serial.printf("[WorkflowStorage] recover publish rename failed: %s\n", full);
-        }
-        else
-        {
-            ctx->matched_count++;
-        }
-    }
-    else
-    {
-        // 未提交事务的残留暂存文件 → 丢弃
-        bin_storage_remove(full);
+        snprintf(ctx->names[ctx->count], 48u, "%s", name);
+        ctx->count++;
     }
 
     return true;
@@ -685,6 +667,9 @@ static bool stage_scan_cb(
 // 处理单个 Workflow 目录下的全部暂存文件：
 //   publish_txn != UINT32_MAX：把 id == publish_txn 的发布、其余删除
 //   publish_txn == UINT32_MAX：全部删除（未提交残留 / 无效 Workflow）
+//
+// 两阶段：先 foreach 收集文件名副本，遍历结束后统一 rename/remove，
+// 避免遍历回调中 rename 破坏 LittleFS 目录游标导致发布不完整。
 static void stage_process(
     uint8_t wf,
     uint32_t publish_txn
@@ -701,11 +686,55 @@ static void stage_process(
     }
 
     StageScanCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
     ctx.wf = wf;
     ctx.publish_txn = publish_txn;
-    ctx.matched_count = 0;
 
     bin_storage_foreach(dir, stage_scan_cb, &ctx);
+
+    // ---- 遍历结束，统一处理收集到的暂存文件 ----
+    for (int i = 0; i < (int)ctx.count; i++)
+    {
+        uint32_t id;
+        if (!parse_stage_txn_id(ctx.names[i], id))
+        {
+            continue;
+        }
+
+        char full[64];
+        snprintf(full, sizeof(full), "%s/wf%02u/%s",
+                 WF_STG_DIR, (unsigned)wf, ctx.names[i]);
+
+        if (id == publish_txn)
+        {
+            // 已提交事务的暂存文件 → 发布（rename 覆盖正式文件，
+            // LittleFS rename 具备原子替换语义）
+            unsigned st = 0;
+            if (sscanf(ctx.names[i], "step%2u", &st) != 1 ||
+                st >= WF_STG_MAX_STEP)
+            {
+                continue;
+            }
+
+            char base[64];
+            snprintf(base, sizeof(base), "%s/wf%02u/step%02u.bin",
+                     WF_STG_DIR, (unsigned)wf, st);
+
+            if (bin_storage_rename(full, base) != BIN_STORAGE_OK)
+            {
+                Serial.printf("[WorkflowStorage] recover publish rename failed: %s\n", full);
+            }
+            else
+            {
+                ctx.matched_count++;
+            }
+        }
+        else
+        {
+            // 未提交事务的残留暂存文件 → 丢弃
+            bin_storage_remove(full);
+        }
+    }
 }
 
 // =====================================================
@@ -1211,18 +1240,37 @@ WorkflowStorageResult workflow_storage_save(
             return r;
         }
 
-        // 读回校验：大小 + CRC（暂存文件必须完整，才允许进入提交）
-        if (bin_storage_size(stage) != total)
+        // 读回校验（与 load_step_internal 一致）：
+        //   重读整个暂存文件，解析后对 payload 重算 CRC，与写入的 step_crc 比对。
+        //   ⚠️ 不能用 bin_storage_crc32()——它算的是【整个文件】的 CRC，
+        //   而 step_crc 仅覆盖 payload（header 之后的部分），两者必然不等。
         {
-            stage_process(workflow_id, UINT32_MAX);
-            return WF_STG_ERR_WRITE_FAILED;
-        }
-        uint32_t disk_crc = 0;
-        if (bin_storage_crc32(stage, disk_crc) != BIN_STORAGE_OK ||
-            disk_crc != step_crc)
-        {
-            stage_process(workflow_id, UINT32_MAX);
-            return WF_STG_ERR_WRITE_FAILED;
+            uint8_t rbuf[WF_STG_STEP_BIN_MAX];
+            size_t rbytes = 0;
+            WorkflowStorageResult rr = workflow_storage_from_bin_result(
+                bin_storage_read(stage, rbuf, total, rbytes)
+            );
+            if (rr != WF_STG_OK || rbytes != total)
+            {
+                Serial.printf("[WorkflowStorage] save readback failed: %s rr=%d\n",
+                              stage, (int)rr);
+                stage_process(workflow_id, UINT32_MAX);
+                return WF_STG_ERR_WRITE_FAILED;
+            }
+            uint32_t rb_crc = wf_crc32_final(
+                wf_crc32_update(
+                    wf_crc32_init(),
+                    rbuf + WF_STG_STEP_HEADER_SIZE,
+                    payload_size
+                )
+            );
+            if (rb_crc != step_crc)
+            {
+                Serial.printf("[WorkflowStorage] save crc mismatch: %s disk=%u expect=%u\n",
+                              stage, (unsigned)rb_crc, (unsigned)step_crc);
+                stage_process(workflow_id, UINT32_MAX);
+                return WF_STG_ERR_WRITE_FAILED;
+            }
         }
     }
     crc = wf_crc32_final(crc);
@@ -1253,6 +1301,8 @@ WorkflowStorageResult workflow_storage_save(
     if (!workflow_storage_save_meta())
     {
         // Meta 提交失败：事务未提交，清掉本次暂存，正式文件保持旧版本
+        Serial.printf("[WorkflowStorage] save: meta commit failed (wf=%u)\n",
+                      (unsigned)workflow_id);
         stage_process(workflow_id, UINT32_MAX);
         return WF_STG_ERR_WRITE_FAILED;
     }
@@ -1319,6 +1369,40 @@ WorkflowStorageResult workflow_storage_delete(
     }
 
     return WF_STG_OK;
+}
+
+// =====================================================
+// WorkflowDefinition 缓冲分配
+// =====================================================
+//
+// WorkflowDefinition ~8.6KB（见头文件说明），栈上声明会击穿
+// Arduino loopTask 8KB 栈（已实测栈溢出重启循环）。必须堆分配。
+// 优先 PSRAM（8MB 充足），分配失败回退内部 RAM。
+
+WorkflowDefinition *workflow_storage_alloc_definition(void)
+{
+    void *p = heap_caps_malloc(
+        sizeof(WorkflowDefinition), MALLOC_CAP_SPIRAM);
+
+    if (p == NULL)
+    {
+        // PSRAM 不可用 / 不足时回退内部 RAM（MALLOC_CAP_8BIT）
+        p = heap_caps_malloc(
+            sizeof(WorkflowDefinition), MALLOC_CAP_8BIT);
+    }
+
+    return (WorkflowDefinition *)p;
+}
+
+void workflow_storage_free_definition(
+    WorkflowDefinition *definition
+)
+{
+    if (definition != NULL)
+    {
+        // heap_caps_malloc 分配的内存统一用 heap_caps_free 释放
+        heap_caps_free(definition);
+    }
 }
 
 // =====================================================
