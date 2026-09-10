@@ -452,6 +452,80 @@ bool workflow_delete(
 );
 
 // =====================================================
+// Workflow CRUD（需求文档 Phase 8 / §28）
+// =====================================================
+//
+// 统一语义：
+//   1. 全部只改 Definition（下一次执行什么），不触碰运行中的 Runtime
+//   2. 顺序铁律：先 mark_dirty（含 Critical acquire）成功，再改 RAM
+//   3. 修改后不立即落盘 —— 由延迟保存窗口（5 分钟）或显式
+//      workflow_save_transaction() 一次性提交整批（§20 / §22）
+//
+// 运行中保护：
+//   会改变 step_count / 重建 Step 的 API（create / set_step_count）
+//   在 state == WORKFLOW_RUNNING 时拒绝 —— 否则会让在飞运行提前结束。
+//   只改字段的 API（update_meta / set_step 参数）允许运行中调用（§13）。
+
+// 把 RAM 中当前全部 Workflow 一次性写入 Flash BIN
+//
+// 用途：JSON → BIN 迁移。
+//   BIN 只保存 Dirty Workflow，若 JSON 回退加载后只修改了一个 Workflow，
+//   下次启动时 BIN 已 Valid → 只加载该 Workflow，其余从 JSON 来的会丢失。
+//   故 JSON 加载成功后必须整体迁移一次，让 BIN 成为唯一数据源。
+//
+// 内部：全部 Workflow 标 Dirty → workflow_save_transaction()。
+// 返回 false 表示保存失败（Dirty 与 Critical 保留，可稍后重试）。
+bool workflow_migrate_to_storage();
+
+// 创建一个空 Workflow（step_count = 0）
+//
+// 已存在同名 / 同槽位数据时整体覆盖（先清空全部 Step Definition）。
+// 创建后仍处于"未提交"状态，需配合 set_step 填充 Step 再保存。
+bool workflow_create(
+    uint8_t workflow_index,
+    const String &id,
+    const String &name,
+    uint32_t timeout_ms
+);
+
+// 修改 Workflow 级 Definition：id / name / enable / timeout_ms
+//
+// 只改 Definition。enable=false 不会终止当前运行（§13）；
+// 要立即终止请用 workflow_stop() / workflow_disable()。
+bool workflow_update_meta(
+    uint8_t workflow_index,
+    const String &id,
+    const String &name,
+    bool enable,
+    uint32_t timeout_ms
+);
+
+// 新建或修改一个 Step 的 Definition，并同步重建其 Runtime
+//
+// step_index >= 当前 step_count 时自动扩展 step_count（上限 16）。
+// Descriptor 由 id 现场解析（BIN 只存 ID，§44）；id 未注册时
+// 与 JSON / BIN 加载路径行为一致：不分配 Instance，Step 仍计入 step_count。
+bool workflow_set_step(
+    uint8_t workflow_index,
+    uint8_t step_index,
+    WorkflowStepType type,
+    WorkflowInstanceType instance_type,
+    const String &id,
+    const WorkflowParamValue *params,
+    uint8_t param_count
+);
+
+// 设置 Step 数量
+//
+// 缩小：清空尾部 Step Definition（Runtime 不回收，随下次 start 重建）
+// 扩大：尾部 Step 为空 Definition，需再用 set_step 填充
+// 运行中拒绝（改 step_count 会让在飞运行提前结束，§13）
+bool workflow_set_step_count(
+    uint8_t workflow_index,
+    uint8_t step_count
+);
+
+// =====================================================
 // Workflow Step
 // =====================================================
 
