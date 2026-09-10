@@ -816,15 +816,78 @@ bool workflow_storage_init()
 // 依据 RAM Meta 处理全部 Workflow 的暂存文件：
 //   valid     → 发布 txn_id 匹配的暂存（提交后掉电恢复）
 //   invalid   → 删除全部暂存（不复活已删除的 Workflow）
+// 收集 /workflow 下实际存在的 wfNN 目录
+//
+// 用途：恢复扫描只处理真实存在的目录。
+//   ⚠️ 不能改成"逐个 wfNN 调 bin_storage_exists()"——
+//   ESP32 Arduino core 的 FS::exists() 内部是 open(path,"r")，
+//   路径不存在时 vfs_api 会直接打印
+//   "[E][vfs_api.cpp] ... does not exist, no permits for creation"。
+//   启动时 16 个槽位会有 13 条噪音错误日志，淹没真实故障。
+struct WfDirCtx
+{
+    bool present[WF_STG_MAX_COUNT];
+};
+
+static bool wf_dir_cb(
+    const char *name,
+    bool is_dir,
+    void *user
+)
+{
+    if (!is_dir)
+    {
+        return true;
+    }
+
+    WfDirCtx *ctx = (WfDirCtx *)user;
+    unsigned wf = 0;
+
+    if (sscanf(name, "wf%2u", &wf) == 1 && wf < WF_STG_MAX_COUNT)
+    {
+        ctx->present[wf] = true;
+    }
+
+    return true;
+}
+
 static void workflow_storage_recover_internal()
 {
+    WfDirCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+
+    bin_storage_foreach(WF_STG_DIR, wf_dir_cb, &ctx);
+
     for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
     {
+        // 目录不存在 → 不可能有暂存文件，跳过（同时避免 exists() 噪音）
+        if (!ctx.present[wf])
+        {
+            continue;
+        }
+
         if (s_meta[wf].valid)
         {
             stage_process(wf, s_meta[wf].txn_id);
         }
         else
+        {
+            stage_process(wf, UINT32_MAX);
+        }
+    }
+}
+
+// 清理全部存在目录下的暂存文件（无 Meta / Meta 损坏时用）
+static void stage_cleanup_all()
+{
+    WfDirCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+
+    bin_storage_foreach(WF_STG_DIR, wf_dir_cb, &ctx);
+
+    for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
+    {
+        if (ctx.present[wf])
         {
             stage_process(wf, UINT32_MAX);
         }
@@ -844,10 +907,7 @@ bool workflow_storage_load_meta()
     {
         // 首次启动：没有 meta.bin 属正常，全部 Workflow 视为 Invalid。
         // 清掉可能的历史暂存残留（没有 Meta 就没有可恢复的事务）。
-        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
-        {
-            stage_process(wf, UINT32_MAX);
-        }
+        stage_cleanup_all();
         s_meta_loaded = true;
         return true;
     }
@@ -855,10 +915,7 @@ bool workflow_storage_load_meta()
     size_t file_size = bin_storage_size(WF_STG_META_PATH);
     if (file_size == 0 || file_size > WF_STG_META_BIN_MAX)
     {
-        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
-        {
-            stage_process(wf, UINT32_MAX);
-        }
+        stage_cleanup_all();
         s_meta_loaded = true;
         return false;
     }
@@ -882,10 +939,7 @@ bool workflow_storage_load_meta()
     if (r != WF_STG_OK)
     {
         // 损坏时绝不猜测旧格式，全部保持 Invalid，并清历史暂存
-        for (uint8_t wf = 0; wf < WF_STG_MAX_COUNT; wf++)
-        {
-            stage_process(wf, UINT32_MAX);
-        }
+        stage_cleanup_all();
         return false;
     }
 
