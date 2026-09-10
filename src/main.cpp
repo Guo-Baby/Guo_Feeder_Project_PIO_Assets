@@ -22,6 +22,12 @@
 #include "capability_registry.h"
 #include "MiThermometer.h"
 
+// BinStorage 错误日志 → 串口（模块默认静默，注册后便于上板诊断）
+static void bin_log_serial(const char *level, const char *message)
+{
+    Serial.printf("[Bin][%s] %s\n", level, message);
+}
+
 // =====================================================
 // setup
 // =====================================================
@@ -54,6 +60,8 @@ void setup()
     if (!bin_storage_init()) {
         Serial.println("[System] BinStorage init failed!");
     }
+    // 注册日志回调：BinStorage 默认静默，注册后其 E/W 级错误打串口，便于上板诊断
+    bin_storage_set_log_callback(bin_log_serial);
     // ===== 初始化 Workflow Storage（Workflow 定义持久化，依赖 BinStorage）=====
     //
     // 内部会创建 /workflow 目录并加载 meta.bin。
@@ -279,17 +287,29 @@ static bool wfst_verify(
     int base
 )
 {
-    WorkflowDefinition def;
+    // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+    WorkflowDefinition *def_buf =
+        workflow_storage_alloc_definition();
+
+    if (def_buf == NULL)
+    {
+        Serial.println("verify: def alloc failed");
+        return false;
+    }
+
+    WorkflowDefinition &def = *def_buf;
     WorkflowStorageResult r = workflow_storage_load((uint8_t)wf, &def);
 
     if (r != WF_STG_OK)
     {
         Serial.printf("verify: load failed, r=%s\n", workflow_storage_result_name(r));
+        workflow_storage_free_definition(def_buf);
         return false;
     }
     if ((int)def.step_count != steps)
     {
         Serial.printf("verify: step_count=%u expect=%d\n", def.step_count, steps);
+        workflow_storage_free_definition(def_buf);
         return false;
     }
     for (int i = 0; i < steps; i++)
@@ -300,6 +320,7 @@ static bool wfst_verify(
         {
             Serial.printf("verify: step[%d] id=%s expect=%s\n",
                           i, def.steps[i].id, expect_id);
+            workflow_storage_free_definition(def_buf);
             return false;
         }
         if (def.steps[i].param_count < 1 ||
@@ -309,9 +330,11 @@ static bool wfst_verify(
                           i,
                           def.steps[i].param_count ? (int)def.steps[i].params[0].int_value : -999,
                           base + i);
+            workflow_storage_free_definition(def_buf);
             return false;
         }
     }
+    workflow_storage_free_definition(def_buf);
     return true;
 }
 
@@ -359,9 +382,18 @@ void wfst_console(const String &cmd)
         if (op.startsWith("abort1")) workflow_storage_test_abort_phase(1);
         if (op.startsWith("abort2")) workflow_storage_test_abort_phase(2);
 
-        WorkflowDefinition def;
+        // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+        WorkflowDefinition *def_buf = workflow_storage_alloc_definition();
+        if (def_buf == NULL)
+        {
+            Serial.println("def alloc failed");
+            workflow_storage_test_abort_phase(0);
+            return;
+        }
+        WorkflowDefinition &def = *def_buf;
         wfst_make_def(def, a, b, c);
         WorkflowStorageResult r = workflow_storage_save((uint8_t)a, &def);
+        workflow_storage_free_definition(def_buf);
         Serial.printf("%s -> r=%s staged=%d\n",
                       op.substring(0, op.indexOf(' ')).c_str(),
                       workflow_storage_result_name(r),
@@ -379,10 +411,19 @@ void wfst_console(const String &cmd)
             Serial.println("bad args");
             return;
         }
-        WorkflowDefinition def;
+        // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+        WorkflowDefinition *def_buf = workflow_storage_alloc_definition();
+        if (def_buf == NULL)
+        {
+            Serial.println("def alloc failed");
+            workflow_storage_test_fail_step(-1);
+            return;
+        }
+        WorkflowDefinition &def = *def_buf;
         wfst_make_def(def, a, g_wfst_steps, g_wfst_base + 100);
         workflow_storage_test_fail_step(b);
         WorkflowStorageResult r = workflow_storage_save((uint8_t)a, &def);
+        workflow_storage_free_definition(def_buf);
         workflow_storage_test_fail_step(-1);
         Serial.printf("fail@%d -> r=%s staged=%d\n",
                       b,
@@ -393,7 +434,14 @@ void wfst_console(const String &cmd)
 
     if (sscanf(op.c_str(), "dump %d", &a) == 1)
     {
-        WorkflowDefinition def;
+        // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
+        WorkflowDefinition *def_buf = workflow_storage_alloc_definition();
+        if (def_buf == NULL)
+        {
+            Serial.println("def alloc failed");
+            return;
+        }
+        WorkflowDefinition &def = *def_buf;
         WorkflowStorageResult r = workflow_storage_load((uint8_t)a, &def);
         Serial.printf("load r=%s staged=%d\n",
                       workflow_storage_result_name(r),
@@ -411,6 +459,7 @@ void wfst_console(const String &cmd)
                                   : -999);
             }
         }
+        workflow_storage_free_definition(def_buf);
         return;
     }
 
