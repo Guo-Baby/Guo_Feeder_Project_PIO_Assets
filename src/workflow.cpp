@@ -1791,6 +1791,46 @@ bool workflow_delete(
         return false;
     }
 
+    // =====================================================
+    // 清理该 Workflow 上尚未保存的 Dirty
+    // =====================================================
+    //
+    // 必须清：删除本身已落盘（meta.valid=false），该 Workflow 上残留的
+    // Dirty 若留着，后续 save_transaction() 会把它重新写回并把
+    // meta.valid 置回 true —— 等于删除被撤销。
+    //
+    // 释放顺序（跨任务铁律）：先 release，再清 Dirty。
+    //   反向（先清 Dirty）会打开窗口：另一任务在 release 之前
+    //   mark_dirty 并 acquire，随后被我们的 release 误清 → count 泄漏，
+    //   系统永久无法重启。
+    //   先 release 是安全的：Dirty 非空期间 mark_dirty 不会 acquire。
+    if(wf_dirty_critical_held && dirty_workflow_has(workflow_index))
+    {
+        bool only_this = true;
+
+        for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+        {
+            if(wf != workflow_index && dirty_workflow_has(wf))
+            {
+                only_this = false;
+                break;
+            }
+        }
+
+        if(only_this)
+        {
+            system_command_critical_operation_release();
+            wf_dirty_critical_held = false;
+        }
+    }
+
+    dirty_workflow_clear(workflow_index);
+
+    if(!dirty_any())
+    {
+        workflow_save_since_ms = 0;
+    }
+
     // 禁止下一次启动
     workflows[workflow_index].enable = false;
 

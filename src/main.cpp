@@ -547,7 +547,7 @@ void wfc_console(const String &cmd)
 
     if (op.length() == 0 || op.startsWith("help"))
     {
-        Serial.println("wfc ops: list create meta step count del param def dirty save migrate run");
+        Serial.println("wfc ops: list create meta step count del stop param def dirty save migrate run");
         return;
     }
 
@@ -593,27 +593,36 @@ void wfc_console(const String &cmd)
         return;
     }
 
-    // step <wf> <st> <t|a> <id> <intval>
-    if (sscanf(op.c_str(), "step %d %d %1s %31s %d", &a, &b, kind, sid, &c) == 5)
+    // step <wf> <st> <t|a> <id> <pname> <pval>
+    //   pname = "-" 表示该 Step 无参数
     {
-        WorkflowParamValue pv;
-        pv.name = "v";
-        pv.type = PARAM_INT;
-        pv.int_value = c;
-        pv.float_value = 0.0f;
-        pv.bool_value = false;
-        pv.string_value = "";
+        char pname[24] = {0};
+        int pval = 0;
+        if (sscanf(op.c_str(), "step %d %d %1s %31s %23s %d",
+                   &a, &b, kind, sid, pname, &pval) >= 5)
+        {
+            WorkflowParamValue pv;
+            bool has_param = (strcmp(pname, "-") != 0);
+            pv.name = has_param ? String(pname) : String("");
+            pv.type = PARAM_INT;
+            pv.int_value = pval;
+            pv.float_value = 0.0f;
+            pv.bool_value = false;
+            pv.string_value = "";
 
-        bool is_trigger = (kind[0] == 't');
-        bool ok = workflow_set_step(
-            (uint8_t)a, (uint8_t)b,
-            is_trigger ? WORKFLOW_STEP_TRIGGER : WORKFLOW_STEP_ACTION,
-            is_trigger ? INSTANCE_TRIGGER : INSTANCE_ACTION,
-            String(sid), &pv, 1);
+            bool is_trigger = (kind[0] == 't');
+            bool ok = workflow_set_step(
+                (uint8_t)a, (uint8_t)b,
+                is_trigger ? WORKFLOW_STEP_TRIGGER : WORKFLOW_STEP_ACTION,
+                is_trigger ? INSTANCE_TRIGGER : INSTANCE_ACTION,
+                String(sid),
+                has_param ? &pv : nullptr,
+                has_param ? 1 : 0);
 
-        Serial.printf("step wf%02d s%02d %s id=%s v=%d -> %d\n",
-                      a, b, kind, sid, c, ok ? 1 : 0);
-        return;
+            Serial.printf("step wf%02d s%02d %s id=%s %s=%d -> %d\n",
+                          a, b, kind, sid, pname, pval, ok ? 1 : 0);
+            return;
+        }
     }
 
     if (sscanf(op.c_str(), "count %d %d", &a, &b) == 2)
@@ -664,6 +673,19 @@ void wfc_console(const String &cmd)
         return;
     }
 
+    if (sscanf(op.c_str(), "stop %d", &a) == 1)
+    {
+        Workflow *w = workflow_get((uint8_t)a);
+        if (w == nullptr)
+        {
+            Serial.println("stop: null workflow");
+            return;
+        }
+        bool ok = workflow_stop(w->id);
+        Serial.printf("stop wf%02d -> %d state=%d\n", a, ok ? 1 : 0, (int)w->state);
+        return;
+    }
+
     if (op.startsWith("dirty"))
     {
         Serial.printf("dirty=%u\n", workflow_has_any_dirty() ? 1u : 0u);
@@ -685,17 +707,23 @@ void wfc_console(const String &cmd)
         return;
     }
 
-    if (sscanf(op.c_str(), "run %d", &a) == 1)
     {
-        Workflow *w = workflow_get((uint8_t)a);
-        if (w == nullptr)
+        int skip = 0;
+        int n = sscanf(op.c_str(), "run %d %d", &a, &skip);
+        if (n >= 1)
         {
-            Serial.println("run: null workflow");
+            Workflow *w = workflow_get((uint8_t)a);
+            if (w == nullptr)
+            {
+                Serial.println("run: null workflow");
+                return;
+            }
+            // skip=1 → 跳过第 0 步 Trigger，直接进入 Action（无硬件等待的快速验证）
+            bool ok = workflow_start(w, n >= 2 && skip != 0);
+            Serial.printf("run wf%02d skip=%d -> %d state=%d\n",
+                          a, skip, ok ? 1 : 0, (int)w->state);
             return;
         }
-        bool ok = workflow_start(w);
-        Serial.printf("run wf%02d -> %d state=%d\n", a, ok ? 1 : 0, (int)w->state);
-        return;
     }
 
     Serial.printf("unknown wfc op: %s\n", op.c_str());
