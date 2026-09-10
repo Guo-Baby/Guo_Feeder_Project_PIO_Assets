@@ -1813,6 +1813,260 @@ bool workflow_delete(
     return true;
 }
 
+// =====================================================
+// Workflow CRUD（需求文档 Phase 8 / §28）
+// =====================================================
+//
+// 三条统一语义（每个 API 都必须满足）：
+//   1. 只写 Definition，不动运行中的 Runtime（§13 / §45）
+//   2. 先 mark_dirty 成功（含 Critical acquire）再改 RAM ——
+//      否则 acquire 被拒时会留下"改了但没标 Dirty"的静默不一致
+//   3. 不立即落盘，由延迟窗口或显式 save_transaction 成批提交（§20 / §22）
+
+// 把 RAM 中当前全部 Workflow 一次性写入 Flash BIN（JSON → BIN 迁移）
+//
+// 背景（必须迁移的原因）：
+//   BIN 只保存 Dirty Workflow。若 JSON 回退加载后只修改了其中一个
+//   Workflow，下次启动时 BIN 已 Valid → load_from_storage() 返回 true
+//   → 只加载这一个 Workflow，其余从 JSON 来的会【静默丢失】。
+//   故 JSON 加载成功后必须整体迁移一次，让 BIN 成为唯一数据源。
+bool workflow_migrate_to_storage()
+{
+    bool marked = false;
+
+    for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+    {
+        // 只迁移有效槽位（有 ID 或有 Step）
+        if(workflows[wf].id.length() == 0 &&
+           workflows[wf].step_count == 0)
+        {
+            continue;
+        }
+
+        // 保存粒度是整个 Workflow（Meta CRC 覆盖全部 Step），
+        // 故只需把 Step 0 标 Dirty 即可触发该 Workflow 整体落盘。
+        if(!workflow_mark_step_dirty(wf, 0))
+        {
+            Serial.printf(
+                "[Workflow] migrate aborted: wf=%u mark dirty rejected\n",
+                (unsigned)wf
+            );
+            return false;
+        }
+        marked = true;
+    }
+
+    if(!marked)
+    {
+        return true;
+    }
+
+    return workflow_save_transaction();
+}
+
+bool workflow_create(
+    uint8_t workflow_index,
+    const String &id,
+    const String &name,
+    uint32_t timeout_ms
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+
+    // 创建会清空全部 Step Definition，运行中执行会让在飞运行提前结束
+    if(workflows[workflow_index].state == WORKFLOW_RUNNING)
+    {
+        Serial.println("[Workflow] create rejected: workflow running");
+        return false;
+    }
+
+    if(!workflow_mark_step_dirty(workflow_index, 0))
+    {
+        return false;
+    }
+
+    Workflow &w = workflows[workflow_index];
+
+    w.id = id;
+    w.name = name;
+    w.enable = true;
+    w.timeout_ms = timeout_ms;
+    w.step_count = 0;
+    w.current_step = 0;
+    w.state = WORKFLOW_IDLE;
+    w.cmd_id = "";
+    w.finish_callback = nullptr;
+
+    for(uint8_t s = 0; s < WORKFLOW_MAX_STEP; s++)
+    {
+        workflow_clear_step_def(workflow_index, s);
+    }
+
+    if(workflow_index + 1 > workflow_count)
+    {
+        workflow_count = (uint8_t)(workflow_index + 1);
+    }
+
+    return true;
+}
+
+bool workflow_update_meta(
+    uint8_t workflow_index,
+    const String &id,
+    const String &name,
+    bool enable,
+    uint32_t timeout_ms
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+
+    // 只改 Definition：允许运行中调用，enable=false 不终止当前运行（§13）
+    if(!workflow_mark_step_dirty(workflow_index, 0))
+    {
+        return false;
+    }
+
+    Workflow &w = workflows[workflow_index];
+
+    w.id = id;
+    w.name = name;
+    w.enable = enable;
+    w.timeout_ms = timeout_ms;
+
+    return true;
+}
+
+bool workflow_set_step(
+    uint8_t workflow_index,
+    uint8_t step_index,
+    WorkflowStepType type,
+    WorkflowInstanceType instance_type,
+    const String &id,
+    const WorkflowParamValue *params,
+    uint8_t param_count
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT ||
+       step_index >= WORKFLOW_MAX_STEP ||
+       param_count > WORKFLOW_MAX_PARAM)
+    {
+        return false;
+    }
+    if(param_count > 0 && params == nullptr)
+    {
+        return false;
+    }
+
+    // 改写 Step 会重建其 Runtime Instance。运行中的 Runtime 正被在飞执行
+    // 使用，重建会直接打断它 —— 与 §13 "Definition 修改不影响本次运行"
+    // 冲突，故运行中一律拒绝（要改请先 stop）。
+    if(workflows[workflow_index].state == WORKFLOW_RUNNING)
+    {
+        Serial.println("[Workflow] set_step rejected: workflow running");
+        return false;
+    }
+
+    if(!workflow_mark_step_dirty(workflow_index, step_index))
+    {
+        return false;
+    }
+
+    WorkflowStepDef *def =
+        workflow_step_def_at(workflow_index, step_index);
+
+    if(def == nullptr)
+    {
+        return false;
+    }
+
+    def->type = type;
+    def->instance_type = instance_type;
+    def->id = id;
+    def->param_count = param_count;
+
+    for(uint8_t i = 0; i < param_count; i++)
+    {
+        def->params[i] = params[i];
+    }
+
+    WorkflowStep &s = workflows[workflow_index].steps[step_index];
+
+    // 已有同类型 Instance 则复用（避免每次修改都从 256 槽池中
+    // 消耗一个新槽 —— 池索引单调递增，反复改会耗尽），
+    // 否则走 apply 分配并绑定 Descriptor（Descriptor 由 ID 现场解析，§44）
+    bool reuse =
+        (instance_type == INSTANCE_TRIGGER)
+            ? (s.instance.trigger != nullptr)
+            : (s.instance.action != nullptr);
+
+    if(reuse)
+    {
+        s.id = id;
+        s.type = type;
+        s.instance_type = instance_type;
+        workflow_snapshot_step_def((int)workflow_index, step_index, s);
+    }
+    else
+    {
+        WorkflowStepDefinition sd;
+        memset(&sd, 0, sizeof(sd));
+        workflow_def_to_storage(def, &sd);
+        workflow_apply_step_definition(
+            workflow_index, step_index, &sd);
+    }
+
+    if(step_index + 1 > workflows[workflow_index].step_count)
+    {
+        workflows[workflow_index].step_count = (uint8_t)(step_index + 1);
+    }
+
+    return true;
+}
+
+bool workflow_set_step_count(
+    uint8_t workflow_index,
+    uint8_t step_count
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT ||
+       step_count > WORKFLOW_MAX_STEP)
+    {
+        return false;
+    }
+
+    // step_count 决定"何时结束"，运行中被改写会让在飞运行提前结束
+    if(workflows[workflow_index].state == WORKFLOW_RUNNING)
+    {
+        Serial.println("[Workflow] set_step_count rejected: running");
+        return false;
+    }
+
+    if(!workflow_mark_step_dirty(workflow_index, 0))
+    {
+        return false;
+    }
+
+    for(uint8_t s = step_count; s < WORKFLOW_MAX_STEP; s++)
+    {
+        workflow_clear_step_def(workflow_index, s);
+    }
+
+    workflows[workflow_index].step_count = step_count;
+
+    if(workflows[workflow_index].current_step > step_count)
+    {
+        workflows[workflow_index].current_step = 0;
+    }
+
+    return true;
+}
+
 // 延迟保存窗口到期检查（由 workflow_task() 调用）
 //
 // 注意：这里不是"为了维护 Critical 而持续轮询"，
@@ -2270,9 +2524,21 @@ bool workflow_reload()
         );
         return false;
     }
-    return workflow_load_json(
+    bool result = workflow_load_json(
         workflow_json_cache
     );
+
+    if(result)
+    {
+        // JSON 侧刚刚重建了 RAM 状态，必须同步回写 BIN，
+        // 否则 BIN 停留在旧版本，下次启动会加载回旧数据。
+        if(!workflow_migrate_to_storage())
+        {
+            Serial.println("[WARN] Reload: JSON -> BIN sync failed");
+        }
+    }
+
+    return result;
 }
 //workflow执行完毕后重置step状态，以备下一次执行
 void workflow_reset_step(WorkflowStep &step)

@@ -110,6 +110,16 @@ void setup()
         Serial.println("[OK] Workflow loaded from Flash BIN");
     } else if (workflow_load_json_file("/workflow.json")) {
         Serial.println("[OK] Workflow loaded from /workflow.json");
+        // JSON → BIN 一次性迁移。
+        //
+        // 不做迁移的后果：BIN 只保存 Dirty Workflow，若之后只改了一个
+        // Workflow，下次启动时 BIN 已 Valid → 只加载这一个，
+        // 其余从 JSON 来的 Workflow 会静默丢失。
+        if (workflow_migrate_to_storage()) {
+            Serial.println("[OK] Workflow migrated JSON -> Flash BIN");
+        } else {
+            Serial.println("[WARN] Workflow JSON -> BIN migration failed");
+        }
     } else {
         Serial.println("[WARN] No workflow.json found");
     }
@@ -132,6 +142,8 @@ void setup()
 void serial_debug_command_process();
 // WorkflowStorage 独立测试控制台（wfst 命令，仅上板自测用）
 void wfst_console(const String &cmd);
+// Workflow CRUD + 回归测试控制台（wfc 命令，仅上板自测用）
+void wfc_console(const String &cmd);
 // =====================================================
 // loop
 // =====================================================
@@ -217,6 +229,11 @@ void serial_debug_command_process(void)
             {
                 // WorkflowStorage 独立测试控制台（仅上板自测用）
                 wfst_console(serial_cmd_buffer);
+            }
+            else if (serial_cmd_buffer.startsWith("wfc "))
+            {
+                // Workflow CRUD + 回归测试控制台（仅上板自测用）
+                wfc_console(serial_cmd_buffer);
             }
             else
             {
@@ -497,4 +514,189 @@ void wfst_console(const String &cmd)
     }
 
     Serial.printf("unknown wfst op: %s\n", op.c_str());
+}
+
+// =====================================================
+// Workflow CRUD + 回归测试控制台（仅上板自测用）
+//
+// 命令（wfc <op> ...）：
+//   help
+//   list                                  列出全部 Workflow RAM 状态
+//   create <wf> <id> <name> <timeout>      新建空 Workflow
+//   meta <wf> <id> <name> <0|1> <timeout>  改 Workflow 级 Definition
+//   step <wf> <st> <t|a> <id> <intval>     新建/改写 Step（1 个 int 参数）
+//   count <wf> <n>                         设置 step_count
+//   del <wf>                               删除（只置 meta.valid=false）
+//   param <wf> <st> <pidx> <intval>        改单个参数（运行中允许，§13）
+//   def <wf> <st>                          打印该 Step 的 Definition
+//   dirty                                  是否存在未持久化修改
+//   save                                   显式触发保存事务
+//   migrate                                全量迁移到 BIN
+//   run <wf>                               启动 Workflow
+//
+// Phase 9（运行中修改隔离）验证步骤：
+//   wfc run 0        → 运行中
+//   wfc param 0 1 0 999    → 改 Definition（返回 ok=1）
+//   wfc def 0 1      → Definition 已是 999，但本次运行仍用旧值跑完
+// =====================================================
+
+void wfc_console(const String &cmd)
+{
+    String op = cmd.substring(4);
+    op.trim();
+
+    if (op.length() == 0 || op.startsWith("help"))
+    {
+        Serial.println("wfc ops: list create meta step count del param def dirty save migrate run");
+        return;
+    }
+
+    int a = 0, b = 0, c = 0;
+    char sid[32] = {0};
+    char sname[32] = {0};
+    char kind[4] = {0};
+
+    if (op.startsWith("list"))
+    {
+        Serial.printf("count=%u dirty=%u\n",
+                      (unsigned)workflow_get_count(),
+                      workflow_has_any_dirty() ? 1u : 0u);
+        for (uint8_t i = 0; i < workflow_get_count(); i++)
+        {
+            Workflow *w = workflow_get(i);
+            if (w == nullptr) continue;
+            Serial.printf("  wf%02u id=%s name=%s en=%u st=%d steps=%u cur=%u to=%lu\n",
+                          (unsigned)i,
+                          w->id.c_str(),
+                          w->name.c_str(),
+                          w->enable ? 1u : 0u,
+                          (int)w->state,
+                          (unsigned)w->step_count,
+                          (unsigned)w->current_step,
+                          (unsigned long)w->timeout_ms);
+        }
+        return;
+    }
+
+    if (sscanf(op.c_str(), "create %d %31s %31s %d", &a, sid, sname, &c) == 4)
+    {
+        bool ok = workflow_create((uint8_t)a, String(sid), String(sname), (uint32_t)c);
+        Serial.printf("create wf%02d -> %d\n", a, ok ? 1 : 0);
+        return;
+    }
+
+    if (sscanf(op.c_str(), "meta %d %31s %31s %d %d", &a, sid, sname, &b, &c) == 5)
+    {
+        bool ok = workflow_update_meta((uint8_t)a, String(sid), String(sname),
+                                       b != 0, (uint32_t)c);
+        Serial.printf("meta wf%02d -> %d\n", a, ok ? 1 : 0);
+        return;
+    }
+
+    // step <wf> <st> <t|a> <id> <intval>
+    if (sscanf(op.c_str(), "step %d %d %1s %31s %d", &a, &b, kind, sid, &c) == 5)
+    {
+        WorkflowParamValue pv;
+        pv.name = "v";
+        pv.type = PARAM_INT;
+        pv.int_value = c;
+        pv.float_value = 0.0f;
+        pv.bool_value = false;
+        pv.string_value = "";
+
+        bool is_trigger = (kind[0] == 't');
+        bool ok = workflow_set_step(
+            (uint8_t)a, (uint8_t)b,
+            is_trigger ? WORKFLOW_STEP_TRIGGER : WORKFLOW_STEP_ACTION,
+            is_trigger ? INSTANCE_TRIGGER : INSTANCE_ACTION,
+            String(sid), &pv, 1);
+
+        Serial.printf("step wf%02d s%02d %s id=%s v=%d -> %d\n",
+                      a, b, kind, sid, c, ok ? 1 : 0);
+        return;
+    }
+
+    if (sscanf(op.c_str(), "count %d %d", &a, &b) == 2)
+    {
+        bool ok = workflow_set_step_count((uint8_t)a, (uint8_t)b);
+        Serial.printf("count wf%02d=%d -> %d\n", a, b, ok ? 1 : 0);
+        return;
+    }
+
+    if (sscanf(op.c_str(), "del %d", &a) == 1)
+    {
+        bool ok = workflow_delete((uint8_t)a);
+        Serial.printf("del wf%02d -> %d\n", a, ok ? 1 : 0);
+        return;
+    }
+
+    {
+        int pidx = 0, val = 0;
+        if (sscanf(op.c_str(), "param %d %d %d %d", &a, &b, &pidx, &val) == 4)
+        {
+            WorkflowParamValue pv;
+            pv.name = "v";
+            pv.type = PARAM_INT;
+            pv.int_value = val;
+            pv.float_value = 0.0f;
+            pv.bool_value = false;
+            pv.string_value = "";
+            bool ok = workflow_update_step_param(
+                (uint8_t)a, (uint8_t)b, (uint8_t)pidx, pv);
+            Serial.printf("param wf%02d s%02d p%d=%d -> %d\n",
+                          a, b, pidx, val, ok ? 1 : 0);
+            return;
+        }
+    }
+
+    if (sscanf(op.c_str(), "def %d %d", &a, &b) == 2)
+    {
+        WorkflowStepDef *d = workflow_step_def_at((uint8_t)a, (uint8_t)b);
+        if (d == nullptr)
+        {
+            Serial.println("def: null");
+            return;
+        }
+        Serial.printf("def wf%02d s%02d type=%d inst=%d id=%s n=%u p0=%d\n",
+                      a, b, (int)d->type, (int)d->instance_type,
+                      d->id.c_str(), (unsigned)d->param_count,
+                      d->param_count ? d->params[0].int_value : -999);
+        return;
+    }
+
+    if (op.startsWith("dirty"))
+    {
+        Serial.printf("dirty=%u\n", workflow_has_any_dirty() ? 1u : 0u);
+        return;
+    }
+
+    if (op.startsWith("save"))
+    {
+        bool ok = workflow_save_transaction();
+        Serial.printf("save -> %d (dirty=%u)\n", ok ? 1 : 0,
+                      workflow_has_any_dirty() ? 1u : 0u);
+        return;
+    }
+
+    if (op.startsWith("migrate"))
+    {
+        bool ok = workflow_migrate_to_storage();
+        Serial.printf("migrate -> %d\n", ok ? 1 : 0);
+        return;
+    }
+
+    if (sscanf(op.c_str(), "run %d", &a) == 1)
+    {
+        Workflow *w = workflow_get((uint8_t)a);
+        if (w == nullptr)
+        {
+            Serial.println("run: null workflow");
+            return;
+        }
+        bool ok = workflow_start(w);
+        Serial.printf("run wf%02d -> %d state=%d\n", a, ok ? 1 : 0, (int)w->state);
+        return;
+    }
+
+    Serial.printf("unknown wfc op: %s\n", op.c_str());
 }
