@@ -114,6 +114,25 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - **Capability Registry 陷阱**：新增/删除任何 Action 都会令 **version+1 且全部 stable_id 按 runtime_id 升序重排**（capability_registry.h:56），云端缓存的 mapping 必须重新拉取
 - 命令 `id`（或新格式 `i`）每条必须唯一，设备按 cmd_id 去重
 
+## 内存分配铁律（PSRAM）
+- 硬件 N16R8 = 8MB PSRAM，**实测可用**（boot 日志 `PSRAM size: 8386279`）；
+  platformio.ini 已配 `memory_type = qio_opi` + `psram_type = opi`。
+- **栈永远在内部 RAM，PSRAM 只能用于堆。** 栈溢出的解法：① 大对象移出栈 → ② 堆分配走 PSRAM。
+  `-DARDUINO_LOOP_STACK_SIZE=16384` 与 PSRAM 是两件事，都要保留。
+- **项目统一范式：大对象 `MALLOC_CAP_SPIRAM` 优先，失败回退 `MALLOC_CAP_8BIT`**
+  （参考 `capability_registry.cpp: registry_buf_alloc` / `workflow.cpp:782` / `workflow_storage.cpp:1481`）。
+- 任何 >1KB 的结构禁止在栈上声明（setup/loop/命令路径尤其危险）。
+- ArduinoJson 7.4.3 **无** PSRAM 支持，所有 JsonDocument 缓冲仍占内部 RAM（要迁移需自定义 Allocator）。
+
+## Workflow variant 版本机制（2026-09-10 定版，已上板）
+- `Workflow.variant` = uint32 **内容版本**：create=1 / set=+1 / delete=+1，**绝不用时间戳**；存在 Meta entry（Meta v3，89B）。
+- CapabilityRegistry 文件 **v2**：entry = stable_id + **object_version(uint32)** + runtime_id；workflow 的 object_version 直接取 `wf->variant`；magic `CAPA/CAPT/CAPW` → `AP2A/AP2T/AP2W`（改格式必须换 magic 强制重建）。
+- 云端增量同步两步：`workflow.list`（registry_version / checksum / 各 stable_id+variant）比对 → 只 `workflow.get` 变了的。
+- 6 条 CommandManager 命令：`workflow.list / get / create / set / delete / save`；`save` 落盘后请求 Safe Restart（`p:{restart:false}` 跳过）。
+- delete 是**逻辑删**（valid=false + variant++），不物理删 BIN。
+- 串口调试透传：`cm {"cmd":"workflow.xxx","ob":"-","id":"8010","p":{...}}`（main.cpp `cm_console`），与 MQTT 走同一 `command_manager_execute()` 链路。
+- **铁律**：新增 Workflow 字段时，`workflow_storage_load()` 的每个拷贝点都要回填，否则重启丢值（variant 曾漏过）。
+
 ## 新增硬件 Action 模块速查
 - 模板见 `新增动作模板.md`；参照实现 `src/valve.cpp`（即时完成）/ `src/computer_reset.cpp`（异步 + 单例 GPIO 仲裁）
 - 接入点：main.cpp `setup()` 第四层（必须在 `workflow_init()` 之后）+ `loop()`
