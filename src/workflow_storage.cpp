@@ -44,6 +44,7 @@ static_assert(WF_STG_MAX_PARAM == WORKFLOW_MAX_PARAM, "WF_STG_MAX_PARAM 与 WORK
 // =====================================================
 static int8_t s_test_fail_step = -1;   // -1 = 关闭
 static int s_test_abort_phase = 0;     // 0 = 关闭, 1 = 预提交中断, 2 = 提交后中断
+static int8_t s_test_fail_wf = -1;     // -1 = 关闭；指定 Workflow 的整次 save 失败
 
 // =====================================================
 // 模块内部状态
@@ -1267,6 +1268,19 @@ WorkflowStorageResult workflow_storage_save(
         return WF_STG_ERR_INVALID_ARGUMENT;
     }
 
+    // 故障注入：指定 Workflow 的整次 save 失败（一次性，用于验证
+    // "部分成功不得清空全部 Dirty"）。放在参数校验之后，
+    // 模拟的是"真正开始写盘时才失败"。
+    if (s_test_fail_wf >= 0 && s_test_fail_wf == (int8_t)workflow_id)
+    {
+        s_test_fail_wf = -1;
+        Serial.printf(
+            "[WFStg] TEST fail_wf injected: wf=%u\n",
+            (unsigned)workflow_id
+        );
+        return WF_STG_ERR_WRITE_FAILED;
+    }
+
     if (!s_meta_loaded)
     {
         workflow_storage_load_meta();
@@ -1509,6 +1523,15 @@ void workflow_storage_free_definition(
 void workflow_storage_test_fail_step(int step)
 {
     s_test_fail_step = (step >= 0 && step < WF_STG_MAX_STEP) ? (int8_t)step : (int8_t)-1;
+}
+
+void workflow_storage_test_fail_wf(int wf)
+{
+    s_test_fail_wf = (wf >= 0 && wf < (int)WF_STG_MAX_COUNT) ? (int8_t)wf : (int8_t)-1;
+    Serial.printf(
+        "[WFStg] TEST fail_wf armed: wf=%d\n",
+        (int)s_test_fail_wf
+    );
 }
 
 void workflow_storage_test_abort_phase(int phase)

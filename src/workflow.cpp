@@ -841,6 +841,19 @@ bool workflow_init()
         return false;
     }
 
+    // 启动期确认大池是否真的落在 PSRAM（§37）
+    //   三者都是 PSRAM 优先 + DRAM 回退；回退不报错，但必须可见。
+    Serial.printf(
+        "[Workflow] pools: trigger=%s(%u B) action=%s(%u B) step_def=%s(%u B) | PSRAM total=%u B\n",
+        trigger_instances_psram ? "PSRAM" : "DRAM",
+        (unsigned)trigger_size,
+        action_instances_psram ? "PSRAM" : "DRAM",
+        (unsigned)action_size,
+        step_definitions_psram ? "PSRAM" : "DRAM",
+        (unsigned)def_size,
+        (unsigned)ESP.getPsramSize()
+    );
+
     for(uint16_t i = 0; i < instance_count; i++)
     {
         new (&trigger_instances[i]) WorkflowTriggerInstance();
@@ -1733,6 +1746,23 @@ bool workflow_save_transaction()
         return false;
     }
 
+    // Dirty 清单先打出来，便于核对"是否所有 Dirty Workflow 都被处理"
+    {
+        String list = "";
+        for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
+        {
+            if(dirty_workflow_has(wf))
+            {
+                list += String((unsigned)wf);
+                list += " ";
+            }
+        }
+        Serial.printf(
+            "[Workflow] save transaction: dirty=[%s] critical_held=%d\n",
+            list.c_str(), wf_dirty_critical_held ? 1 : 0
+        );
+    }
+
     for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
     {
         if(!dirty_workflow_has(wf))
@@ -1743,6 +1773,12 @@ bool workflow_save_transaction()
         workflow_build_definition(wf, def_buf);
 
         WorkflowStorageResult r = workflow_storage_save(wf, def_buf);
+
+        Serial.printf(
+            "[Workflow] save wf=%u id=%s -> %s\n",
+            (unsigned)wf, workflows[wf].id.c_str(),
+            workflow_storage_result_name(r)
+        );
 
         if(r != WF_STG_OK)
         {

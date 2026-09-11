@@ -383,7 +383,7 @@ void wfst_console(const String &cmd)
 
     if (op == "help")
     {
-        Serial.println("wfst ops: seed overwrite dump verify ls del fail abort1 abort2 recover");
+        Serial.println("wfst ops: seed overwrite dump verify ls del fail failwf abort1 abort2 recover");
         return;
     }
 
@@ -529,6 +529,23 @@ void wfst_console(const String &cmd)
     {
         WorkflowStorageResult r = workflow_storage_delete((uint8_t)a);
         Serial.printf("del wf%02d -> r=%s\n", a, workflow_storage_result_name(r));
+        return;
+    }
+
+    // 故障注入：让下一次 save 的第 N 个 Step 写失败（-1 关闭）
+    if (sscanf(op.c_str(), "fail %d", &a) == 1)
+    {
+        workflow_storage_test_fail_step(a);
+        Serial.printf("fail step armed=%d\n", a);
+        return;
+    }
+
+    // 故障注入：让指定 Workflow 的整次 save 失败（-1 关闭）
+    // 用于验证 workflow.save 的"部分失败不得清空全部 Dirty"
+    if (sscanf(op.c_str(), "failwf %d", &a) == 1)
+    {
+        workflow_storage_test_fail_wf(a);
+        Serial.printf("fail wf armed=%d\n", a);
         return;
     }
 

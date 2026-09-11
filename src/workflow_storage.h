@@ -408,6 +408,15 @@ void workflow_storage_test_fail_step(int step);
 // 触发后自动复位为关闭。
 void workflow_storage_test_abort_phase(int phase);
 
+// 让指定 Workflow 的【整次】workflow_storage_save() 失败（返回
+// WF_STG_ERR_WRITE_FAILED）。wf < 0 或 >= 16 表示关闭（默认）。
+//
+// 与 fail_step 的区别：fail_step 是"某个 Step 写失败"，
+// 本接口是"某个 Workflow 保存失败"，用于验证 workflow.save 的
+// 全 Dirty 语义 —— 部分 Workflow 失败时 Dirty 必须整体保留。
+// 触发后自动复位为关闭。
+void workflow_storage_test_fail_wf(int wf);
+
 // 统计某 Workflow 目录下残留的 .t* 暂存文件数（测试断言用）
 int workflow_storage_test_staged_count(
     uint8_t workflow_id
