@@ -176,7 +176,9 @@ static bool save_registry_file(
         }
         uint8_t sid = table.entries[i].stable_id;
         uint8_t l8 = (uint8_t)len;
+        // v2：条目新增 object_version(uint32) —— 重启后恢复 variant
         ok = ok && file.write(&sid, 1) == 1;
+        ok = ok && file_write_u32(file, table.entries[i].object_version);
         ok = ok && file.write(&l8, 1) == 1;
         ok = ok && file.write(
             (const uint8_t *)table.entries[i].runtime_id.c_str(),
@@ -288,8 +290,10 @@ static bool load_registry_file(
 
     for (uint16_t i = 0; i < file_count; i++) {
         uint8_t sid = 0;
+        uint32_t object_version = 0;
         uint8_t len = 0;
         if (file.read(&sid, 1) != 1
+            || !file_read_u32(file, object_version)
             || file.read(&len, 1) != 1)
         {
             ok = false;
@@ -306,6 +310,7 @@ static bool load_registry_file(
         }
         buf[len] = '\0';
         tmp.entries[i].stable_id = sid;
+        tmp.entries[i].object_version = object_version;
         tmp.entries[i].runtime_id = String(buf, len);
         tmp.count = (uint8_t)(i + 1);
     }
@@ -329,6 +334,7 @@ static bool load_registry_file(
     table.count = tmp.count;
     for (uint16_t i = 0; i < file_count; i++) {
         table.entries[i].stable_id = tmp.entries[i].stable_id;
+        table.entries[i].object_version = tmp.entries[i].object_version;
         table.entries[i].runtime_id = tmp.entries[i].runtime_id;
     }
     return true;
@@ -438,11 +444,10 @@ static uint8_t scan_workflow_ids(
             continue;
         }
         out[count].runtime_id = wf->id;
-        // TODO Task9:
-        // 等 workflow_version 接入 workflow.cpp 后启用
-        //
-        // out[count].object_version = wf->version;
-        out[count].object_version = 0;
+        // object_version = workflow.variant（§5）：
+        // Workflow 内容每改一次 variant++ → checksum 变 → registry version++
+        // → 云端 list 比对发现不同 → get 拉取新内容。
+        out[count].object_version = wf->variant;
         count++;
     }
     return count;
@@ -529,6 +534,11 @@ static bool registry_sync(CapabilityType type)
     for (uint8_t i = 0; i < count; i++) {
         current_table.entries[i].runtime_id =
             current[i].runtime_id;
+        // object_version 必须一起带入：
+        //   checksum 计算包含它（registry_checksum），
+        //   漏掉会让"内容变了但 checksum 没变"→ 云端永远同步不到新版本。
+        current_table.entries[i].object_version =
+            current[i].object_version;
     }
     // Stable ID 由 runtime_id 排序决定，与注册顺序无关
     sort_capability_mapping(
@@ -562,6 +572,8 @@ static bool registry_sync(CapabilityType type)
                 loaded.entries[i].stable_id;
             table->entries[i].runtime_id =
                 loaded.entries[i].runtime_id;
+            table->entries[i].object_version =
+                loaded.entries[i].object_version;
         }
         Serial.printf(
             "[CapRegistry] %s reuse version=%u count=%u\n",
@@ -585,6 +597,8 @@ static bool registry_sync(CapabilityType type)
             table->entries[i].stable_id = i;
             table->entries[i].runtime_id =
                 current_table.entries[i].runtime_id;
+            table->entries[i].object_version =
+                current_table.entries[i].object_version;
         }
 
 if (!save_registry_file(path, magic, *table))
@@ -652,11 +666,20 @@ static void dump_table(
     Serial.printf("version=%u\n", table.version);
     Serial.printf("checksum=%u\n", table.checksum);
     for (uint8_t i = 0; i < table.count; i++) {
-        Serial.printf(
-            "%u %s\n",
-            table.entries[i].stable_id,
-            table.entries[i].runtime_id.c_str()
-        );
+        if (table.entries[i].object_version != 0) {
+            Serial.printf(
+                "%u %s v=%u\n",
+                table.entries[i].stable_id,
+                table.entries[i].runtime_id.c_str(),
+                (unsigned)table.entries[i].object_version
+            );
+        } else {
+            Serial.printf(
+                "%u %s\n",
+                table.entries[i].stable_id,
+                table.entries[i].runtime_id.c_str()
+            );
+        }
     }
 }
 
@@ -819,6 +842,24 @@ bool capability_get_workflow_stable_id(
         }
     }
     return false;
+}
+
+bool capability_get_workflow_object_version(
+    uint8_t stable_id,
+    uint32_t &object_version
+)
+{
+    if (!g_initialized || stable_id >= g_workflow_table.count) {
+        return false;
+    }
+    if (g_workflow_table.entries[stable_id].stable_id
+        != stable_id)
+    {
+        return false;
+    }
+    object_version =
+        g_workflow_table.entries[stable_id].object_version;
+    return true;
 }
 
 // =====================================================

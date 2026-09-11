@@ -26,11 +26,14 @@ static_assert(WF_STG_MAX_PARAM == WORKFLOW_MAX_PARAM, "WF_STG_MAX_PARAM 与 WORK
 //   v1（81B）：valid(1) version(1) step_count(2) update_time(4) crc32(4)
 //              id(32) name(32) enable(1) timeout_ms(4)
 //   v2（85B）：v1 布局 + txn_id(4)   —— Workflow 级事务提交标识
+//   v3（89B）：v2 布局 + variant(4)  —— Workflow 内容版本（云端增量同步）
 #define WF_STG_META_ENTRY_SIZE_V1 81u
 #define WF_STG_META_ENTRY_SIZE_V2 85u
+#define WF_STG_META_ENTRY_SIZE_V3 89u
 
 #define WF_STG_META_SIZE_V1 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V1 * WF_STG_MAX_COUNT)
 #define WF_STG_META_SIZE_V2 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V2 * WF_STG_MAX_COUNT)
+#define WF_STG_META_SIZE_V3 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V3 * WF_STG_MAX_COUNT)
 
 // 事务暂存文件后缀：stepNN.bin.t<txn_id 十六进制>
 // 见 workflow_storage_save() 事务说明。
@@ -443,6 +446,7 @@ static size_t serialize_meta(
         put_u8(out, pos, e.enable ? 1u : 0u);
         put_u32(out, pos, e.timeout_ms);
         put_u32(out, pos, e.txn_id);
+        put_u32(out, pos, e.variant);
     }
 
     size_t entries_size = pos - WF_STG_META_HEADER_SIZE;
@@ -465,16 +469,23 @@ static WorkflowStorageResult deserialize_meta(
     size_t size
 )
 {
-    // 版本 1 与版本 2 布局长度不同（v2 每 entry 多 txn_id 4 字节），
-    // 兼容读取：旧版固件写入的 v1 meta 仍可加载（txn_id 视为 0）。
-    bool is_v2;
-    if (size == WF_STG_META_SIZE_V2)
+    // 版本 1 / 2 / 3 布局长度不同：
+    //   v2 每 entry 多 txn_id 4 字节
+    //   v3 每 entry 再多 variant 4 字节
+    // 兼容读取：旧版固件写入的 meta 仍可加载
+    //（缺失的 txn_id / variant 视为 0）。
+    int layout;   // 1 / 2 / 3
+    if (size == WF_STG_META_SIZE_V3)
     {
-        is_v2 = true;
+        layout = 3;
+    }
+    else if (size == WF_STG_META_SIZE_V2)
+    {
+        layout = 2;
     }
     else if (size == WF_STG_META_SIZE_V1)
     {
-        is_v2 = false;
+        layout = 1;
     }
     else
     {
@@ -499,7 +510,9 @@ static WorkflowStorageResult deserialize_meta(
     {
         return WF_STG_ERR_VERSION_MISMATCH;
     }
-    if ((is_v2 && version < 2) || (!is_v2 && version > 1))
+    if ((layout == 3 && version < 3) ||
+        (layout == 2 && version != 2) ||
+        (layout == 1 && version != 1))
     {
         // 头部版本与文件长度自相矛盾，视为损坏
         return WF_STG_ERR_FORMAT_INVALID;
@@ -530,7 +543,8 @@ static WorkflowStorageResult deserialize_meta(
         get_fixed(in, pos, e.name, WF_STG_NAME_MAX_LEN);
         e.enable = get_u8(in, pos) ? 1u : 0u;
         e.timeout_ms = get_u32(in, pos);
-        e.txn_id = is_v2 ? get_u32(in, pos) : 0u;
+        e.txn_id = (layout >= 2) ? get_u32(in, pos) : 0u;
+        e.variant = (layout >= 3) ? get_u32(in, pos) : 0u;
 
         if (e.step_count > WF_STG_MAX_STEP)
         {
@@ -1069,6 +1083,30 @@ void workflow_storage_set_info(
     e.version = WF_STG_META_VERSION;
 }
 
+uint32_t workflow_storage_get_variant(
+    uint8_t workflow_id
+)
+{
+    if (workflow_id >= WF_STG_MAX_COUNT || !s_meta_loaded)
+    {
+        return 0;
+    }
+    return s_meta[workflow_id].variant;
+}
+
+void workflow_storage_set_variant(
+    uint8_t workflow_id,
+    uint32_t variant
+)
+{
+    if (workflow_id >= WF_STG_MAX_COUNT)
+    {
+        return;
+    }
+    s_meta[workflow_id].variant = variant;
+    s_meta[workflow_id].version = WF_STG_META_VERSION;
+}
+
 // -----------------------------------------------------
 // Step
 // -----------------------------------------------------
@@ -1351,6 +1389,7 @@ WorkflowStorageResult workflow_storage_save(
     e.name[WF_STG_NAME_MAX_LEN - 1] = '\0';
     e.enable = definition->enable ? 1u : 0u;
     e.timeout_ms = definition->timeout_ms;
+    e.variant = definition->variant;
 
     if (!workflow_storage_save_meta())
     {

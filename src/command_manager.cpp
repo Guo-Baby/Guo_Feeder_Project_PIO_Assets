@@ -24,6 +24,10 @@
 #define CMD_ERROR_DUPLICATE_CMD_ID     8
 #define CMD_ERROR_SYSTEM               9
 #define CMD_ERROR_EXECUTION           10
+// Workflow 管理命令专用
+#define CMD_ERROR_INVALID_PAYLOAD     11   // payload 不是合法 JSON
+#define CMD_ERROR_NO_FREE_SLOT        12   // Workflow 槽位已满（16）
+#define CMD_ERROR_REJECTED            13   // 修改被拒（运行中 / Critical acquire 失败）
 // =====================================================
 // Command Runtime（命令生命周期管理）
 //
@@ -84,8 +88,19 @@ void command_manager_set_result_callback(CommandResultCallback callback)
     result_callback = callback;
 }
 
+// 命令结果回显（调试用，默认关闭）
+static bool result_echo_enabled = false;
+
+void command_manager_set_result_echo(bool enable)
+{
+    result_echo_enabled = enable;
+}
+
 static void command_report_result(const String &json)
 {
+    if (result_echo_enabled) {
+        command_log("RESULT", json.c_str());
+    }
     if (result_callback != nullptr) {
         result_callback(json);
     }
@@ -177,6 +192,15 @@ static bool command_system_restart_status(const CommandMessage &cmd, JsonDocumen
 static bool command_system_get_time(const CommandMessage &cmd, JsonDocument &response);
 
 // Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
+// ---- Workflow 管理命令（云端同步 / 远程 CRUD）----
+static bool command_workflow_list(const CommandMessage &cmd, JsonDocument &response);
+static bool command_workflow_get(const CommandMessage &cmd, JsonDocument &response);
+static bool command_workflow_create(const CommandMessage &cmd, JsonDocument &response);
+static bool command_workflow_set(const CommandMessage &cmd, JsonDocument &response);
+static bool command_workflow_delete(const CommandMessage &cmd, JsonDocument &response);
+static bool command_workflow_save(const CommandMessage &cmd, JsonDocument &response);
+static bool workflow_router(const CommandMessage &cmd, JsonDocument &response);
+
 static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
 static bool command_config_set(const CommandMessage &cmd, JsonDocument &response);
 static bool command_config_save(const CommandMessage &cmd, JsonDocument &response);
@@ -1134,6 +1158,534 @@ static bool command_query_capabilities(JsonDocument &response)
     response["status"] = "success";
     last_result = CMD_RESULT_OK;
     return true;
+}
+
+// =====================================================
+// 一级路由: workflow（Workflow 管理 / 云端同步）
+//
+// 命令:
+//   workflow.list    设备 Workflow 摘要（stable_id + variant）
+//   workflow.get     拉取单个 Workflow 完整 JSON
+//   workflow.create  新建
+//   workflow.set     整体替换
+//   workflow.delete  删除（只置 valid=false）
+//   workflow.save    立即落盘（默认随后安全重启）
+//
+// 分层铁律:
+//   本层只做【参数校验 + 调用 workflow.cpp API + 返回 JSON】，
+//   不解析 BIN、不直接操作 LittleFS、不保存 Workflow 内部结构。
+// =====================================================
+
+// payload 解析（允许为空）
+static bool workflow_parse_payload(
+    const CommandMessage &cmd,
+    JsonDocument &pl
+)
+{
+    if (cmd.payload.length() == 0)
+    {
+        return true;   // 无参数，合法
+    }
+
+    if (deserializeJson(pl, cmd.payload))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_INVALID_PAYLOAD,
+            "workflow payload is not valid JSON"
+        );
+        return false;
+    }
+    return true;
+}
+
+// 从 payload 中取出 workflow 对象
+//
+// 两种写法都接受:
+//   {"workflow":{ ... }}
+//   { "id":"x", "steps":[...] }        （payload 本身即 workflow）
+static bool workflow_pick_object(
+    const CommandMessage &cmd,
+    JsonDocument &pl,
+    JsonObject &out
+)
+{
+    JsonVariant wf = pl["workflow"];
+    if (!wf.isNull() && wf.is<JsonObject>())
+    {
+        out = wf.as<JsonObject>();
+        return true;
+    }
+    if (!pl["id"].isNull())
+    {
+        out = pl.as<JsonObject>();
+        return true;
+    }
+
+    command_send_error(
+        cmd,
+        CMD_ERROR_PARAM,
+        "Missing 'workflow' object"
+    );
+    return false;
+}
+
+// 定位目标 Workflow
+//
+// 优先级: payload.stable_id > payload.id > cmd.object
+// stable_id 经 CapabilityRegistry 翻译成 runtime_id，再用
+// workflow_find_index_by_id() 找槽位。
+static bool workflow_resolve_index(
+    const CommandMessage &cmd,
+    JsonDocument &pl,
+    uint8_t &index,
+    String &runtime_id
+)
+{
+    if (!pl["stable_id"].isNull())
+    {
+        long k = pl["stable_id"].as<long>();
+        if (k < 0 || k > 255 ||
+            !capability_get_workflow_by_stable_id((uint8_t)k, runtime_id))
+        {
+            command_send_error(
+                cmd,
+                CMD_ERROR_WORKFLOW_NOT_FOUND,
+                "workflow stable_id not found"
+            );
+            return false;
+        }
+    }
+    else if (!pl["id"].isNull())
+    {
+        runtime_id = pl["id"].as<String>();
+    }
+    else if (cmd.object.length() > 0)
+    {
+        runtime_id = cmd.object;
+    }
+    else
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_MISSING_OBJECT,
+            "Missing 'stable_id' / 'id' (workflow)"
+        );
+        return false;
+    }
+
+    int idx = workflow_find_index_by_id(runtime_id);
+    if (idx < 0)
+    {
+        String msg = "Workflow not found: ";
+        msg += runtime_id;
+        command_send_error(
+            cmd,
+            CMD_ERROR_WORKFLOW_NOT_FOUND,
+            msg
+        );
+        return false;
+    }
+
+    index = (uint8_t)idx;
+    return true;
+}
+
+// 找空槽位（id 为空 / 槽位从未使用）
+static int workflow_find_free_slot()
+{
+    for (uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        Workflow *w = workflow_get(i);
+        if (w == nullptr || w->id.length() == 0)
+        {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// ---- workflow.list ----
+static bool command_workflow_list(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    (void)cmd;
+
+    uint8_t count = capability_get_workflow_count();
+
+    Serial.printf(
+        "[CMD][WF] list: registry_version=%u checksum=%u count=%u dirty=%d\n",
+        (unsigned)capability_get_workflow_version(),
+        (unsigned)capability_get_workflow_checksum(),
+        (unsigned)count,
+        workflow_has_any_dirty() ? 1 : 0
+    );
+
+    response["registry_version"] = capability_get_workflow_version();
+    response["registry_checksum"] = capability_get_workflow_checksum();
+    response["count"] = count;
+    response["dirty"] = workflow_has_any_dirty();
+
+    JsonArray arr = response["workflows"].to<JsonArray>();
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        String runtime_id;
+        uint32_t variant = 0;
+
+        if (!capability_get_workflow_by_stable_id(i, runtime_id))
+        {
+            continue;
+        }
+        capability_get_workflow_object_version(i, variant);
+
+        JsonObject item = arr.add<JsonObject>();
+        item["stable_id"] = i;
+        item["id"] = runtime_id;
+        item["variant"] = variant;
+
+        Serial.printf(
+            "[CMD][WF]   #%u %s variant=%u\n",
+            (unsigned)i, runtime_id.c_str(), (unsigned)variant
+        );
+    }
+
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// ---- workflow.get ----
+static bool command_workflow_get(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!workflow_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    uint8_t index = 0;
+    String runtime_id;
+    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    {
+        return false;
+    }
+
+    String json;
+    if (!workflow_export_workflow_json(index, json))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "workflow export failed"
+        );
+        return false;
+    }
+
+    // 导出结果是 String，这里反序列化回结构化对象再挂到 response，
+    // 保证云端拿到的是真正可解析的 JSON 对象（而不是嵌套字符串）。
+    JsonDocument tmp;
+    if (deserializeJson(tmp, json))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "workflow export re-parse failed"
+        );
+        return false;
+    }
+
+    JsonObject dst = response["workflow"].to<JsonObject>();
+    for (JsonPair kv : tmp.as<JsonObject>())
+    {
+        dst[kv.key()] = kv.value();
+    }
+
+    uint8_t stable_id = 0xFF;
+    if (capability_get_workflow_stable_id(runtime_id, stable_id))
+    {
+        response["stable_id"] = stable_id;
+    }
+
+    Serial.printf(
+        "[CMD][WF] get: slot=%u id=%s variant=%u bytes=%u\n",
+        (unsigned)index, runtime_id.c_str(),
+        (unsigned)workflow_get_variant(index), (unsigned)json.length()
+    );
+
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// ---- workflow.create ----
+static bool command_workflow_create(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!workflow_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    JsonObject wf_obj;
+    if (!workflow_pick_object(cmd, pl, wf_obj))
+    {
+        return false;
+    }
+
+    int slot = workflow_find_free_slot();
+    if (slot < 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_NO_FREE_SLOT,
+            "No free workflow slot (max 16)"
+        );
+        return false;
+    }
+
+    if (!workflow_apply_workflow_json((uint8_t)slot, wf_obj, true))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_REJECTED,
+            "workflow create rejected (running / dirty acquire failed)"
+        );
+        return false;
+    }
+
+    // id 集合变化 → stable_id 映射与 checksum 都要重算
+    capability_registry_rescan();
+
+    String runtime_id = wf_obj["id"] | "";
+    uint8_t stable_id = 0xFF;
+    capability_get_workflow_stable_id(runtime_id, stable_id);
+
+    Serial.printf(
+        "[CMD][WF] create: slot=%u id=%s stable_id=%u variant=%u\n",
+        (unsigned)slot, runtime_id.c_str(),
+        (unsigned)stable_id,
+        (unsigned)workflow_get_variant((uint8_t)slot)
+    );
+
+    response["status"] = "success";
+    response["slot"] = slot;
+    response["stable_id"] = stable_id;
+    response["id"] = runtime_id;
+    response["variant"] = workflow_get_variant((uint8_t)slot);
+    response["dirty"] = workflow_has_any_dirty();
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// ---- workflow.set ----
+static bool command_workflow_set(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!workflow_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    JsonObject wf_obj;
+    if (!workflow_pick_object(cmd, pl, wf_obj))
+    {
+        return false;
+    }
+
+    uint8_t index = 0;
+    String runtime_id;
+    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    {
+        return false;
+    }
+
+    if (!workflow_apply_workflow_json(index, wf_obj, false))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_REJECTED,
+            "workflow set rejected (running / dirty acquire failed)"
+        );
+        return false;
+    }
+
+    capability_registry_rescan();
+
+    String new_id = wf_obj["id"] | "";
+    if (new_id.length() == 0)
+    {
+        new_id = runtime_id;
+    }
+    uint8_t stable_id = 0xFF;
+    capability_get_workflow_stable_id(new_id, stable_id);
+
+    Serial.printf(
+        "[CMD][WF] set: slot=%u id=%s stable_id=%u variant=%u\n",
+        (unsigned)index, new_id.c_str(),
+        (unsigned)stable_id,
+        (unsigned)workflow_get_variant(index)
+    );
+
+    response["status"] = "success";
+    response["slot"] = index;
+    response["stable_id"] = stable_id;
+    response["id"] = new_id;
+    response["variant"] = workflow_get_variant(index);
+    response["dirty"] = workflow_has_any_dirty();
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// ---- workflow.delete ----
+static bool command_workflow_delete(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!workflow_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    uint8_t index = 0;
+    String runtime_id;
+    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    {
+        return false;
+    }
+
+    if (!workflow_delete(index))
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "workflow delete failed"
+        );
+        return false;
+    }
+
+    capability_registry_rescan();
+
+    Serial.printf(
+        "[CMD][WF] delete: slot=%u id=%s variant=%u\n",
+        (unsigned)index, runtime_id.c_str(),
+        (unsigned)workflow_get_variant(index)
+    );
+
+    response["status"] = "success";
+    response["slot"] = index;
+    response["id"] = runtime_id;
+    response["variant"] = workflow_get_variant(index);
+    response["dirty"] = workflow_has_any_dirty();
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// ---- workflow.save ----
+//
+// 立即把 Dirty 落盘（不等 5 分钟延迟窗口），成功后默认请求
+// 安全重启 —— 与 ConfigManager 的 config_save 同一套语义：
+// 重启由 SystemCommand 统一执行，等 Critical Operation 归零
+// 后进入 10s 安全窗口。
+static bool command_workflow_save(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    JsonDocument pl;
+    if (!workflow_parse_payload(cmd, pl))
+    {
+        return false;
+    }
+
+    bool had_dirty = workflow_has_any_dirty();
+    bool restart = pl["restart"] | true;
+
+    Serial.printf(
+        "[CMD][WF] save: dirty=%d restart=%d\n",
+        had_dirty ? 1 : 0, restart ? 1 : 0
+    );
+
+    bool ok = workflow_save_transaction();
+
+    if (!ok)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_EXECUTION,
+            "workflow save failed (dirty kept for retry)"
+        );
+        return false;
+    }
+
+    capability_registry_rescan();
+
+    bool restarting = false;
+    if (had_dirty && restart)
+    {
+        restarting = system_command_request_restart();
+        Serial.printf(
+            "[CMD][WF] save: restart requested=%d\n",
+            restarting ? 1 : 0
+        );
+    }
+
+    response["status"] = "success";
+    response["saved"] = true;
+    response["dirty"] = workflow_has_any_dirty();
+    response["restarting"] = restarting;
+    response["registry_version"] = capability_get_workflow_version();
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+static bool workflow_router(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    const String &command = cmd.command;
+
+    if (command == "workflow.list") {
+        return command_workflow_list(cmd, response);
+    }
+    if (command == "workflow.get") {
+        return command_workflow_get(cmd, response);
+    }
+    if (command == "workflow.create") {
+        return command_workflow_create(cmd, response);
+    }
+    if (command == "workflow.set") {
+        return command_workflow_set(cmd, response);
+    }
+    if (command == "workflow.delete") {
+        return command_workflow_delete(cmd, response);
+    }
+    if (command == "workflow.save") {
+        return command_workflow_save(cmd, response);
+    }
+
+    String msg = "Unknown workflow command: ";
+    msg += command;
+    command_send_error(
+        cmd,
+        CMD_ERROR_UNKNOWN_COMMAND,
+        msg
+    );
+    return false;
 }
 
 // =====================================================

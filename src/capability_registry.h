@@ -49,8 +49,19 @@
 //   magic    : uint32_t  文件魔数（区分三种 Registry）
 //   version  : uint32_t  Mapping 逻辑版本，变化时 +1（初始 1，禁止时间戳）
 //   count    : uint16_t  条目数
-//   checksum : uint32_t  CRC32（每个条目: stable_id + len + runtime_id）
-//   entries  : count 个 { stable_id(uint8) len(uint8) runtime_id[len] }
+//   checksum : uint32_t  CRC32（每个条目: stable_id + object_version + len + runtime_id）
+//   entries  : count 个 { stable_id(uint8) object_version(uint32) len(uint8) runtime_id[len] }
+//
+// 文件格式 v2（相对 v1 的变更）：
+//   - 每个条目新增 object_version(uint32)
+//     Workflow = workflow.variant（内容版本，云端增量同步依据）
+//     Action / Trigger 恒为 0
+//   - checksum 计算早已包含 object_version，v2 才把它真正落盘
+//   - 魔数整体变更 → 旧 v1 文件被判定为"不存在"，自动重建，
+//     无需编写容易出错的兼容解析分支。
+//
+// 影响：内容变化 → variant++ → checksum 变化 → version++ →
+//       云端发现不同 → 增量同步（§5 / §6）。
 //
 // Stable ID 规则:
 //   runtime_id 按字符串升序排序，排序后的 index 即 stable_id；
@@ -82,11 +93,14 @@
 #define CAPABILITY_WORKFLOW_FILE      "/registry/workflow.bin"
 
 // =====================================================
-// 文件魔数 ('CAPA' / 'CAPT' / 'CAPW')
+// 文件魔数（v2 格式：条目含 object_version）
+//
+// 'AP2A' / 'AP2T' / 'AP2W'
+// 与 v1（'CAPA' / 'CAPT' / 'CAPW'）不同 → v1 文件自动失效并重建。
 // =====================================================
-#define CAPABILITY_MAGIC_ACTION      0x43415041UL
-#define CAPABILITY_MAGIC_TRIGGER     0x43415054UL
-#define CAPABILITY_MAGIC_WORKFLOW    0x43415057UL
+#define CAPABILITY_MAGIC_ACTION      0x41503241UL
+#define CAPABILITY_MAGIC_TRIGGER     0x41503254UL
+#define CAPABILITY_MAGIC_WORKFLOW    0x41503257UL
 
 // =====================================================
 // Registry 类型
@@ -196,6 +210,15 @@ bool capability_get_workflow_by_stable_id(
 bool capability_get_workflow_stable_id(
     const String &runtime_id,
     uint8_t &stable_id
+);
+
+// 读取 Workflow 条目的 object_version（= workflow.variant）
+//
+// 用途：workflow.list 需要把 (stable_id, variant) 一起返回给云端
+// 做增量比对。stable_id 越界 / 未初始化返回 false。
+bool capability_get_workflow_object_version(
+    uint8_t stable_id,
+    uint32_t &object_version
 );
 
 // =====================================================
