@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-**Phase 5 — README 更新 + 脚本化回归 + 最终报告**
+**✅ 全部完成（Phase 1 – Phase 5）**
 
 ## Task Summary
 
@@ -15,7 +15,7 @@
 | Phase 2 | `set` 无变化不增 variant（canonical 比较）+ `save` 全 Dirty 语义核对 | ✅ 完成 |
 | Phase 3 | PSRAM / 栈安全优化 + save 可观测性 + 保存失败故障注入 | ✅ 完成 |
 | Phase 4 | `workflow_cloud_interface.md` 云端适配文档 | ✅ 完成 |
-| Phase 5 | README 更新 + 回归测试 + 最终报告 | 🚧 进行中 |
+| Phase 5 | README 更新 + 脚本化回归 + 最终报告 | ✅ 完成 |
 
 ## Completed
 
@@ -55,19 +55,25 @@
   返回 `WRITE_FAILED`（一次性），区别于已有的 `fail_step`（单 Step 失败）。
 - `wfst` 控制台新增 `failwf <n>`。
 
-### Phase 4（本文件同批提交）
+### Phase 5（本次）
 
-- 新增 `workflow_cloud_interface.md`（15 章 + 2 附录）：
-  分层架构、概念模型、JSON Schema、Definition/Runtime、
-  修改限制、Variant、Capability Registry & Stable ID、
-  传输格式（明文 + 云端紧凑键映射）、7 个命令详解（请求/参数/返回/错误/
-  variant 行为/dirty 行为）、错误码、同步流程、Action/Trigger 清单、
-  UI 对接注意事项、边界限制、测试方法。
+- `readme.md`：§4.9 补 Workflow 架构（4.9.1 架构组成 / 4.9.2 数据形态与边界 /
+  4.9.3 云端同步命令速查）；§4.10 补 `object_version = variant` 与 Stable ID
+  平移规则；§4.11 补 Workflow Manage Command 与分层约束。
+- 新增受跟踪回归资产：`test/serial_batch.py` + 4 个用例集。
+- 最终回归：**56/56 断言通过，0 崩溃**（47 主回归 + 9 重启验证）。
+- 新增 `workflow_cloud_sync测试报告.md`（含 §33–§37 逐项证据、
+  未验证边界、复现步骤）。
+- **修复 1 处高严重度接口缺陷**：`workflow.set`/`create` 只给定位字段时
+  会把 `p` 本身当成完整 Workflow，从而**静默清空**目标对象的 steps。
+  现在内容必须嵌套在 `p.workflow` 下，平铺形态返回错误码 `6`。
 
 ## Current Commit
 
 | commit | 说明 |
 |---|---|
+| `93b1ee7` | docs(readme): 补充 Workflow 架构说明（§4.9 / §4.10 / §4.11） |
+| `28e509f` | docs(workflow): 云端适配接口文档 + 任务进度文档 |
 | `56b3d55` | perf(workflow): PSRAM 池分配可见性 + save 全 Dirty 可观测性 + 保存失败故障注入 |
 | `57973aa` | feat(workflow): 云端同步协议完善 — valid 字段 / sync_info / set 幂等 |
 | `8a1e4c4` | perf(registry): 临时缓冲改 PSRAM 优先 + load 去掉栈上 800B tmp |
@@ -80,23 +86,32 @@
 
 ## Tests
 
-### 已执行（上板 COM8，真实固件）
+### 最终执行（上板 COM8，真实固件，基线 commit `56b3d55` + pick_object 修复）
+
+| 用例集 | 断言 | 结果 | 日志 |
+|---|---|---|---|
+| `test/wf_final_tests.txt`（§33–§38） | 47 | **47/47 PASS** | `.pio/wf_final_run2.log` |
+| `test/wf_reboot_final_tests.txt`（§35） | 9 | **9/9 PASS** | `.pio/wf_reboot_final.log` |
+| **合计** | **56** | **56/56 PASS，0 崩溃** | — |
+
+完整证据见 `workflow_cloud_sync测试报告.md`。
+
+### 早期执行（Phase 1–3 期间，保留备查）
 
 | 用例集 | 结果 | 日志 |
 |---|---|---|
-| `wf_sync_tests.txt`（32 断言，覆盖 §33–§37） | **32/32 PASS** | `.pio/wf_sync_run1.log` |
-| `wf_reboot_tests.txt`（7 断言，覆盖 §35） | **7/7 PASS** | `.pio/wf_reboot_run1.log` |
+| `wf_sync_tests.txt`（32 断言） | **32/32 PASS** | `.pio/wf_sync_run1.log` |
+| `wf_reboot_tests.txt`（7 断言） | **7/7 PASS** | `.pio/wf_reboot_run1.log` |
 
 关键证据：
 
 ```
 [Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B)
-[CapRegistry] sync buf 2328 B in PSRAM (hwm=9844)
-[CapRegistry] ACTION   reuse    version=1  count=7
-[CapRegistry] TRIGGER  reuse    version=1  count=3
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9876)
 [CapRegistry] WORKFLOW rebuild  version=20 count=4   ← 新增 cm_a → version++
-[WFStg] TEST fail_wf injected: wf=6                  ← §34 故障注入生效
-[Workflow] save transaction: dirty=[3 5 6 ] critical_held=1
+[WFStg] TEST fail_wf injected: wf=5                  ← §34 故障注入生效
+[Workflow] save transaction: dirty=[3 5 ] critical_held=1
+[Workflow] save wf=5 id=cm_h -> WRITE_FAILED         ← §34 部分失败
 ```
 
 | 验收项 | 证据 |
@@ -121,9 +136,11 @@
 | 低 | `step.id` 未注册时设备**静默接受**（保存但不执行） | 设计如此，已在接口文档 §3.5 显式说明并要求云端校验 |
 | 低 | `stable_id` 按 `runtime_id` 字母序生成，新增/改名会让后续对象整体平移 | 非缺陷，是排序编号固有性质；已在接口文档 §7 强调"以 `id` 为主键" |
 | P2 | Temp Action 环形队列 `queue_wr_ptr` / `queue_rd_ptr` 跨任务无保护 | **既有问题**，非本次引入，待独立立项 |
+| 待验 | 6 项边界未实测（16×16 满载、NO_FREE_SLOT、RUNNING 拒改、variant 溢出、MQTT 端到端、掉电事务恢复） | 见测试报告 §9 |
 
 ## Resolved
 
+- ✅ **【高】** `workflow.set`/`create` 只给定位字段（`p:{"id":"X"}`）会静默清空目标对象 → 内容改为必须嵌套 `p.workflow`，平铺返回错误码 `6`（本次 Phase 5 修复）
 - ✅ 重启后 `variant` 回退为 1 → `workflow_storage_load()` 未回填 `variant`（`3b0ba11`）
 - ✅ `workflow.create` 触发 loopTask 栈溢出崩溃 → `registry_sync` 栈上 2.4KB 对象改堆分配（`beff2d3`）
 - ✅ `workflow.*` 全部 "Unknown command" → 一级路由分支被并行编辑覆盖（`82afacb`）
@@ -134,9 +151,13 @@
 
 ## Next
 
-1. 更新 `readme.md` 的 Workflow 架构说明（§31）
-2. 扩充/整理回归用例并复跑，输出最终测试报告（§38-10）
-3. 输出最终报告，逐条回答 §39 的 18 个问题
+**无未完成的必做项。** Phase 1–5 全部完成，最终交付物见 `workflow_cloud_sync测试报告.md` §11。
+
+后续可选（非本次需求）：
+1. 补齐测试报告 §9 列出的 6 项边界用例。
+2. 统一 `enable` 缺省值（需评估对既有 BIN 的兼容影响）。
+3. Temp Action 环形队列跨任务保护（P2，独立立项）。
+4. 云端侧按 `workflow_cloud_interface.md` 实现 MQTT 端到端联调。
 
 ## Notes（踩坑速查）
 

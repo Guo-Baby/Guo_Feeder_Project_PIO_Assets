@@ -1219,24 +1219,37 @@ static bool workflow_pick_object(
     JsonObject &out
 )
 {
+    // 必须提供嵌套的 "workflow" 对象。
+    //
+    // 【为什么不接受"把字段平铺在 p 上"】
+    // workflow.set 的定位字段同样是 p.id。若允许平铺，则
+    //
+    //     p = {"id":"WF1"}          ← 只想定位，没打算改内容
+    //
+    // 会被识别成"一个只有 id、没有 steps 的完整 Workflow"，
+    // 走整体替换后把 WF1 的 steps 全部清空 —— 静默破坏用户数据。
+    //
+    // 因此这里有且只有一种合法形态：
+    //
+    //     {"id":"WF1", "workflow":{...完整 Workflow...}}
+    //
+    // 平铺形态一律按"缺少 workflow 对象"拒绝（错误码 6）。
     JsonVariant wf = pl["workflow"];
-    if (!wf.isNull() && wf.is<JsonObject>())
+    if (wf.isNull() || !wf.is<JsonObject>())
     {
-        out = wf.as<JsonObject>();
-        return true;
-    }
-    if (!pl["id"].isNull())
-    {
-        out = pl.as<JsonObject>();
-        return true;
+        Serial.println(
+            "[CMD][WF] pick_object rejected: missing 'workflow' object"
+        );
+        command_send_error(
+            cmd,
+            CMD_ERROR_PARAM,
+            "Missing 'workflow' object"
+        );
+        return false;
     }
 
-    command_send_error(
-        cmd,
-        CMD_ERROR_PARAM,
-        "Missing 'workflow' object"
-    );
-    return false;
+    out = wf.as<JsonObject>();
+    return true;
 }
 
 // 定位目标 Workflow

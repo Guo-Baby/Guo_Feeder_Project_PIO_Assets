@@ -1,0 +1,82 @@
+# ============================================================
+# Workflow 云端同步 —— 最终回归测试（需求文档 §33 - §38）
+#
+# 用法:
+#   python .pio/serial_batch.py COM8 .pio/wf_final_run.log .pio/wf_final_tests.txt 4
+#
+# 前置状态：设备有 3 个真实 Workflow（slot 0/1/2，variant=1），slots 3..15 空闲。
+#   daily_valve_test / daily_valve_test1 / queue_test
+#
+# 断言目标为设备日志中的原始 [CMD][RESULT] 行（逻辑字段名），
+# 而非云端紧凑上行（s/c/i/t/o/k），两者同一次执行都会打印。
+# ============================================================
+
+# ---------- A. 基础：sync_info / list(valid) / get(valid)  §33-A ----------
+cm {"cmd":"workflow.sync_info","id":"a1"} ||| "command":"workflow.sync_info"
+cm {"cmd":"workflow.sync_info","id":"a2"} ||| "registry_checksum"
+cm {"cmd":"workflow.list","id":"a3"} ||| "valid":true
+cm {"cmd":"workflow.get","id":"a4","p":{"id":"daily_valve_test"}} ||| "valid":true
+
+# ---------- B. 创建 + 立即可见（§12：create 后 list/get 必须立刻可见）----------
+cm {"cmd":"workflow.create","id":"b1","p":{"workflow":{"id":"cm_a","name":"A","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer","params":{"type":"daily","hour":9,"minute":30}},{"type":"action","id":"VALVE_OPEN"}]}}} ||| "variant":1
+cm {"cmd":"workflow.list","id":"b2"} ||| "id":"cm_a","variant":1,"valid":true
+cm {"cmd":"workflow.get","id":"b3","p":{"id":"cm_a"}} ||| "timer"
+
+# ---------- C. 修改 variant++ / 相同内容幂等  §33-C ----------
+cm {"cmd":"workflow.set","id":"c1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer","params":{"type":"daily","hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN"}]}}} ||| "variant":2
+cm {"cmd":"workflow.set","id":"c2","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer","params":{"type":"daily","hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN"}]}}} ||| "changed":false
+cm {"cmd":"workflow.get","id":"c3","p":{"id":"cm_a"}} ||| "A2"
+cm {"cmd":"workflow.get","id":"c4","p":{"id":"cm_a"}} ||| "variant":2
+
+# ---------- D. 整体替换语义：新 steps 更短时，尾部 Step 必须真的消失  §13 ----------
+cm {"cmd":"workflow.set","id":"d1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_CLOSE"}]}}} ||| "variant":3
+cm {"cmd":"workflow.get","id":"d2","p":{"id":"cm_a"}} ||| "VALVE_CLOSE"
+cm {"cmd":"workflow.set","id":"d3","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "variant":4
+cm {"cmd":"workflow.get","id":"d4","p":{"id":"cm_a"}} ||| "steps":[{"type":"action","id":"VALVE_OPEN"}]
+
+# ---------- E. 参数类型往返：float / int  §11 ----------
+cm {"cmd":"workflow.create","id":"e1","p":{"workflow":{"id":"cm_g","enable":true,"timeout_ms":45000,"steps":[{"type":"trigger","id":"weight_decrease","params":{"gram":12.5}},{"type":"action","id":"MQTT_TEST","params":{"length":512}}]}}} ||| "variant":1
+cm {"cmd":"workflow.get","id":"e2","p":{"id":"cm_g"}} ||| "gram":12.5
+cm {"cmd":"workflow.get","id":"e3","p":{"id":"cm_g"}} ||| "length":512
+
+# ---------- F. 逻辑删除：valid=false + variant++ + list 可见  §33-D ----------
+cm {"cmd":"workflow.delete","id":"f1","p":{"id":"cm_g"}} ||| "status":"success"
+cm {"cmd":"workflow.list","id":"f2"} ||| "id":"cm_g","variant":2,"valid":false
+cm {"cmd":"workflow.create","id":"f3","p":{"workflow":{"id":"cm_h","enable":false,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "variant":1
+
+# ---------- G. 多 Dirty 对象一次 save：全部落盘 + dirty 清零 + 不重启  §15/§33-Save ----------
+cm {"cmd":"workflow.set","id":"g1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A3","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "changed":true
+cm {"cmd":"workflow.set","id":"g2","p":{"id":"cm_h","workflow":{"id":"cm_h","name":"H2","enable":false,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_CLOSE"}]}}} ||| "changed":true
+cm {"cmd":"workflow.list","id":"g3"} ||| "dirty":true
+cm {"cmd":"workflow.save","id":"g4","p":{"restart":false}} ||| save transaction: dirty=[3 5 ]
+cm {"cmd":"workflow.list","id":"g5"} ||| "dirty":false
+
+# ---------- H. 无 Dirty 时 save 不得空转重启  §16.1 ----------
+cm {"cmd":"workflow.save","id":"h1","p":{"restart":true}} ||| "restarting":false
+
+# ---------- I. Save 部分失败：Dirty 必须保留，重试能继续  §34 ----------
+wfst failwf 5 ||| armed
+cm {"cmd":"workflow.set","id":"i1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A4","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "changed":true
+cm {"cmd":"workflow.set","id":"i2","p":{"id":"cm_h","workflow":{"id":"cm_h","name":"H3","enable":false,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_CLOSE"}]}}} ||| "changed":true
+cm {"cmd":"workflow.save","id":"i3","p":{"restart":false}} ||| "error_code":10
+cm {"cmd":"workflow.list","id":"i4"} ||| "dirty":true
+cm {"cmd":"workflow.save","id":"i5","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.list","id":"i6"} ||| "dirty":false
+
+# ---------- J. Capability Registry 联动（§36）----------
+cm {"cmd":"workflow.create","id":"j1","p":{"workflow":{"id":"cm_z","enable":false,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| WORKFLOW rebuild version=
+cm {"cmd":"workflow.list","id":"j2"} ||| "registry_version"
+
+# ---------- K. 错误码  §28 ----------
+cm {"cmd":"workflow.get","id":"k1","p":{"stable_id":99}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"k2","p":{"id":"not_exist_wf"}} ||| "error_code":5
+cm {"cmd":"workflow.foo","id":"k3"} ||| "error_code":1
+cm {"cmd":"workflow.create","id":"k4","p":{}} ||| "error_code":6
+cm {"cmd":"workflow.set","id":"k5","p":{"id":"cm_a"}} ||| "error_code":6
+cm {"cmd":"workflow.delete","id":"k6","p":{}} ||| "error_code":3
+
+# ---------- L. 落盘 + 清理，准备重启验证  §35 ----------
+cm {"cmd":"workflow.delete","id":"l1","p":{"id":"cm_z"}} ||| "status":"success"
+cm {"cmd":"workflow.delete","id":"l2","p":{"id":"cm_h"}} ||| "status":"success"
+cm {"cmd":"workflow.save","id":"l3","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.list","id":"l4"} ||| "dirty":false
