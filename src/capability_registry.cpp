@@ -1,6 +1,8 @@
 #include "capability_registry.h"
 
 #include <LittleFS.h>
+#include <esp_heap_caps.h>   // heap_caps_malloc / heap_caps_free
+#include <new>               // placement new（堆上就地构造含 String 的结构）
 
 #include "workflow.h"
 
@@ -501,8 +503,47 @@ static bool registry_sync(CapabilityType type)
     const char *path = nullptr;
     uint32_t magic = 0;
     CapabilityRegistryTable *table = nullptr;
-    CapabilityMapping current[CAPABILITY_MAX_ENTRY];
     uint8_t count = 0;
+
+    // =====================================================
+    // 工作区从堆分配（不能放栈 / 不能用 static）
+    //
+    // 三张表各约 800B（entries[32] 含 String）。
+    //   - 放栈：本函数会被命令路径调用，命令可能跑在 loopTask（8KB）
+    //     或 esp-mqtt 任务（默认栈更小）上；曾实测导致
+    //     "Stack canary watchpoint triggered (loopTask)" 崩溃。
+    //   - 用 static：云端命令（MQTT 任务）与串口命令（loop 任务）
+    //     可能并发进入本函数，static 会互相踩踏。
+    // 故每次调用从堆分配，返回前析构 + 释放。
+    // =====================================================
+    const size_t tbl_size = sizeof(CapabilityRegistryTable);
+    const size_t map_size = sizeof(CapabilityMapping) * CAPABILITY_MAX_ENTRY;
+
+    CapabilityRegistryTable *current_table_raw =
+        (CapabilityRegistryTable *)heap_caps_malloc(tbl_size, MALLOC_CAP_8BIT);
+    CapabilityMapping *current_raw =
+        (CapabilityMapping *)heap_caps_malloc(map_size, MALLOC_CAP_8BIT);
+    CapabilityRegistryTable *loaded_raw =
+        (CapabilityRegistryTable *)heap_caps_malloc(tbl_size, MALLOC_CAP_8BIT);
+
+    if (current_table_raw == nullptr || current_raw == nullptr ||
+        loaded_raw == nullptr)
+    {
+        if (current_table_raw) heap_caps_free(current_table_raw);
+        if (current_raw) heap_caps_free(current_raw);
+        if (loaded_raw) heap_caps_free(loaded_raw);
+        Serial.println("[CapRegistry] sync oom");
+        return false;
+    }
+
+    // malloc 出来的内存未调用构造函数，String 成员必须就地构造
+    new (current_table_raw) CapabilityRegistryTable();
+    new (loaded_raw) CapabilityRegistryTable();
+    new (current_raw) CapabilityMapping[CAPABILITY_MAX_ENTRY];
+
+    CapabilityRegistryTable &current_table = *current_table_raw;
+    CapabilityRegistryTable &loaded = *loaded_raw;
+    CapabilityMapping *current = current_raw;
 
     switch (type) {
         case CAP_ACTION:
@@ -524,11 +565,18 @@ static bool registry_sync(CapabilityType type)
             count = scan_workflow_ids(current, CAPABILITY_MAX_ENTRY);
             break;
         default:
+            // 析构 + 释放后返回
+            current_table_raw->~CapabilityRegistryTable();
+            loaded_raw->~CapabilityRegistryTable();
+            for (uint8_t i = 0; i < CAPABILITY_MAX_ENTRY; i++) {
+                current_raw[i].~CapabilityMapping();
+            }
+            heap_caps_free(current_table_raw);
+            heap_caps_free(current_raw);
+            heap_caps_free(loaded_raw);
             return false;
     }
 
-    // 当前能力列表
-    CapabilityRegistryTable current_table;
     table_reset(current_table);
     current_table.count = count;
     for (uint8_t i = 0; i < count; i++) {
@@ -551,7 +599,6 @@ static bool registry_sync(CapabilityType type)
     current_table.checksum =
         registry_checksum(current_table);
 
-    CapabilityRegistryTable loaded;
     table_reset(loaded);
     bool loaded_ok = load_registry_file(
         path,
@@ -617,6 +664,16 @@ Serial.printf(
     table->checksum
 );
     }
+
+    // 析构 String 成员后释放（String 内部有堆缓冲，必须显式析构）
+    current_table_raw->~CapabilityRegistryTable();
+    loaded_raw->~CapabilityRegistryTable();
+    for (uint8_t i = 0; i < CAPABILITY_MAX_ENTRY; i++) {
+        current_raw[i].~CapabilityMapping();
+    }
+    heap_caps_free(current_table_raw);
+    heap_caps_free(current_raw);
+    heap_caps_free(loaded_raw);
 
     return true;
 }
