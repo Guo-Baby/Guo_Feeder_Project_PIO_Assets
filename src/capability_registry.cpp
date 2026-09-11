@@ -87,6 +87,7 @@ static void table_reset(CapabilityRegistryTable &table)
 {
     for (uint8_t i = 0; i < CAPABILITY_MAX_ENTRY; i++) {
         table.entries[i].stable_id = 0;
+        table.entries[i].object_version = 0;
         table.entries[i].runtime_id = "";
     }
     table.version = 0;
@@ -287,8 +288,15 @@ static bool load_registry_file(
         return false;
     }
 
-    CapabilityRegistryTable tmp;
-    table_reset(tmp);
+    // 直接写入调用方缓冲区，不再用栈上 tmp 中转。
+    //
+    // 旧实现在此声明 `CapabilityRegistryTable tmp`（约 800B 栈上对象，
+    // 含 32 个 String）。本函数位于命令路径调用栈内（loopTask / mqtt task），
+    // 是此前栈溢出的叠加来源之一。
+    //
+    // 唯一调用点 registry_sync() 已先 table_reset(loaded)，
+    // 失败时调用方只看返回值、不读 table 内容，故直接写入是安全的。
+    table_reset(table);
 
     for (uint16_t i = 0; i < file_count; i++) {
         uint8_t sid = 0;
@@ -311,10 +319,10 @@ static bool load_registry_file(
             break;
         }
         buf[len] = '\0';
-        tmp.entries[i].stable_id = sid;
-        tmp.entries[i].object_version = object_version;
-        tmp.entries[i].runtime_id = String(buf, len);
-        tmp.count = (uint8_t)(i + 1);
+        table.entries[i].stable_id = sid;
+        table.entries[i].object_version = object_version;
+        table.entries[i].runtime_id = String(buf, len);
+        table.count = (uint8_t)(i + 1);
     }
 
     file.close();
@@ -325,20 +333,13 @@ static bool load_registry_file(
 
     // 结构校验：stable_id 必须从 0 连续递增
     for (uint16_t i = 0; i < file_count; i++) {
-        if (tmp.entries[i].stable_id != (uint8_t)i) {
+        if (table.entries[i].stable_id != (uint8_t)i) {
             return false;
         }
     }
 
-    table_reset(table);
     table.version = file_version;
     table.checksum = file_checksum;
-    table.count = tmp.count;
-    for (uint16_t i = 0; i < file_count; i++) {
-        table.entries[i].stable_id = tmp.entries[i].stable_id;
-        table.entries[i].object_version = tmp.entries[i].object_version;
-        table.entries[i].runtime_id = tmp.entries[i].runtime_id;
-    }
     return true;
 }
 
@@ -493,6 +494,30 @@ static const char *capability_type_name(CapabilityType type)
 }
 
 // =====================================================
+// 工作缓冲区分配：PSRAM 优先，回退内部 RAM
+//
+// N16R8 实测 8MB PSRAM（启动日志 "PSRAM size: 8386279"）。
+// 内部 RAM 仅约 327KB，还要留给 WiFi / MQTT / ArduinoJson /
+// 各任务栈，这些只在 rescan 瞬间使用的临时大缓冲不该占它。
+// 无 PSRAM 的板子（或 PSRAM 不足）自动回退内部 RAM，功能不变。
+//
+// all_psram: 传入 true，任一次分配回退就被置 false（用于日志）。
+// =====================================================
+static void *registry_buf_alloc(size_t size, bool *all_psram)
+{
+    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (p == nullptr)
+    {
+        p = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+        if (all_psram != nullptr)
+        {
+            *all_psram = false;
+        }
+    }
+    return p;
+}
+
+// =====================================================
 // 单类 Registry 同步：
 //   1. 扫描当前能力列表
 //   2. 计算当前 checksum
@@ -515,16 +540,20 @@ static bool registry_sync(CapabilityType type)
     //   - 用 static：云端命令（MQTT 任务）与串口命令（loop 任务）
     //     可能并发进入本函数，static 会互相踩踏。
     // 故每次调用从堆分配，返回前析构 + 释放。
+    //
+    // 分配位置：PSRAM 优先（见 registry_buf_alloc），
+    // 不占用宝贵的内部 RAM。
     // =====================================================
     const size_t tbl_size = sizeof(CapabilityRegistryTable);
     const size_t map_size = sizeof(CapabilityMapping) * CAPABILITY_MAX_ENTRY;
 
+    bool all_psram = true;
     CapabilityRegistryTable *current_table_raw =
-        (CapabilityRegistryTable *)heap_caps_malloc(tbl_size, MALLOC_CAP_8BIT);
+        (CapabilityRegistryTable *)registry_buf_alloc(tbl_size, &all_psram);
     CapabilityMapping *current_raw =
-        (CapabilityMapping *)heap_caps_malloc(map_size, MALLOC_CAP_8BIT);
+        (CapabilityMapping *)registry_buf_alloc(map_size, &all_psram);
     CapabilityRegistryTable *loaded_raw =
-        (CapabilityRegistryTable *)heap_caps_malloc(tbl_size, MALLOC_CAP_8BIT);
+        (CapabilityRegistryTable *)registry_buf_alloc(tbl_size, &all_psram);
 
     if (current_table_raw == nullptr || current_raw == nullptr ||
         loaded_raw == nullptr)
@@ -535,6 +564,13 @@ static bool registry_sync(CapabilityType type)
         Serial.println("[CapRegistry] sync oom");
         return false;
     }
+
+    Serial.printf(
+        "[CapRegistry] sync buf %u B in %s (hwm=%u)\n",
+        (unsigned)(tbl_size * 2u + map_size),
+        all_psram ? "PSRAM" : "INTERNAL",
+        (unsigned)uxTaskGetStackHighWaterMark(nullptr)
+    );
 
     // malloc 出来的内存未调用构造函数，String 成员必须就地构造
     new (current_table_raw) CapabilityRegistryTable();
