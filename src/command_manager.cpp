@@ -460,6 +460,12 @@ static bool command_is_system(const String &command)
     return command == "system";
 }
 
+// Workflow 管理命令：workflow.list / get / create / set / delete / save
+static bool command_is_workflow_manage(const String &command)
+{
+    return command.startsWith("workflow.");
+}
+
 // =====================================================
 // 接收并执行命令
 //
@@ -504,6 +510,8 @@ bool command_manager_execute(const CommandMessage &cmd)
         success = query_router(cmd, response);
     } else if (command_is_system(command)) {
         success = system_router(cmd, response);
+    } else if (command_is_workflow_manage(command)) {
+        success = workflow_router(cmd, response);
     } else {
         String msg = "Unknown command: ";
         msg += command;
