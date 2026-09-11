@@ -11,6 +11,9 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - `json_storage接口文档.md`：JsonStorage 全部接口语义 / 幂等性 / EOF 语义 / 踩坑清单（定版）
 - `system_command接口文档.md`：SystemCommand V1 定位/边界/交互/3 条指令 + restart 保护规划（⚠️ restart 行为已被 V2 取代，以代码为准）
 - `critical_operation接入规范.md`：**V2 Safe Restart 后各业务模块接入 Critical Operation 的标准**（acquire/release 配对、各模块接入点、测试方法）
+- `workflow_cloud_interface.md`：**Workflow ↔ Cloud 唯一契约**（15 章 + 2 附录：架构分层 / JSON Schema / Definition-Runtime / Variant / Stable ID / 传输格式与紧凑键映射 / 7 命令详解 / 错误码 / 同步流程 / Action·Trigger 清单 / UI 注意事项）。**写云端/UI 只读这一份。**
+- `workflow_cloud_sync_progress.md`：Workflow 云端同步**进度台账**（中断后先读它）。同主题还有 `workflow_cloud_sync测试报告.md`（56/56 断言 + 未验证边界）。
+- `workflow_storage改造进度.md` / `bin_storage开发说明0910.md`：BIN 存储层实现与需求
 
 ## 软件架构（四层）
 应用/能力层（Valve / Weight / DispenseGuard / Mijia / OLED）→ 自动化层（Workflow Manager + Capability Registry）→ 服务层（System State / Config / Event / Time / WiFi / Command / Log）→ 云通信层（Cloud Manager / MQTT）。
@@ -124,13 +127,31 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - 任何 >1KB 的结构禁止在栈上声明（setup/loop/命令路径尤其危险）。
 - ArduinoJson 7.4.3 **无** PSRAM 支持，所有 JsonDocument 缓冲仍占内部 RAM（要迁移需自定义 Allocator）。
 
-## Workflow variant 版本机制（2026-09-10 定版，已上板）
-- `Workflow.variant` = uint32 **内容版本**：create=1 / set=+1 / delete=+1，**绝不用时间戳**；存在 Meta entry（Meta v3，89B）。
+## Workflow 云端同步协议（2026-09-12 定版，已上板，56/56 回归通过）
+- `Workflow.variant` = uint32 **内容版本**：create=1 / set 有变化 +1 / **set 内容完全一致则不变** / delete+1，**绝不用时间戳**；存在 Meta entry（Meta v3，89B）。
+- `Workflow.valid` = **RAM 标志**（不进 BIN）：delete→false，create/set/加载→true；`workflow_is_valid()`。重启后 valid=false 不再加载。
 - CapabilityRegistry 文件 **v2**：entry = stable_id + **object_version(uint32)** + runtime_id；workflow 的 object_version 直接取 `wf->variant`；magic `CAPA/CAPT/CAPW` → `AP2A/AP2T/AP2W`（改格式必须换 magic 强制重建）。
-- 云端增量同步两步：`workflow.list`（registry_version / checksum / 各 stable_id+variant）比对 → 只 `workflow.get` 变了的。
-- 6 条 CommandManager 命令：`workflow.list / get / create / set / delete / save`；`save` 落盘后请求 Safe Restart（`p:{restart:false}` 跳过）。
-- delete 是**逻辑删**（valid=false + variant++），不物理删 BIN。
+- **7 条命令**：`workflow.sync_info / list / get / create / set / delete / save`。
+  - `sync_info` 只回 `registry_version / registry_checksum / count / dirty`（轻量入口，不返回列表）
+  - `list` 每项 `{stable_id, id, variant, valid}`
+  - `get` 的完整对象在 `workflow{}`（云端紧凑键 `o`），**`valid` 放在它外面**（`workflow{}` 要能原样回传 set）
+  - `set` 幂等靠 `workflow_definition_matches_json()` canonical 比较（字段定序 + 参数按 name 排序 + 值带 `i/f/b/s` 前缀）→ 响应带 `changed`
+  - `save` 是**全局 Dirty 落盘**：任一失败 → 不清 dirty、不 release Critical、错误码 10 可重试；全部成功才清零；`dirty=false` 时空转重启**被禁止**
+- delete 是**逻辑删**（valid=false + variant++），不物理删 BIN、不杀 Runtime；重启前 `list` 仍可见（刻意设计）。
 - 串口调试透传：`cm {"cmd":"workflow.xxx","ob":"-","id":"8010","p":{...}}`（main.cpp `cm_console`），与 MQTT 走同一 `command_manager_execute()` 链路。
+- 云端上行两种形态：CommandManager 明文（`status/cmd/id/command/timestamp`）→ CloudManager 紧凑键（`s/c/i/t/o/k`，见 cloud_manager.cpp:540-720）。
+
+### 三条极易踩的语义（写云端/UI 必看）
+1. **`stable_id` ≠ Slot 编号**，= 按 `runtime_id` 字符串升序的下标（`capability_registry.cpp:sort_capability_mapping`）。新增/改名一个字母序靠前的 id → **后面所有对象的 stable_id 整体平移**（实测加 `cm_a` 后 `daily_valve_test` 从 #0→#1）。⇒ 云端以 **`id` 为业务主键**，`stable_id` 只作定位；`registry_version` 变了就重建映射。
+2. **`enable` 缺省值两条路径不一致**：JSON 导入缺省 `true`，BIN 加载缺省 `false`。⇒ 云端永远显式传 `enable`。（代码未改）
+3. **`step.id` 写错不报错**：未注册的 id 被安静保存但永不执行。⇒ 云端提交前用注册清单校验。
+
+### 形态约束（高危缺陷已修，dd49512）
+`workflow_pick_object()` **必须**要求内容嵌套在 `p.workflow` 下。
+曾允许平铺 → `set` 的定位字段同为 `p.id`，导致 `p:{"id":"WF1"}`（只想定位）
+被当成完整 Workflow 而**静默清空目标 steps**。现在平铺一律返回错误码 6。
+**教训：定位字段与内容载荷绝不能共用同一个 key。**
+
 - **铁律**：新增 Workflow 字段时，`workflow_storage_load()` 的每个拷贝点都要回填，否则重启丢值（variant 曾漏过）。
 
 ## 新增硬件 Action 模块速查
