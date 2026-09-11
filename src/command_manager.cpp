@@ -193,6 +193,7 @@ static bool command_system_get_time(const CommandMessage &cmd, JsonDocument &res
 
 // Config 异步命令 handler（定义在文件后段，此处前向声明以便路由）
 // ---- Workflow 管理命令（云端同步 / 远程 CRUD）----
+static bool command_workflow_sync_info(const CommandMessage &cmd, JsonDocument &response);
 static bool command_workflow_list(const CommandMessage &cmd, JsonDocument &response);
 static bool command_workflow_get(const CommandMessage &cmd, JsonDocument &response);
 static bool command_workflow_create(const CommandMessage &cmd, JsonDocument &response);
@@ -1302,6 +1303,8 @@ static bool workflow_resolve_index(
 // 找空槽位（id 为空 / 槽位从未使用）
 static int workflow_find_free_slot()
 {
+    // 第一轮：优先"从未使用"的 Slot
+    //   workflow_get(i) 在 i >= workflow_count 时返回 nullptr
     for (uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
     {
         Workflow *w = workflow_get(i);
@@ -1310,7 +1313,59 @@ static int workflow_find_free_slot()
             return (int)i;
         }
     }
+
+    // 第二轮：回收已被 delete 的 Slot（valid=false，id 仍非空）
+    //
+    // delete 是逻辑删，id 不会被清空。若不回收，连续 create/delete
+    // 填满 16 个 Slot 后，重启前将永远无法再创建（误报 NO_FREE_SLOT）。
+    for (uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        Workflow *w = workflow_get(i);
+        if (w != nullptr && !workflow_is_valid(i))
+        {
+            Serial.printf(
+                "[CMD][WF] reuse deleted slot=%u (old id=%s)\n",
+                (unsigned)i, w->id.c_str()
+            );
+            return (int)i;
+        }
+    }
+
     return -1;
+}
+
+// ---- workflow.list ----
+// ---- workflow.sync_info ----
+//
+// 轻量同步入口：只给"要不要继续同步"的判断依据，不返回 Workflow 清单。
+// 云端策略：
+//   sync_info → registry_version / checksum 与缓存一致 ⇒ 结束
+//             → 不一致 ⇒ workflow.list 比 variant/valid ⇒ workflow.get
+static bool command_workflow_sync_info(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    (void)cmd;
+
+    uint8_t count = capability_get_workflow_count();
+    uint32_t version = capability_get_workflow_version();
+    uint32_t checksum = capability_get_workflow_checksum();
+    bool dirty = workflow_has_any_dirty();
+
+    Serial.printf(
+        "[CMD][WF] sync_info: registry_version=%u checksum=%u count=%u dirty=%d\n",
+        (unsigned)version, (unsigned)checksum,
+        (unsigned)count, dirty ? 1 : 0
+    );
+
+    response["registry_version"] = version;
+    response["registry_checksum"] = checksum;
+    response["count"] = count;
+    response["dirty"] = dirty;
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
 }
 
 // ---- workflow.list ----
@@ -1349,14 +1404,27 @@ static bool command_workflow_list(
         }
         capability_get_workflow_object_version(i, variant);
 
+        // valid：区分"对象被删了"与"对象凭空消失"
+        //
+        // delete 是逻辑删（valid=false + variant++），条目仍出现在 list 里，
+        // 云端靠 valid=false + variant 变化识别删除；重启后该 Slot 不再加载。
+        bool valid = false;
+        int idx = workflow_find_index_by_id(runtime_id);
+        if (idx >= 0)
+        {
+            valid = workflow_is_valid((uint8_t)idx);
+        }
+
         JsonObject item = arr.add<JsonObject>();
         item["stable_id"] = i;
         item["id"] = runtime_id;
         item["variant"] = variant;
+        item["valid"] = valid;
 
         Serial.printf(
-            "[CMD][WF]   #%u %s variant=%u\n",
-            (unsigned)i, runtime_id.c_str(), (unsigned)variant
+            "[CMD][WF]   #%u %s variant=%u valid=%d\n",
+            (unsigned)i, runtime_id.c_str(), (unsigned)variant,
+            valid ? 1 : 0
         );
     }
 
@@ -1420,10 +1488,17 @@ static bool command_workflow_get(
         response["stable_id"] = stable_id;
     }
 
+    // valid 放在 workflow 对象【外面】：
+    //   workflow{} 是可被 workflow.set 直接回传的持久化 JSON Schema，
+    //   不应掺入设备侧的删除标记。
+    bool valid = workflow_is_valid(index);
+    response["valid"] = valid;
+
     Serial.printf(
-        "[CMD][WF] get: slot=%u id=%s variant=%u bytes=%u\n",
+        "[CMD][WF] get: slot=%u id=%s variant=%u valid=%d bytes=%u\n",
         (unsigned)index, runtime_id.c_str(),
-        (unsigned)workflow_get_variant(index), (unsigned)json.length()
+        (unsigned)workflow_get_variant(index), valid ? 1 : 0,
+        (unsigned)json.length()
     );
 
     response["status"] = "success";
@@ -1529,6 +1604,29 @@ static bool command_workflow_set(
         return false;
     }
 
+    // 幂等保护：内容与当前完全一致时不改任何东西，variant 也不 +1。
+    //
+    // 为什么要判等：云端 UI 常做"打开编辑 → 原样保存"，
+    // 若无条件 variant++ 会让 registry checksum 无意义变化，
+    // 进而导致 registry_version 虚增、云端反复拉取。
+    if (workflow_definition_matches_json(index, wf_obj))
+    {
+        Serial.printf(
+            "[CMD][WF] set: identical, no-op slot=%u id=%s variant=%u\n",
+            (unsigned)index, runtime_id.c_str(),
+            (unsigned)workflow_get_variant(index)
+        );
+
+        response["status"] = "success";
+        response["slot"] = index;
+        response["id"] = runtime_id;
+        response["variant"] = workflow_get_variant(index);
+        response["changed"] = false;
+        response["dirty"] = workflow_has_any_dirty();
+        last_result = CMD_RESULT_OK;
+        return true;
+    }
+
     if (!workflow_apply_workflow_json(index, wf_obj, false))
     {
         command_send_error(
@@ -1561,6 +1659,7 @@ static bool command_workflow_set(
     response["stable_id"] = stable_id;
     response["id"] = new_id;
     response["variant"] = workflow_get_variant(index);
+    response["changed"] = true;
     response["dirty"] = workflow_has_any_dirty();
     last_result = CMD_RESULT_OK;
     return true;
@@ -1677,6 +1776,9 @@ static bool workflow_router(
 {
     const String &command = cmd.command;
 
+    if (command == "workflow.sync_info") {
+        return command_workflow_sync_info(cmd, response);
+    }
     if (command == "workflow.list") {
         return command_workflow_list(cmd, response);
     }
