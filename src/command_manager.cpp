@@ -1460,6 +1460,11 @@ static bool command_workflow_create(
         return false;
     }
 
+    Serial.printf(
+        "[CMD][WF] create: enter stack_hwm=%u\n",
+        (unsigned)uxTaskGetStackHighWaterMark(nullptr)
+    );
+
     if (!workflow_apply_workflow_json((uint8_t)slot, wf_obj, true))
     {
         command_send_error(
@@ -1472,6 +1477,11 @@ static bool command_workflow_create(
 
     // id 集合变化 → stable_id 映射与 checksum 都要重算
     capability_registry_rescan();
+
+    Serial.printf(
+        "[CMD][WF] create: after rescan stack_hwm=%u\n",
+        (unsigned)uxTaskGetStackHighWaterMark(nullptr)
+    );
 
     String runtime_id = wf_obj["id"] | "";
     uint8_t stable_id = 0xFF;
