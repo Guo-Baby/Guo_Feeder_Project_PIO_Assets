@@ -167,6 +167,16 @@ void command_manager_clear();
 // 日志回调注册
 void command_manager_set_log_callback(CommandLogCallback callback);
 
+// 命令结果回显开关（调试用）
+//
+// 打开后，本模块生成的每一条结果 JSON（成功 result / 失败 error）
+// 都会额外通过 CommandLogCallback 以 "RESULT" 级别输出一份。
+//
+// 用途：串口调试台执行 `cm {...}` 时临时打开，
+// 让结果直接可见（否则结果只走 MQTT，串口看不到）。
+// 生产路径（CloudManager 调用）保持关闭，避免刷屏。
+void command_manager_set_result_echo(bool enable);
+
 // 命令结果回调注册（CloudManager 契约保持不变）
 void command_manager_set_result_callback(CommandResultCallback callback);
 

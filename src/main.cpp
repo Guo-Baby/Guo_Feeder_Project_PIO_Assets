@@ -28,6 +28,16 @@ static void bin_log_serial(const char *level, const char *message)
     Serial.printf("[Bin][%s] %s\n", level, message);
 }
 
+// CommandManager 日志 / 结果回显 → 串口
+//
+// CommandManager 默认静默（与 BinStorage 一样只留回调接口）。
+// 注册后可以看到命令路由过程；配合 command_manager_set_result_echo()
+// 还能在串口直通（cm 命令）时看到完整的结果 JSON。
+static void command_log_serial(const char *level, const char *message)
+{
+    Serial.printf("[CMD][%s] %s\n", level, message);
+}
+
 // =====================================================
 // setup
 // =====================================================
@@ -100,6 +110,8 @@ void setup()
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
     command_manager_init();
+    // 注册日志回调：CommandManager 默认静默，注册后可看到路由/错误/结果
+    command_manager_set_log_callback(command_log_serial);
     cloud_init();
     // =====================================================
     // 第六层：加载 Workflow 配置（依赖所有注册完成）
@@ -144,6 +156,8 @@ void serial_debug_command_process();
 void wfst_console(const String &cmd);
 // Workflow CRUD + 回归测试控制台（wfc 命令，仅上板自测用）
 void wfc_console(const String &cmd);
+// CommandManager 直通控制台（cm 命令，仅上板自测用）
+void cm_console(const String &cmd);
 // =====================================================
 // loop
 // =====================================================
@@ -727,4 +741,76 @@ void wfc_console(const String &cmd)
     }
 
     Serial.printf("unknown wfc op: %s\n", op.c_str());
+}
+
+// =====================================================
+// CommandManager 直通控制台（cm 命令，仅上板自测用）
+//
+// 作用：不经过 MQTT，直接把一条云端命令喂给 CommandManager，
+// 走的是与云端完全相同的路由链（一级路由 → 二级路由 → handler
+// → 结果 JSON 上报），因此串口测通 ≈ 云端可用。
+//
+// 输入格式（与 CloudManager 的下行 JSON 一致，长短字段都接受）：
+//   cm {"cmd":"workflow.list","id":"t1"}
+//   cm {"cmd":"workflow.get","id":"t2","p":{"stable_id":0}}
+//   cm {"cmd":"workflow.set","id":"t3","p":{"stable_id":0,"workflow":{...}}}
+//
+// 字段映射：
+//   cmd → CommandMessage.command
+//   ob  → CommandMessage.object
+//   id  → CommandMessage.cmd_id（缺省自动补 cm<millis>）
+//   p / pl → 序列化后存入 CommandMessage.payload
+//
+// 执行期间临时打开结果回显，结果 JSON 会以
+//   [CMD][RESULT] {...}
+// 打印出来（生产路径走 MQTT，不开回显，避免刷屏）。
+// =====================================================
+void cm_console(const String &cmd)
+{
+    String json = cmd.substring(3);
+    json.trim();
+
+    if (json.length() == 0)
+    {
+        Serial.println("cm: usage: cm {\"cmd\":\"workflow.list\",\"id\":\"t1\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err)
+    {
+        Serial.printf("cm: bad json (%s)\n", err.c_str());
+        return;
+    }
+
+    CommandMessage msg;
+    msg.command = doc["cmd"] | "";
+    msg.object  = doc["ob"]  | "";
+    msg.cmd_id  = doc["id"]  | "";
+    msg.source  = "serial";
+    msg.timestamp = millis();
+
+    if (msg.cmd_id.length() == 0)
+    {
+        msg.cmd_id = "cm" + String(millis());
+    }
+
+    JsonVariant pv = doc.containsKey("p") ? doc["p"] : doc["pl"];
+    if (!pv.isNull())
+    {
+        serializeJson(pv, msg.payload);
+    }
+
+    Serial.printf("cm: cmd=%s ob=%s id=%s payload=%s\n",
+                  msg.command.c_str(),
+                  msg.object.c_str(),
+                  msg.cmd_id.c_str(),
+                  msg.payload.length() ? msg.payload.c_str() : "(empty)");
+
+    command_manager_set_result_echo(true);
+    bool ok = command_manager_execute(msg);
+    command_manager_set_result_echo(false);
+
+    Serial.printf("cm: ret=%d\n", ok ? 1 : 0);
 }

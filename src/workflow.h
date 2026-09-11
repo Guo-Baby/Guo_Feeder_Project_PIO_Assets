@@ -515,6 +515,61 @@ bool workflow_set_step(
     uint8_t param_count
 );
 
+// =====================================================
+// Workflow Variant / 云端同步接口（CommandManager 专用）
+// =====================================================
+//
+// 分层要求：CommandManager 只做参数校验 + 调用本组 API + 返回 JSON，
+// 禁止解析 BIN、禁止直接操作 LittleFS。本组 API 是它与 Workflow 数据
+// 的唯一合法通道。
+
+// 读取指定 Workflow 的 variant（索引越界返回 0）
+uint32_t workflow_get_variant(
+    uint8_t workflow_index
+);
+
+// 直接设置 variant（仅供迁移 / 测试使用；正常修改请用 create/set/delete
+// 内部的自增逻辑，避免版本回退）
+bool workflow_set_variant(
+    uint8_t workflow_index,
+    uint32_t variant
+);
+
+// 按 runtime_id 查找 Workflow 索引；找不到返回 -1
+int workflow_find_index_by_id(
+    const String &id
+);
+
+// 单个 Workflow 导出 JSON（含 variant）
+//
+// 与 workflow_export_json()（全部 Workflow）的区别：
+//   - 本函数从【Definition】导出，不依赖 Runtime Instance 是否已实例化
+//   - 供云端 workflow.get 使用，只回传一个 Workflow
+// 输出结构：
+//   { "id":.., "name":.., "variant":.., "enable":.., "timeout_ms":..,
+//     "steps":[ {"type":"trigger|action","id":..,"params":{..}}, .. ] }
+bool workflow_export_workflow_json(
+    uint8_t workflow_index,
+    String &json
+);
+
+// 单个 Workflow 从 JSON 导入（create / set 共用）
+//
+// 语义：
+//   - 整体替换：先清空该 Workflow 全部 Step Definition，再按 JSON 重建
+//   - is_create = true  → variant 置 1
+//   - is_create = false → variant = 原值 + 1
+//   - 只写 Definition + 复用 Runtime Instance（不消耗新的 256 槽）
+//   - 自动 mark_dirty（含 Critical acquire）；不立即落盘
+//   - 运行中拒绝（会重建 Step，会让在飞运行提前结束）
+//
+// 返回 false：索引越界 / JSON 结构非法 / 运行中 / 修改被拒
+bool workflow_apply_workflow_json(
+    uint8_t workflow_index,
+    JsonObjectConst obj,
+    bool is_create
+);
+
 // 设置 Step 数量
 //
 // 缩小：清空尾部 Step Definition（Runtime 不回收，随下次 start 重建）
@@ -551,6 +606,12 @@ struct Workflow
     unsigned long start_time;
     unsigned long timeout_ms;
     WorkflowState state;
+    // Workflow 内容版本（云端增量同步依据）
+    //
+    // 规则：新建 = 1；每次内容修改 +1；删除 +1（删除不是物理删除）。
+    // 禁止使用时间戳 —— 启动期时间不可信，且无法表达"改了几次"。
+    // 持久化在 Meta v3 entry，重启后恢复。
+    uint32_t variant;
     // CommandManager 关联 ID（Workflow 只保存关联，不理解命令业务）
     String cmd_id;
     // 完成回调（CommandManager 契约；完成/超时/失败时回调 cmd_id + 结果）

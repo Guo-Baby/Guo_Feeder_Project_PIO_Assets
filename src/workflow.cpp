@@ -1387,6 +1387,7 @@ static void workflow_build_definition(
     out->enable = workflows[wf].enable ? 1 : 0;
     out->timeout_ms = (uint32_t)workflows[wf].timeout_ms;
     out->step_count = workflows[wf].step_count;
+    out->variant = workflows[wf].variant;
 
     for(uint8_t s = 0; s < out->step_count; s++)
     {
@@ -1598,6 +1599,19 @@ bool workflow_load_from_storage()
         w.cmd_id = "";
         w.finish_callback = nullptr;
         w.start_time = 0;
+
+        // variant 恢复（Meta v3 起持久化）
+        //
+        // v1/v2 旧 BIN 没有该字段 → 读到 0。此时不能保持 0，
+        // 否则云端会认为"版本 0 = 从未同步过"而反复拉取。
+        // 统一提升为 1（表示"至少存在一版内容"）。
+        w.variant = (def_buf->variant == 0) ? 1u : def_buf->variant;
+
+        Serial.printf(
+            "[WF][DBG] load wf=%u id=%s steps=%u variant=%u\n",
+            (unsigned)wf, w.id.c_str(), (unsigned)w.step_count,
+            (unsigned)w.variant
+        );
 
         for(uint8_t s = 0; s < def_buf->step_count; s++)
         {
@@ -1834,6 +1848,17 @@ bool workflow_delete(
     // 禁止下一次启动
     workflows[workflow_index].enable = false;
 
+    // 删除不是物理删除（§12）：只置 valid=false，variant 仍要 +1，
+    // 这样云端 list 能发现"该 Workflow 变了"并重新拉取（拿到已删状态）。
+    workflows[workflow_index].variant++;
+
+    Serial.printf(
+        "[WF][DBG] delete wf=%u id=%s variant=%u\n",
+        (unsigned)workflow_index,
+        workflows[workflow_index].id.c_str(),
+        (unsigned)workflows[workflow_index].variant
+    );
+
     // §27：正在运行时【不销毁 Runtime Snapshot】
     //   运行中的 Runtime 持有自己的参数快照，继续执行到结束；
     //   同时不清 Definition / 不改 step_count —— 否则会让在飞运行提前结束。
@@ -1939,6 +1964,14 @@ bool workflow_create(
     w.state = WORKFLOW_IDLE;
     w.cmd_id = "";
     w.finish_callback = nullptr;
+
+    // 新建：variant = 1（§4.2）
+    w.variant = 1;
+
+    Serial.printf(
+        "[WF][DBG] create wf=%u id=%s variant=%u\n",
+        (unsigned)workflow_index, id.c_str(), (unsigned)w.variant
+    );
 
     for(uint8_t s = 0; s < WORKFLOW_MAX_STEP; s++)
     {
@@ -2107,6 +2140,330 @@ bool workflow_set_step_count(
     return true;
 }
 
+// =====================================================
+// Workflow Variant / 云端同步接口实现
+// =====================================================
+//
+// CommandManager 通过这些 API 访问 Workflow 数据，
+// 自身不解析 BIN、不直接操作 LittleFS（§3.2）。
+
+uint32_t workflow_get_variant(
+    uint8_t workflow_index
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return 0;
+    }
+    return workflows[workflow_index].variant;
+}
+
+bool workflow_set_variant(
+    uint8_t workflow_index,
+    uint32_t variant
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+    workflows[workflow_index].variant = variant;
+
+    Serial.printf(
+        "[WF][DBG] set_variant wf=%u variant=%u\n",
+        (unsigned)workflow_index, (unsigned)variant
+    );
+    return true;
+}
+
+int workflow_find_index_by_id(
+    const String &id
+)
+{
+    if(id.length() == 0)
+    {
+        return -1;
+    }
+
+    for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        if(workflows[i].id.length() > 0 &&
+           workflows[i].id == id)
+        {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// 单个 Workflow → JSON（从 Definition 导出，不依赖 Runtime）
+bool workflow_export_workflow_json(
+    uint8_t workflow_index,
+    String &json
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+
+    Workflow &wf = workflows[workflow_index];
+
+    if(wf.id.length() == 0)
+    {
+        return false;
+    }
+
+    JsonDocument doc;
+
+    doc["id"] = wf.id;
+    doc["name"] = wf.name;
+    doc["variant"] = wf.variant;
+    doc["enable"] = wf.enable;
+    doc["timeout_ms"] = wf.timeout_ms;
+
+    JsonArray steps = doc["steps"].to<JsonArray>();
+
+    for(uint8_t s = 0; s < wf.step_count; s++)
+    {
+        const WorkflowStepDef *def =
+            workflow_step_def_at(workflow_index, s);
+
+        if(def == nullptr)
+        {
+            continue;
+        }
+
+        JsonObject step = steps.add<JsonObject>();
+
+        step["type"] =
+            (def->type == WORKFLOW_STEP_TRIGGER) ? "trigger" : "action";
+        step["id"] = def->id;
+
+        if(def->param_count > 0)
+        {
+            JsonObject params = step["params"].to<JsonObject>();
+
+            for(uint8_t p = 0; p < def->param_count; p++)
+            {
+                const WorkflowParamValue &pv = def->params[p];
+
+                switch(pv.type)
+                {
+                    case PARAM_INT:
+                        params[pv.name] = pv.int_value;
+                        break;
+                    case PARAM_FLOAT:
+                        params[pv.name] = pv.float_value;
+                        break;
+                    case PARAM_BOOL:
+                        params[pv.name] = pv.bool_value;
+                        break;
+                    case PARAM_STRING:
+                        params[pv.name] = pv.string_value;
+                        break;
+                }
+            }
+        }
+    }
+
+    json = "";
+    ArduinoJson::serializeJson(doc, json);
+
+    Serial.printf(
+        "[WF][DBG] export wf=%u id=%s variant=%u steps=%u bytes=%u\n",
+        (unsigned)workflow_index, wf.id.c_str(),
+        (unsigned)wf.variant, (unsigned)wf.step_count,
+        (unsigned)json.length()
+    );
+
+    return true;
+}
+
+// 单个 Workflow ← JSON（create / set 共用）
+bool workflow_apply_workflow_json(
+    uint8_t workflow_index,
+    JsonObjectConst obj,
+    bool is_create
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT || obj.isNull())
+    {
+        Serial.println("[WF][DBG] apply_json: bad arg");
+        return false;
+    }
+
+    // 整体替换会清空 Step Definition，运行中执行会让在飞运行提前结束
+    if(workflows[workflow_index].state == WORKFLOW_RUNNING)
+    {
+        Serial.printf(
+            "[WF][DBG] apply_json rejected: wf=%u running\n",
+            (unsigned)workflow_index
+        );
+        return false;
+    }
+
+    String id = obj["id"] | "";
+    if(id.length() == 0)
+    {
+        Serial.println("[WF][DBG] apply_json: missing id");
+        return false;
+    }
+
+    String name = obj["name"] | "";
+    if(name.length() == 0)
+    {
+        name = id;   // 未给 name 时退回用 id
+    }
+    bool enable = obj["enable"] | true;
+    uint32_t timeout_ms = obj["timeout_ms"] | 600000UL;
+
+    // ----------------------------------------------------
+    // 1. 先清空全部 Step Definition（整体替换语义：
+    //    新 JSON 的 steps 比旧的少时，尾部必须真的消失）
+    //
+    //    set_step_count(0) 内部已 mark_dirty。
+    //    注意：它只清 Definition，Runtime Instance 保留 →
+    //    后续 set_step 走复用路径，不会消耗新的 256 槽。
+    // ----------------------------------------------------
+    if(!workflow_set_step_count(workflow_index, 0))
+    {
+        Serial.printf(
+            "[WF][DBG] apply_json: reset step_count failed wf=%u\n",
+            (unsigned)workflow_index
+        );
+        return false;
+    }
+
+    // 2. 写入 Workflow 级字段
+    if(!workflow_update_meta(
+           workflow_index, id, name, enable, timeout_ms))
+    {
+        return false;
+    }
+
+    // 3. 逐个重建 Step
+    uint8_t step_index = 0;
+    JsonArrayConst steps = obj["steps"];
+
+    if(!steps.isNull())
+    {
+        for(JsonObjectConst step : steps)
+        {
+            if(step_index >= WORKFLOW_MAX_STEP)
+            {
+                Serial.printf(
+                    "[WF][DBG] apply_json: wf=%u step overflow, trunc to 16\n",
+                    (unsigned)workflow_index
+                );
+                break;
+            }
+
+            String type = step["type"] | "action";
+            String step_id = step["id"] | "";
+
+            if(step_id.length() == 0)
+            {
+                continue;
+            }
+
+            bool is_trigger = (type == "trigger");
+
+            WorkflowParamValue params[WORKFLOW_MAX_PARAM];
+            uint8_t param_count = 0;
+
+            JsonObjectConst src_params = step["params"];
+            if(!src_params.isNull())
+            {
+                for(JsonPairConst kv : src_params)
+                {
+                    if(param_count >= WORKFLOW_MAX_PARAM)
+                    {
+                        break;
+                    }
+
+                    WorkflowParamValue &p = params[param_count];
+                    p.name = String(kv.key().c_str());
+
+                    JsonVariantConst v = kv.value();
+                    if(v.is<bool>())
+                    {
+                        p.type = PARAM_BOOL;
+                        p.bool_value = v.as<bool>();
+                    }
+                    else if(v.is<int>())
+                    {
+                        p.type = PARAM_INT;
+                        p.int_value = v.as<int>();
+                    }
+                    else if(v.is<float>())
+                    {
+                        p.type = PARAM_FLOAT;
+                        p.float_value = v.as<float>();
+                    }
+                    else
+                    {
+                        p.type = PARAM_STRING;
+                        p.string_value = v.as<String>();
+                    }
+                    param_count++;
+                }
+            }
+
+            bool ok = workflow_set_step(
+                workflow_index,
+                step_index,
+                is_trigger ? WORKFLOW_STEP_TRIGGER
+                           : WORKFLOW_STEP_ACTION,
+                is_trigger ? INSTANCE_TRIGGER : INSTANCE_ACTION,
+                step_id,
+                param_count > 0 ? params : nullptr,
+                param_count
+            );
+
+            if(!ok)
+            {
+                Serial.printf(
+                    "[WF][DBG] apply_json: set_step failed wf=%u s=%u\n",
+                    (unsigned)workflow_index, (unsigned)step_index
+                );
+                return false;
+            }
+
+            step_index++;
+        }
+    }
+
+    // ----------------------------------------------------
+    // 4. variant 维护（§4.2）
+    //    新建 = 1；修改 = 原值 + 1。
+    //    放在最后：确保只有全部 Step 都写成功才推进版本，
+    //    避免"版本涨了但内容没改完"的不一致。
+    // ----------------------------------------------------
+    Workflow &wf = workflows[workflow_index];
+
+    if(is_create)
+    {
+        wf.variant = 1;
+    }
+    else
+    {
+        wf.variant++;
+        if(wf.variant == 0)
+        {
+            wf.variant = 1;   // 溢出保护：0 表示"无版本"，不允许回退到 0
+        }
+    }
+
+    Serial.printf(
+        "[WF][DBG] apply_json wf=%u id=%s create=%d steps=%u variant=%u\n",
+        (unsigned)workflow_index, wf.id.c_str(), is_create ? 1 : 0,
+        (unsigned)wf.step_count, (unsigned)wf.variant
+    );
+
+    return true;
+}
+
 // 延迟保存窗口到期检查（由 workflow_task() 调用）
 //
 // 注意：这里不是"为了维护 Critical 而持续轮询"，
@@ -2143,6 +2500,7 @@ void workflow_clear()
         workflows[i].current_step = 0;
         workflows[i].start_time = 0;
         workflows[i].timeout_ms = 0;
+        workflows[i].variant = 0;
         workflows[i].cmd_id = "";
         workflows[i].finish_callback = nullptr;
         for(uint8_t j = 0; j < WORKFLOW_MAX_STEP; j++) {
@@ -2280,6 +2638,13 @@ bool workflow_parse_json(JsonDocument &doc)
             wf["enable"] | false;
         workflow.timeout_ms =
             wf["timeout_ms"] | 600000;
+        // variant：JSON 中没有该字段时按 1 处理（存在即至少一版内容）
+        workflow.variant =
+            wf["variant"] | 1u;
+        if(workflow.variant == 0)
+        {
+            workflow.variant = 1;
+        }
         workflow.state =
             WORKFLOW_IDLE;
         workflow.current_step =
@@ -3348,6 +3713,7 @@ bool workflow_export_json(String &json)
         obj["name"] = wf.name;
         obj["enable"] = wf.enable;
         obj["timeout_ms"] = wf.timeout_ms;
+        obj["variant"] = wf.variant;
 
         JsonArray steps = obj["steps"].to<JsonArray>();
         for (uint8_t j = 0; j < wf.step_count; j++) {

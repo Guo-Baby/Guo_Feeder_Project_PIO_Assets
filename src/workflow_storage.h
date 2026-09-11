@@ -77,7 +77,11 @@
 // Meta 格式版本：
 //   v1 = 81B/entry（无 txn_id）
 //   v2 = 85B/entry（+txn_id，Workflow 级事务提交标识）
-#define WF_STG_META_VERSION 2u
+//   v3 = 89B/entry（+variant，Workflow 内容版本，云端增量同步用）
+//
+// 兼容：v1 / v2 旧文件仍可读（txn_id / variant 视为 0），
+// 写入一律用当前版本 v3。
+#define WF_STG_META_VERSION 3u
 
 #define WF_STG_ID_MAX_LEN 32
 #define WF_STG_NAME_MAX_LEN 32
@@ -169,6 +173,7 @@ struct WorkflowDefinition
     uint8_t enable;
     uint32_t timeout_ms;
     uint8_t step_count;
+    uint32_t variant;   // Workflow 内容版本（云端增量同步，禁止用时间戳）
     WorkflowStepDefinition steps[WF_STG_MAX_STEP];
 };
 
@@ -192,6 +197,7 @@ struct WorkflowMetaEntry
     uint8_t enable;
     uint32_t timeout_ms;
     uint32_t txn_id;     // 最后已提交事务的标识（掉电恢复用，见 workflow_storage_recover）
+    uint32_t variant;    // Workflow 内容版本（v3 起；v1/v2 旧文件读为 0）
 };
 
 
@@ -253,6 +259,25 @@ void workflow_storage_set_info(
     const char *name,
     bool enable,
     uint32_t timeout_ms
+);
+
+// -----------------------------------------------------
+// Variant（Workflow 内容版本，v3 Meta 起持久化）
+//
+// 用途：云端增量同步的比对依据。
+//   内容变化 → variant++ → Capability Registry checksum 变化
+//   → 云端 workflow.list 发现不同 → workflow.get 拉取新内容
+//
+// 规则（禁止用时间戳）：
+//   新建 = 1；每次内容修改 +1；删除 +1（删除不是物理删除）。
+// -----------------------------------------------------
+uint32_t workflow_storage_get_variant(
+    uint8_t workflow_id
+);
+
+void workflow_storage_set_variant(
+    uint8_t workflow_id,
+    uint32_t variant
 );
 
 
