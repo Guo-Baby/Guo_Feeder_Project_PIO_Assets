@@ -472,6 +472,57 @@ Workflow 执行
 Temporary Action
 Action Instance 管理
 
+## 4.9.1 架构组成
+
+```
+Workflow
+├── Definition          持久化定义（可被云端修改）
+├── Runtime             执行期内存快照（不受 Definition 修改影响）
+├── WorkflowStorage     Definition ↔ BIN 持久化（原子事务 + 双版本备份）
+├── Variant             单个 Workflow 的内容版本（云端增量同步依据）
+├── Capability Registry Stable ID ↔ Runtime ID 映射
+└── CommandManager      命令路由（Cloud Sync 入口）
+```
+
+## 4.9.2 数据形态与边界
+
+```
+Cloud  ←→ JSON ←→  CommandManager  ←→  Workflow.cpp  ←→  Definition
+                                                             │
+                                                     WorkflowStorage
+                                                             │
+                                                     Meta BIN + Step BIN
+                                                             │
+                                                         LittleFS
+```
+
+- **Cloud 使用 JSON**：JSON 只是 Cloud / CommandManager ↔ Workflow.cpp 的
+  **通信格式**，不是设备内部长期存储格式。
+- **设备内部使用 BIN**：Definition 落盘为 Meta BIN + Step BIN，
+  带原子事务与备份，云端不需要也不允许理解。
+- **Workflow Variant 用于对象版本同步**：每个 Workflow 独立维护
+  `uint32_t variant`。`create → 1`，内容变化 `→ +1`，`delete → +1`，
+  内容无变化不增加，**重启后不得回退**。
+- **Capability Registry 提供 Stable ID**：由 `runtime_id` 字母序生成，
+  仅作定位；`object_version = workflow.variant`，是 registry
+  版本与校验值的输入。
+
+## 4.9.3 云端同步命令
+
+```
+workflow.sync_info    轻量同步入口（version / checksum / count / dirty）
+workflow.list         摘要列表（stable_id / id / variant / valid）
+workflow.get          拉取单个完整 JSON
+workflow.create       新建（variant = 1）
+workflow.set          整体替换（variant +1；内容相同则不变）
+workflow.delete       逻辑删除（valid=false，variant +1）
+workflow.save         全 Dirty 落盘，成功后请求安全重启
+```
+
+> **完整协议（请求 / 参数 / 返回 / 错误码 / variant 与 dirty 行为 /
+> 同步流程 / 可用 Action·Trigger 清单 / UI 对接注意事项）见
+> `workflow_cloud_interface.md`，README 不重复展开。**
+
 所有耗时任务采用：
 
 start()
@@ -510,6 +561,25 @@ Capability Registry
 
 减少云端通信报文长度，同时为未来 UI 自动生成设备能力界面提供基础。
 
+## 4.10.1 与 Workflow Variant 的关系
+
+```
+CapabilityMapping
+├── stable_id        按 runtime_id 字母序排序后的下标
+├── runtime_id       真实对象名（Action / Trigger / Workflow id）
+└── object_version   Workflow 填 workflow.variant
+
+registry_version    整个 Mapping 的版本（任一映射变化 +1）
+registry_checksum   整个 Mapping 的校验值
+```
+
+- `registry_version` 与 `Workflow variant` 是**两个层级**，不得混淆：
+  前者描述"整体映射变没变"，后者描述"单个 Workflow 内容变没变"。
+- `object_version` 必须参与 checksum，否则会出现
+  "内容变了但 checksum 没变 → 云端永远同步不到"。
+- `stable_id` 会随 `runtime_id` 集合变化**整体平移**，
+  云端应以 `id` 为业务主键，`stable_id` 只作定位。
+
 # 4.11 Command Manager
 负责设备命令的统一接收、分类和路由。
 
@@ -528,6 +598,20 @@ Command
 Execute Command
 Query Command
 System Command
+Workflow Manage Command（workflow.sync_info / list / get / create / set / delete / save）
+
+分层约束：
+CommandManager 只做命令路由，**不允许**直接操作
+WorkflowStorage / BinStorage / FileStorage；
+Workflow 的 JSON ↔ 内部结构语义转换一律由 Workflow.cpp 承担。
+
+Workflow 管理命令专用错误码：
+1  Unknown command
+5  Workflow not found
+6  Invalid payload / missing workflow
+11 Invalid JSON payload
+12 No free slot
+13 Rejected（运行中 / Critical 获取失败）
 Config Command
 Workflow Command
 
