@@ -244,6 +244,11 @@ void serial_debug_command_process(void)
                 // WorkflowStorage 独立测试控制台（仅上板自测用）
                 wfst_console(serial_cmd_buffer);
             }
+            else if (serial_cmd_buffer.startsWith("cm "))
+            {
+                // CommandManager 直通（走完整路由链，含结果 JSON 上报）
+                cm_console(serial_cmd_buffer);
+            }
             else if (serial_cmd_buffer.startsWith("wfc "))
             {
                 // Workflow CRUD + 回归测试控制台（仅上板自测用）
