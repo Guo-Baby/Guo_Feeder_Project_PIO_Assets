@@ -2435,12 +2435,19 @@ bool workflow_apply_workflow_json(
     }
 
     // ----------------------------------------------------
-    // 4. variant 维护（§4.2）
-    //    新建 = 1；修改 = 原值 + 1。
-    //    放在最后：确保只有全部 Step 都写成功才推进版本，
-    //    避免"版本涨了但内容没改完"的不一致。
+    // 4. 纳入可见范围 + variant 维护（§4.2）
+    //
+    //    workflow_count 必须在这里推进：
+    //    Capability Registry 的扫描以 workflow_get_count() 为上限，
+    //    create 走的是本函数（不是 workflow_create()），若漏掉这一步，
+    //    新建的 Workflow 在重启前对 registry / 云端都是不可见的。
     // ----------------------------------------------------
     Workflow &wf = workflows[workflow_index];
+
+    if(workflow_index + 1 > workflow_count)
+    {
+        workflow_count = (uint8_t)(workflow_index + 1);
+    }
 
     if(is_create)
     {
