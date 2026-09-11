@@ -540,6 +540,19 @@ int workflow_find_index_by_id(
     const String &id
 );
 
+// 查询该 Slot 是否承载一个有效 Workflow
+//
+// 语义：
+//   - create / set / 从 BIN 或 JSON 成功加载 → true
+//   - delete（逻辑删，valid=false + variant++）→ false
+//   - 从未使用 / workflow_clear 之后 → false
+//
+// 云端用它区分"对象被删了"和"对象凭空消失"：
+//   见 workflow.list 的 valid 字段。
+bool workflow_is_valid(
+    uint8_t workflow_index
+);
+
 // 单个 Workflow 导出 JSON（含 variant）
 //
 // 与 workflow_export_json()（全部 Workflow）的区别：
@@ -551,6 +564,20 @@ int workflow_find_index_by_id(
 bool workflow_export_workflow_json(
     uint8_t workflow_index,
     String &json
+);
+
+// 判断入参 JSON 与当前 Workflow Definition 内容是否等价
+//
+// 用途：workflow.set 的幂等保护 —— 提交内容与当前完全一致时
+// 不得无意义 variant++（也不产生 Dirty）。
+//
+// 比较范围：id / name / enable / timeout_ms / steps（含 params）
+// 不比较：variant（它正是被本次操作改变的字段）
+// 归一规则：固定字段顺序 + 参数按 name 排序 + 值带类型前缀，
+//           缺省值与 workflow_apply_workflow_json 保持一致。
+bool workflow_definition_matches_json(
+    uint8_t workflow_index,
+    JsonObjectConst obj
 );
 
 // 单个 Workflow 从 JSON 导入（create / set 共用）
@@ -612,6 +639,13 @@ struct Workflow
     // 禁止使用时间戳 —— 启动期时间不可信，且无法表达"改了几次"。
     // 持久化在 Meta v3 entry，重启后恢复。
     uint32_t variant;
+    // 该 Slot 是否承载一个有效 Workflow
+    //
+    // delete 是逻辑删：只置 valid=false（Step BIN 保留、variant++），
+    // 这样云端能通过 workflow.list 看到 "valid=false + variant 变化"，
+    // 明确得知"这个对象被删了"，而不是"它凭空消失了"。
+    // 重启后 valid=false 的 Slot 不会被作为有效 Workflow 加载。
+    bool valid;
     // CommandManager 关联 ID（Workflow 只保存关联，不理解命令业务）
     String cmd_id;
     // 完成回调（CommandManager 契约；完成/超时/失败时回调 cmd_id + 结果）

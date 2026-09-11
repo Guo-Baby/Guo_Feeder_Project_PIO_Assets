@@ -1607,6 +1607,10 @@ bool workflow_load_from_storage()
         // 统一提升为 1（表示"至少存在一版内容"）。
         w.variant = (def_buf->variant == 0) ? 1u : def_buf->variant;
 
+        // BIN 里 valid=false 的 Slot 不会走到这里（循环开头 continue），
+        // 因此能从 BIN 加载出来的一定是有效 Workflow。
+        w.valid = true;
+
         Serial.printf(
             "[WF][DBG] load wf=%u id=%s steps=%u variant=%u\n",
             (unsigned)wf, w.id.c_str(), (unsigned)w.step_count,
@@ -1850,6 +1854,7 @@ bool workflow_delete(
 
     // 删除不是物理删除（§12）：只置 valid=false，variant 仍要 +1，
     // 这样云端 list 能发现"该 Workflow 变了"并重新拉取（拿到已删状态）。
+    workflows[workflow_index].valid = false;
     workflows[workflow_index].variant++;
 
     Serial.printf(
@@ -1967,6 +1972,7 @@ bool workflow_create(
 
     // 新建：variant = 1（§4.2）
     w.variant = 1;
+    w.valid = true;
 
     Serial.printf(
         "[WF][DBG] create wf=%u id=%s variant=%u\n",
@@ -2196,6 +2202,18 @@ int workflow_find_index_by_id(
     return -1;
 }
 
+// 该 Slot 是否承载一个有效 Workflow（delete 后置 false）
+bool workflow_is_valid(
+    uint8_t workflow_index
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+    return workflows[workflow_index].valid;
+}
+
 // 单个 Workflow → JSON（从 Definition 导出，不依赖 Runtime）
 bool workflow_export_workflow_json(
     uint8_t workflow_index,
@@ -2278,6 +2296,261 @@ bool workflow_export_workflow_json(
     );
 
     return true;
+}
+
+// =====================================================
+// 内容等价判定（供 workflow.set 幂等使用）
+//
+// 需求：set 提交的内容与当前内容完全一致时，不得无意义 variant++。
+//
+// 难点：JSON 的键顺序、空白、数字写法都可能不同，直接比字符串不可靠；
+//      而 ArduinoJson v7 不提供深度相等运算符。
+//
+// 做法：两边都归一成"canonical 文本"再比：
+//   - 固定字段顺序（id / name / enable / timeout / steps）
+//   - 参数按 name 排序（params 是 name→value 字典，顺序无语义）
+//   - 值带类型前缀（i/f/b/s），避免 1000 与 "1000" 被判为相同
+//   - variant 不参与比较（它本来就是被这次操作改变的字段）
+//   - 缺省值必须与 workflow_apply_workflow_json 完全一致，
+//     否则"JSON 省略 enable"会被误判为内容变化
+// =====================================================
+namespace {
+
+struct CanonParam
+{
+    String name;
+    char type;
+    String value;
+};
+
+// 类型 → 单字符前缀
+static const char *canon_type_prefix(int t)
+{
+    switch (t)
+    {
+        case PARAM_INT:    return "i";
+        case PARAM_FLOAT:  return "f";
+        case PARAM_BOOL:   return "b";
+        case PARAM_STRING: return "s";
+        default:           return "?";
+    }
+}
+
+// 参数按 name 升序（插入排序，最多 8 个）
+static void canon_sort_params(CanonParam *arr, uint8_t n)
+{
+    for (uint8_t i = 1; i < n; i++)
+    {
+        CanonParam key = arr[i];
+        uint8_t j = i;
+        while (j > 0 && arr[j - 1].name > key.name)
+        {
+            arr[j] = arr[j - 1];
+            j--;
+        }
+        arr[j] = key;
+    }
+}
+
+static void canon_append_params(String &out, CanonParam *arr, uint8_t n)
+{
+    canon_sort_params(arr, n);
+    for (uint8_t i = 0; i < n; i++)
+    {
+        out += arr[i].name;
+        out += ':';
+        out += arr[i].type;
+        out += '=';
+        out += arr[i].value;
+        out += ';';
+    }
+}
+
+// 当前 Definition → canonical 文本
+static void canon_from_definition(uint8_t wf_index, String &out)
+{
+    const Workflow &wf = workflows[wf_index];
+
+    out = "";
+    out += "id=";
+    out += wf.id;
+    out += "\nname=";
+    out += wf.name;
+    out += "\nenable=";
+    out += wf.enable ? "1" : "0";
+    out += "\ntimeout=";
+    out += String((unsigned long)wf.timeout_ms);
+    out += "\nsteps=";
+    out += String((unsigned)wf.step_count);
+    out += "\n";
+
+    for (uint8_t s = 0; s < wf.step_count; s++)
+    {
+        const WorkflowStepDef *def = workflow_step_def_at(wf_index, s);
+        if (def == nullptr)
+        {
+            continue;
+        }
+
+        out += (def->type == WORKFLOW_STEP_TRIGGER) ? "T|" : "A|";
+        out += def->id;
+        out += '|';
+
+        CanonParam cp[WORKFLOW_MAX_PARAM];
+        uint8_t n = 0;
+
+        for (uint8_t p = 0;
+             p < def->param_count && n < WORKFLOW_MAX_PARAM;
+             p++)
+        {
+            const WorkflowParamValue &pv = def->params[p];
+            cp[n].name = pv.name;
+            cp[n].type = *canon_type_prefix(pv.type);
+            switch (pv.type)
+            {
+                case PARAM_INT:
+                    cp[n].value = String(pv.int_value);
+                    break;
+                case PARAM_FLOAT:
+                    cp[n].value = String(pv.float_value, 4);
+                    break;
+                case PARAM_BOOL:
+                    cp[n].value = pv.bool_value ? "1" : "0";
+                    break;
+                case PARAM_STRING:
+                    cp[n].value = pv.string_value;
+                    break;
+                default:
+                    cp[n].value = "";
+                    break;
+            }
+            n++;
+        }
+
+        canon_append_params(out, cp, n);
+        out += '\n';
+    }
+}
+
+// 入参 JSON → canonical 文本（缺省值必须与 apply 一致）
+static void canon_from_json(JsonObjectConst obj, String &out)
+{
+    String id = obj["id"] | "";
+    String name = obj["name"] | "";
+    if (name.length() == 0)
+    {
+        name = id;
+    }
+    bool enable = obj["enable"] | true;
+    uint32_t timeout_ms = obj["timeout_ms"] | 600000UL;
+
+    out = "";
+    out += "id=";
+    out += id;
+    out += "\nname=";
+    out += name;
+    out += "\nenable=";
+    out += enable ? "1" : "0";
+    out += "\ntimeout=";
+    out += String((unsigned long)timeout_ms);
+
+    JsonArrayConst steps = obj["steps"];
+
+    uint8_t step_count = 0;
+    String steps_txt = "";
+
+    if (!steps.isNull())
+    {
+        for (JsonObjectConst step : steps)
+        {
+            String step_id = step["id"] | "";
+            if (step_id.length() == 0)
+            {
+                continue;   // 与 apply 一致：无 id 的 Step 被跳过
+            }
+
+            String type = step["type"] | "action";
+            steps_txt += (type == "trigger") ? "T|" : "A|";
+            steps_txt += step_id;
+            steps_txt += '|';
+
+            CanonParam cp[WORKFLOW_MAX_PARAM];
+            uint8_t n = 0;
+
+            JsonObjectConst src = step["params"];
+            if (!src.isNull())
+            {
+                for (JsonPairConst kv : src)
+                {
+                    if (n >= WORKFLOW_MAX_PARAM)
+                    {
+                        break;
+                    }
+                    cp[n].name = String(kv.key().c_str());
+
+                    JsonVariantConst v = kv.value();
+                    if (v.is<bool>())
+                    {
+                        cp[n].type = 'b';
+                        cp[n].value = v.as<bool>() ? "1" : "0";
+                    }
+                    else if (v.is<int>())
+                    {
+                        cp[n].type = 'i';
+                        cp[n].value = String(v.as<int>());
+                    }
+                    else if (v.is<float>())
+                    {
+                        cp[n].type = 'f';
+                        cp[n].value = String(v.as<float>(), 4);
+                    }
+                    else
+                    {
+                        cp[n].type = 's';
+                        cp[n].value = v.as<String>();
+                    }
+                    n++;
+                }
+            }
+
+            canon_append_params(steps_txt, cp, n);
+            steps_txt += '\n';
+            step_count++;
+        }
+    }
+
+    out += "\nsteps=";
+    out += String((unsigned)step_count);
+    out += "\n";
+    out += steps_txt;
+}
+
+}   // anonymous namespace
+
+bool workflow_definition_matches_json(
+    uint8_t workflow_index,
+    JsonObjectConst obj
+)
+{
+    if (workflow_index >= WORKFLOW_MAX_COUNT || obj.isNull())
+    {
+        return false;
+    }
+
+    String a;
+    String b;
+    canon_from_definition(workflow_index, a);
+    canon_from_json(obj, b);
+
+    bool same = (a == b);
+
+    Serial.printf(
+        "[WF][DBG] compare wf=%u identical=%d (cur=%u B, new=%u B)\n",
+        (unsigned)workflow_index, same ? 1 : 0,
+        (unsigned)a.length(), (unsigned)b.length()
+    );
+
+    return same;
 }
 
 // 单个 Workflow ← JSON（create / set 共用）
@@ -2449,6 +2722,9 @@ bool workflow_apply_workflow_json(
         workflow_count = (uint8_t)(workflow_index + 1);
     }
 
+    // 能从 create / set 走通，说明该 Slot 承载一个有效 Workflow
+    wf.valid = true;
+
     if(is_create)
     {
         wf.variant = 1;
@@ -2508,6 +2784,7 @@ void workflow_clear()
         workflows[i].start_time = 0;
         workflows[i].timeout_ms = 0;
         workflows[i].variant = 0;
+        workflows[i].valid = false;
         workflows[i].cmd_id = "";
         workflows[i].finish_callback = nullptr;
         for(uint8_t j = 0; j < WORKFLOW_MAX_STEP; j++) {
@@ -2652,6 +2929,8 @@ bool workflow_parse_json(JsonDocument &doc)
         {
             workflow.variant = 1;
         }
+        // JSON 里出现的都是有效 Workflow
+        workflow.valid = true;
         workflow.state =
             WORKFLOW_IDLE;
         workflow.current_step =
