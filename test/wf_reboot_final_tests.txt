@@ -1,0 +1,27 @@
+# ============================================================
+# §35 重启持久化验证（在 wf_final_tests.txt 全量跑完并落盘之后执行）
+#
+# 用法:
+#   python .pio/serial_batch.py COM8 .pio/wf_reboot_final.log .pio/wf_reboot_final_tests.txt 5
+#
+# 前一轮结束时的设备状态：
+#   slot 0/1/2  daily_valve_test / daily_valve_test1 / queue_test   variant=1  有效
+#   slot 3      cm_a    name=A4   variant=6                        有效（已 save）
+#   slot 4      cm_g    已 delete（valid=false，已 save）
+#   slot 5      cm_h    已 delete（valid=false，已 save）
+#   slot 6      cm_z    已 delete（valid=false，已 save）
+#
+# 重启后期望：
+#   - count = 4（有效对象：3 原有 + cm_a）
+#   - cm_a 仍在且 variant 仍为 6   ← §35「variant 跨重启不得回退」
+#   - cm_g / cm_h / cm_z 不得复活  ← §35「删除对象重启后不得重新出现」
+# ============================================================
+
+cm {"cmd":"workflow.list","id":"r1"} ||| "count":4
+cm {"cmd":"workflow.list","id":"r2"} ||| "id":"cm_a","variant":6,"valid":true
+cm {"cmd":"workflow.get","id":"r3","p":{"id":"cm_a"}} ||| "A4"
+cm {"cmd":"workflow.get","id":"r4","p":{"id":"cm_a"}} ||| "variant":6
+cm {"cmd":"workflow.get","id":"r5","p":{"id":"cm_g"}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"r6","p":{"id":"cm_h"}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"r7","p":{"id":"cm_z"}} ||| "error_code":5
+cm {"cmd":"workflow.list","id":"r8"} ||| "dirty":false
