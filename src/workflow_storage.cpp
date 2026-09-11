@@ -1218,6 +1218,10 @@ WorkflowStorageResult workflow_storage_load(
     definition->enable = e.enable;
     definition->timeout_ms = e.timeout_ms;
     definition->step_count = (uint8_t)e.step_count;
+    // variant 必须回填（Meta v3）：
+    // 漏掉会导致重启后 variant 归 0 → 被上层提升为 1，
+    // 云端看来"版本倒退"，永远同步不到正确内容。
+    definition->variant = e.variant;
 
     // 只加载 0 .. step_count-1，绝不读取 step_count .. 15
     uint32_t crc = wf_crc32_init();
