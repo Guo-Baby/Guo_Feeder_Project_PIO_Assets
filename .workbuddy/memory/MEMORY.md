@@ -162,6 +162,27 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 
 - **铁律**：新增 Workflow 字段时，`workflow_storage_load()` 的每个拷贝点都要回填，否则重启丢值（variant 曾漏过）。
 
+## 文件系统烧录与初始基线（2026-09-13 定版）
+- **`uploadfs` 会整分区擦除**（实测 `Flash will be erased from 0x00410000 to 0x00ffffff`），
+  `/config/*` 与 `/workflow/*.bin` 全清；日常 `esptool write_flash 0x10000 firmware.bin`
+  **不碰** LittleFS。
+- `data/` 被 `.gitignore` 忽略（含 WiFi 密码 / CA），初始文件不在版本库 →
+  用 `tools/gen_config_version.py` + `tools/gen_workflow_bin.py` 重建：
+  - `gen_config_version.py` → `data/config/version.json`（8 模块 version=1）
+  - `gen_workflow_bin.py` → `data/workflow/meta.bin` + `wfNN/stepMM.bin`
+    （Meta v3 = 12B header + 16×89B entry；Step v1 = 16B header + payload；
+    CRC32 init 0xFFFFFFFF / poly 0xEDB88320 reflected / final xor 0xFFFFFFFF；
+    `meta.entry.crc32` = 各 step payload CRC 依次 u32 LE 追加后的 CRC）
+  - ⚠️ `WF_STG_META_VERSION` 升级（v3→v4）必须同步脚本，否则 `VERSION_TOO_NEW`
+    拒绝 → 回退 `/workflow.json`（功能不丢，BIN 基线失效）
+- **ConfigManager version 自愈**：`bootstrap_version_file()` 为已加载模块置 version=1。
+  必须在**模块加载之后**调用（config_init 步骤 6），否则 `loaded` 全 false。
+  背景：`save_version_file()` 跳过 `version==0` 的模块 → 缺 version.json 时
+  文件永远生成不了，每次启动 `[CFG][E] version reload failed`。
+- **验证技巧**：串口批量脚本开串口会复位板子，"烧录后第一次启动"捕获不到。
+  用 `esptool --after no_reset write_flash 0x410000 littlefs.bin` 留在 bootloader，
+  再开串口即可捕获真正的首次启动日志。
+
 ## 新增硬件 Action 模块速查
 - 模板见 `新增动作模板.md`；参照实现 `src/valve.cpp`（即时完成）/ `src/computer_reset.cpp`（异步 + 单例 GPIO 仲裁）
 - 接入点：main.cpp `setup()` 第四层（必须在 `workflow_init()` 之后）+ `loop()`
