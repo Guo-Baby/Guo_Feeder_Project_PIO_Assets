@@ -507,17 +507,42 @@ Cloud  ←→ JSON ←→  CommandManager  ←→  Workflow.cpp  ←→  Definit
   仅作定位；`object_version = workflow.variant`，是 registry
   版本与校验值的输入。
 
-## 4.9.3 云端同步命令
+## 4.9.3 Workflow 定位模型
+
+```text
+              Workflow
+                 │
+        ┌────────┴────────┐
+      p.id            workflow.id
+   唯一 Slot 定位      用户业务 ID
+    （整数 0..15）     （字符串，可重复）
+```
+
+- **`p.id` = Slot 索引**，是 `create`/`set`/`delete`/`get` 的**唯一定位键**。
+- **`workflow.id` 允许重复**，不能作为主键，设备不按它搜索对象。
+- **`stable_id` 是 Registry 映射元数据**，按 `runtime_id` 排序生成，
+  新增/改名会整体重排，**不得长期引用**。
+
+## 4.9.4 云端同步命令
 
 ```
 workflow.sync_info    轻量同步入口（version / checksum / count / dirty）
-workflow.list         摘要列表（stable_id / id / variant / valid）
-workflow.get          拉取单个完整 JSON
-workflow.create       新建（variant = 1）
-workflow.set          整体替换（variant +1；内容相同则不变）
-workflow.delete       逻辑删除（valid=false，variant +1）
-workflow.save         全 Dirty 落盘，成功后请求安全重启
+workflow.list         摘要列表（slot / id / variant / valid / stable_id）
+workflow.get          按 Slot 拉取单个完整 JSON
+workflow.create       新建（variant = 1，允许重复 workflow.id）
+workflow.set          按 Slot 整体替换（variant +1；内容相同则不变）
+workflow.delete       逻辑删除（valid=false，variant +1；重复删除幂等）
+workflow.save         全 Dirty 落盘（逐 Workflow 事务），成功后请求安全重启
 ```
+
+关键语义（详见接口文档）：
+
+- `count` = **占用 Slot 数**，含 `valid=false` 的已删对象，**不等于**可执行数量。
+- `dirty` 是**全局**标志，不指明是哪个对象。
+- `save` 逻辑上全局、物理上**逐 Workflow 事务**：成功者清自己的 Dirty，
+  失败者保留；任一失败则整体返回失败。
+- `restarting:true` 只表示**重启请求已被接受**，不代表已完成 reboot。
+- `type` 必填；`steps>16` / `params>8` **整体拒绝**（不截断）。
 
 > **完整协议（请求 / 参数 / 返回 / 错误码 / variant 与 dirty 行为 /
 > 同步流程 / 可用 Action·Trigger 清单 / UI 对接注意事项）见
@@ -578,7 +603,12 @@ registry_checksum   整个 Mapping 的校验值
 - `object_version` 必须参与 checksum，否则会出现
   "内容变了但 checksum 没变 → 云端永远同步不到"。
 - `stable_id` 会随 `runtime_id` 集合变化**整体平移**，
-  云端应以 `id` 为业务主键，`stable_id` 只作定位。
+  云端应以 **`p.id`（Slot）** 为 Workflow 唯一主键，`stable_id` 只作定位。
+- `registry_version` 也可能因 Action / Trigger 映射变化而改变，
+  **不能**据此推断"只有 Workflow 变了"。
+- Registry 按 `runtime_id` **去重**，因此 `workflow.id` 重复时
+  Registry 条目数**少于**占用 Slot 数 —— `list` / `sync_info` 的
+  `count` 用的是**占用 Slot 数**，不是 Registry 条目数。
 
 # 4.11 Command Manager
 负责设备命令的统一接收、分类和路由。
