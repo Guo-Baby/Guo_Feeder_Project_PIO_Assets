@@ -127,24 +127,32 @@ ESP32-S3 N16R8 智能宠物供水/投喂设备，当前主攻「自动猫咪饮�
 - 任何 >1KB 的结构禁止在栈上声明（setup/loop/命令路径尤其危险）。
 - ArduinoJson 7.4.3 **无** PSRAM 支持，所有 JsonDocument 缓冲仍占内部 RAM（要迁移需自定义 Allocator）。
 
-## Workflow 云端同步协议（2026-09-12 定版，已上板，56/56 回归通过）
-- `Workflow.variant` = uint32 **内容版本**：create=1 / set 有变化 +1 / **set 内容完全一致则不变** / delete+1，**绝不用时间戳**；存在 Meta entry（Meta v3，89B）。
-- `Workflow.valid` = **RAM 标志**（不进 BIN）：delete→false，create/set/加载→true；`workflow_is_valid()`。重启后 valid=false 不再加载。
-- CapabilityRegistry 文件 **v2**：entry = stable_id + **object_version(uint32)** + runtime_id；workflow 的 object_version 直接取 `wf->variant`；magic `CAPA/CAPT/CAPW` → `AP2A/AP2T/AP2W`（改格式必须换 magic 强制重建）。
+## Workflow 云端同步协议（2026-09-13 契约修订版，已上板 171/171）
+**定位模型（★最重要，2026-09-13 变更）**
+- **`p.id` = Slot 整数（0..15），是唯一定位键**；`workflow.id` 是用户业务 ID，**允许重复、允许内容完全相同**；`stable_id` 只是 Registry metadata。
+- 已**移除**「按 workflow.id 搜索对象」——`workflow_find_index_by_id()` 禁止用于云端定位。
+- `list` / `sync_info` 的 `count` = **占用 Slot 数**（`workflow_get_occupied_count()`，含 valid=false），**不是** `capability_get_workflow_count()`（Registry 按 runtime_id 去重，重复 id 时两者不等）。
+- `list` 按 **Slot 升序**输出 `{slot, id, variant, valid, stable_id}`。
+
+- `Workflow.variant` = uint32 **内容版本号/修订号**（不是 hash/指纹，相同 variant 不代表内容相同）：create=1 / set 有变化 +1 / set 完全一致不变 / delete(valid=true)+1 / **重复 delete 不变（幂等 no-op）**，绝不用时间戳；存在 Meta entry（Meta v3，89B）。
+- `Workflow.valid` = **RAM 标志**（不进 BIN）：delete→false，create/set/加载→true；`workflow_is_valid()`。重启后 valid=false 不再加载 → `get` 返回 **error 5**。
+- CapabilityRegistry 文件 **v2**：entry = stable_id + **object_version(uint32)** + runtime_id；workflow 的 object_version 直接取 `wf->variant`；magic `AP2A/AP2T/AP2W`（改格式必须换 magic 强制重建）。
 - **7 条命令**：`workflow.sync_info / list / get / create / set / delete / save`。
   - `sync_info` 只回 `registry_version / registry_checksum / count / dirty`（轻量入口，不返回列表）
-  - `list` 每项 `{stable_id, id, variant, valid}`
-  - `get` 的完整对象在 `workflow{}`（云端紧凑键 `o`），**`valid` 放在它外面**（`workflow{}` 要能原样回传 set）
+  - `get` 的完整对象在 `workflow{}`（云端紧凑键 `o`），**`valid`/`slot`/`k` 放在它外面**（`workflow{}` 要能原样回传 set）
   - `set` 幂等靠 `workflow_definition_matches_json()` canonical 比较（字段定序 + 参数按 name 排序 + 值带 `i/f/b/s` 前缀）→ 响应带 `changed`
-  - `save` 是**全局 Dirty 落盘**：任一失败 → 不清 dirty、不 release Critical、错误码 10 可重试；全部成功才清零；`dirty=false` 时空转重启**被禁止**
-- delete 是**逻辑删**（valid=false + variant++），不物理删 BIN、不杀 Runtime；重启前 `list` 仍可见（刻意设计）。
+  - `save` **逻辑全局、物理逐 Workflow 事务**：成功者立即清自己的 Dirty，失败者保留，循环不中断；任一失败 → 错误码 10；仅当 `!dirty_any()` 才 release Critical；`dirty=false` 时 `saved=true, restarting=false`（不空转重启）
+  - `restarting:true` **只表示重启请求已被接受**，不代表已完成 reboot
+- **严格 Cloud Contract**：Step `type` 必填（缺失不再默认 action）、`steps>16`、`params>8` 一律**整体拒绝（错误码 11）**，绝不截断/降级。校验在 create 分配 Slot 之前、set 幂等比较之前。
+- delete 是**逻辑删**（valid=false + variant++），不物理删 BIN、不杀 Runtime；**立即落盘**（meta.valid=0），随后清本对象 Dirty —— 这是刻意的：保留 Dirty 会让后续 save 把 valid 置回 true 撤销删除。重启前 `list` 仍可见（valid=false）。**delete 后无需再 save。**
 - 串口调试透传：`cm {"cmd":"workflow.xxx","ob":"-","id":"8010","p":{...}}`（main.cpp `cm_console`），与 MQTT 走同一 `command_manager_execute()` 链路。
 - 云端上行两种形态：CommandManager 明文（`status/cmd/id/command/timestamp`）→ CloudManager 紧凑键（`s/c/i/t/o/k`，见 cloud_manager.cpp:540-720）。
 
-### 三条极易踩的语义（写云端/UI 必看）
-1. **`stable_id` ≠ Slot 编号**，= 按 `runtime_id` 字符串升序的下标（`capability_registry.cpp:sort_capability_mapping`）。新增/改名一个字母序靠前的 id → **后面所有对象的 stable_id 整体平移**（实测加 `cm_a` 后 `daily_valve_test` 从 #0→#1）。⇒ 云端以 **`id` 为业务主键**，`stable_id` 只作定位；`registry_version` 变了就重建映射。
+### 四条极易踩的语义（写云端/UI 必看）
+1. **`stable_id` ≠ Slot 编号**，= 按 `runtime_id` 字符串升序的下标。新增/改名一个字母序靠前的 id → **后面所有对象的 stable_id 整体平移**。⇒ 云端以 **`p.id`（Slot）为唯一主键**，`stable_id` 只作定位；`registry_version` 变了就重建映射。
 2. **`enable` 缺省值两条路径不一致**：JSON 导入缺省 `true`，BIN 加载缺省 `false`。⇒ 云端永远显式传 `enable`。（代码未改）
 3. **`step.id` 写错不报错**：未注册的 id 被安静保存但永不执行。⇒ 云端提交前用注册清单校验。
+4. **`registry_version` 变化 ≠ 只有 Workflow 变了**：Action/Trigger 映射变化同样会改变它。⇒ 必须再走 `workflow.list` 才能判断。
 
 ### 形态约束（高危缺陷已修，dd49512）
 `workflow_pick_object()` **必须**要求内容嵌套在 `p.workflow` 下。
