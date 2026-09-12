@@ -1252,22 +1252,113 @@ static bool workflow_pick_object(
     return true;
 }
 
-// 定位目标 Workflow
+// =====================================================
+// Workflow 对象定位（§2 / §5 / §22）
 //
-// 优先级: payload.stable_id > payload.id > cmd.object
-// stable_id 经 CapabilityRegistry 翻译成 runtime_id，再用
-// workflow_find_index_by_id() 找槽位。
-static bool workflow_resolve_index(
+// 唯一定位方式 = p.id，即设备内部 Slot 索引（整数）：
+//
+//   p.id  →  唯一 Workflow Slot  →  Workflow object
+//
+// workflow.id 是用户业务 ID，【允许重复】，因此绝不用于定位：
+//   用它搜索只会命中第一个同名 Slot，导致改错对象。
+//
+// p.stable_id 保留作为 Capability Registry 的映射入口，但最终仍
+//   解析回 Slot —— 它只是 Registry metadata，不是稳定主键。
+// =====================================================
+static bool workflow_resolve_slot(
     const CommandMessage &cmd,
     JsonDocument &pl,
-    uint8_t &index,
-    String &runtime_id
+    uint8_t &slot
 )
 {
-    if (!pl["stable_id"].isNull())
+    JsonVariant id_v = pl["id"];
+
+    if(!id_v.isNull())
+    {
+        long v = -1;
+        bool ok = false;
+
+        if(id_v.is<int>() || id_v.is<long>() || id_v.is<unsigned int>())
+        {
+            v = id_v.as<long>();
+            ok = true;
+        }
+        else if(id_v.is<const char *>() || id_v.is<String>())
+        {
+            // 兼容云端的数字字符串形态；非全数字一律拒绝，
+            // 避免把 workflow.id 误当成 Slot。
+            String s = id_v.as<String>();
+            bool all_digit = (s.length() > 0);
+
+            for(unsigned i = 0; i < s.length(); i++)
+            {
+                if(s[i] < '0' || s[i] > '9')
+                {
+                    all_digit = false;
+                    break;
+                }
+            }
+
+            if(all_digit)
+            {
+                v = s.toInt();
+                ok = true;
+            }
+        }
+
+        if(!ok)
+        {
+            Serial.printf(
+                "[CMD][WF] resolve rejected: p.id must be an integer slot"
+                " (got '%s')\n",
+                id_v.as<String>().c_str()
+            );
+            command_send_error(
+                cmd,
+                CMD_ERROR_PARAM,
+                "p.id must be an integer workflow slot"
+            );
+            return false;
+        }
+
+        if(v < 0 || v >= WORKFLOW_MAX_COUNT)
+        {
+            Serial.printf(
+                "[CMD][WF] resolve rejected: slot out of range (%ld)\n", v
+            );
+            command_send_error(
+                cmd,
+                CMD_ERROR_WORKFLOW_NOT_FOUND,
+                "workflow slot out of range"
+            );
+            return false;
+        }
+
+        // Slot 必须被占用（承载一个 Workflow）。
+        // reboot 后 valid=false 的 Slot 不再加载 → 这里即 error 5。
+        if(!workflow_slot_occupied((uint8_t)v))
+        {
+            Serial.printf(
+                "[CMD][WF] resolve rejected: slot %ld not occupied\n", v
+            );
+            command_send_error(
+                cmd,
+                CMD_ERROR_WORKFLOW_NOT_FOUND,
+                "workflow slot is empty"
+            );
+            return false;
+        }
+
+        slot = (uint8_t)v;
+        return true;
+    }
+
+    if(!pl["stable_id"].isNull())
     {
         long k = pl["stable_id"].as<long>();
-        if (k < 0 || k > 255 ||
+        String runtime_id;
+
+        if(k < 0 || k > 255 ||
             !capability_get_workflow_by_stable_id((uint8_t)k, runtime_id))
         {
             command_send_error(
@@ -1277,40 +1368,28 @@ static bool workflow_resolve_index(
             );
             return false;
         }
-    }
-    else if (!pl["id"].isNull())
-    {
-        runtime_id = pl["id"].as<String>();
-    }
-    else if (cmd.object.length() > 0)
-    {
-        runtime_id = cmd.object;
-    }
-    else
-    {
-        command_send_error(
-            cmd,
-            CMD_ERROR_MISSING_OBJECT,
-            "Missing 'stable_id' / 'id' (workflow)"
-        );
-        return false;
+
+        int idx = workflow_find_index_by_id(runtime_id);
+        if(idx < 0)
+        {
+            command_send_error(
+                cmd,
+                CMD_ERROR_WORKFLOW_NOT_FOUND,
+                "workflow stable_id not resolvable"
+            );
+            return false;
+        }
+
+        slot = (uint8_t)idx;
+        return true;
     }
 
-    int idx = workflow_find_index_by_id(runtime_id);
-    if (idx < 0)
-    {
-        String msg = "Workflow not found: ";
-        msg += runtime_id;
-        command_send_error(
-            cmd,
-            CMD_ERROR_WORKFLOW_NOT_FOUND,
-            msg
-        );
-        return false;
-    }
-
-    index = (uint8_t)idx;
-    return true;
+    command_send_error(
+        cmd,
+        CMD_ERROR_MISSING_OBJECT,
+        "Missing 'id' (workflow slot)"
+    );
+    return false;
 }
 
 // 找空槽位（id 为空 / 槽位从未使用）
@@ -1361,21 +1440,21 @@ static bool command_workflow_sync_info(
 {
     (void)cmd;
 
-    uint8_t count = capability_get_workflow_count();
-    uint32_t version = capability_get_workflow_version();
-    uint32_t checksum = capability_get_workflow_checksum();
-    bool dirty = workflow_has_any_dirty();
+    // Workflow 对象入口：占用 Slot 数（含 valid=false 的逻辑删除对象）
+    uint8_t count = workflow_get_occupied_count();
 
     Serial.printf(
         "[CMD][WF] sync_info: registry_version=%u checksum=%u count=%u dirty=%d\n",
-        (unsigned)version, (unsigned)checksum,
-        (unsigned)count, dirty ? 1 : 0
+        (unsigned)capability_get_workflow_version(),
+        (unsigned)capability_get_workflow_checksum(),
+        (unsigned)count,
+        workflow_has_any_dirty() ? 1 : 0
     );
 
-    response["registry_version"] = version;
-    response["registry_checksum"] = checksum;
+    response["registry_version"] = capability_get_workflow_version();
+    response["registry_checksum"] = capability_get_workflow_checksum();
     response["count"] = count;
-    response["dirty"] = dirty;
+    response["dirty"] = workflow_has_any_dirty();
     response["status"] = "success";
     last_result = CMD_RESULT_OK;
     return true;
@@ -1389,7 +1468,18 @@ static bool command_workflow_list(
 {
     (void)cmd;
 
-    uint8_t count = capability_get_workflow_count();
+    // =====================================================
+    // count = 当前被占用的 Slot 数（§9）
+    //
+    // 它表示"RAM 中存在多少个 Workflow object"，
+    // 【包含】valid=false 的逻辑删除对象，
+    // 不等于"有多少个可执行 Workflow"。
+    // 云端要判断有效数量请逐项读 workflows[].valid。
+    //
+    // 注意：不能用 capability_get_workflow_count()（Registry 条目数），
+    // 因为 Registry 按 runtime_id 去重，workflow.id 重复时两者不相等。
+    // =====================================================
+    uint8_t count = workflow_get_occupied_count();
 
     Serial.printf(
         "[CMD][WF] list: registry_version=%u checksum=%u count=%u dirty=%d\n",
@@ -1406,38 +1496,41 @@ static bool command_workflow_list(
 
     JsonArray arr = response["workflows"].to<JsonArray>();
 
-    for (uint8_t i = 0; i < count; i++)
+    // 按 Slot 遍历（不是按 stable_id）：
+    //   slot 是云端唯一定位键；stable_id 只是 Registry metadata。
+    for (uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
     {
-        String runtime_id;
-        uint32_t variant = 0;
-
-        if (!capability_get_workflow_by_stable_id(i, runtime_id))
+        if (!workflow_slot_occupied(i))
         {
             continue;
         }
-        capability_get_workflow_object_version(i, variant);
 
-        // valid：区分"对象被删了"与"对象凭空消失"
-        //
-        // delete 是逻辑删（valid=false + variant++），条目仍出现在 list 里，
-        // 云端靠 valid=false + variant 变化识别删除；重启后该 Slot 不再加载。
-        bool valid = false;
-        int idx = workflow_find_index_by_id(runtime_id);
-        if (idx >= 0)
+        Workflow *w = workflow_get(i);
+        if (w == nullptr)
         {
-            valid = workflow_is_valid((uint8_t)idx);
+            continue;
         }
 
+        uint8_t stable_id = 0xFF;
+        bool has_sid = capability_get_workflow_stable_id(w->id, stable_id);
+
+        bool valid = workflow_is_valid(i);
+
         JsonObject item = arr.add<JsonObject>();
-        item["stable_id"] = i;
-        item["id"] = runtime_id;
-        item["variant"] = variant;
+        item["slot"] = i;
+        item["id"] = w->id;
+        item["variant"] = workflow_get_variant(i);
         item["valid"] = valid;
+        if (has_sid)
+        {
+            item["stable_id"] = stable_id;
+        }
 
         Serial.printf(
-            "[CMD][WF]   #%u %s variant=%u valid=%d\n",
-            (unsigned)i, runtime_id.c_str(), (unsigned)variant,
-            valid ? 1 : 0
+            "[CMD][WF]   slot=%u id=%s variant=%u valid=%d stable_id=%d\n",
+            (unsigned)i, w->id.c_str(),
+            (unsigned)workflow_get_variant(i), valid ? 1 : 0,
+            has_sid ? (int)stable_id : -1
         );
     }
 
@@ -1458,15 +1551,18 @@ static bool command_workflow_get(
         return false;
     }
 
-    uint8_t index = 0;
-    String runtime_id;
-    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    uint8_t slot = 0xFF;
+    if (!workflow_resolve_slot(cmd, pl, slot))
     {
         return false;
     }
 
+    // valid=false 的对象【仍可读取】（§7）：
+    //   只要 Slot 还被占用，就把当前状态原样返回并显式带 valid=false，
+    //   让云端在"删完 → 重启前"这段窗口里也能看到真实状态。
+    //   reboot 后该 Slot 不再加载 → 上面 resolve 即返回 error 5。
     String json;
-    if (!workflow_export_workflow_json(index, json))
+    if (!workflow_export_workflow_json(slot, json))
     {
         command_send_error(
             cmd,
@@ -1495,6 +1591,9 @@ static bool command_workflow_get(
         dst[kv.key()] = kv.value();
     }
 
+    Workflow *wf = workflow_get(slot);
+    String runtime_id = (wf != nullptr) ? wf->id : String("");
+
     uint8_t stable_id = 0xFF;
     if (capability_get_workflow_stable_id(runtime_id, stable_id))
     {
@@ -1504,13 +1603,16 @@ static bool command_workflow_get(
     // valid 放在 workflow 对象【外面】：
     //   workflow{} 是可被 workflow.set 直接回传的持久化 JSON Schema，
     //   不应掺入设备侧的删除标记。
-    bool valid = workflow_is_valid(index);
+    bool valid = workflow_is_valid(slot);
     response["valid"] = valid;
+    response["slot"] = slot;
 
     Serial.printf(
-        "[CMD][WF] get: slot=%u id=%s variant=%u valid=%d bytes=%u\n",
-        (unsigned)index, runtime_id.c_str(),
-        (unsigned)workflow_get_variant(index), valid ? 1 : 0,
+        "[CMD][WF] get: slot=%u id=%s variant=%u valid=%d stable_id=%d bytes=%u\n",
+        (unsigned)slot, runtime_id.c_str(),
+        (unsigned)workflow_get_variant(slot), valid ? 1 : 0,
+        capability_get_workflow_stable_id(runtime_id, stable_id)
+            ? (int)stable_id : -1,
         (unsigned)json.length()
     );
 
@@ -1534,6 +1636,24 @@ static bool command_workflow_create(
     JsonObject wf_obj;
     if (!workflow_pick_object(cmd, pl, wf_obj))
     {
+        return false;
+    }
+
+    // 严格 Cloud Contract（§18 / §19）：type 必填、steps≤16、params≤8
+    //
+    // 必须在分配 Slot / 做任何修改【之前】校验 ——
+    // 否则一次非法提交会把目标 Workflow 的 Step 清空（整体替换语义）。
+    String err;
+    if (!workflow_validate_workflow_json(wf_obj, err))
+    {
+        Serial.printf(
+            "[CMD][WF] create rejected: %s\n", err.c_str()
+        );
+        command_send_error(
+            cmd,
+            CMD_ERROR_INVALID_PAYLOAD,
+            err.c_str()
+        );
         return false;
     }
 
@@ -1610,12 +1730,32 @@ static bool command_workflow_set(
         return false;
     }
 
-    uint8_t index = 0;
-    String runtime_id;
-    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    // 严格 Cloud Contract（§18 / §19）：type 必填、steps≤16、params≤8。
+    // 必须在幂等比较【之前】校验 —— 否则 type 缺失的提交会先被
+    // canon_from_json 默认成 action，从而误判为"未变化"直接 no-op。
+    String err;
+    if (!workflow_validate_workflow_json(wf_obj, err))
+    {
+        Serial.printf(
+            "[CMD][WF] set rejected: %s\n", err.c_str()
+        );
+        command_send_error(
+            cmd,
+            CMD_ERROR_INVALID_PAYLOAD,
+            err.c_str()
+        );
+        return false;
+    }
+
+    // 唯一定位 = p.id（Slot）。workflow.id 允许重复，不参与定位（§5）。
+    uint8_t index = 0xFF;
+    if (!workflow_resolve_slot(cmd, pl, index))
     {
         return false;
     }
+
+    Workflow *target = workflow_get(index);
+    String runtime_id = (target != nullptr) ? target->id : String("");
 
     // 幂等保护：内容与当前完全一致时不改任何东西，variant 也不 +1。
     //
@@ -1690,11 +1830,42 @@ static bool command_workflow_delete(
         return false;
     }
 
-    uint8_t index = 0;
-    String runtime_id;
-    if (!workflow_resolve_index(cmd, pl, index, runtime_id))
+    // 唯一定位 = p.id（Slot），不按 workflow.id 搜索（§5）
+    uint8_t index = 0xFF;
+    if (!workflow_resolve_slot(cmd, pl, index))
     {
         return false;
+    }
+
+    Workflow *target = workflow_get(index);
+    String runtime_id = (target != nullptr) ? target->id : String("");
+
+    // =====================================================
+    // 幂等（§8.2）：目标已经是 valid=false 时直接 no-op
+    //
+    //   - 不再次 variant++（否则 registry 版本无意义变化）
+    //   - 不产生新的 Dirty
+    //   - 不触发 rescan / 额外保存
+    //   - 仍返回 success，云端可以把 delete 当幂等操作使用
+    // =====================================================
+    if (!workflow_is_valid(index))
+    {
+        Serial.printf(
+            "[CMD][WF] delete: no-op slot=%u id=%s (already invalid)"
+            " variant=%u\n",
+            (unsigned)index, runtime_id.c_str(),
+            (unsigned)workflow_get_variant(index)
+        );
+
+        response["status"] = "success";
+        response["slot"] = index;
+        response["id"] = runtime_id;
+        response["variant"] = workflow_get_variant(index);
+        response["deleted"] = false;
+        response["noop"] = true;
+        response["dirty"] = workflow_has_any_dirty();
+        last_result = CMD_RESULT_OK;
+        return true;
     }
 
     if (!workflow_delete(index))
@@ -1719,6 +1890,8 @@ static bool command_workflow_delete(
     response["slot"] = index;
     response["id"] = runtime_id;
     response["variant"] = workflow_get_variant(index);
+    response["deleted"] = true;
+    response["noop"] = false;
     response["dirty"] = workflow_has_any_dirty();
     last_result = CMD_RESULT_OK;
     return true;
