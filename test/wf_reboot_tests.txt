@@ -7,5 +7,5 @@ cm {"cmd":"workflow.sync_info","id":"r1"} ||| "count":6
 cm {"cmd":"workflow.list","id":"r2"} ||| "id":"cm_a","variant":3,"valid":true
 cm {"cmd":"workflow.list","id":"r3"} ||| "id":"cm_c","variant":2,"valid":true
 cm {"cmd":"workflow.list","id":"r4"} ||| "id":"cm_d","variant":2,"valid":true
-cm {"cmd":"workflow.get","id":"r5","p":{"id":"cm_a"}} ||| "A3"
-cm {"cmd":"workflow.get","id":"r6","p":{"id":"cm_a"}} ||| "hour":13
+cm {"cmd":"workflow.get","id":"r5","p":{"id":3}} ||| "A3"
+cm {"cmd":"workflow.get","id":"r6","p":{"id":3}} ||| "hour":13

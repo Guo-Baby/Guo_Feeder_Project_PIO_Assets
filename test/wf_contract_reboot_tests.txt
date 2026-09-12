@@ -1,0 +1,29 @@
+# =============================================================
+# Test 6 / Test 20 —— reboot 之后的语义（必须在 T19 触发的重启之后跑）
+#
+#   python serial_batch.py COM8 <log> test/wf_contract_reboot_tests.txt 4
+#
+# 前置状态（T19 保存后重启）:
+#   slot 0/1/2 = 基线三条
+#   slot 3     = 已 delete（valid=false，重启后【不再加载】）
+#   slot 4/5/6/7 = same / dupfull / zz_renamed / aaa_first
+#   预期重启后 count = 7（slot3 消失）
+# =============================================================
+
+# ---------------- T6 reboot 后 get 已删除 Slot → error 5（§7 / Test 6） ----------------
+cm {"cmd":"workflow.list","id":"t6a"} ||| "count":7
+cm {"cmd":"workflow.get","id":"t6b","p":{"id":3}} ||| "error_code":5
+cm {"cmd":"workflow.delete","id":"t6c","p":{"id":3}} ||| "error_code":5
+
+# ---------------- T20 reboot 后完整同步（§23 / Test 20） ----------------
+cm {"cmd":"workflow.sync_info","id":"t20a"} ||| "count":7
+cm {"cmd":"workflow.list","id":"t20b"} ||| "count":7
+# 逐个 get，确认云端可以完全恢复当前状态
+cm {"cmd":"workflow.get","id":"t20c","p":{"id":7}} ||| "id":"aaa_first"
+cm {"cmd":"workflow.get","id":"t20d","p":{"id":5}} ||| "id":"dupfull"
+cm {"cmd":"workflow.get","id":"t20e","p":{"id":6}} ||| "id":"zz_renamed"
+cm {"cmd":"workflow.get","id":"t20f","p":{"id":4}} ||| "id":"same"
+# dirty 应为 false（T19 已全部落盘）
+cm {"cmd":"workflow.sync_info","id":"t20g"} ||| "dirty":false
+# variant 跨重启保持（slot5: T9 改一次 -> 2，T17a 又改一次 -> 3）
+cm {"cmd":"workflow.get","id":"t20h","p":{"id":5}} ||| "variant":3
