@@ -556,6 +556,51 @@ static bool recover_module(ConfigModule *m)
 // =====================================================
 // 版本文件读写
 // =====================================================
+
+// 前向声明：bootstrap_version_file() 依赖它，而它定义在下方
+static bool save_version_file();
+
+// 版本文件缺失 / 损坏时的自愈
+//
+// 背景（实测 bug）：
+//   data/config/ 只烧录了 8 个模块 JSON，没有 version.json。
+//   于是每次启动 load_version_file() 都失败 → 打 [CFG][E] version reload
+//   failed，且所有模块 version 停在 0（"未知"）。
+//
+//   更糟的是它不会自愈：save_version_file() 会跳过 version==0 的模块
+//   （防止未知值覆盖文件中已记录的版本），所以只要没有模块被真正修改，
+//   version.json 永远不会被创建 —— 错误永久存在。
+//
+// 修复：缺失 / 损坏时，为【已成功加载】的模块建立版本基线并立即落盘。
+//   - 只对 loaded 的模块置 1：未加载的模块 version 保持 0，
+//     不污染"未知"语义，后续真正加载后会自然进入版本管理。
+//   - 返回 false 表示连写入都失败，调用方据此打 E 级日志。
+static bool bootstrap_version_file()
+{
+    bool any = false;
+
+    for (int i = 0; i < CONFIG_MODULE_COUNT; i++)
+    {
+        if (!s_modules[i].loaded)
+        {
+            continue;
+        }
+        if (s_modules[i].version == 0)
+        {
+            s_modules[i].version = 1;
+        }
+        any = true;
+    }
+
+    if (!any)
+    {
+        // 没有任何模块加载成功，写下去也只是空文件，等下次启动再试
+        return false;
+    }
+
+    return save_version_file();
+}
+
 static bool load_version_file()
 {
     String content;
@@ -715,9 +760,18 @@ static bool commit_recover_from_backup()
     //      backup      = 保持不变
     //      RAM version = 文件里的版本值
     //    三者重新一致。
+    // 此路径下模块已在上面重新加载完毕（loaded 已置位），
+    // 因此可以直接自愈：为已加载模块建立版本基线。
     if (!load_version_file())
     {
-        cfg_log("E", "version reload failed");
+        if (!bootstrap_version_file())
+        {
+            cfg_log("E", "version reload failed");
+        }
+        else
+        {
+            cfg_log("W", "version file rebuilt after rollback");
+        }
     }
 
     // 与文件状态保持一致:
@@ -1023,9 +1077,17 @@ bool config_init()
     }
 
     // 3) 版本信息
-    if (!load_version_file())
+    //
+    //    版本文件缺失 / 损坏时【不在此处】重建 —— 此时模块尚未加载
+    //    （步骤 5），无法判断哪些模块真正可用。先记下状态，
+    //    等模块加载完成后再统一自愈（见步骤 6）。
+    bool version_ok = load_version_file();
+
+    if (!version_ok)
     {
-        cfg_log("E", "version reload failed");
+        // 首次烧录（data/config 未带 version.json）或文件损坏都属预期场景，
+        // 用 W 而非 E —— 它不是故障，步骤 6 会自动补上。
+        cfg_log("W", "version file missing or corrupt, will rebuild");
     }
 
     // 4) 恢复判定
@@ -1126,6 +1188,24 @@ bool config_init()
     }
 
     cfg_log("I", "init done, loaded %d/%d modules", loaded, CONFIG_MODULE_COUNT);
+
+    // 6) 版本文件自愈（必须在模块加载之后）
+    //
+    //    缺失 / 损坏时为已加载模块建立版本基线并落盘。
+    //    不做的后果：save_version_file() 会跳过 version==0 的模块，
+    //    于是 version.json 永远生成不了，每次启动都报"版本读取失败"，
+    //    expect_version 乐观锁也因版本恒为 0 而失效。
+    if (!version_ok)
+    {
+        if (bootstrap_version_file())
+        {
+            cfg_log("I", "version file created (baseline)");
+        }
+        else
+        {
+            cfg_log("E", "version rebuild failed");
+        }
+    }
 
     return loaded > 0;
 }
@@ -1281,9 +1361,13 @@ bool config_reload()
         s_modules[i].dirty = false;
     }
 
-    if (!load_version_file())
+    // 与 config_init() 同样处理：文件缺失 / 损坏时先记状态，
+    // 等本函数末尾模块重新加载完成后再自愈。
+    bool version_ok = load_version_file();
+
+    if (!version_ok)
     {
-        cfg_log("E", "version reload failed");
+        cfg_log("W", "version file missing or corrupt, will rebuild");
     }
 
     for (int i = 0; i < CONFIG_MODULE_COUNT; i++)
@@ -1295,6 +1379,18 @@ bool config_reload()
                 "reload failed, module=%s",
                 s_modules[i].name
             );
+        }
+    }
+
+    if (!version_ok)
+    {
+        if (bootstrap_version_file())
+        {
+            cfg_log("I", "version file created (baseline)");
+        }
+        else
+        {
+            cfg_log("E", "version rebuild failed");
         }
     }
 
