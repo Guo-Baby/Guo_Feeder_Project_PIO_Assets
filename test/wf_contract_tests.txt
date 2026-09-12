@@ -1,0 +1,119 @@
+# =============================================================
+# Workflow Cloud Contract 整改 — 上板回归（Test 1~20）
+#
+# 用法:
+#   python serial_batch.py COM8 <log> test/wf_contract_tests.txt 3
+#
+# 基线（跑之前必须确认）:
+#   slot 0/1/2 = daily_valve_test / daily_valve_test1 / queue_test
+#   count = 3，dirty = false，slot 3..15 空闲
+#
+# 说明: 打开串口会复位板子，因此必须批量跑（单条命令会与 boot 日志竞争）
+# =============================================================
+
+# ---------------- T0 基线 ----------------
+cm {"cmd":"workflow.list","id":"t00"} ||| "count":3
+
+# ---------------- T1 重复 workflow.id（§3 / Test 1） ----------------
+# 两个不同 Slot 使用完全相同的 workflow.id，必须都成功
+cm {"cmd":"workflow.create","id":"t1a","p":{"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "slot":3
+cm {"cmd":"workflow.create","id":"t1b","p":{"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "slot":4
+cm {"cmd":"workflow.list","id":"t1c"} ||| "count":5
+cm {"cmd":"workflow.get","id":"t1d","p":{"id":3}} ||| "id":"same"
+cm {"cmd":"workflow.get","id":"t1e","p":{"id":4}} ||| "id":"same"
+
+# ---------------- T2 内容完全相同的两个 Workflow（§4.1 / Test 2） ----------------
+# slot5 / slot6 提交逐字段相同的完整 JSON，必须都成功且 variant 各自独立 = 1
+cm {"cmd":"workflow.create","id":"t2a","p":{"workflow":{"id":"dupfull","enable":false,"timeout_ms":1234,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "variant":1
+cm {"cmd":"workflow.create","id":"t2b","p":{"workflow":{"id":"dupfull","enable":false,"timeout_ms":1234,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "variant":1
+cm {"cmd":"workflow.list","id":"t2c"} ||| "count":7
+cm {"cmd":"workflow.get","id":"t2d","p":{"id":6}} ||| "variant":1
+
+# ---------------- T3 set 只改 p.id 指定的 Slot（§5 / Test 3） ----------------
+# slot3 与 slot4 的 workflow.id 都是 "same"；只 set slot3
+cm {"cmd":"workflow.set","id":"t3a","p":{"id":3,"workflow":{"id":"changed","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "id":"changed"
+# slot4 绝不能被波及
+cm {"cmd":"workflow.get","id":"t3b","p":{"id":4}} ||| "id":"same"
+cm {"cmd":"workflow.get","id":"t3c","p":{"id":3}} ||| "id":"changed"
+
+# ---------------- T4 workflow.id 可改成与他人重复（§6 / Test 4） ----------------
+cm {"cmd":"workflow.set","id":"t4a","p":{"id":3,"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "id":"same"
+cm {"cmd":"workflow.get","id":"t4b","p":{"id":4}} ||| "id":"same"
+cm {"cmd":"workflow.list","id":"t4c"} ||| "count":7
+
+# ---------------- T16 JSON 字段顺序变化不增 variant（§20 / Test 16） ----------------
+# 与 slot5 当前内容语义一致，仅 member 顺序 & params 顺序不同 → changed:false
+cm {"cmd":"workflow.set","id":"t16a","p":{"id":5,"workflow":{"timeout_ms":1234,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"params":{"b":2,"a":1},"type":"action","id":"VALVE_OPEN"}],"enable":false,"id":"dupfull"}}} ||| "changed":false
+cm {"cmd":"workflow.get","id":"t16b","p":{"id":5}} ||| "variant":1
+
+# ---------------- T9 只改内容不改 id → variant+1 / stable_id 不变（Test 9） ----------------
+cm {"cmd":"workflow.get","id":"t9a","p":{"id":5}} ||| "variant":1
+cm {"cmd":"workflow.set","id":"t9b","p":{"id":5,"workflow":{"id":"dupfull","enable":true,"timeout_ms":1234,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "changed":true
+cm {"cmd":"workflow.get","id":"t9c","p":{"id":5}} ||| "variant":2
+
+# ---------------- T10 改 workflow.id → variant+1（Test 10） ----------------
+cm {"cmd":"workflow.set","id":"t10a","p":{"id":6,"workflow":{"id":"zz_renamed","enable":false,"timeout_ms":1234,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "id":"zz_renamed"
+cm {"cmd":"workflow.get","id":"t10b","p":{"id":6}} ||| "variant":2
+
+# ---------------- T11 新增导致 stable_id 重排（§12 / Test 11） ----------------
+# 插入一个字母序最前的 id，它应拿到 stable_id = 0
+cm {"cmd":"workflow.create","id":"t11a","p":{"workflow":{"id":"aaa_first","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "stable_id":0
+cm {"cmd":"workflow.list","id":"t11b"} ||| "count":8
+
+# ---------------- T13 type 缺失 → INVALID_PAYLOAD（§18 / Test 13） ----------------
+cm {"cmd":"workflow.set","id":"t13a","p":{"id":4,"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"id":"VALVE_OPEN"}]}}} ||| "error_code":11
+cm {"cmd":"workflow.create","id":"t13b","p":{"workflow":{"id":"notype","enable":false,"timeout_ms":0,"steps":[{"id":"VALVE_OPEN"}]}}} ||| "error_code":11
+# 确认目标未被破坏
+cm {"cmd":"workflow.get","id":"t13c","p":{"id":4}} ||| "id":"same"
+
+# ---------------- T14 >8 params → INVALID_PAYLOAD（§19 / Test 14） ----------------
+cm {"cmd":"workflow.set","id":"t14a","p":{"id":4,"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN","params":{"p1":1,"p2":2,"p3":3,"p4":4,"p5":5,"p6":6,"p7":7,"p8":8,"p9":9}}]}}} ||| "error_code":11
+cm {"cmd":"workflow.get","id":"t14b","p":{"id":4}} ||| "id":"same"
+
+# ---------------- T15 >16 steps → INVALID_PAYLOAD（§19 / Test 15） ----------------
+cm {"cmd":"workflow.set","id":"t15a","p":{"id":4,"workflow":{"id":"same","enable":false,"timeout_ms":0,"steps":[{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"},{"type":"action","id":"VALVE_OPEN"}]}}} ||| "error_code":11
+cm {"cmd":"workflow.get","id":"t15b","p":{"id":4}} ||| "id":"same"
+
+# ---------------- T5 get valid=false（不 reboot）（§7 / Test 5） ----------------
+cm {"cmd":"workflow.delete","id":"t5a","p":{"id":3}} ||| "deleted":true
+cm {"cmd":"workflow.get","id":"t5b","p":{"id":3}} ||| "status":"success"
+cm {"cmd":"workflow.get","id":"t5c","p":{"id":3}} ||| "valid":false
+cm {"cmd":"workflow.list","id":"t5d"} ||| "count":8
+
+# ---------------- T7 delete 幂等（§8.2 / Test 7） ----------------
+# 第二次 delete 必须 no-op：不 variant++、不产生 Dirty
+cm {"cmd":"workflow.get","id":"t7a","p":{"id":3}} ||| "valid":false
+cm {"cmd":"workflow.delete","id":"t7b","p":{"id":3}} ||| "noop":true
+cm {"cmd":"workflow.get","id":"t7c","p":{"id":3}} ||| "valid":false
+cm {"cmd":"workflow.list","id":"t7d"} ||| "count":8
+
+# ---------------- T8 count 包含 valid=false 对象（§9 / Test 8） ----------------
+cm {"cmd":"workflow.sync_info","id":"t8a"} ||| "count":8
+cm {"cmd":"workflow.list","id":"t8b"} ||| "count":8
+
+# ---------------- 先清一次 Dirty，拿到干净状态 ----------------
+cm {"cmd":"workflow.save","id":"tc1","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.list","id":"tc2"} ||| "dirty":false
+
+# ---------------- T17 save 部分失败（§13 / Test 17） ----------------
+# 制造两个 Dirty：slot5 与 slot6
+cm {"cmd":"workflow.set","id":"t17a","p":{"id":5,"workflow":{"id":"dupfull","enable":true,"timeout_ms":5555,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "changed":true
+cm {"cmd":"workflow.set","id":"t17b","p":{"id":6,"workflow":{"id":"zz_renamed","enable":true,"timeout_ms":6666,"steps":[{"type":"trigger","id":"delay","params":{"seconds":3}},{"type":"action","id":"VALVE_OPEN","params":{"a":1,"b":2}}]}}} ||| "changed":true
+cm {"cmd":"workflow.list","id":"t17c"} ||| "dirty":true
+# 注入 slot6 保存失败（一次性）
+wfst failwf 6
+# 整体 save 必须返回失败（错误码 10）；slot5 成功应已清掉自己的 Dirty
+cm {"cmd":"workflow.save","id":"t17d","p":{"restart":false}} ||| "error_code":10
+cm {"cmd":"workflow.list","id":"t17e"} ||| "dirty":true
+# 去掉注入后再 save：日志里 dirty 清单应只剩 6（证明 5 在上一轮已清）
+cm {"cmd":"workflow.save","id":"t17f","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.list","id":"t17g"} ||| "dirty":false
+
+# ---------------- T18 save 无 Dirty（§14 / Test 18） ----------------
+cm {"cmd":"workflow.save","id":"t18a","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.save","id":"t18b","p":{"restart":false}} ||| "restarting":false
+
+# ---------------- T19 save + restart（§15 / Test 19） ----------------
+cm {"cmd":"workflow.set","id":"t19a","p":{"id":4,"workflow":{"id":"same","enable":false,"timeout_ms":9999,"steps":[{"type":"action","id":"VALVE_OPEN"}]}}} ||| "changed":true
+cm {"cmd":"workflow.list","id":"t19b"} ||| "dirty":true
+cm {"cmd":"workflow.save","id":"t19c"} ||| "restarting":true

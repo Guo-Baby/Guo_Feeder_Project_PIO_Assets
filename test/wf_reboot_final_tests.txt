@@ -19,9 +19,9 @@
 
 cm {"cmd":"workflow.list","id":"r1"} ||| "count":4
 cm {"cmd":"workflow.list","id":"r2"} ||| "id":"cm_a","variant":6,"valid":true
-cm {"cmd":"workflow.get","id":"r3","p":{"id":"cm_a"}} ||| "A4"
-cm {"cmd":"workflow.get","id":"r4","p":{"id":"cm_a"}} ||| "variant":6
-cm {"cmd":"workflow.get","id":"r5","p":{"id":"cm_g"}} ||| "error_code":5
-cm {"cmd":"workflow.get","id":"r6","p":{"id":"cm_h"}} ||| "error_code":5
-cm {"cmd":"workflow.get","id":"r7","p":{"id":"cm_z"}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"r3","p":{"id":3}} ||| "A4"
+cm {"cmd":"workflow.get","id":"r4","p":{"id":3}} ||| "variant":6
+cm {"cmd":"workflow.get","id":"r5","p":{"id":4}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"r6","p":{"id":5}} ||| "error_code":5
+cm {"cmd":"workflow.get","id":"r7","p":{"id":6}} ||| "error_code":5
 cm {"cmd":"workflow.list","id":"r8"} ||| "dirty":false

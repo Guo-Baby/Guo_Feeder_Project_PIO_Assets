@@ -20,21 +20,21 @@ cm {"cmd":"workflow.get","id":"a4","p":{"stable_id":0}} ||| "valid"
 # ---------- B. 创建：create -> list 立即可见，variant=1 ----------
 cm {"cmd":"workflow.create","id":"b1","p":{"workflow":{"id":"cm_a","name":"A","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":9,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":1
 cm {"cmd":"workflow.list","id":"b2"} ||| "cm_a"
-cm {"cmd":"workflow.get","id":"b3","p":{"id":"cm_a"}} ||| "timer_daily"
+cm {"cmd":"workflow.get","id":"b3","p":{"id":3}} ||| "timer_daily"
 
 # ---------- C. 修改：set -> variant++；再 set 相同内容 -> 不变 ----------
-cm {"cmd":"workflow.set","id":"c1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
-cm {"cmd":"workflow.set","id":"c2","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "changed":false
-cm {"cmd":"workflow.get","id":"c3","p":{"id":"cm_a"}} ||| "variant":2
-cm {"cmd":"workflow.get","id":"c4","p":{"id":"cm_a"}} ||| "A2"
+cm {"cmd":"workflow.set","id":"c1","p":{"id":3,"workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
+cm {"cmd":"workflow.set","id":"c2","p":{"id":3,"workflow":{"id":"cm_a","name":"A2","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":11,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "changed":false
+cm {"cmd":"workflow.get","id":"c3","p":{"id":3}} ||| "variant":2
+cm {"cmd":"workflow.get","id":"c4","p":{"id":3}} ||| "A2"
 
 # ---------- D. 删除：variant++ 且 list 可见 valid=false ----------
 cm {"cmd":"workflow.create","id":"d1","p":{"workflow":{"id":"cm_b","name":"B","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":1
-cm {"cmd":"workflow.delete","id":"d2","p":{"id":"cm_b"}} ||| "status":"success"
+cm {"cmd":"workflow.delete","id":"d2","p":{"id":4}} ||| "status":"success"
 cm {"cmd":"workflow.list","id":"d3"} ||| "id":"cm_b","variant":2,"valid":false
 
 # ---------- E. 多 Workflow save：全部落盘 + dirty 清零 + 不重启 ----------
-cm {"cmd":"workflow.set","id":"e1","p":{"id":"cm_a","workflow":{"id":"cm_a","name":"A3","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":13,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":3
+cm {"cmd":"workflow.set","id":"e1","p":{"id":3,"workflow":{"id":"cm_a","name":"A3","enable":true,"timeout_ms":30000,"steps":[{"type":"trigger","id":"timer_daily","params":{"hour":13,"minute":30}},{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":3
 cm {"cmd":"workflow.create","id":"e2","p":{"workflow":{"id":"cm_c","name":"C","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":1
 cm {"cmd":"workflow.create","id":"e3","p":{"workflow":{"id":"cm_d","name":"D","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":1
 cm {"cmd":"workflow.list","id":"e4"} ||| "dirty":true
@@ -44,8 +44,8 @@ cm {"cmd":"workflow.save","id":"e7","p":{"restart":true}} ||| "restarting":false
 
 # ---------- F. Save 部分失败：cm_c 成功 / cm_d 失败 -> dirty 必须保留 ----------
 wfst failwf 6 ||| armed
-cm {"cmd":"workflow.set","id":"f1","p":{"id":"cm_c","workflow":{"id":"cm_c","name":"C2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
-cm {"cmd":"workflow.set","id":"f2","p":{"id":"cm_d","workflow":{"id":"cm_d","name":"D2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
+cm {"cmd":"workflow.set","id":"f1","p":{"id":5,"workflow":{"id":"cm_c","name":"C2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
+cm {"cmd":"workflow.set","id":"f2","p":{"id":6,"workflow":{"id":"cm_d","name":"D2","enable":true,"timeout_ms":30000,"steps":[{"type":"action","id":"VALVE_OPEN","params":{}}]}}} ||| "variant":2
 cm {"cmd":"workflow.save","id":"f3","p":{"restart":false}} ||| "error_code":10
 cm {"cmd":"workflow.list","id":"f4"} ||| "dirty":true
 cm {"cmd":"workflow.save","id":"f5","p":{"restart":false}} ||| "saved":true
