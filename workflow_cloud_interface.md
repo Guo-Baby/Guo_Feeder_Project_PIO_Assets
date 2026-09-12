@@ -3,7 +3,7 @@
 **项目：Guo Feeder / 郭氏自动猫粮机**
 **目标平台：ESP32-S3 N16R8**
 **适用对象：Cloud / Web / App / UI 开发人员**
-**固件基线：commit `56b3d55`**
+**固件基线：commit `cfc8dbc`（Cloud Contract 修订版）**
 
 > 本文档是 Cloud 侧对接 Workflow 的**唯一契约**。
 > 设备内部的 BIN 格式、LittleFS 布局、事务实现属于私有实现，
@@ -11,8 +11,58 @@
 
 ---
 
+## 0. Workflow 定位模型（★ 最重要，先读这一节）
+
+```text
+                    Workflow
+                       │
+              ┌────────┴────────┐
+              │                 │
+           p.id             workflow.id
+              │                 │
+     唯一 Slot 定位         用户业务 ID
+       （整数 0..15）        （字符串）
+              │                 │
+        不可修改             可重复
+              │                 │
+      Cloud 用它定位       Cloud 不得用它
+         对象                 做唯一主键
+```
+
+| | `p.id` | `workflow.id` |
+|---|---|---|
+| 是什么 | 设备内部 **Slot 索引** | 用户定义的**业务 ID / 名称** |
+| 类型 | 整数 `0..15` | 字符串 |
+| 唯一性 | **唯一**（一个 Slot 一个对象） | **不保证唯一，允许重复** |
+| 能否修改 | 不能（由设备分配） | 可以任意改 |
+| 用途 | `create`/`set`/`delete`/`get` 的**唯一定位键** | 展示、业务语义 |
+| 出现在哪 | 命令的 `p.id`，以及 `list`/`get` 响应的 `slot` 字段 | Workflow JSON 的 `id` 字段 |
+
+**铁律**
+
+1. 修改类命令（`workflow.set` / `workflow.delete`）**必须**用 `p.id` 定位。
+   设备**不会**根据 `workflow.id` 去搜索对象。
+2. `workflow.id` **允许重复**：两个 Slot 可以叫同一个名字，甚至内容完全一致。
+   `workflow.create` 不会因为 `workflow.id` 重复而失败。
+3. `p.id` 与 `workflow.id` **没有任何唯一性关系**，设备不做 `p.id == workflow.id` 校验。
+4. `stable_id` 是 Capability Registry 的**映射元数据**，不是 Workflow 主键（见 §7）。
+
+**错误示范 / 正确示范**
+
+```jsonc
+// ✗ 错：把业务 ID 当定位键
+{ "cmd": "workflow.set", "p": { "id": "morning", "workflow": { ... } } }
+//   → 设备会尝试把 "morning" 解析成整数 Slot，失败 → error 6
+
+// ✓ 对：用 Slot 定位，workflow.id 只是内容
+{ "cmd": "workflow.set", "p": { "id": 3, "workflow": { "id": "morning", ... } } }
+```
+
+---
+
 ## 目录
 
+0. [Workflow 定位模型（★最重要）](#0-workflow-定位模型-最重要先读这一节)
 1. [分层架构与数据流](#1-分层架构与数据流)
 2. [Workflow 概念模型](#2-workflow-概念模型)
 3. [JSON 数据模型](#3-json-数据模型)
@@ -166,7 +216,7 @@ Workflow
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `id` | string | ✅ | **Workflow 的业务身份**，设备内唯一。非空。 |
+| `id` | string | ✅ | **用户业务 ID / 名称**。非空，**允许重复**，设备不做唯一性校验。 |
 | `name` | string | ✕ | 显示名。缺省时回落为 `id`。 |
 | `variant` | uint32 | ✕ | 内容版本号。**由设备维护**，云端提交时该字段被忽略（见 §6）。 |
 | `enable` | bool | ✕ | 是否参与自动触发。缺省 `true`（注意：**设备 BIN 加载路径缺省为 `false`**，见 §5.3）。 |
@@ -182,9 +232,13 @@ Workflow
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `type` | string | ✅ | `"trigger"` 或 `"action"`。缺省按 `"action"` 处理。 |
+| `type` | string | ✅ | `"trigger"` 或 `"action"`。**必填，缺失一律拒绝（error 11）**，不会默认成 `action`。 |
 | `id` | string | ✅ | **Runtime ID**，必须与设备注册的 Action/Trigger id 完全一致（见 §12）。 |
-| `params` | object | ✕ | 参数键值对，最多 8 个。 |
+| `params` | object | ✕ | 参数键值对，**最多 8 个**；超过 8 个整体拒绝（error 11），不截断。 |
+
+> **为什么 `type` 不能默认？** 用户本想表达 Trigger 却漏写 `type` 时，
+> 静默默认成 `action` 会产生危险的语义错误（该等待的条件变成了立即执行）。
+> 同理 `steps > 16` 时设备**不会**"只保存前 16 个" —— 静默丢数据比报错更糟。
 
 ### 3.3 参数值类型
 
@@ -218,12 +272,28 @@ Workflow
 
 ## 4. Definition 与 Runtime
 
+> **Workflow Definition** 是设备侧对 Workflow 的**结构化定义表示**，
+> 与 Cloud 的 Workflow JSON 对应。Workflow 启动时会从 Definition
+> 创建 **Runtime Snapshot**。
+> 持久化由 WorkflowStorage **独立负责**，Cloud 不需要感知具体的
+> BIN / Meta / LittleFS 实现。
+
 ```text
-Workflow Definition   （持久化对象，可被 Cloud 修改）
-        │
-        │ start
-        ▼
-Workflow Runtime Snapshot   （执行期的内存快照）
+Cloud JSON
+     ↓
+Workflow Definition
+     ↓
+Runtime Snapshot        （执行期内存快照）
+```
+
+同时存在一条**独立**路径：
+
+```text
+Workflow Definition
+     ↓
+WorkflowStorage
+     ↓
+Flash
 ```
 
 **关键结论**：
@@ -298,35 +368,45 @@ Workflow #15 → variant
 
 | 操作 | variant 变化 |
 |---|---|
-| `create` | 置为 **1** |
+| `create` | 置为 **1**（即使已存在内容完全相同的另一个 Workflow，也是 1） |
 | `set`（内容**真的**变了） | **+1** |
 | `set`（内容与当前**完全一致**） | **不变** |
-| `delete` | **+1** |
+| `delete`（目标当前 `valid=true`） | **+1** |
+| `delete`（目标已经 `valid=false`） | **不变**（幂等 no-op，见 §9.6） |
 | 重启 | **保持不变**（从 Meta BIN 恢复） |
 
 示例：
 
 ```text
-create  → variant = 1
-set     → variant = 2
-set     → variant = 3
-delete  → variant = 4
+create   → variant = 1
+set      → variant = 2
+set      → variant = 3
+delete   → variant = 4
+delete   → variant = 4   ← 第二次 delete 是 no-op
 ```
+
+> **`variant` 是"内容版本号 / 修订号"，不是内容 Hash，也不是内容指纹。**
+> 它只表达"这个对象被改过几次"，不能用来判断两份内容是否相同 ——
+> 两个内容完全相同的 Workflow 完全可能拥有不同的 `variant`。
 
 ### 6.3 "内容相同"的判定方式
 
-设备用 **canonical 文本比较**，与 JSON 字段书写顺序、参数书写顺序无关：
+设备比较 Workflow 的**语义内容**：
 
-- 固定字段顺序输出；
-- 参数按 `name` 升序排序；
-- 每个值带类型前缀（`i` / `f` / `b` / `s`），避免 `1` 与 `"1"` 混淆。
+- **JSON 成员顺序不影响语义**：`{"id":"x","enable":true}` 与
+  `{"enable":true,"id":"x"}` 视为相同；
+- 参数成员顺序同样不影响语义；
+- `variant` 本身**不参与**比较（它正是被本次操作改变的字段）；
+- 字段缺省值、类型归一规则由固件内部实现（canonical 文本比较），
+  Cloud 无需感知具体算法。
 
 因此"打开编辑 → 原样保存"不会让 variant 虚增。
 
 ### 6.4 云端应当怎么做
 
-- **只读**：把 `variant` 当作"内容是否变化"的指纹。
+- **只读**：把 `variant` 当作"这个对象的内容是不是变过了"的修订号。
 - **不要写**：提交时给 `variant` 赋值没有任何效果，设备会自行覆盖。
+- **不要当指纹**：不能由 `variant` 相同推断内容相同，反之亦然。
 - **不要比时间**：`variant` 没有时间语义，**不能**用来判断"谁更新"。
 
 ---
@@ -396,9 +476,23 @@ Workflow 内容变化
 
 **正确做法**：
 
-- 以 **`id` 作为业务主键**，`stable_id` 只作本次会话的加速器。
-- 持久化 `stable_id` / `id` / `variant` / `valid` 四元组。
+- 以 **`p.id`（Slot）作为 Workflow 的唯一主键**；
+  `workflow.id` 只是业务名称，**不唯一**，不能当主键。
+- `stable_id` 只作本次会话的加速器（例如 `workflow.get` 的入口）。
+- 持久化 `slot` / `id` / `variant` / `valid` 四元组。
 - 当 `registry_version` 变化时，**重新拉取 `workflow.list` 并重建映射**。
+
+### 7.5 两种定位方式不得混用
+
+| 场景 | 用哪个 |
+|---|---|
+| 修改 / 删除某个 Workflow | **`p.id`（Slot）** |
+| 查询某个 Workflow | **`p.id`（Slot）**，`stable_id` 亦可（会解析回 Slot） |
+| Capability Registry 映射（紧凑编码） | `stable_id` |
+| 业务展示 / 命名 | `workflow.id` |
+
+> `workflow.id` 允许重复，因此它**不能**作为任何单对象操作的定位条件。
+> 设备已移除"按 `workflow.id` 搜索对象"的能力。
 
 ---
 
@@ -516,17 +610,22 @@ cm {"cmd":"workflow.sync_info","id":"9010","p":{}}
 
 | 字段 | 说明 |
 |---|---|
-| `registry_version` | 整体 Mapping 版本 |
-| `registry_checksum` | Mapping 校验值 |
-| `count` | 当前 Workflow 对象数（**含 `valid=false` 的已删对象**） |
-| `dirty` | 是否存在**尚未落盘**的修改 |
+| `registry_version` | **整体** Capability Mapping 的版本。它可能因为 Action / Trigger / **Workflow** 任一类映射变化而变，**不能**据此推断"只有 Workflow 变了" |
+| `registry_checksum` | Mapping 的完整性校验值。**必须与 `registry_version` 组合判断**（`version + checksum`） |
+| `count` | 当前 **占用 Slot 数**（**含 `valid=false` 的逻辑删除对象**）。**不等于**"可执行 Workflow 数量" |
+| `dirty` | **全局 Dirty**：RAM 中"至少存在一个 Workflow 修改尚未持久化"。它**不告诉你是哪一个** |
 
 **variant 行为**：无。
 **dirty 行为**：只读。
 **用途**：一次往返判断"要不要继续同步"。`registry_version` +
 `registry_checksum` 都没变 → 整轮同步可跳过。
+发生变化 → 继续 `workflow.list`，由列表判断具体是什么变了。
 
 > `sync_info` **不返回** Workflow 列表，也不返回完整 Workflow。
+>
+> ⚠️ `count` 只是"存在多少个 Workflow object / 占用 Slot"，
+> 要知道真正有效（可执行）的数量，请读 `workflow.list` 的
+> `workflows[].valid` 自行统计。
 
 ---
 
@@ -550,10 +649,10 @@ cm {"cmd":"workflow.list","id":"9011","p":{}}
     "count": 4,
     "dirty": true,
     "workflows": [
-        { "stable_id": 0, "id": "cm_a",             "variant": 1, "valid": true  },
-        { "stable_id": 1, "id": "daily_valve_test", "variant": 1, "valid": true  },
-        { "stable_id": 2, "id": "daily_valve_test1","variant": 1, "valid": true  },
-        { "stable_id": 3, "id": "queue_test",       "variant": 1, "valid": true  }
+        { "slot": 0, "id": "cm_a",             "variant": 1, "valid": true,  "stable_id": 0 },
+        { "slot": 3, "id": "daily_valve_test", "variant": 1, "valid": true,  "stable_id": 1 },
+        { "slot": 4, "id": "daily_valve_test1","variant": 1, "valid": true,  "stable_id": 2 },
+        { "slot": 7, "id": "queue_test",       "variant": 1, "valid": false, "stable_id": 3 }
     ],
     "command": "workflow.list"
 }
@@ -561,33 +660,40 @@ cm {"cmd":"workflow.list","id":"9011","p":{}}
 
 | 字段 | 说明 |
 |---|---|
-| `stable_id` | 本次 Mapping 下的定位编号（§7.2，会整体重排） |
-| `id` | **业务主键** |
-| `variant` | 该 Workflow 的内容版本 |
-| `valid` | `false` = 已被 `workflow.delete` 逻辑删除 |
-| `count` | 数组长度（含 `valid=false`） |
+| **`slot`** | **设备 Slot 编号 = `p.id`。这是云端的唯一定位键** |
+| `id` | 用户业务 ID。**允许重复**，不是主键 |
+| `variant` | 该 Workflow 的内容版本（修订号） |
+| `valid` | `false` = 已被 `workflow.delete` 逻辑删除（重启后消失） |
+| `stable_id` | 本次 Mapping 下的紧凑编号（§7.2，会整体重排，**不得长期引用**） |
+| `count` | **占用 Slot 数**，含 `valid=false` 的对象 |
+
+> ⚠️ **`count` ≠ 可执行 Workflow 数量。** 它包含 `valid=false` 的
+> 逻辑删除对象（它们仍占用 Slot，直到重启才真正消失）。
+> 要统计有效数量请自行过滤 `workflows[].valid == true`。
 
 **variant 行为**：无。
 **dirty 行为**：只读。
 **注意**：**不在 list 中返回 Steps**。要完整内容必须 `workflow.get`。
+**注意**：列表按 **Slot 升序**输出，与 `stable_id` 顺序无关。
 
 ---
 
 ### 9.3 `workflow.get` —— 拉取单个完整 Workflow
 
-**请求**（三种定位方式，优先级从高到低）
+**请求**
 
 ```json
-cm {"cmd":"workflow.get","id":"9012","p":{"stable_id":0}}
-cm {"cmd":"workflow.get","id":"9013","p":{"id":"cm_a"}}
-cm {"cmd":"workflow.get","id":"9014","ob":"cm_a"}
+cm {"cmd":"workflow.get","id":"9012","p":{"id":3}}
+cm {"cmd":"workflow.get","id":"9013","p":{"stable_id":0}}
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `p.stable_id` | 按 Stable ID 定位（优先） |
-| `p.id` | 按业务 id 定位 |
-| `ob` | 第三顺位：对象名字段 |
+| **`p.id`** | **Slot 编号（整数 0..15）。首选、也是唯一的精确定位方式** |
+| `p.stable_id` | Registry 映射入口，设备解析回 Slot（§7）。重复 `workflow.id` 时可能不唯一 |
+
+> `workflow.id` **不是**合法的定位条件（允许重复），设备已移除该能力。
+> 用业务 ID 作为 `p.id` 会得到 **error 6**（不是整数）。
 
 **返回**
 
@@ -606,6 +712,7 @@ cm {"cmd":"workflow.get","id":"9014","ob":"cm_a"}
         ]
     },
     "valid": true,
+    "slot": 3,
     "command": "workflow.get"
 }
 ```
@@ -613,14 +720,31 @@ cm {"cmd":"workflow.get","id":"9014","ob":"cm_a"}
 | 字段 | 说明 |
 |---|---|
 | `o` | 完整 Workflow 对象（逻辑名为 `workflow`），**可直接回传 `workflow.set`** |
-| `k` | 该对象的 `stable_id`（逻辑名 `stable_id`） |
-| `valid` | 放在 `o` **外面**：`o` 是纯持久化 Schema，不掺设备侧删除标记 |
+| `k` / `slot` / `valid` | **Response metadata**，不在 `o` 里，回传时不要带回去 |
+| `k` | 该对象的 `stable_id`（紧凑键名） |
+| `slot` | 该对象的 Slot（= `p.id`） |
+| `valid` | `false` = 已逻辑删除 |
 
 **variant 行为**：无。
 **dirty 行为**：只读。
-**错误**：`5`（对象不存在）。
+
+### 9.3.1 `valid=false` 时的行为（★）
+
+```text
+当前 RAM 中 valid=false（刚 delete，未重启）
+    → workflow.get 成功返回，顶层带 "valid": false
+    → o 中是该 Slot 当前真实内容（Steps 通常已被清空）
+
+设备 reboot 之后
+    → 该 Slot 不再作为有效 Workflow 加载
+    → workflow.get 返回 error 5（WORKFLOW_NOT_FOUND）
+```
+
+**错误**：`5`（Slot 不存在 / 未占用）、`6`（`p.id` 不是整数）。
 
 > `o` 内部**不含** `valid`。判断是否已删除请看顶层 `valid`。
+> 回传 `workflow.set` 时只取 `o` 的内容，**不要**把 `k/slot/valid/dirty`
+> 等 metadata 混进 Workflow JSON。
 
 ---
 
@@ -665,14 +789,23 @@ cm {"cmd":"workflow.create","id":"9015","p":{"workflow":{
 
 | 项目 | 结果 |
 |---|---|
-| `variant` | 置 **1** |
+| `variant` | 置 **1**（即使已存在内容完全相同的另一个 Workflow，也是 1） |
 | `valid` | `true` |
 | `dirty` | `true` |
-| Slot 选择 | 优先未使用 Slot；无空位时**回收已 `delete` 的 Slot** |
+| Slot 选择 | 优先未使用 Slot；无空位时**回收已 `delete` 的 Slot**。**Slot 选择是设备内部实现，Cloud 不得依赖分配顺序**，只用返回的 `slot` 做后续定位 |
 | 立即可见 | ✅ `list` / `get` 立刻可见（无需重启） |
 | Registry | 立即 rescan → `registry_version++` |
 
-**错误**：`6`（缺 `workflow` / 缺 `id`）、`12`（16 个 Slot 全满且无可回收）、`13`（运行中 / Critical 获取失败）。
+**重复 `workflow.id` 完全合法（§3 / §4.1）**
+
+```text
+Slot 3: id = "test"      ✅
+Slot 7: id = "test"      ✅   不报错
+Slot 3 与 Slot 7 内容完全一致   ✅   也允许
+```
+
+**错误**：`6`（缺 `workflow` / 缺 `id`）、`11`（`type` 缺失或非法 / `steps>16` / `params>8`）、
+`12`（16 个 Slot 全满且无可回收）、`13`（运行中 / Critical 获取失败）。
 
 ---
 
@@ -682,7 +815,7 @@ cm {"cmd":"workflow.create","id":"9015","p":{"workflow":{
 
 ```json
 cm {"cmd":"workflow.set","id":"9016","p":{
-  "id":"morning_water",
+  "id":3,
   "workflow":{
     "id":"morning_water",
     "name":"早间供水 v2",
@@ -698,11 +831,24 @@ cm {"cmd":"workflow.set","id":"9016","p":{
 
 | 参数 | 说明 |
 |---|---|
-| `p.id` / `p.stable_id` / `ob` | 定位目标对象（同 §9.3 规则） |
+| **`p.id`** | **Slot 编号（整数）。唯一定位方式，必填** |
+| `p.stable_id` | 备选：Registry 映射入口（会解析回 Slot） |
 | `p.workflow` | **必填**。**完整**新内容（**不支持 PATCH**，也不支持平铺到 `p` 上） |
 
+> **只改 `p.id` 指定的那一个 Slot。** 设备**不会**根据 `workflow.id`
+> 去搜索对象 —— 即使 Slot 7 也叫 `"morning_water"`，它也**不会**被改动。
+>
 > **缺少 `p.workflow` 时返回错误码 `6`，不会清空目标对象。**
 > 这是刻意的保护：避免"只想定位"的半截请求被当成整体替换执行。
+
+**`workflow.id` 可以自由改名，也可以改得和别人重复（§6）**
+
+```text
+p.id = 3, workflow.id = "another_name"   ✅ 允许
+p.id = 3, workflow.id = "morning_water"（与 Slot 7 同名）  ✅ 允许
+```
+
+设备**不做** `p.id == workflow.id` 之类的校验 —— 二者没有唯一性关系。
 
 **返回（内容真的变了）**
 
@@ -733,9 +879,14 @@ cm {"cmd":"workflow.set","id":"9016","p":{
 
 - 整体替换：新 `steps` 比旧的少时，**尾部 Step 真的消失**。
 - 空 `steps` 合法：Workflow 存在但无行为。
-- 超过 16 步：**截断到 16** 并继续（不报错）。
+- `steps > 16`：**整体拒绝**（错误码 `11`），不截断。
+- 单个 Step 的 `params > 8`：**整体拒绝**（错误码 `11`），不截断。
+- Step 的 `type` 缺失或非法：**整体拒绝**（错误码 `11`），不默认成 `action`。
+- 校验在**修改之前**执行：被拒绝的请求不会破坏目标 Workflow 的现有内容。
 
-**错误**：`5`、`6`、`13`（运行中 / Critical 获取失败）。
+**错误**：`5`（Slot 不存在）、`6`（缺 `workflow` / `p.id` 非整数）、
+`11`（内容非法：`type` 缺失 / `steps>16` / `params>8`）、
+`13`（运行中 / Critical 获取失败）。
 
 ---
 
@@ -744,38 +895,67 @@ cm {"cmd":"workflow.set","id":"9016","p":{
 **请求**
 
 ```json
-cm {"cmd":"workflow.delete","id":"9018","p":{"id":"morning_water"}}
+cm {"cmd":"workflow.delete","id":"9018","p":{"id":3}}
 cm {"cmd":"workflow.delete","id":"9019","p":{"stable_id":0}}
 ```
 
-**返回**
+**返回（第一次删除）**
 
 ```json
 {
     "s": 0, "c": "result", "i": "9018", "t": 1789151305,
-    "slot": 4, "variant": 2, "dirty": true,
+    "slot": 3, "variant": 4, "deleted": true, "noop": false, "dirty": true,
     "command": "workflow.delete"
 }
 ```
 
-**行为**
+**返回（重复删除，幂等 no-op）**
 
-```text
-valid   = false
-variant = variant + 1
-dirty   = true
+```json
+{
+    "s": 0, "c": "result", "i": "9020", "t": 1789151311,
+    "slot": 3, "variant": 4, "deleted": false, "noop": true, "dirty": false,
+    "command": "workflow.delete"
+}
 ```
 
-- **不物理删除** Step BIN，也不立即删除文件。
+**状态机（§8）**
+
+```text
+delete(valid=true)
+    ↓
+valid   = false
+variant = variant + 1
+
+delete(valid=false)        ← 重复删除
+    ↓
+success / no-op
+  · 不再次 variant++
+  · 不产生新的 Dirty
+  · 不触发 Registry 变化
+  · 不触发额外保存
+```
+
+**其它行为**
+
+- **不物理删除** Step BIN，也不删除文件；只把 `meta.valid` 置 0 并**立即写盘**。
 - 不会终止正在运行的 Runtime。
 - 删除后到重启前的窗口内，`workflow.list` **仍然能看到它**，
   标记为 `valid=false` —— 这是**设计行为**，让 Cloud 明确得知
   "对象被删了"，而不是"它凭空消失"。
-- 重启后该 Slot 不再作为有效 Workflow 加载。
+- 重启后该 Slot 不再作为有效 Workflow 加载，此时再 `delete` 返回 **error 5**。
 - 无需重启即可被新 `create` 回收（`workflow_find_free_slot` 第二轮）。
 
-**variant 行为**：`+1`。
-**错误**：`5`。
+**variant 行为**：`+1`（仅第一次）；重复删除不变。
+**错误**：`5`（Slot 不存在 / 未占用）。
+
+> **与需求 §8.1 的一处差异（已知，未改）**：需求文字描述 delete 后
+> "进入 Dirty 状态"，而当前实现是**立即落盘并清掉本对象 Dirty**。
+> 原因：`workflow_delete()` 若保留 Dirty，后续 `save_transaction()`
+> 会把该对象重新写回并把 `meta.valid` 置回 `true` —— 等于删除被撤销。
+> 这是已验证稳定的既有设计，本次按 §3「不修改已验证稳定的
+> Dirty/Critical 基础架构」保持不变。对 Cloud 的影响：
+> delete 之后**不需要**再调 `save` 来持久化删除（调了也是 no-op）。
 
 ---
 
@@ -814,35 +994,76 @@ cm {"cmd":"workflow.save","id":"9021","p":{"restart":true}}
 
 **语义（★本次重点）**
 
-`workflow.save` 是**全局**操作，不是保存某一个 Workflow。它必须：
+`workflow.save` 在**逻辑上是全局**操作（一次调用处理所有 Dirty），
+但**物理层是逐 Workflow 独立事务** —— 不是所有 Workflow 的一个
+真正的全局 Flash 原子事务：
 
 ```text
-1. 处理【全部】Dirty Workflow（不是第一个，也不是调用方指定的那个）
-2. 每一个都落盘成功
-        ↓
-3. 才允许 clear dirty
-4. 才允许 release Workflow Edit Critical
-5. 若 restart=true，才请求 SystemCommand Restart
+workflow.save
+     ↓
+遍历【当前全部】Dirty Workflow
+     ↓
+逐个执行自己的持久化事务
+     ↓
+成功的 → 立即清掉【它自己】的 Dirty
+失败的 → 保留【它自己】的 Dirty
+     ↓
+只要存在任意失败 → 整个 workflow.save 命令返回失败
 ```
 
-**任一个失败**：
+因此下面这种结果**是允许且正常的**：
 
 ```text
-Dirty 保留  +  Critical 保留  →  返回错误码 10
-之后可直接重试 workflow.save，剩余对象会继续落盘
+Workflow A save 成功 → dirty=false
+Workflow B save 失败 → dirty=true
+Workflow C save 成功 → dirty=false
+
+workflow.save 整体返回 → 失败（错误码 10）
+```
+
+> ⚠️ 接口语义**不是**"任何一个失败时所有 Workflow 都保持 Dirty"。
+> 成功的对象已经落盘并清掉了自己的 Dirty；只有失败的还留着。
+> 重试 `workflow.save` 只会重新尝试剩余的那几个。
+
+**Critical 释放规则**
+
+```text
+全部 Dirty 清空  → 释放 Workflow Edit Critical，允许安全重启
+仍有 Dirty 残留  → 【不】释放，系统继续阻止重启
 ```
 
 **decision 表**
 
 | 场景 | `saved` | `dirty` | `restarting` | 重启 |
 |---|---|---|---|---|
-| 有 Dirty，全部成功，`restart:true` | `true` | `false` | `true`（请求成功时） | 是 |
+| 有 Dirty，全部成功，`restart:true` | `true` | `false` | `true` | 是（随后断开重连） |
 | 有 Dirty，全部成功，`restart:false` | `true` | `false` | `false` | 否 |
+| 部分失败 | 错误码 `10` | `true`（失败对象保留） | — | 否 |
 | **无 Dirty**，`restart:true` | `true` | `false` | **`false`** | **否（不空转重启）** |
-| 任一失败 | 错误码 10 | `true`（保留） | — | 否 |
+
+**`saved=true` 的含义**：Save operation 成功完成。
+它**不代表**本次一定发生了 Flash 写入 —— 无 Dirty 时不会有写入。
+
+**`restarting=true` 的含义**：重启请求**已被设备接受 / 安排**。
+它**不代表**设备已经完成 reboot。Cloud 应预期：
+
+```text
+command response
+     ↓
+MQTT disconnect
+     ↓
+device reconnect
+     ↓
+workflow.sync_info
+     ↓
+必要时 list / get
+```
+
+设备**不会**主动发送 "I have rebooted"，也不需要额外的
+Cloud Workflow State Machine。
 
 **variant 行为**：无（只落盘）。
-**错误**：`10`（保存失败，Dirty 已保留）。
+**错误**：`10`（保存失败，失败对象的 Dirty 已保留）。
 
 > 落盘是**异步安全重启**：写入成功后才请求重启，因此不会出现
 > "重启后修改丢失"。
@@ -857,17 +1078,21 @@ Dirty 保留  +  Critical 保留  →  返回错误码 10
 | `2` | Missing command | 请求缺命令名 |
 | `3` | Missing object | 缺少定位字段 |
 | `4` | Action not found | 动作不存在 |
-| `5` | **Workflow not found** | `stable_id` / `id` 找不到对象 |
-| `6` | **Invalid payload / missing workflow** | payload 非对象、缺 `workflow`、缺 `id` |
+| `5` | **Workflow not found** | `p.id` 越界 / Slot 未占用（含重启后已删对象）；`stable_id` 找不到 |
+| `6` | **Invalid param / missing workflow** | payload 非对象、缺 `workflow`、缺 `id`、**`p.id` 不是整数 Slot** |
 | `7` | Queue full | 命令运行时队列满 |
 | `8` | Duplicate cmd_id | `i` / `id` 重复 |
 | `9` | System | 系统级错误 |
 | `10` | Execution | `workflow.save` 保存失败（Dirty 已保留） |
-| `11` | **Invalid JSON payload** | payload 不是合法 JSON |
+| `11` | **INVALID_PAYLOAD** | payload 不是合法 JSON；**Step 缺 `type`** / `type` 非法；**`steps > 16`**；**`params > 8`** |
 | `12` | **No free slot** | Workflow 槽位满（16）且无可回收 |
 | `13` | **Rejected** | 运行中 / Critical 获取失败 |
 
-错误上行示例：
+> §18/§19 提到的 "INVALID_PAYLOAD" 在设备上就是错误码 **11**
+> （`CMD_ERROR_INVALID_PAYLOAD`）。需求文字里出现的 "error 6" 是
+> 早期草案的写法，以本表为准。
+
+错误上行示例（实测）
 
 ```json
 {"m":"Unknown workflow command: workflow.foo","e":1,"i":"g2","t":1789151404,"type":"command"}
@@ -886,14 +1111,14 @@ Dirty 保留  +  Critical 保留  →  返回错误码 10
        ↓ 比对 registry_version + registry_checksum
        ↓ 都相同 → 结束（可跳过整轮）
 2. workflow.list
-       ↓ 逐条比对 (id, variant, valid)
+       ↓ 逐条比对 (slot, variant, valid)
        ↓ 与服务端 Cache 一致 → 跳过
        ↓ 不一致 → 记入待拉取集合
-3. 对每个变化的 Workflow: workflow.get
+3. 对每个变化的 Workflow: workflow.get  {"id": <slot>}
        ↓
 4. 用返回的 o 覆盖服务端缓存；用顶层 valid 决定"有效/已删"
        ↓
-5. 重建 stable_id ↔ id 映射（registry_version 变了就必须重建）
+5. 重建 slot ↔ 缓存 映射；registry_version 变了则重建 stable_id 映射
 ```
 
 ### 11.2 增量同步（常规轮询）
@@ -1021,12 +1246,18 @@ ESP32   → Workflow JSON → workflow.get  → UI Model
 **`workflow.get` 的 `o` 可以直接作为 UI 编辑器的输入**，
 编辑完再原样回传 `workflow.set`（整体替换，不是 PATCH）。
 
-### 13.3 四个必须遵守的约定
+### 13.3 必须遵守的约定
 
-1. **显式写 `enable`**（§5.3 两条路径缺省值不同）。
-2. **`step.id` 用 §12 清单校验**（写错不会报错，但不会执行）。
-3. **不要持久化 `stable_id` 作为主键**，用 `id`（§7.4）。
-4. **判断"已删除"看顶层 `valid`**，不是看对象是否存在（§9.6）。
+1. **用 `slot`（= `p.id`）作为 Workflow 的唯一主键**。
+   `workflow.id` 允许重复，**不能**当主键；`stable_id` 会整体重排。
+2. **显式写 `enable`**（§5.3 两条路径缺省值不同）。
+3. **`step.id` 用 §12 清单校验**（写错不会报错，但不会执行）。
+4. **`type` 必须显式给出**，`steps` ≤ 16，`params` ≤ 8（否则 error 11）。
+5. **判断"已删除"看顶层 `valid`**，不是看对象是否存在（§9.6）。
+6. **不要把 metadata 混进 Workflow JSON**：
+   `variant` / `slot` / `stable_id` / `dirty` / `registry_version` / `valid`
+   都是**只读**的 Response metadata，回传 `workflow.set` 时只取 `o`（或
+   `workflow`）的内容。
 
 ### 13.4 推荐 UI 状态机
 
@@ -1045,10 +1276,12 @@ ESP32   → Workflow JSON → workflow.get  → UI Model
 | 项目 | 限制 | 超限行为 |
 |---|---|---|
 | Workflow 数量 | **16** | `create` 返回 `12 NO_FREE_SLOT`（若无可回收的已删 Slot） |
-| 每 Workflow Step 数 | **16** | 超出**截断**，不报错 |
-| 每 Step 参数个数 | **8** | 超出部分丢弃 |
+| 每 Workflow Step 数 | **16** | 超出**整体拒绝**（错误码 `11`），**不截断** |
+| 每 Step 参数个数 | **8** | 超出**整体拒绝**（错误码 `11`），**不丢弃** |
+| Step `type` | 必填 | 缺失 / 非法 → **整体拒绝**（错误码 `11`），不默认 |
 | `variant` | uint32 | 溢出回绕到 1（不归 0） |
-| `id` | 非空字符串 | 空 → 错误码 6 |
+| `id`（workflow.id） | 非空字符串 | 空 → 错误码 6。**允许重复** |
+| `p.id`（Slot） | 整数 `0..15` | 非整数 → 错误码 6；未占用 → 错误码 5 |
 | 运行中整体替换 | 禁止 | 错误码 13 |
 | 命令 `i`/`id` | 必须唯一 | 重复 → 错误码 8 |
 
@@ -1071,22 +1304,27 @@ cm {"cmd":"workflow.sync_info","id":"t1","p":{}}
 打开串口会复位开发板，单条手敲会与 boot 日志竞争，因此使用批处理脚本：
 
 ```bash
-python .pio/serial_batch.py <COM口> <日志文件> <用例文件> [单条等待秒]
+python test/serial_batch.py <COM口> <日志文件> <用例文件> [单条等待秒]
 ```
 
 用例文件格式（`|||` 后为期望子串）：
 
 ```text
 cm {"cmd":"workflow.list","id":"t1"} ||| "valid"
-cm {"cmd":"workflow.save","id":"t2","p":{"restart":false}} ||| "saved":true
+cm {"cmd":"workflow.get","id":"t2","p":{"id":3}} ||| "valid":true
+cm {"cmd":"workflow.save","id":"t3","p":{"restart":false}} ||| "saved":true
 ```
 
-已落地用例：
+已落地用例（在受跟踪的 `test/` 目录下；`.pio/` 被 gitignore）：
 
 | 文件 | 覆盖 |
 |---|---|
-| `.pio/wf_sync_tests.txt` | §33–§37：基础 / 创建 / 修改 / 幂等 / 删除 / 多对象 save / **保存失败** / 错误码 |
-| `.pio/wf_reboot_tests.txt` | §35：重启后 variant 保持、删除不复活 |
+| `test/wf_sync_tests.txt` | §33–§37：基础 / 创建 / 修改 / 幂等 / 删除 / 多对象 save / **保存失败** / 错误码 |
+| `test/wf_reboot_tests.txt` | §35：重启后 variant 保持、删除不复活 |
+| `test/wf_final_tests.txt` | 导出导入往返 / 参数类型 / 槽位回收 / registry 联动 / 错误码 |
+| `test/wf_reboot_final_tests.txt` | §35：variant 跨重启、已删对象不复活 |
+| **`test/wf_contract_tests.txt`** | **Cloud Contract 修订 Test 1–20**（重复 id / 完全相同 Workflow / p.id 精确定位 / valid=false get / delete 幂等 / count 含 invalid / stable_id 重排 / type 缺失 / >8 params / >16 steps / JSON 字段顺序 / save 部分失败 / no-dirty save / save+restart） |
+| **`test/wf_contract_reboot_tests.txt`** | **Test 6 / Test 20**：reboot 后 get → error 5、完整重新同步 |
 
 ### 15.3 故障注入（保存失败测试）
 
@@ -1114,12 +1352,14 @@ cm workflow.save {"restart":false}   → saved=true, dirty=false
 | 命令 | 参数 | 关键返回 | variant | dirty |
 |---|---|---|---|---|
 | `workflow.sync_info` | — | `registry_version` `registry_checksum` `count` `dirty` | — | 只读 |
-| `workflow.list` | — | `workflows[{stable_id,id,variant,valid}]` | — | 只读 |
-| `workflow.get` | `stable_id` \| `id` \| `ob` | `o{...}` `k` `valid` | — | 只读 |
+| `workflow.list` | — | `workflows[{slot,id,variant,valid,stable_id}]` `count` | — | 只读 |
+| `workflow.get` | **`id`(Slot)** \| `stable_id` | `o{...}` `slot` `k` `valid` | — | 只读 |
 | `workflow.create` | `workflow{...}` | `slot` `stable_id` `variant` | `=1` | `true` |
-| `workflow.set` | `id`+`workflow{...}` | `slot` `variant` `changed` | `+1`／不变 | 变化时为 `true` |
-| `workflow.delete` | `stable_id` \| `id` | `slot` `variant` | `+1` | `true` |
-| `workflow.save` | `restart`(缺省 true) | `saved` `dirty` `restarting` `registry_version` | — | 全部成功才清零 |
+| `workflow.set` | **`id`(Slot)**+`workflow{...}` | `slot` `variant` `changed` | `+1`／不变 | 变化时为 `true` |
+| `workflow.delete` | **`id`(Slot)** \| `stable_id` | `slot` `variant` `deleted` `noop` | `+1`／不变（幂等） | 视实现 |
+| `workflow.save` | `restart`(缺省 true) | `saved` `dirty` `restarting` `registry_version` | — | 各对象自己清 |
+
+> 所有定位参数中的 `id` 都是 **Slot 整数**，不是 `workflow.id`。
 
 ## 附录 B：相关文档
 
