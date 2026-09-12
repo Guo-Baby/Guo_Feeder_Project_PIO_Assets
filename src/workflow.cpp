@@ -1735,6 +1735,7 @@ bool workflow_save_transaction()
     }
 
     bool all_ok = true;
+    bool saved_any = false;
 
     // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
     WorkflowDefinition *def_buf =
@@ -1782,41 +1783,69 @@ bool workflow_save_transaction()
 
         if(r != WF_STG_OK)
         {
+            // §13：物理持久化是【逐 Workflow 事务】。
+            //   失败的这个保留 Dirty（不清），但循环【不中断】——
+            //   后续 Dirty Workflow 仍要尝试保存，成功的照常清自己的 Dirty。
+            //
+            //   旧实现在这里 break，导致"A 成功 B 失败 C 未处理"时
+            //   A 的 Dirty 也被保留，与接口文档语义不符。
             Serial.printf(
-                "[Workflow] save transaction failed: wf=%u err=%s\n",
+                "[Workflow] save failed, keep dirty: wf=%u err=%s\n",
                 (unsigned)wf,
                 workflow_storage_result_name(r)
             );
             all_ok = false;
-            break;
+            continue;
         }
+
+        // 该 Workflow 自己的事务成功 → 立即清它自己的 Dirty
+        dirty_workflow_clear(wf);
+        saved_any = true;
     }
 
-    if(!all_ok)
+    if(!dirty_any())
     {
-        // §18 / §25：失败不 release、不清 Dirty，允许后续重新 Save
-        workflow_storage_free_definition(def_buf);
-        return false;
-    }
+        // 全部落盘完成：清延迟保存窗口 + 释放 Critical
+        //
+        // 顺序（与既有实现一致）：先清 Dirty，后 release。
+        // 期间 wf_dirty_critical_held 仍为 true，并发 mark_dirty
+        // 不会重复 acquire，不会造成 count 泄漏。
+        workflow_save_since_ms = 0;
 
-    for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
-    {
-        if(dirty_workflow_has(wf))
+        if(wf_dirty_critical_held)
         {
-            dirty_workflow_clear(wf);
+            system_command_critical_operation_release();
+            wf_dirty_critical_held = false;
         }
     }
-
-    workflow_save_since_ms = 0;
-
-    if(wf_dirty_critical_held)
+    else
     {
-        system_command_critical_operation_release();
-        wf_dirty_critical_held = false;
+        // 仍有 Dirty 残留（部分失败）：
+        //   【不】释放 Critical —— 系统必须继续阻止重启，
+        //   否则会带着未持久化的修改重启。
+        Serial.printf(
+            "[Workflow] save partial: dirty remain, critical_held=%d\n",
+            wf_dirty_critical_held ? 1 : 0
+        );
     }
 
     workflow_storage_free_definition(def_buf);
-    return true;
+
+    if(!all_ok)
+    {
+        Serial.println(
+            "[Workflow] save transaction: FAILED (dirty kept for retry)"
+        );
+    }
+    else
+    {
+        Serial.printf(
+            "[Workflow] save transaction: OK (saved=%d)\n",
+            saved_any ? 1 : 0
+        );
+    }
+
+    return all_ok;
 }
 
 void workflow_request_save()
@@ -2238,6 +2267,35 @@ int workflow_find_index_by_id(
     return -1;
 }
 
+bool workflow_slot_occupied(
+    uint8_t workflow_index
+)
+{
+    if(workflow_index >= WORKFLOW_MAX_COUNT)
+    {
+        return false;
+    }
+
+    // workflow_get() 在 index >= workflow_count 时返回 nullptr
+    Workflow *w = workflow_get(workflow_index);
+
+    return (w != nullptr && w->id.length() > 0);
+}
+
+uint8_t workflow_get_occupied_count()
+{
+    uint8_t n = 0;
+
+    for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        if(workflow_slot_occupied(i))
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
 // 该 Slot 是否承载一个有效 Workflow（delete 后置 false）
 bool workflow_is_valid(
     uint8_t workflow_index
@@ -2589,6 +2647,110 @@ bool workflow_definition_matches_json(
     return same;
 }
 
+// 云端提交内容的严格校验（§18 / §19）
+bool workflow_validate_workflow_json(
+    JsonObjectConst obj,
+    String &err
+)
+{
+    if(obj.isNull())
+    {
+        err = "workflow object is null";
+        return false;
+    }
+
+    String id = obj["id"] | "";
+    if(id.length() == 0)
+    {
+        err = "workflow.id is required";
+        return false;
+    }
+
+    JsonVariantConst steps_v = obj["steps"];
+    if(steps_v.isNull())
+    {
+        return true;   // 无 steps 合法（空 Workflow）
+    }
+
+    if(!steps_v.is<JsonArrayConst>())
+    {
+        err = "workflow.steps must be an array";
+        return false;
+    }
+
+    JsonArrayConst steps = steps_v.as<JsonArrayConst>();
+
+    uint8_t step_index = 0;
+
+    for(JsonObjectConst step : steps)
+    {
+        String step_id = step["id"] | "";
+
+        if(step_id.length() == 0)
+        {
+            continue;   // 与 apply 一致：无 id 的 Step 被跳过，不计入上限
+        }
+
+        if(step_index >= WORKFLOW_MAX_STEP)
+        {
+            err = "workflow.steps exceed ";
+            err += String((unsigned)WORKFLOW_MAX_STEP);
+            err += " (got more)";
+            return false;
+        }
+
+        // type 必填：缺失或非法一律拒绝，绝不默认成 action
+        JsonVariantConst type_v = step["type"];
+
+        if(type_v.isNull())
+        {
+            err = "step.type is required at steps[";
+            err += String((unsigned)step_index);
+            err += "] ('trigger' or 'action')";
+            return false;
+        }
+
+        String type = type_v.as<String>();
+
+        if(type != "trigger" && type != "action")
+        {
+            err = "step.type invalid at steps[";
+            err += String((unsigned)step_index);
+            err += "]: must be 'trigger' or 'action'";
+            return false;
+        }
+
+        // params 数量超限：整体拒绝，不截断
+        JsonVariantConst params_v = step["params"];
+
+        if(!params_v.isNull() && params_v.is<JsonObjectConst>())
+        {
+            JsonObjectConst params = params_v.as<JsonObjectConst>();
+
+            uint8_t pc = 0;
+            for(JsonPairConst kv : params)
+            {
+                (void)kv;
+                pc++;
+            }
+
+            if(pc > WORKFLOW_MAX_PARAM)
+            {
+                err = "step.params exceed ";
+                err += String((unsigned)WORKFLOW_MAX_PARAM);
+                err += " at steps[";
+                err += String((unsigned)step_index);
+                err += "]";
+                return false;
+            }
+        }
+
+        step_index++;
+    }
+
+    return true;
+}
+
 // 单个 Workflow ← JSON（create / set 共用）
 bool workflow_apply_workflow_json(
     uint8_t workflow_index,
@@ -2659,21 +2821,48 @@ bool workflow_apply_workflow_json(
     {
         for(JsonObjectConst step : steps)
         {
-            if(step_index >= WORKFLOW_MAX_STEP)
-            {
-                Serial.printf(
-                    "[WF][DBG] apply_json: wf=%u step overflow, trunc to 16\n",
-                    (unsigned)workflow_index
-                );
-                break;
-            }
-
-            String type = step["type"] | "action";
             String step_id = step["id"] | "";
 
             if(step_id.length() == 0)
             {
                 continue;
+            }
+
+            // 严格上限：超限整体拒绝，绝不"只保存前 16 个"
+            if(step_index >= WORKFLOW_MAX_STEP)
+            {
+                Serial.printf(
+                    "[WF][DBG] apply_json: wf=%u steps exceed %u, rejected\n",
+                    (unsigned)workflow_index, (unsigned)WORKFLOW_MAX_STEP
+                );
+                return false;
+            }
+
+            // type 必填（§18）：缺失 / 非法一律拒绝。
+            // 校验器 workflow_validate_workflow_json() 已在 CommandManager
+            // 层挡过一次，这里是 Defence in Depth —— 任何绕过校验的调用
+            // 都不会退化成"静默默认 action"。
+            JsonVariantConst type_v = step["type"];
+
+            if(type_v.isNull())
+            {
+                Serial.printf(
+                    "[WF][DBG] apply_json: wf=%u s=%u missing type, rejected\n",
+                    (unsigned)workflow_index, (unsigned)step_index
+                );
+                return false;
+            }
+
+            String type = type_v.as<String>();
+
+            if(type != "trigger" && type != "action")
+            {
+                Serial.printf(
+                    "[WF][DBG] apply_json: wf=%u s=%u bad type=%s, rejected\n",
+                    (unsigned)workflow_index, (unsigned)step_index,
+                    type.c_str()
+                );
+                return false;
             }
 
             bool is_trigger = (type == "trigger");
@@ -2686,9 +2875,16 @@ bool workflow_apply_workflow_json(
             {
                 for(JsonPairConst kv : src_params)
                 {
+                    // 严格上限：超限整体拒绝，不截断（§19）
                     if(param_count >= WORKFLOW_MAX_PARAM)
                     {
-                        break;
+                        Serial.printf(
+                            "[WF][DBG] apply_json: wf=%u s=%u params exceed %u,"
+                            " rejected\n",
+                            (unsigned)workflow_index, (unsigned)step_index,
+                            (unsigned)WORKFLOW_MAX_PARAM
+                        );
+                        return false;
                     }
 
                     WorkflowParamValue &p = params[param_count];

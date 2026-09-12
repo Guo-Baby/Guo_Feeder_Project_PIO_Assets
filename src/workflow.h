@@ -536,9 +536,28 @@ bool workflow_set_variant(
 );
 
 // 按 runtime_id 查找 Workflow 索引；找不到返回 -1
+//
+// 【重要】workflow.id 是用户业务 ID，允许重复，因此本函数只返回
+// 第一个匹配的 Slot。它【不得】用于云端命令的对象定位 ——
+// 云端唯一定位方式是 Slot（p.id），见 workflow_slot_occupied()。
 int workflow_find_index_by_id(
     const String &id
 );
+
+// 该 Slot 当前是否被占用（承载一个 Workflow，无论 valid 与否）
+//
+// 判定：Slot 在 [0, workflow_count) 内且 workflow.id 非空。
+// 注意：valid=false 的逻辑删除对象在重启前【仍占用】该 Slot。
+bool workflow_slot_occupied(
+    uint8_t workflow_index
+);
+
+// 当前被占用的 Slot 数量（含 valid=false 的逻辑删除对象）
+//
+// 这是 workflow.list / workflow.sync_info 的 count 语义：
+//   它表示"当前 RAM 中存在多少个 Workflow object"，
+//   不等于"有多少个可执行 Workflow"。
+uint8_t workflow_get_occupied_count();
 
 // 查询该 Slot 是否承载一个有效 Workflow
 //
@@ -595,6 +614,26 @@ bool workflow_apply_workflow_json(
     uint8_t workflow_index,
     JsonObjectConst obj,
     bool is_create
+);
+
+// 校验云端提交的 Workflow JSON（create / set 提交内容前调用）
+//
+// 严格 Cloud Contract（禁止静默降级 / 静默截断）：
+//   - workflow.id 必须存在且非空
+//   - 每个 Step 的 type 必须存在，且只能是 "trigger" / "action"
+//     （缺失时【不得】默认成 action —— 用户本想表达 Trigger 却漏写
+//       type，静默默认会产生危险的语义错误）
+//   - 有效 Step 数 > WORKFLOW_MAX_STEP(16)  → 拒绝
+//   - 单个 Step 的 params 成员数 > WORKFLOW_MAX_PARAM(8) → 拒绝
+//     （超过就整体拒绝，绝不"只保存前 N 个"造成 silent data loss）
+//
+// 有效 Step 计数规则与 workflow_apply_workflow_json 一致：
+//   没有 id 的 Step 会被跳过，不计入 16 的上限。
+//
+// 返回 false 时 err 是可直接回传给云端的英文原因。
+bool workflow_validate_workflow_json(
+    JsonObjectConst obj,
+    String &err
 );
 
 // 设置 Step 数量
