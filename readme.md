@@ -226,6 +226,31 @@ Command 转换
 云端消息上传
 云端命令下发
 
+## 2.5.1 Topic 布局
+
+```
+MQTT
+├── down   guo_feeder/down    Cloud → Device   命令 + 协议级消息
+├── up     guo_feeder/up      Device → Cloud   业务上行（ACK / Result / Registry / 上线通知）
+└── log    guo_feeder/log     Device → Cloud   ★ 预留：仅 LogManager 结构化日志批次（尚未实现）
+```
+
+| Topic | 方向 | 当前状态 | 说明 |
+|---|---|---|---|
+| `down` | Cloud → Device | ✅ 已实现 | 唯一订阅对象；`log_ack` 也将复用它 |
+| `up` | Device → Cloud | ✅ 已实现 | 业务上行；语义不因 Log 而改变 |
+| `log` | Device → Cloud | 🔒 **预留（未实现）** | 日志专用通道，与业务上行彻底分离 |
+
+**为什么 Log 要独立成 Topic**
+
+- `cloud_compress_uplink()` 是按字段名映射的缩写器，日志批次结构完全不同，混入会污染既有 `up` 契约。
+- 业务上行是偶发突发；日志是**可抑制的批量流**，需要独立限流。
+- 只有日志有"补发历史"需求；混入 `up` 会让"补发"变成"重放业务消息"。
+- 云端可在不中断业务的前提下单独停掉日志订阅。
+
+> **完整协议（连接参数 / 报文外壳 / 字段缩写 / 命令翻译 / ACK / 分片 / 错误码 /
+> Log Topic 预留规范）见 `cloud_protocol.md`，本节不重复展开。**
+
 # 2.6 Log Manager
 
 Log Manager 属于服务层，负责保存设备运行过程中重要的：
@@ -237,6 +262,20 @@ Log Manager 属于服务层，负责保存设备运行过程中重要的：
 业务运行记录
 
 目标是在不明显影响 ESP32 实时运行性能的前提下，实现可靠的本地日志记录，并Log Upload。
+
+## 2.6.1 与 Cloud Manager 的关系（规划）
+
+```
+LogManager  ──(注入的 upload_callback)──►  CloudManager  ──►  MQTT log Topic
+     │                                          │
+     │                                          └── log_ack 经 down Topic 回到 LogManager
+     └──► BinStorage → FileStorage → LittleFS （离线时的耐久层）
+```
+
+- **LogManager 不直接调用 MQTT Client**，只持有由 `main.cpp` 注入的上行回调。
+- 依赖方向单向：`CloudManager ↑ LogManager`，二者互不 include，由 `main.cpp` 绑定。
+- 日志上传走**独立的 `log` Topic**，不混入业务 `up`。
+- 详细设计见 `log模块历史/LogManager详细设计规划0915.md`。
 
 # 2.7 系统整体数据流
 
@@ -698,28 +737,68 @@ Cloud Manager 与设备业务模块保持解耦。
 
 Cloud Protocol
 
-当前已经形成统一 MQTT JSON 外壳：
-cmd
-ob
-id
-pl
-src
-ts
-
-采用topic：
+采用 Topic：
 UP
 DOWN
 作为方向区分。
+（Log 模块完成后新增第三个 Topic：LOG，见 §2.5.1）
 
-同时已经实现：
+## 4.12.1 两种下行报文格式
+
+设备**同时支持**两种格式，由是否存在 `c` 字段判定（`compact = !doc["c"].isNull()`）：
+
+| | 旧格式（长字段，**调试首选**） | 新格式（紧凑字段，正式） |
+|---|---|---|
+| 命令 | `cmd` | `c` |
+| 命令 ID | `id` | `i` |
+| 对象 | `ob` | `p.o` / `ob` |
+| 载荷 | `pl` | `p` |
+| 时间戳 | `ts` | `t` |
+| Registry 版本 | — | `v` |
+| Stable ID | — | `k` |
+
+- **旧格式**：`cmd` / `ob` 原样透传给 CommandManager，不做翻译、不校验版本。
+- **新格式**：经 `cloud_translate_command()` 翻译，`v`/`k` 不匹配直接返回协议错误
+  （`s=5, e=3` 版本不匹配 / `e=2` 对象非法），不进 CommandManager。
+
+## 4.12.2 上行紧凑键
+
+所有上行经 `cloud_compress_uplink()` 做字段名缩写，云端必须解缩写：
+
+```
+status→s   cmd→c   id→i   object→o   payload→p
+timestamp→t   error→e   message→m   version→v   stable_id→k
+```
+
+- `t` 在 `time_get()` 返回 0（时间无效）时**被省略**。
+- Registry 查询结果走特化分支：`{c, i, s, r, v, n, cs, d}`（`d` = `[[stable_id, runtime_id], ...]`）。
+- ⚠️ 当前上行是 **JSON 文本**（开了 `ARDUINOJSON_USE_CBOR=1` 但未走 CBOR 路径）。
+
+## 4.12.3 已实现能力
+
 Command 压缩
-Object / Command 映射
-ACK
+Object / Command 映射（含 Stable ID ↔ Runtime ID）
+ACK（命令已受理，先于执行）
 Action Result
 Workflow Result
 State Report
+Registry 查询（Action / Trigger / Workflow）
+协议级消息旁路（`change_msg_limit`）
 
-目前 MQTT JSON 协议已经基本进入冻结阶段。
+## 4.12.4 协议冻结范围与扩展原则
+
+**冻结（不得改变语义）**：
+- Topic 方向：`up` = 设备→云，`down` = 云→设备
+- 上行紧凑键集合（`s/c/i/o/p/t/e/m/v/k`）
+- 命令 ID 唯一性与去重语义
+- 错误码取值
+
+**允许扩展**：
+- 新增命令与 object 定义
+- 新增协议级消息（照 `change_msg_limit` 的落点，旁路 CommandManager）
+- 新增 Topic（如 `log`），但必须配置化、纯新增，且既有函数签名不变
+
+> **完整协议规范见 `cloud_protocol.md`。**
 
 # 4.13 Mijia Temperature / Humidity
 
@@ -1418,13 +1497,36 @@ Descriptor 只读共享；Instance 唯一归属；状态存入 runtime；禁用 
 - 云端 → 设备：发送控制命令
 - 设备 → 云端：返回 ACK、执行结果、状态、数据
 
-
 所有消息均使用同一个 JSON 外壳。
 
+### 1.1 Topic
+
+| Topic | 方向 | 状态 | 承载 |
+|---|---|---|---|
+| `guo_feeder/down` | Cloud → Device | ✅ 已实现 | 命令 + 协议级消息（含未来的 `log_ack`） |
+| `guo_feeder/up` | Device → Cloud | ✅ 已实现 | ACK / Result / Registry / 上线通知 |
+| `guo_feeder/log` | Device → Cloud | 🔒 **预留** | **仅日志批次**（Log 模块，尚未实现） |
+
+> Log 独立成 Topic 的原因与接入规范见 §2.5.1 与 `cloud_protocol.md` §8。
+
+### 1.2 两种报文格式并存
+
+设备**同时支持**两种下行格式，由是否存在 `c` 字段判定：
+
+```c
+bool compact = !doc["c"].isNull();    // cloud_manager.cpp:1048
+```
+
+- **旧格式**（长字段）：`cmd` / `ob` 原样透传，无需版本与 Stable ID，**调试首选**。
+- **新格式**（紧凑字段）：经 `cloud_translate_command()` 翻译，`v` / `k` 校验。
+
+> ⚠️ **本章为概述。权威规范见 `cloud_protocol.md`（V2.0，按代码实读重写）。**
 
 ---
 
 # 2. 统一 JSON 格式（核心协议）
+
+## 2.1 旧格式（长字段，调试首选）
 
 所有 MQTT 消息必须符合以下结构：
 
@@ -1439,19 +1541,54 @@ Descriptor 只读共享；Instance 唯一归属；状态存入 runtime；禁用 
 }
 ```
 
-
-## 字段说明
-
-
-
+### 字段说明
 
 | 字段 | 含义 | 类型 | 说明 |
-cmd    |     command      |    消息类型，决定消息行为，采用枚举匹配，查询command.h |
-ob      |    object       |  操作对象或目标，由各模块定义其动作函数名|
-id      |    cmd_id        |  消息关联ID，用于匹配请求和响应，采用发出命令时的unix时间戳+毫秒 |
-pl      |    payload       |  自定义数据区域 |
-src      |   source       | 消息来源 |
-ts       |   timestamp       | Unix时间戳 |
+|---|---|---|---|
+| `cmd` | command | string | 消息类型，决定消息行为；**原样透传给 CommandManager** |
+| `ob` | object | string | 操作对象或目标，由各模块定义其动作函数名 |
+| `id` | cmd_id | string | 消息关联 ID，用于匹配请求和响应；**每条必须唯一**，重复会被去重丢弃 |
+| `pl` | payload | object | 自定义数据区域 |
+| `src` | source | string | 消息来源 |
+| `ts` | timestamp | number | Unix 时间戳 |
+
+## 2.2 新格式（紧凑字段，正式）
+
+```json
+{
+    "c":"action",
+    "i":"1785514667334",
+    "v":3,
+    "k":0,
+    "p":{}
+}
+```
+
+| 字段 | 含义 | 类型 | 说明 |
+|---|---|---|---|
+| `c` | command | string | `action` / `workflow` / `registry` / `system` / `query` / 其他透传命令名 |
+| `i` | id | string | 命令唯一 ID |
+| `v` | version | number | Registry 版本号（`c=action` / `workflow` 时必填且须匹配） |
+| `k` | kind | number | Stable ID；`c=registry` 时为 RegistryType（0=Action / 1=Trigger / 2=Workflow） |
+| `p` | payload | object | 载荷；对象取 `p.o` 或 `p.object` |
+| `t` | timestamp | number | Unix 时间戳 |
+
+## 2.3 上行紧凑键（设备 → 云端）
+
+设备发出前经 `cloud_compress_uplink()` 缩写字段名，**云端必须解缩写**：
+
+| 缩写 | 全称 | 说明 |
+|---|---|---|
+| `s` | status | `CloudStatus` 枚举 |
+| `c` | cmd | 命令名 |
+| `i` | id | 命令 ID |
+| `o` | object | 对象（源优先级 `object` > `action` > `workflow` > `key` > `ob`） |
+| `p` | payload | 载荷 |
+| `t` | timestamp | **时间无效时该字段被省略** |
+| `e` | error | 错误码 |
+| `m` | message | 可读文本 |
+| `v` | version | 版本号 |
+| `k` | stable_id | Stable ID |
 
 ---
 
@@ -1629,7 +1766,7 @@ state_report
 
 config_upload
 
-log_upload
+log_upload          ← 注：走独立 log Topic（预留，见 §2.5.1）
 
 
 error
@@ -1640,36 +1777,40 @@ device_online
 device_offline
 ```
 
+| 响应 | Topic | 说明 |
+|---|---|---|
+| `ack` / `action_result` / `workflow_result` / `state_report` / `config_upload` / `error` / `device_online` | **`up`** | 业务上行，现有语义不变 |
+| `log_upload` | **`log`（预留）** | 结构化日志批次。**不混入 `up`** —— 它是可抑制的批量流，且有离线补发需求 |
+
 
 ---
 
 # 5. ACK协议
 
 
-设备收到命令后立即返回 ACK。
+设备收到命令后**立即**返回 ACK —— 在命令执行**之前**发出。
 
 
-示例：
+实际报文（`cloud_send_ack()`，`cloud_manager.cpp:782`）：
 
 ```json
 {
-    "id":"cmd_001",
-
-    "command":"ack",
-
-    "object":"VALVE_OPEN",
-
-    "payload":
+    "c":"ack",
+    "i":"cmd_001",
+    "o":"VALVE_OPEN",
+    "p":
     {
-        "state":"received"
+        "result":"received"
     },
-
-    "timestamp":1785514668,
-
-    "source":"device"
+    "t":1785514668
 }
 ```
 
+经 `cloud_compress_uplink()` 缩写后字段名不变（`c` / `i` / `o` / `p` / `t` 已是缩写）。
+
+> 旧格式（长字段）写法等价：
+> `{"cmd":"ack","id":"cmd_001","ob":"VALVE_OPEN","pl":{"result":"received"},"ts":...}`
+> —— 但设备**发出**的是上面那一份（紧凑格式）。
 
 说明：
 
@@ -1681,6 +1822,16 @@ ACK 仅表示：
 
 
 不代表执行完成。
+
+字段省略规则：`o` 在 object 为空时省略；`t` 在 `time_get()` 返回 0（时间无效）时省略。
+
+发送顺序（`cloud_process_rx_message`）：
+
+```
+④ change_msg_limit（协议级）→ ⑤ 命令翻译（失败则协议错误）
+→ ⑥ cloud_send_ack()  ← 这里
+→ ⑦ command_manager_execute()  ← 真正的执行
+```
 
 
 ---
@@ -1929,34 +2080,43 @@ Unix timestamp
 
 # 11. MQTT发送规则
 
+## 11.1 现有实现（topic/up 与 topic/set）
 
-设备发送消息：
-
-普通广播：
-
-```
-topic/set
-```
-
-
-仅更新云端：
-
-```
-topic/up
-```
-
+⚠️ **注意**：代码中 `cloud_send_set()` 与 `cloud_send_up()` **都发往 `publish_topic`
+（`guo_feeder/up`）**，区别只在串口日志标签。因此下表的"set"在当前实现里
+**不会产生第二个 Topic**，仅作为历史语义保留。
 
 规则：
 
-|消息|方式|
-|-|-|
-|ACK|up|
-|Action结果|up|
-|Workflow结果|up|
-|状态上传|up|
-|配置上传|up|
-|日志上传|up|
-|需要通知其他设备|set|
+|消息|方式|实际 Topic|
+|-|-|-|
+|ACK|up|`guo_feeder/up`|
+|Action结果|up|`guo_feeder/up`|
+|Workflow结果|up|`guo_feeder/up`|
+|状态上传|up|`guo_feeder/up`|
+|配置上传|up|`guo_feeder/up`|
+|上线通知|set|`guo_feeder/up`（同上）|
+
+## 11.2 日志发送（🔒 预留，Log 模块启用后生效）
+
+|消息|方式|Topic|说明|
+|-|-|-|-|
+|日志批次|**log**|`guo_feeder/log`|**独立于 up**，CBOR 编码，批 ≤16 条 |
+|`log_ack`|下行|`guo_feeder/down`|复用已有订阅，**不新增订阅** |
+
+```
+LogManager
+    │  upload_callback（main.cpp 注入）
+    ▼
+CloudManager ──► MQTT guo_feeder/log
+    ▲
+    └── log_ack 经 guo_feeder/down 回到 LogManager
+```
+
+- **LogManager 不直接调用 MQTT Client**（`AI_RULES` §1 分层要求）。
+- Log 使用 `store=0`（耐久性由设备自身的 Flash 段环保证，避免双重持久化）。
+- 云端对日志批次需按 `(device_id, boot_seq, seq)` 幂等去重。
+- 完整规范见 `cloud_protocol.md` §8.2。
 
 
 ---
@@ -1986,10 +2146,22 @@ source
 command枚举
 object定义
 payload结构
+协议级消息（照 change_msg_limit 的落点，旁路 CommandManager）
+Topic（如 log），但必须配置化且既有函数签名不变
 ```
 
 
 禁止修改基础 JSON 外壳。
+
+补充（V2.0，按代码实读修订）：
+
+- 基础外壳存在**两套**：旧格式 `cmd/ob/id/pl/src/ts` 与新格式 `c/i/v/k/p/t`，
+  二者由是否存在 `c` 判定，**都已冻结，不得单方面废弃**。
+- 上行紧凑键集合（`s/c/i/o/p/t/e/m/v/k`）已冻结。
+- 命令 ID 唯一性与 10 条 / 30 s 去重语义已冻结。
+- 错误码取值（协议层 0–7、业务层 1–13）已冻结。
+
+> 权威规范见 `cloud_protocol.md`。
 
 
 
