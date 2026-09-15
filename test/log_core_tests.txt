@@ -1,0 +1,103 @@
+# =====================================================
+# LogManager P1.2 — Log Core / RAM Queue 上板回归用例
+#
+# 运行：
+#   python test/serial_batch.py COM8 <logfile> test/log_core_tests.txt 4
+#
+# 格式：  <串口命令> ||| <期望子串>
+#
+# 说明：
+#   · logt stats 会先排空 RAM 环再打印，故断言稳定。
+#   · 测"环满 / drop"必须在【单条命令内】发足量（命令之间 loop 会把环排空）。
+# =====================================================
+
+# ---------- 0. 环就绪 ----------
+logt stats ||| ready=1 psram=1 bytes=8192
+logt ring ||| ready=1
+
+# ---------- 1. Level Policy 表（冻结的 5 行）----------
+logt policy debug ||| DEBUG flash=0 cloud=0
+logt policy info ||| INFO flash=0 cloud=1
+logt policy warn ||| WARN flash=1 cloud=1
+logt policy error ||| ERROR flash=1 cloud=1
+logt policy crit ||| CRITICAL flash=1 cloud=1
+
+# ---------- 2. DEBUG：不入队、不落盘、不上云 ----------
+logt reset ||| reset ok
+logt emit debug 0x0401 ||| queued=0
+logt stats ||| debug=1
+logt stats ||| emit=0
+logt stats ||| flash=0 cloud=0
+logt stats ||| ring=0/64
+
+# ---------- 3. INFO：Cloud YES / Flash NO ----------
+logt reset ||| reset ok
+logt fill info 10 ||| queued=10
+logt stats ||| emit=10
+logt stats ||| cloud=10
+logt stats ||| consumed=10
+logt stats ||| flash=0
+logt stats ||| ring=0/64 hw=10
+logt stats ||| seq=10
+
+# ---------- 4. WARN：Flash YES + Cloud YES ----------
+logt reset ||| reset ok
+logt fill warn 7 ||| queued=7
+logt stats ||| emit=7
+logt stats ||| flash=7 cloud=7
+logt stats ||| consumed=7
+
+# ---------- 5. ERROR：Flash YES + Cloud YES ----------
+logt reset ||| reset ok
+logt fill error 3 ||| queued=3
+logt stats ||| flash=3 cloud=3
+
+# ---------- 6. CRITICAL：Flash YES + Cloud YES + flush 请求 ----------
+logt reset ||| reset ok
+logt emit crit 0x0505 ||| queued=1
+logt stats ||| crit=1
+logt stats ||| flush=1
+logt stats ||| flash=1 cloud=1
+
+# ---------- 7. RAM 环满：淘汰最旧并计 drop（单命令内 100 条）----------
+logt reset ||| reset ok
+logt fill info 100 ||| queued=100
+logt stats ||| emit=100
+logt stats ||| drop=36
+logt stats ||| consumed=64
+logt stats ||| cloud=64
+
+# ---------- 8. 混合 Level（DEBUG 不入队）----------
+logt reset ||| reset ok
+logt mix 5 ||| queued=20
+logt stats ||| emit=20
+logt stats ||| debug=5
+logt stats ||| cloud=20
+logt stats ||| flash=15
+logt stats ||| crit=5
+
+# ---------- 9. 结构化参数（0 / 1 / 2 / 8）----------
+logt reset ||| reset ok
+logt emit warn 0x0403 ||| params=0 queued=1
+logt emit warn 0x0403 1:7 ||| params=1 queued=1
+logt emit warn 0x0403 1:7 6:1234 ||| params=2 queued=1
+logt emit warn 0x0403 1:1 2:2 3:3 4:4 5:5 6:6 7:7 8:8 ||| params=8 queued=1
+logt stats ||| emit=4
+
+# ---------- 10. 契约：params > 8 整体拒绝（不截断）----------
+logt reset ||| reset ok
+logt overlimit ||| queued=0 (expect 0)
+logt stats ||| emit=0
+
+# ---------- 11. 高频压力：单命令内 200 条（远超声明的 64 槽）----------
+logt reset ||| reset ok
+logt fill warn 200 ||| queued=200
+logt stats ||| emit=200
+logt stats ||| flash=64
+logt stats ||| consumed=64
+logt stats ||| drop=136
+logt stats ||| ready=1
+
+# ---------- 12. 收尾：环已排空、统计一致 ----------
+logt ring ||| used=0/64
+logt stats ||| ready=1
