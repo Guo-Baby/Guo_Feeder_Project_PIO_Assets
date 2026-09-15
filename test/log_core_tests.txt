@@ -38,7 +38,10 @@ logt stats ||| cloud=10
 logt stats ||| consumed=10
 logt stats ||| flash=0
 logt stats ||| ring=0/64 hw=10
-logt stats ||| seq=10
+# P1.3 起 seq 改为"Boot 预留区间"（不再从 1 连续自增），绝对值跨会话
+# 不可预测，故不做绝对值断言；seq 的 base/limit/reserved/reliable 语义
+# 由 log_meta_*.txt 专项覆盖（39 条）。此处只校验本段 routing 汇总一致。
+logt stats ||| emit=10 debug=0 ring=0/64 hw=10 drop=0 consumed=10 flash=0 cloud=10
 
 # ---------- 4. WARN：Flash YES + Cloud YES ----------
 logt reset ||| reset ok

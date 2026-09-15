@@ -267,4 +267,15 @@ bool log_meta_corrupt();
 // "reservation 写失败 → s_seq_reliable = false"）
 void log_meta_test_fail_next(bool enable);
 
+// ---- Commit 4：损坏注入（仅上板自测）----
+
+// 破坏某 segment 头部（翻转 seg_index → CRC 失败），用于 §18
+bool log_seg_corrupt_head(uint32_t seg);
+
+// 破坏某 segment 的第 rec 条 record（翻转首字节 → CRC 失败），用于 §19
+bool log_seg_corrupt_record(uint32_t seg, uint8_t rec);
+
+// 把某 segment 截断到 bytes 字节（模拟部分写入）并立即重扫描，用于 §19
+bool log_seg_truncate(uint32_t seg, uint32_t bytes);
+
 #endif // LOG_MANAGER_H

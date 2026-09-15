@@ -1,0 +1,44 @@
+# =====================================================
+# LogManager P1.3 — Flash Ring 满淘汰（F5 / §20 / Commit 4）
+#
+# 运行：python test/serial_batch.py COM8 <log> test/log_flash_recovery_tests.txt 3
+# =====================================================
+
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+
+# ---------- 写满 16 段 × 31 = 496 条 ----------
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+
+logt flash ||| segs=16
+logt flash ||| total=496
+logt flash ||| oldest=0
+logt flash ||| newest=15
+logt flash ||| append=15@31
+logt stats ||| seg_del=0
+
+# ---------- 第 497 条 → 淘汰最老段（seg 0）并复用该槽位 ----------
+logt fill warn 31 ||| queued=31
+logt flush ||| flush done
+logt stats ||| seg_del=1
+logt flash ||| segs=16
+logt flash ||| total=496
+logt flash ||| oldest=1
+logt fseg 0 ||| ok=1
+logt fseg 0 ||| recs=31
+logt fver 0 0 ||| crc=1

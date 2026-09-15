@@ -553,6 +553,31 @@ static void logt_do_mfail(const String &op)
     Serial.printf("[LogT] mfail armed=%ld\n", (v != 0) ? 1L : 0L);
 }
 
+// ---- P1.3 损坏注入 ----
+
+static void logt_do_fcorrupt(const String &op)
+{
+    const long seg = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const bool ok = log_seg_corrupt_head((uint32_t)seg);
+    Serial.printf("[LogT] fcorrupt seg=%ld ok=%d\n", seg, ok ? 1 : 0);
+}
+
+static void logt_do_fbrec(const String &op)
+{
+    const long seg = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const long rec = strtol(logt_arg(op, 2).c_str(), nullptr, 10);
+    const bool ok = log_seg_corrupt_record((uint32_t)seg, (uint8_t)rec);
+    Serial.printf("[LogT] fbrec seg=%ld rec=%ld ok=%d\n", seg, rec, ok ? 1 : 0);
+}
+
+static void logt_do_ftrunc(const String &op)
+{
+    const long seg = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const long bytes = strtol(logt_arg(op, 2).c_str(), nullptr, 10);
+    const bool ok = log_seg_truncate((uint32_t)seg, (uint32_t)bytes);
+    Serial.printf("[LogT] ftrunc seg=%ld bytes=%ld ok=%d\n", seg, bytes, ok ? 1 : 0);
+}
+
 static void logt_print_policy(const String &op)
 {
     bool ok = false;
@@ -776,6 +801,24 @@ void logt_console(const String &cmd)
     if (name == "mfail")
     {
         logt_do_mfail(op);
+        return;
+    }
+
+    if (name == "fcorrupt")
+    {
+        logt_do_fcorrupt(op);
+        return;
+    }
+
+    if (name == "fbrec")
+    {
+        logt_do_fbrec(op);
+        return;
+    }
+
+    if (name == "ftrunc")
+    {
+        logt_do_ftrunc(op);
         return;
     }
 
