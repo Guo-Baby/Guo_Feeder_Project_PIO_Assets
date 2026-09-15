@@ -416,6 +416,15 @@ static void logt_print_stats()
         (unsigned)st.ring_ready,
         (unsigned)st.ring_in_psram,
         (unsigned)st.ring_bytes);
+
+    Serial.printf(
+        "[LogT] fstats ok=%u fail=%u seg_new=%u seg_del=%u crc_err=%u corrupt=%u\n",
+        (unsigned)st.flash_append_ok,
+        (unsigned)st.flash_append_fail,
+        (unsigned)st.flash_segment_created,
+        (unsigned)st.flash_segment_deleted,
+        (unsigned)st.flash_crc_error,
+        (unsigned)st.flash_corrupt_segment);
 }
 
 static void logt_print_ring()
@@ -429,6 +438,82 @@ static void logt_print_ring()
         (unsigned)st.ring_high_water, (unsigned)st.ring_drop,
         (unsigned)st.ring_ready, (unsigned)st.ring_in_psram,
         (unsigned)st.ring_bytes);
+}
+
+// ---- P1.3 Flash 观测 ----
+
+static void logt_print_flash()
+{
+    LogFlashInfo fi;
+    log_flash_get_info(fi);
+
+    Serial.printf(
+        "[LogT] flash ready=%u segs=%u oldest=%u newest=%u append=%u@%u "
+        "total=%u fseq_old=%u fseq_new=%u batch=%u psram=%u reliable=%u\n",
+        (unsigned)fi.flash_ready,
+        (unsigned)fi.valid_segments,
+        (unsigned)fi.oldest_segment,
+        (unsigned)fi.newest_segment,
+        (unsigned)fi.append_segment,
+        (unsigned)fi.append_index,
+        (unsigned)fi.total_records,
+        (unsigned)fi.first_seq_oldest,
+        (unsigned)fi.first_seq_newest,
+        (unsigned)fi.batch_bytes,
+        (unsigned)fi.batch_in_psram,
+        (unsigned)fi.seq_reliable);
+}
+
+static void logt_do_flush()
+{
+    // 反复 drain，直到 RAM 环排空（WARN+ 在此过程中落 Flash）
+    logt_drain_all();
+    Serial.println("[LogT] flush done");
+}
+
+static void logt_print_fseg(const String &op)
+{
+    long seg = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    LogSegmentHead h;
+
+    if (!log_flash_peek_segment((uint32_t)seg, h))
+    {
+        Serial.printf("[LogT] fseg seg=%ld absent\n", seg);
+        return;
+    }
+
+    Serial.printf(
+        "[LogT] fseg seg=%ld ok=%u magic=0x%08X index=%u first_seq=%u recs=%u crc=0x%08X\n",
+        seg, (unsigned)h.ok, (unsigned)h.magic, (unsigned)h.index,
+        (unsigned)h.first_seq, (unsigned)h.records, (unsigned)h.crc32);
+}
+
+static void logt_print_fver(const String &op)
+{
+    long seg = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    long rec = strtol(logt_arg(op, 2).c_str(), nullptr, 10);
+
+    LogRecord r;
+    uint8_t crc_ok = 0;
+
+    if (!log_flash_peek_record((uint32_t)seg, (uint8_t)rec, r, crc_ok))
+    {
+        Serial.printf("[LogT] fver seg=%ld rec=%ld absent\n", seg, rec);
+        return;
+    }
+
+    Serial.printf(
+        "[LogT] fver seg=%ld rec=%ld crc=%u ver=%u lvl=%u seq=%u boot=%u "
+        "evt=0x%04X params=%u up=%u\n",
+        seg, rec, (unsigned)crc_ok, (unsigned)r.version, (unsigned)r.level,
+        (unsigned)r.seq, (unsigned)r.boot_seq, (unsigned)r.event_id,
+        (unsigned)r.param_count, (unsigned)r.uptime_ms);
+}
+
+static void logt_do_fwipe()
+{
+    const bool ok = log_flash_wipe();
+    Serial.printf("[LogT] fwipe ok=%d\n", ok ? 1 : 0);
 }
 
 static void logt_print_policy(const String &op)
@@ -583,6 +668,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   fill <lv> <n> [event_hex]");
         Serial.println("[LogT]   mix <n>");
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
+        Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
         return;
     }
 
@@ -597,6 +683,37 @@ void logt_console(const String &cmd)
     {
         logt_drain_all();
         logt_print_ring();
+        return;
+    }
+
+    // ---- P1.3 Flash Segment Ring ----
+    if (name == "flush")
+    {
+        logt_do_flush();
+        return;
+    }
+
+    if (name == "flash")
+    {
+        logt_print_flash();
+        return;
+    }
+
+    if (name == "fseg")
+    {
+        logt_print_fseg(op);
+        return;
+    }
+
+    if (name == "fver")
+    {
+        logt_print_fver(op);
+        return;
+    }
+
+    if (name == "fwipe")
+    {
+        logt_do_fwipe();
         return;
     }
 

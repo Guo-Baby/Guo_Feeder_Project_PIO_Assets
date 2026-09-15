@@ -1,0 +1,116 @@
+# =====================================================
+# LogManager P1.3 — Flash Segment Ring 上板回归（Commit 2: skeleton）
+#
+# 运行：
+#   python test/serial_batch.py COM8 <logfile> test/log_flash_tests.txt 3
+#
+# 覆盖：F1 空初始化 / F2 段头 / F3 写入 1·10·31 条 / F4 段满切段 /
+#       INFO·DEBUG 不落 Flash / 16 段写满后 append 失败（Commit 2 行为）/
+#       F6 重启恢复准备
+# =====================================================
+
+# ---------- F1 空初始化 ----------
+logt fwipe ||| fwipe ok=1
+logt flash ||| ready=1 segs=0
+logt flash ||| total=0
+logt flash ||| append=0@0
+logt flash ||| batch=1024 psram=1
+
+# ---------- F2 段头（写入 1 条 → 建段 0）----------
+logt reset ||| reset ok
+logt emit warn 0x0401 1:7 ||| queued=1
+logt flush ||| flush done
+logt flash ||| segs=1
+logt flash ||| append=0@1
+logt flash ||| total=1
+logt fseg 0 ||| ok=1
+logt fseg 0 ||| magic=0x53454753
+logt fseg 0 ||| index=0
+logt fseg 0 ||| recs=1
+logt fver 0 0 ||| crc=1
+logt fver 0 0 ||| ver=2
+logt fver 0 0 ||| lvl=2
+logt fver 0 0 ||| evt=0x0401
+logt fver 0 0 ||| params=1
+
+# ---------- F3 写入 10 条 ----------
+logt fwipe ||| fwipe ok=1
+logt fill warn 10 ||| queued=10
+logt flush ||| flush done
+logt flash ||| total=10
+logt flash ||| append=0@10
+logt fver 0 9 ||| crc=1
+logt fver 0 9 ||| lvl=2
+
+# ---------- F3 写入 31 条（恰好满段）----------
+logt fwipe ||| fwipe ok=1
+logt fill warn 31 ||| queued=31
+logt flush ||| flush done
+logt flash ||| total=31
+logt flash ||| append=0@31
+logt fseg 0 ||| recs=31
+logt fver 0 30 ||| crc=1
+
+# ---------- F4 第 32 条 → 新建段 1 ----------
+logt fwipe ||| fwipe ok=1
+logt fill warn 32 ||| queued=32
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=32
+logt flash ||| append=1@1
+logt fseg 0 ||| recs=31
+logt fseg 1 ||| recs=1
+logt fver 1 0 ||| crc=1
+
+# ---------- 策略回归：INFO 不落 Flash ----------
+logt fwipe ||| fwipe ok=1
+logt fill info 20 ||| queued=20
+logt flush ||| flush done
+logt flash ||| total=0
+logt flash ||| segs=0
+
+# ---------- 策略回归：DEBUG 不落 Flash / WARN+ 落 Flash ----------
+logt fwipe ||| fwipe ok=1
+logt mix 3 ||| queued=12
+logt flush ||| flush done
+logt flash ||| total=9
+logt flash ||| segs=1
+logt fver 0 0 ||| crc=1
+logt fver 0 0 ||| lvl=2
+
+# ---------- 16 段写满（496 条）→ 再写 1 条 append 失败（Commit 2 行为）----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt flash ||| segs=16
+logt flash ||| total=496
+logt flash ||| append=15@31
+logt fill warn 1 ||| queued=1
+logt flush ||| flush done
+logt stats ||| fail=1
+logt flash ||| total=496
+
+# ---------- F6 重启恢复：准备现场（写入 40 条 = 段0 满 + 段1 9 条）----------
+logt fwipe ||| fwipe ok=1
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=40
+logt flash ||| append=1@9
+logt fseg 0 ||| recs=31
+logt fseg 1 ||| recs=9

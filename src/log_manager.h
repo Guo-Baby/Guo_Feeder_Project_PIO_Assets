@@ -40,6 +40,32 @@
 #define LOG_DEBUG_ENABLE          1
 
 // =====================================================
+// P1.3 常量（Flash Segment Ring）
+//
+// 尺寸常量在 log_events.h 已冻结，此处**不重复定义**，只补路径与段头约定：
+//   LOG_SEGMENT_HEADER_SIZE / LOG_RECORDS_PER_SEGMENT / LOG_SEGMENT_SIZE
+//   LOG_SEGMENT_COUNT / LOG_SEGMENT_CAPACITY
+// =====================================================
+
+#define LOG_DIR_PATH        "/log"
+#define LOG_META_PATH       "/log/meta.bin"
+#define LOG_SEG_PATH_FMT    "/log/s%07u.log"   // s0000000.log .. s0000015.log
+
+// 段头 magic（uint32，"SEGS"）
+#define LOG_SEG_MAGIC       0x53454753u
+
+// 段头布局（固定 16 B，不得增删字段）
+//   0   magic      uint32
+//   4   seg_index  uint32
+//   8   first_seq  uint32
+//   12  crc32      uint32（覆盖 [0..11]）
+#define LOG_SEG_OFF_MAGIC      0u
+#define LOG_SEG_OFF_INDEX      4u
+#define LOG_SEG_OFF_FIRST_SEQ  8u
+#define LOG_SEG_OFF_CRC32      12u
+#define LOG_SEG_CRC_SPAN       12u   // 头 CRC 覆盖字节数
+
+// =====================================================
 // 统计（侧信道：LogManager 自身状态，不产生 Log，避免递归）
 // =====================================================
 
@@ -60,6 +86,14 @@ struct LogStats
     uint8_t  ring_ready;      // log_init() 是否成功（0/1）
     uint8_t  ring_in_psram;   // 环缓冲是否落在 PSRAM（0/1）
     uint32_t ring_bytes;      // 环缓冲字节数
+
+    // ---- P1.3 Flash Segment Ring（有界计数，无动态字符串）----
+    uint32_t flash_append_ok;       // 成功写入 Flash 的 record 条数
+    uint32_t flash_append_fail;     // 写入失败的 record 条数
+    uint32_t flash_segment_created; // 新建 segment 次数
+    uint32_t flash_segment_deleted; // 删除 segment 次数（ring 淘汰 / 损坏重建）
+    uint32_t flash_crc_error;       // 扫描时发现的 record CRC 错误数
+    uint32_t flash_corrupt_segment; // Header 损坏被废弃的 segment 数
 };
 
 // =====================================================
@@ -150,5 +184,49 @@ void log_stats_reset();
 // CRITICAL 触发的"立即 flush + 提升 Cloud 优先级"请求（P1.3 / P1.4 消费）
 bool log_flush_requested();
 void log_clear_flush_request();
+
+// =====================================================
+// P1.3 Flash 观测 / 测试钩子（仅上板自测，不属于正式 API）
+//
+// 与 workflow_storage_test_* 同一惯例：只由串口控制台调用。
+// P1.4 / P1.5 若确需正式 API，再单独提升。
+// =====================================================
+
+struct LogFlashInfo
+{
+    uint8_t  flash_ready;       // /log 初始化是否成功（0/1）
+    uint8_t  valid_segments;    // 当前有效 segment 数
+    uint32_t oldest_segment;    // 最老 segment 索引
+    uint32_t newest_segment;    // 最新 segment 索引
+    uint32_t append_segment;    // 当前追加目标 segment
+    uint8_t  append_index;      // 该 segment 内下一条 record 槽位（0..31）
+    uint16_t total_records;     // 全部有效 record 条数
+    uint32_t first_seq_oldest;  // 最老 segment 的 first_seq
+    uint32_t first_seq_newest;  // 最新 segment 的 first_seq
+    uint32_t batch_bytes;       // Flash 批量工作缓冲字节数
+    uint8_t  batch_in_psram;    // 该缓冲是否落在 PSRAM（0/1）
+    uint8_t  seq_reliable;      // seq 可信（meta 写入成功）；Commit 3 接入
+};
+
+void log_flash_get_info(LogFlashInfo &out);
+
+// 读某 segment 头部（ok=0 表示不存在 / magic 或 CRC 非法）
+struct LogSegmentHead
+{
+    uint8_t  ok;
+    uint8_t  records;      // 该段已验证的有效 record 数
+    uint32_t magic;
+    uint32_t index;
+    uint32_t first_seq;
+    uint32_t crc32;
+};
+
+bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out);
+
+// 读某 segment 的第 rec 条 record（crc_ok=0 表示内容存在但校验失败）
+bool log_flash_peek_record(uint32_t seg, uint8_t rec, LogRecord &out, uint8_t &crc_ok);
+
+// 删除 /log 下全部文件（测试基线复位）
+bool log_flash_wipe();
 
 #endif // LOG_MANAGER_H
