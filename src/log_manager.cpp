@@ -114,8 +114,12 @@ bool log_init()
     s_seq = 0;
     s_boot_seq = 1;          // P1.3：改为 meta.bin 读取 + 1
 
+    // 与运行期保持同一保护规则：stats / flush 状态一律经 s_mux 访问
+    // （init 期虽无并发，但统一规则可避免将来出现"漏锁"的访问点）
+    portENTER_CRITICAL(&s_mux);
     memset(&s_stats, 0, sizeof(s_stats));
     s_flush_requested = false;
+    portEXIT_CRITICAL(&s_mux);
 
     s_ring_bytes = bytes;
     s_ready = true;
@@ -290,38 +294,53 @@ void log_task()
 
         budget--;
 
-        // ---- Level → (Flash, Cloud) routing 决策（表驱动，唯一策略）----
+        // ---- routing 决策（纯计算，不涉及任何 I/O）----
         const LogLevel lv = (LogLevel)rec.level;
         const bool to_flash = log_level_to_flash(lv);
         const bool to_cloud = log_level_to_cloud(lv);
+        const bool is_critical = (lv == LOG_LVL_CRITICAL);
+
+        // ---- 短临界区 ①：统一更新 stats 与 flush 请求 ----
+        //
+        // 并发规则（P1.2 fix）：所有 s_stats / s_flush_requested 的读与改
+        // 一律在 s_mux 内完成，与 log_emit() / log_get_stats() /
+        // log_stats_reset() / log_flush_requested() 使用同一把锁。
+        portENTER_CRITICAL(&s_mux);
 
         if (to_flash)
         {
             s_stats.flash_routed++;
-            // P1.3：此处追加进 Flash Segement Ring 写缓冲
         }
 
         if (to_cloud)
         {
             s_stats.cloud_routed++;
-            // P1.4：此处投递到 Cloud Log Queue（独立于业务 Up 队列）
         }
 
         s_stats.consumed++;
 
-        if (lv == LOG_LVL_CRITICAL)
+        if (is_critical)
         {
             s_stats.critical_seen++;
 
             // 冻结语义（P1 修订）：CRITICAL = Flash 立即 + 进入
             // "最高优先级下一批次"，**不建独立通道、不承诺秒级**。
-            // P1.2 只置请求标志，实际 flush / 抢占在 P1.3 / P1.4 落地。
+            // 边沿触发：只置一次，避免重复 flush。
             if (!s_flush_requested)
             {
                 s_flush_requested = true;
                 s_stats.flush_requests++;
             }
         }
+
+        portEXIT_CRITICAL(&s_mux);
+
+        // ---- I/O 区（P1.2 为空，P1.3/P1.4 在此落地）----
+        //
+        // P1.3：Flash Segment append
+        // P1.4：Cloud Log Queue 投递
+        // ★ 严格要求：耗时 I/O 必须在临界区【外】执行 ——
+        //   禁止把 Flash 写入或 MQTT publish 放进上面的 s_mux 段。
     }
 
     portENTER_CRITICAL(&s_mux);
@@ -357,10 +376,17 @@ void log_stats_reset()
 
 bool log_flush_requested()
 {
-    return s_flush_requested;
+    // 与 log_task() / log_emit() 统一使用 s_mux（非阻塞自旋锁，不用 mutex）
+    portENTER_CRITICAL(&s_mux);
+    const bool requested = s_flush_requested;
+    portEXIT_CRITICAL(&s_mux);
+
+    return requested;
 }
 
 void log_clear_flush_request()
 {
+    portENTER_CRITICAL(&s_mux);
     s_flush_requested = false;
+    portEXIT_CRITICAL(&s_mux);
 }
