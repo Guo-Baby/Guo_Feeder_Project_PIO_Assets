@@ -1,0 +1,36 @@
+# =====================================================
+# LogManager P1.3 — Flash 重启恢复验证（F6）
+#
+# 前置：log_flash_tests.txt 末尾已写入 40 条
+#       （segment 0 满 31 条 + segment 1 有 9 条）
+#
+# 运行（打开串口会复位板子，即 F6 的 "restart"）：
+#   python test/serial_batch.py COM8 <logfile> test/log_flash_reboot_tests.txt 3
+#
+# 说明：seq 唯一性 / meta 持久化属 Commit 3，本文件不涉及。
+# =====================================================
+
+# ---------- 重扫描后：段顺序与 append 位置恢复 ----------
+logt flash ||| ready=1
+logt flash ||| segs=2
+logt flash ||| total=40
+logt flash ||| oldest=0
+logt flash ||| newest=1
+logt flash ||| append=1@9
+
+# ---------- 段头与内容仍可读 ----------
+logt fseg 0 ||| ok=1
+logt fseg 0 ||| recs=31
+logt fseg 1 ||| ok=1
+logt fseg 1 ||| recs=9
+logt fver 0 0 ||| crc=1
+logt fver 0 30 ||| crc=1
+logt fver 1 0 ||| crc=1
+logt fver 1 8 ||| crc=1
+
+# ---------- 重启后继续追加：写入 2 条 → 段 1 变 11 条 ----------
+logt fill warn 2 ||| queued=2
+logt flush ||| flush done
+logt flash ||| total=42
+logt flash ||| append=1@11
+logt fver 1 10 ||| crc=1

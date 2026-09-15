@@ -19,6 +19,7 @@
 #include "log_manager.h"
 
 #include <Arduino.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <esp_heap_caps.h>
 
@@ -34,6 +35,32 @@ static uint32_t   s_rd = 0;           // 读计数（单调递增）
 static bool       s_ready = false;
 static bool       s_in_psram = false;
 static uint32_t   s_ring_bytes = 0;
+
+// ---- P1.3 Flash Segment Ring 状态 ----
+//
+// 只由 loopTask 读写（log_init / log_task / 测试钩子都在 loop 上），
+// 因此不需要 s_mux；但**不得**被其它任务直接访问（§35 单写者）。
+static bool     s_flash_ready = false;
+
+// 每 segment 元信息（16 个小整数 —— 属"小型控制状态"，留内部 RAM，§32）
+static uint32_t s_seg_first_seq[LOG_SEGMENT_COUNT];   // 0 = 无有效首条
+static uint8_t  s_seg_records[LOG_SEGMENT_COUNT];     // 已验证的有效 record 数
+static uint8_t  s_seg_present[LOG_SEGMENT_COUNT];     // 文件存在且头合法
+
+static uint32_t s_oldest_segment = 0;
+static uint32_t s_newest_segment = 0;
+static uint32_t s_append_segment = 0;
+static uint8_t  s_append_index = 0;
+static uint8_t  s_valid_segment_count = 0;
+static uint16_t s_flash_total_records = 0;
+
+// Flash 批量工作缓冲（LOG_FLUSH_RECORDS × 128 B = 1 KB）
+//
+// §31 / §33：批量工作区优先 PSRAM，失败回退 DRAM。
+// §30：一次 log_task() 最多执行**一个** Flash append 单元（= 一个 batch）。
+static LogRecord *s_flash_batch = nullptr;
+static bool       s_flash_batch_in_psram = false;
+static uint32_t   s_flash_batch_bytes = 0;
 
 // seq / boot_seq
 //
@@ -72,6 +99,445 @@ static uint32_t log_crc32(const uint8_t *data, uint32_t len)
     }
 
     return ~crc;
+}
+
+// =====================================================
+// P1.3 Flash Segment Ring（实现）
+//
+// 布局（§8 / §9）：
+//   /log/meta.bin                32 B（Commit 3 接入）
+//   /log/s0000000.log .. s0000015.log
+//       16 B header + 31 × 128 B record = 3984 B
+//
+// 原则（§12 / §20 / §42）：
+//   整段创建 / 整段追加 / 整段删除 —— 绝不修改已写入 Record 内的任何字节
+//   （因此不存在 uploaded / persist 位，符合 LittleFS COW 特性）
+//
+// 并发（§35）：
+//   全部由 loopTask 访问（log_init / log_task / 测试钩子），不额外加锁
+// =====================================================
+
+static void flash_seg_path(uint32_t seg, char *out, size_t out_size)
+{
+    snprintf(out, out_size, LOG_SEG_PATH_FMT, (unsigned)seg);
+}
+
+static void flash_put_u32(uint8_t *dst, uint32_t v)
+{
+    dst[0] = (uint8_t)(v & 0xFFu);
+    dst[1] = (uint8_t)((v >> 8) & 0xFFu);
+    dst[2] = (uint8_t)((v >> 16) & 0xFFu);
+    dst[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static uint32_t flash_get_u32(const uint8_t *src)
+{
+    return (uint32_t)src[0]
+         | ((uint32_t)src[1] << 8)
+         | ((uint32_t)src[2] << 16)
+         | ((uint32_t)src[3] << 24);
+}
+
+// 段头组装：magic / seg_index / first_seq / crc32(前 12 B)
+static void flash_build_head(uint8_t *head, uint32_t seg, uint32_t first_seq)
+{
+    memset(head, 0, LOG_SEGMENT_HEADER_SIZE);
+    flash_put_u32(&head[LOG_SEG_OFF_MAGIC], LOG_SEG_MAGIC);
+    flash_put_u32(&head[LOG_SEG_OFF_INDEX], seg);
+    flash_put_u32(&head[LOG_SEG_OFF_FIRST_SEQ], first_seq);
+    flash_put_u32(&head[LOG_SEG_OFF_CRC32], log_crc32(head, LOG_SEG_CRC_SPAN));
+}
+
+// 段头校验（magic / seg_index / crc32）
+static bool flash_check_head(const uint8_t *head, uint32_t expect_seg)
+{
+    if (flash_get_u32(&head[LOG_SEG_OFF_MAGIC]) != LOG_SEG_MAGIC)
+    {
+        return false;
+    }
+
+    if (flash_get_u32(&head[LOG_SEG_OFF_INDEX]) != expect_seg)
+    {
+        return false;
+    }
+
+    if (flash_get_u32(&head[LOG_SEG_OFF_CRC32]) != log_crc32(head, LOG_SEG_CRC_SPAN))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+// Record 校验：crc32 覆盖 [0..LOG_OFF_CRC32)
+static bool flash_check_record(const LogRecord &rec)
+{
+    return rec.crc32 == log_crc32((const uint8_t *)&rec, LOG_OFF_CRC32);
+}
+
+// 扫描段内 record（§19）：
+//   遇到第一条 CRC 失败的 record 即停止 —— 其后的数据不能假定连续有效
+static uint8_t flash_scan_records(File &f)
+{
+    uint8_t count = 0;
+    LogRecord rec;
+
+    for (uint8_t i = 0; i < LOG_RECORDS_PER_SEGMENT; i++)
+    {
+        const uint32_t off =
+            LOG_SEGMENT_HEADER_SIZE + (uint32_t)i * LOG_RECORD_SIZE;
+
+        if (!f.seek(off))
+        {
+            break;
+        }
+
+        if (f.read((uint8_t *)&rec, LOG_RECORD_SIZE) != (size_t)LOG_RECORD_SIZE)
+        {
+            break;
+        }
+
+        if (!flash_check_record(rec))
+        {
+            break;
+        }
+
+        count++;
+    }
+
+    return count;
+}
+
+// 全量扫描 16 个 segment（§17）
+//
+// ⚠️ Commit 2 范围：只做"识别与元信息建立"。
+//    头/大小损坏时的"删除 + corrupt_count++"（§18）在 Commit 4 实现。
+static void flash_scan_all()
+{
+    s_valid_segment_count = 0;
+    s_flash_total_records = 0;
+    s_oldest_segment = 0;
+    s_newest_segment = 0;
+    s_append_segment = 0;
+    s_append_index = 0;
+
+    uint32_t oldest_seq = 0;
+    uint32_t newest_seq = 0;
+    bool have_any = false;
+
+    for (uint32_t i = 0; i < LOG_SEGMENT_COUNT; i++)
+    {
+        s_seg_present[i] = 0;
+        s_seg_records[i] = 0;
+        s_seg_first_seq[i] = 0;
+
+        char path[32];
+        flash_seg_path(i, path, sizeof(path));
+
+        if (!LittleFS.exists(path))
+        {
+            continue;
+        }
+
+        File f = LittleFS.open(path, "r");
+
+        if (!f)
+        {
+            continue;
+        }
+
+        // §17-2 大小检查
+        if (f.size() != (size_t)LOG_SEGMENT_SIZE)
+        {
+            f.close();
+            continue;
+        }
+
+        uint8_t head[LOG_SEGMENT_HEADER_SIZE];
+
+        if (f.read(head, sizeof(head)) != (size_t)sizeof(head))
+        {
+            f.close();
+            continue;
+        }
+
+        // §17-3/4/5 magic / CRC / index 校验
+        if (!flash_check_head(head, i))
+        {
+            f.close();
+            continue;
+        }
+
+        const uint32_t first_seq = flash_get_u32(&head[LOG_SEG_OFF_FIRST_SEQ]);
+        const uint8_t records = flash_scan_records(f);
+        f.close();
+
+        s_seg_present[i] = 1;
+        s_seg_records[i] = records;
+        s_seg_first_seq[i] = first_seq;
+        s_valid_segment_count++;
+        s_flash_total_records = (uint16_t)(s_flash_total_records + records);
+
+        if (!have_any || first_seq < oldest_seq)
+        {
+            oldest_seq = first_seq;
+            s_oldest_segment = i;
+        }
+
+        if (!have_any || first_seq > newest_seq)
+        {
+            newest_seq = first_seq;
+            s_newest_segment = i;
+        }
+
+        have_any = true;
+    }
+
+    if (!have_any)
+    {
+        return;   // 空 ring：追加时从 segment 0 建起
+    }
+
+    // 追加目标：最新段的空闲槽
+    s_append_segment = s_newest_segment;
+    s_append_index = s_seg_records[s_newest_segment];
+}
+
+// 整段创建：预分配 LOG_SEGMENT_SIZE 字节并写入 16 B header
+//
+// §9：一个 segment 恒为 3984 B（16 B header + 31 × 128 B）。
+// 之所以**预分配定长**而不是"按需增长"：
+//   · 扫描时 size 校验恒定成立（否则部分填充的段会被 size 检查误判为损坏）
+//   · 追加只是覆盖已有偏移，不触发文件扩展
+// 未写入的 record 槽为全 0 —— 其 crc32 必然校验失败，因此天然表达"空槽"。
+//
+// 时间边界（§30）：仅在本段首次创建时发生，约 4 KB 写（几十 ms 量级），
+// 属低频事件（每 31 条记录一次），因此可与本轮的 record 追加合为一个单元。
+static bool flash_create_segment(uint32_t seg, uint32_t first_seq)
+{
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    if (LittleFS.exists(path))
+    {
+        LittleFS.remove(path);
+    }
+
+    File f = LittleFS.open(path, "w");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t head[LOG_SEGMENT_HEADER_SIZE];
+    flash_build_head(head, seg, first_seq);
+
+    bool ok = (f.write(head, sizeof(head)) == (size_t)sizeof(head));
+
+    // 整段预分配：剩余空间补零，使文件恒为 LOG_SEGMENT_SIZE
+    if (ok)
+    {
+        static const uint8_t zeros[128] = { 0 };
+        uint32_t remain = LOG_SEGMENT_SIZE - LOG_SEGMENT_HEADER_SIZE;
+
+        while (remain > 0)
+        {
+            const size_t chunk = (remain >= sizeof(zeros)) ? sizeof(zeros) : remain;
+
+            if (f.write(zeros, chunk) != chunk)
+            {
+                ok = false;
+                break;
+            }
+
+            remain -= (uint32_t)chunk;
+        }
+    }
+
+    f.close();
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    s_seg_present[seg] = 1;
+    s_seg_records[seg] = 0;
+    s_seg_first_seq[seg] = first_seq;
+    s_valid_segment_count++;
+    s_append_segment = seg;
+    s_append_index = 0;
+
+    portENTER_CRITICAL(&s_mux);
+    s_stats.flash_segment_created++;
+    portEXIT_CRITICAL(&s_mux);
+
+    return true;
+}
+
+// 确保存在可写的追加目标；必要时新建 segment
+//
+// ⚠️ Commit 2 范围：16 段全满时**返回 false**（暂不可写）。
+//    §20 的"删除最老段并复用"在 Commit 4 实现。
+static bool flash_ensure_append_target(uint32_t next_seq)
+{
+    // ① 当前目标段可用（存在且未满）
+    if (s_seg_present[s_append_segment] &&
+        s_append_index < LOG_RECORDS_PER_SEGMENT)
+    {
+        return true;
+    }
+
+    // ② 选定目标段
+    uint32_t target = LOG_SEGMENT_COUNT;
+
+    if (s_valid_segment_count == 0)
+    {
+        target = 0;                                                  // 空 ring
+    }
+    else if (s_seg_records[s_newest_segment] < LOG_RECORDS_PER_SEGMENT)
+    {
+        target = s_newest_segment;                                   // 最新段有空位
+    }
+    else
+    {
+        // 从最新段之后按环形找一条未使用的段
+        for (uint32_t k = 1; k <= LOG_SEGMENT_COUNT; k++)
+        {
+            const uint32_t idx = (s_newest_segment + k) % LOG_SEGMENT_COUNT;
+
+            if (!s_seg_present[idx])
+            {
+                target = idx;
+                break;
+            }
+        }
+
+        if (target >= LOG_SEGMENT_COUNT)
+        {
+            return false;   // 段环已满（Commit 4 在此做淘汰复用）
+        }
+    }
+
+    // ③ 目标段已有文件 → 直接指向其尾部
+    if (s_seg_present[target])
+    {
+        s_append_segment = target;
+        s_append_index = s_seg_records[target];
+        return (s_append_index < LOG_RECORDS_PER_SEGMENT);
+    }
+
+    // ④ 新建段（first_seq = 即将写入的首条记录 seq）
+    return flash_create_segment(target, next_seq);
+}
+
+// 追加一个 batch（§30：一次调用 = 一个 Flash append 单元）
+//
+// 返回成功写入的 record 条数（< count 表示中途失败）。
+static uint8_t flash_append_batch(const LogRecord *recs, uint8_t count)
+{
+    uint8_t written = 0;
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        if (!flash_ensure_append_target(recs[i].seq))
+        {
+            break;
+        }
+
+        char path[32];
+        flash_seg_path(s_append_segment, path, sizeof(path));
+
+        File f = LittleFS.open(path, "r+");
+
+        if (!f)
+        {
+            break;
+        }
+
+        const uint32_t off = LOG_SEGMENT_HEADER_SIZE +
+                             (uint32_t)s_append_index * LOG_RECORD_SIZE;
+
+        bool ok = f.seek(off);
+
+        if (ok)
+        {
+            ok = (f.write((const uint8_t *)&recs[i], LOG_RECORD_SIZE) ==
+                  (size_t)LOG_RECORD_SIZE);
+        }
+
+        f.close();
+
+        if (!ok)
+        {
+            break;
+        }
+
+        s_append_index++;
+        s_seg_records[s_append_segment]++;
+        s_flash_total_records++;
+        written++;
+    }
+
+    return written;
+}
+
+// Flash 层初始化：建目录 + 批量缓冲（PSRAM 优先）+ 全量扫描
+static bool flash_init()
+{
+    if (!LittleFS.exists(LOG_DIR_PATH))
+    {
+        if (!LittleFS.mkdir(LOG_DIR_PATH))
+        {
+            Serial.println("[Log] mkdir /log failed");
+            return false;
+        }
+    }
+
+    // 批量工作缓冲（§31/§33：优先 PSRAM）
+    s_flash_batch_bytes = (uint32_t)LOG_FLUSH_RECORDS * LOG_RECORD_SIZE;
+
+    void *mem = heap_caps_malloc(s_flash_batch_bytes, MALLOC_CAP_SPIRAM);
+
+    if (mem != nullptr)
+    {
+        s_flash_batch_in_psram = true;
+    }
+    else
+    {
+        mem = heap_caps_malloc(s_flash_batch_bytes, MALLOC_CAP_8BIT);
+        s_flash_batch_in_psram = false;
+    }
+
+    if (mem == nullptr)
+    {
+        Serial.printf("[Log] Flash batch alloc failed (%u B)\n",
+                      (unsigned)s_flash_batch_bytes);
+        return false;
+    }
+
+    s_flash_batch = (LogRecord *)mem;
+    memset(s_flash_batch, 0, s_flash_batch_bytes);
+
+    flash_scan_all();
+
+    Serial.printf(
+        "[Log] Flash ring ready: seg=%u x %u rec, seg_size=%u B, "
+        "valid=%u, oldest=%u, newest=%u, append=%u@%u, total_rec=%u, batch=%u B in %s\n",
+        (unsigned)LOG_SEGMENT_COUNT,
+        (unsigned)LOG_RECORDS_PER_SEGMENT,
+        (unsigned)LOG_SEGMENT_SIZE,
+        (unsigned)s_valid_segment_count,
+        (unsigned)s_oldest_segment,
+        (unsigned)s_newest_segment,
+        (unsigned)s_append_segment,
+        (unsigned)s_append_index,
+        (unsigned)s_flash_total_records,
+        (unsigned)s_flash_batch_bytes,
+        s_flash_batch_in_psram ? "PSRAM" : "DRAM");
+
+    return true;
 }
 
 // =====================================================
@@ -132,6 +598,16 @@ bool log_init()
         s_in_psram ? "PSRAM" : "DRAM",
         (unsigned)s_boot_seq
     );
+
+    // ---- P1.3：Flash Segment Ring（建目录 + 批量缓冲 + 全量扫描）----
+    s_flash_ready = flash_init();
+
+    if (!s_flash_ready)
+    {
+        // Flash 不可用：RAM 环与 routing 决策继续工作（受控 degraded），
+        // 不阻塞、不死等；具体失败计数由 log_task() 的 I/O 区累加。
+        Serial.println("[Log] Flash ring unavailable (degraded)");
+    }
 
     return true;
 }
@@ -268,6 +744,10 @@ void log_task()
         return;
     }
 
+    // 本轮收集待落盘记录；循环结束后**一次性**写入
+    // （§30：一次 log_task() 最多执行一个 Flash append 单元）
+    uint8_t batch_n = 0;
+
     uint8_t budget = LOG_DRAIN_MAX_PER_TASK;
 
     while (budget > 0)
@@ -335,12 +815,41 @@ void log_task()
 
         portEXIT_CRITICAL(&s_mux);
 
-        // ---- I/O 区（P1.2 为空，P1.3/P1.4 在此落地）----
+        // ---- I/O 区 ----
         //
-        // P1.3：Flash Segment append
+        // P1.3：把需落 Flash 的记录收集进批量缓冲 —— 真正的写盘在循环外，
+        //       以"一个 append 单元"为粒度（§30），避免长时间占用 loop。
         // P1.4：Cloud Log Queue 投递
         // ★ 严格要求：耗时 I/O 必须在临界区【外】执行 ——
         //   禁止把 Flash 写入或 MQTT publish 放进上面的 s_mux 段。
+        if (to_flash)
+        {
+            if (s_flash_ready && s_flash_batch != nullptr &&
+                batch_n < LOG_FLUSH_RECORDS)
+            {
+                memcpy(&s_flash_batch[batch_n], &rec, LOG_RECORD_SIZE);
+                batch_n++;
+            }
+            else
+            {
+                // Flash 未就绪 / 缓冲异常：显式计失败，绝不静默丢弃
+                // （Commit 5 会把此处改为"记录保留 + 下一轮重试"）
+                portENTER_CRITICAL(&s_mux);
+                s_stats.flash_append_fail++;
+                portEXIT_CRITICAL(&s_mux);
+            }
+        }
+    }
+
+    // ---- 本轮唯一的 Flash append 单元 ----
+    if (batch_n > 0)
+    {
+        const uint8_t written = flash_append_batch(s_flash_batch, batch_n);
+
+        portENTER_CRITICAL(&s_mux);
+        s_stats.flash_append_ok += written;
+        s_stats.flash_append_fail += (uint32_t)(batch_n - written);
+        portEXIT_CRITICAL(&s_mux);
     }
 
     portENTER_CRITICAL(&s_mux);
@@ -389,4 +898,138 @@ void log_clear_flush_request()
     portENTER_CRITICAL(&s_mux);
     s_flush_requested = false;
     portEXIT_CRITICAL(&s_mux);
+}
+
+// =====================================================
+// P1.3 Flash 观测 / 测试钩子（仅上板自测，见头文件说明）
+// =====================================================
+
+void log_flash_get_info(LogFlashInfo &out)
+{
+    memset(&out, 0, sizeof(out));
+
+    out.flash_ready    = s_flash_ready ? 1u : 0u;
+    out.valid_segments = s_valid_segment_count;
+    out.oldest_segment = s_oldest_segment;
+    out.newest_segment = s_newest_segment;
+    out.append_segment = s_append_segment;
+    out.append_index   = s_append_index;
+    out.total_records  = s_flash_total_records;
+
+    out.first_seq_oldest = s_seg_present[s_oldest_segment]
+                               ? s_seg_first_seq[s_oldest_segment] : 0u;
+    out.first_seq_newest = s_seg_present[s_newest_segment]
+                               ? s_seg_first_seq[s_newest_segment] : 0u;
+
+    out.batch_bytes    = s_flash_batch_bytes;
+    out.batch_in_psram = s_flash_batch_in_psram ? 1u : 0u;
+    out.seq_reliable   = 1u;   // Commit 3 接入 meta.bin 后改为真实状态
+}
+
+bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out)
+{
+    memset(&out, 0, sizeof(out));
+
+    if (seg >= LOG_SEGMENT_COUNT)
+    {
+        return false;
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t head[LOG_SEGMENT_HEADER_SIZE];
+
+    if (f.read(head, sizeof(head)) != (size_t)sizeof(head))
+    {
+        f.close();
+        return false;
+    }
+
+    out.magic     = flash_get_u32(&head[LOG_SEG_OFF_MAGIC]);
+    out.index     = flash_get_u32(&head[LOG_SEG_OFF_INDEX]);
+    out.first_seq = flash_get_u32(&head[LOG_SEG_OFF_FIRST_SEQ]);
+    out.crc32     = flash_get_u32(&head[LOG_SEG_OFF_CRC32]);
+    out.ok        = flash_check_head(head, seg) ? 1u : 0u;
+    out.records   = out.ok ? flash_scan_records(f) : 0u;
+
+    f.close();
+    return true;
+}
+
+bool log_flash_peek_record(uint32_t seg, uint8_t rec, LogRecord &out, uint8_t &crc_ok)
+{
+    crc_ok = 0;
+
+    if (seg >= LOG_SEGMENT_COUNT || rec >= LOG_RECORDS_PER_SEGMENT)
+    {
+        return false;
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const uint32_t off =
+        LOG_SEGMENT_HEADER_SIZE + (uint32_t)rec * LOG_RECORD_SIZE;
+
+    bool ok = f.seek(off);
+
+    if (ok)
+    {
+        ok = (f.read((uint8_t *)&out, LOG_RECORD_SIZE) == (size_t)LOG_RECORD_SIZE);
+    }
+
+    f.close();
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    crc_ok = flash_check_record(out) ? 1u : 0u;
+    return true;
+}
+
+bool log_flash_wipe()
+{
+    bool ok = true;
+    char path[32];
+
+    for (uint32_t i = 0; i < LOG_SEGMENT_COUNT; i++)
+    {
+        flash_seg_path(i, path, sizeof(path));
+
+        if (LittleFS.exists(path) && !LittleFS.remove(path))
+        {
+            ok = false;
+        }
+    }
+
+    if (LittleFS.exists(LOG_META_PATH) && !LittleFS.remove(LOG_META_PATH))
+    {
+        ok = false;
+    }
+
+    flash_scan_all();   // 重建元信息（空 ring）
+
+    return ok;
 }
