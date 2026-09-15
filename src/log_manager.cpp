@@ -81,6 +81,9 @@ static bool     s_seq_reserving = false;  // 预留进行中（避免并发重�
 // 测试钩子：令下一次 meta_write 失败（一次性），用于验证 §15 / §41-4
 static bool s_meta_fail_next = false;
 
+// 本次扫描新增的损坏 segment 数（§18），由 seq_init() 累加进 meta.corrupt_count
+static uint32_t s_scan_corrupt = 0;
+
 static bool s_flush_requested = false;
 
 static LogStats s_stats;
@@ -186,7 +189,9 @@ static bool flash_check_record(const LogRecord &rec)
 
 // 扫描段内 record（§19）：
 //   遇到第一条 CRC 失败的 record 即停止 —— 其后的数据不能假定连续有效
-static uint8_t flash_scan_records(File &f)
+//
+// count_errors=false 用于"只读观测"（测试钩子 peek），避免反复扫描污染统计
+static uint8_t flash_scan_records(File &f, bool count_errors)
 {
     uint8_t count = 0;
     LogRecord rec;
@@ -208,6 +213,13 @@ static uint8_t flash_scan_records(File &f)
 
         if (!flash_check_record(rec))
         {
+            // §19：该条及其后不再认为有效
+            if (count_errors)
+            {
+                portENTER_CRITICAL(&s_mux);
+                s_stats.flash_crc_error++;
+                portEXIT_CRITICAL(&s_mux);
+            }
             break;
         }
 
@@ -215,6 +227,136 @@ static uint8_t flash_scan_records(File &f)
     }
 
     return count;
+}
+
+// 把文件补零扩展到 target（修复被截断的 segment，§19）
+static bool flash_extend_file(File &f, size_t target)
+{
+    const size_t sz = f.size();
+
+    if (sz >= target)
+    {
+        return true;
+    }
+
+    if (!f.seek((uint32_t)sz))
+    {
+        return false;
+    }
+
+    static const uint8_t zeros[128] = { 0 };
+    size_t remain = target - sz;
+
+    while (remain > 0)
+    {
+        const size_t chunk = (remain >= sizeof(zeros)) ? sizeof(zeros) : remain;
+
+        if (f.write(zeros, chunk) != chunk)
+        {
+            return false;
+        }
+
+        remain -= chunk;
+    }
+
+    return true;
+}
+
+// §18：Header 无效 / 尺寸异常 → 删除该 segment（下次作为空段复用）并计数
+static void flash_drop_broken_segment(uint32_t seg, const char *path)
+{
+    LittleFS.remove(path);
+
+    s_seg_present[seg] = 0;
+    s_seg_records[seg] = 0;
+    s_seg_first_seq[seg] = 0;
+
+    s_scan_corrupt++;
+
+    portENTER_CRITICAL(&s_mux);
+    s_stats.flash_corrupt_segment++;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+// 依 first_seq 重算 oldest / newest
+static void flash_recompute_extremes()
+{
+    uint32_t oldest = 0;
+    uint32_t newest = 0;
+    uint32_t oldest_seq = 0;
+    uint32_t newest_seq = 0;
+    bool have = false;
+
+    for (uint32_t i = 0; i < LOG_SEGMENT_COUNT; i++)
+    {
+        if (!s_seg_present[i])
+        {
+            continue;
+        }
+
+        const uint32_t fs = s_seg_first_seq[i];
+
+        if (!have || fs < oldest_seq)
+        {
+            oldest_seq = fs;
+            oldest = i;
+        }
+
+        if (!have || fs > newest_seq)
+        {
+            newest_seq = fs;
+            newest = i;
+        }
+
+        have = true;
+    }
+
+    s_oldest_segment = have ? oldest : 0;
+    s_newest_segment = have ? newest : 0;
+}
+
+// §20：删除某个 segment（ring 淘汰 / 损坏重建）
+static bool flash_drop_segment(uint32_t seg)
+{
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    bool ok = true;
+
+    if (LittleFS.exists(path))
+    {
+        ok = LittleFS.remove(path);
+    }
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    if (s_seg_present[seg])
+    {
+        if (s_flash_total_records >= s_seg_records[seg])
+        {
+            s_flash_total_records =
+                (uint16_t)(s_flash_total_records - s_seg_records[seg]);
+        }
+
+        s_seg_present[seg] = 0;
+        s_seg_records[seg] = 0;
+        s_seg_first_seq[seg] = 0;
+
+        if (s_valid_segment_count > 0)
+        {
+            s_valid_segment_count--;
+        }
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    s_stats.flash_segment_deleted++;
+    portEXIT_CRITICAL(&s_mux);
+
+    flash_recompute_extremes();
+    return true;
 }
 
 // 全量扫描 16 个 segment（§17）
@@ -248,17 +390,29 @@ static void flash_scan_all()
             continue;
         }
 
-        File f = LittleFS.open(path, "r");
+        // 以 "r+" 打开：截断修复（§19）需要写回
+        File f = LittleFS.open(path, "r+");
 
         if (!f)
         {
             continue;
         }
 
-        // §17-2 大小检查
-        if (f.size() != (size_t)LOG_SEGMENT_SIZE)
+        const size_t fsize = f.size();
+
+        // §18：连 header 都不完整 → 损坏
+        if (fsize < (size_t)LOG_SEGMENT_HEADER_SIZE)
         {
             f.close();
+            flash_drop_broken_segment(i, path);
+            continue;
+        }
+
+        // §18：尺寸异常膨胀 → 损坏
+        if (fsize > (size_t)LOG_SEGMENT_SIZE)
+        {
+            f.close();
+            flash_drop_broken_segment(i, path);
             continue;
         }
 
@@ -267,18 +421,28 @@ static void flash_scan_all()
         if (f.read(head, sizeof(head)) != (size_t)sizeof(head))
         {
             f.close();
+            flash_drop_broken_segment(i, path);
             continue;
         }
 
-        // §17-3/4/5 magic / CRC / index 校验
+        // §17-3/4/5 magic / CRC / index 校验；§18：非法 → 删除 + 计数
         if (!flash_check_head(head, i))
         {
             f.close();
+            flash_drop_broken_segment(i, path);
             continue;
         }
 
         const uint32_t first_seq = flash_get_u32(&head[LOG_SEG_OFF_FIRST_SEQ]);
-        const uint8_t records = flash_scan_records(f);
+        const uint8_t records = flash_scan_records(f, true);
+
+        // §19：文件被截断（部分写入）→ 补零修复为定长；
+        //       append 位置由 flash_scan_records 给出的"首条坏记录"决定
+        if (fsize < (size_t)LOG_SEGMENT_SIZE)
+        {
+            flash_extend_file(f, LOG_SEGMENT_SIZE);
+        }
+
         f.close();
 
         s_seg_present[i] = 1;
@@ -377,6 +541,7 @@ static bool flash_create_segment(uint32_t seg, uint32_t first_seq)
     s_valid_segment_count++;
     s_append_segment = seg;
     s_append_index = 0;
+    s_newest_segment = seg;   // 新段必为最新（first_seq 单调递增）
 
     portENTER_CRITICAL(&s_mux);
     s_stats.flash_segment_created++;
@@ -425,7 +590,15 @@ static bool flash_ensure_append_target(uint32_t next_seq)
 
         if (target >= LOG_SEGMENT_COUNT)
         {
-            return false;   // 段环已满（Commit 4 在此做淘汰复用）
+            // §20：段环已满 → 删除最老 segment 后复用该槽位
+            const uint32_t victim = s_oldest_segment;
+
+            if (!flash_drop_segment(victim))
+            {
+                return false;
+            }
+
+            target = victim;
         }
     }
 
@@ -670,6 +843,8 @@ static void seq_init()
 
     if (have_meta)
     {
+        // §18：本次扫描发现的损坏段也累加进持久化计数
+        corrupt = corrupt + s_scan_corrupt;
         s_meta_corrupt = corrupt;
     }
     else
@@ -678,7 +853,7 @@ static void seq_init()
         const uint32_t max_seq = flash_find_max_seq();
 
         reserved = ((max_seq + LOG_SEQ_RESERVE - 1) / LOG_SEQ_RESERVE) * LOG_SEQ_RESERVE;
-        corrupt = corrupt + 1;                       // §16-7
+        corrupt = corrupt + 1 + s_scan_corrupt;      // §16-7 + §18
 
         s_meta_corrupt = corrupt;
 
@@ -1248,7 +1423,7 @@ bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out)
     out.first_seq = flash_get_u32(&head[LOG_SEG_OFF_FIRST_SEQ]);
     out.crc32     = flash_get_u32(&head[LOG_SEG_OFF_CRC32]);
     out.ok        = flash_check_head(head, seg) ? 1u : 0u;
-    out.records   = out.ok ? flash_scan_records(f) : 0u;
+    out.records   = out.ok ? flash_scan_records(f, false) : 0u;
 
     f.close();
     return true;
@@ -1370,4 +1545,161 @@ bool log_meta_corrupt()
 void log_meta_test_fail_next(bool enable)
 {
     s_meta_fail_next = enable;
+}
+
+// ---- Commit 4：损坏注入钩子（仅上板自测）----
+
+// 翻转文件某字节（读-改-写），用于构造损坏数据
+static bool flash_flip_byte(const char *path, uint32_t off)
+{
+    File f = LittleFS.open(path, "r+");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t b = 0;
+
+    if (!f.seek(off) || (f.read(&b, 1) != 1))
+    {
+        f.close();
+        return false;
+    }
+
+    b ^= 0xFFu;
+
+    if (!f.seek(off) || (f.write(&b, 1) != 1))
+    {
+        f.close();
+        return false;
+    }
+
+    f.close();
+    return true;
+}
+
+bool log_seg_corrupt_head(uint32_t seg)
+{
+    if (seg >= LOG_SEGMENT_COUNT)
+    {
+        return false;
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    // 翻转 seg_index（offset 4）→ 头 CRC 必然不匹配（§18 场景）
+    const bool ok = flash_flip_byte(path, LOG_SEG_OFF_INDEX);
+
+    if (ok)
+    {
+        flash_scan_all();   // 模拟"重新初始化"后的扫描（§40-F7）
+    }
+
+    return ok;
+}
+
+bool log_seg_corrupt_record(uint32_t seg, uint8_t rec)
+{
+    if (seg >= LOG_SEGMENT_COUNT || rec >= LOG_RECORDS_PER_SEGMENT)
+    {
+        return false;
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    // 翻转该 record 的 byte 0（version，落在 CRC 覆盖区 [0..107]）
+    const uint32_t off =
+        LOG_SEGMENT_HEADER_SIZE + (uint32_t)rec * LOG_RECORD_SIZE;
+
+    const bool ok = flash_flip_byte(path, off);
+
+    if (ok)
+    {
+        flash_scan_all();   // 模拟"重新初始化"后的扫描（§40-F8）
+    }
+
+    return ok;
+}
+
+bool log_seg_truncate(uint32_t seg, uint32_t bytes)
+{
+    if (seg >= LOG_SEGMENT_COUNT)
+    {
+        return false;
+    }
+
+    if (bytes > LOG_SEGMENT_SIZE)
+    {
+        bytes = LOG_SEGMENT_SIZE;
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    // 读回原内容（≤ 3984 B，PSRAM 优先）
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(LOG_SEGMENT_SIZE, MALLOC_CAP_SPIRAM);
+
+    if (buf == nullptr)
+    {
+        buf = (uint8_t *)heap_caps_malloc(LOG_SEGMENT_SIZE, MALLOC_CAP_8BIT);
+    }
+
+    if (buf == nullptr)
+    {
+        return false;
+    }
+
+    size_t n = 0;
+    File f = LittleFS.open(path, "r");
+
+    if (f)
+    {
+        n = f.read(buf, LOG_SEGMENT_SIZE);
+        f.close();
+    }
+
+    bool ok = LittleFS.remove(path);
+
+    if (ok)
+    {
+        File w = LittleFS.open(path, "w");
+
+        if (!w)
+        {
+            ok = false;
+        }
+        else
+        {
+            const uint32_t take = (bytes < (uint32_t)n) ? bytes : (uint32_t)n;
+            ok = (w.write(buf, take) == (size_t)take);
+            w.close();
+        }
+    }
+
+    heap_caps_free(buf);
+
+    if (ok)
+    {
+        flash_scan_all();   // 模拟"重新初始化"后的扫描（§40-F9）
+    }
+
+    return ok;
 }

@@ -1,0 +1,65 @@
+# =====================================================
+# LogManager P1.3 — 损坏恢复（F7 坏头 / F8 坏记录 / F9 部分写入 / Commit 4）
+#
+# 运行：python test/serial_batch.py COM8 <log> test/log_flash_corrupt_tests.txt 3
+#
+# 说明：三个注入钩子内部都会调用 flash_scan_all()，等效于"重新初始化扫描"，
+#       因此无需重启即可验证。
+# =====================================================
+
+# ---------- F7：Header 损坏 → 段被删除 + corrupt 计数（§18）----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=40
+logt fcorrupt 1 ||| fcorrupt seg=1 ok=1
+logt flash ||| segs=1
+logt flash ||| total=31
+logt stats ||| corrupt=1
+# 空出的槽位可被复用：再写 31 条会新建段（而不是失败）
+logt fill warn 31 ||| queued=31
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=62
+
+# ---------- F8：Record CRC 损坏 → 该条及其后无效（§19）----------
+# 单段场景：破坏第 5 条后，append 应回到槽 5
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 20 ||| queued=20
+logt flush ||| flush done
+logt flash ||| total=20
+logt fseg 0 ||| recs=20
+logt fbrec 0 5 ||| fbrec seg=0 rec=5 ok=1
+logt fseg 0 ||| recs=5
+logt flash ||| total=5
+logt stats ||| crc_err=1
+logt fill warn 2 ||| queued=2
+logt flush ||| flush done
+# 追加位置从首条坏记录（槽 5）继续 → 缓存计数 5+2=7、append=0@7。
+# 注意：槽 7..19 的旧数据 CRC 仍有效，因此实时扫描（fseg）会报 20 条，
+#       这里断言的是"缓存/追加位置"，不是实时扫描值。
+logt flash ||| total=7
+logt flash ||| append=0@7
+
+# ---------- F9：部分写入（截断）→ 半条无效 + 文件补齐（§19）----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| total=40
+logt fseg 1 ||| recs=9
+# 段 1 = 16 + 9×128 = 1168 B；截断到 1104 → 第 9 条只剩半条
+logt ftrunc 1 1104 ||| ftrunc seg=1 bytes=1104 ok=1
+logt fseg 1 ||| recs=8
+logt fseg 1 ||| ok=1
+logt flash ||| total=39
+# 截断属于"数据不完整"，与 CRC 校验失败是两种情况：
+# 扫描读到不足 128 B 即停止，因此不计入 crc_err
+logt stats ||| crc_err=0
+# 从槽 8 继续追加
+logt fill warn 1 ||| queued=1
+logt flush ||| flush done
+logt fseg 1 ||| recs=9

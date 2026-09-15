@@ -78,7 +78,7 @@ logt flash ||| segs=1
 logt fver 0 0 ||| crc=1
 logt fver 0 0 ||| lvl=2
 
-# ---------- 16 段写满（496 条）→ 再写 1 条 append 失败（Commit 2 行为）----------
+# ---------- 16 段写满（496 条）→ 第 497 条触发 §20 淘汰最老段 ----------
 logt fwipe ||| fwipe ok=1
 logt reset ||| reset ok
 logt fill warn 62 ||| queued=62
@@ -100,10 +100,15 @@ logt flush ||| flush done
 logt flash ||| segs=16
 logt flash ||| total=496
 logt flash ||| append=15@31
+logt flash ||| oldest=0
+# §20：环满 → 删除最老段（seg 0）并复用该槽位
 logt fill warn 1 ||| queued=1
 logt flush ||| flush done
-logt stats ||| fail=1
-logt flash ||| total=496
+logt stats ||| seg_del=1
+logt flash ||| segs=16
+# 环满淘汰最老段（31 条）后总记录数：496 - 31 + 1 = 466
+logt flash ||| total=466
+logt flash ||| oldest=1
 
 # ---------- F6 重启恢复：准备现场（写入 40 条 = 段0 满 + 段1 9 条）----------
 logt fwipe ||| fwipe ok=1
