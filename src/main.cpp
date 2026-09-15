@@ -21,6 +21,11 @@
 #include "test_mqtt.h"
 #include "capability_registry.h"
 #include "MiThermometer.h"
+// LogManager P1.1 冻结契约（仅契约 + 编译期 static_assert，不含实现）
+//
+// 必须被某个编译单元包含，否则 log_events.h 里的 static_assert 不会被求值。
+// 此处包含即完成 P1.1 的 Contract Test（编译期校验）。
+#include "log_events.h"
 
 // BinStorage 错误日志 → 串口（模块默认静默，注册后便于上板诊断）
 static void bin_log_serial(const char *level, const char *message)
@@ -57,6 +62,16 @@ void setup()
     }
     Serial.printf("PSRAM size: %u\n", ESP.getPsramSize());
     Serial.printf("PSRAM free: %u\n", ESP.getFreePsram());
+    // LogManager P1.1：冻结契约校验（值全部来自 log_events.h 的编译期常量）
+    Serial.printf(
+        "[LogContract] v=%u rec=%u seg=%u x%u cap=%u fmt=%u check=%s\n",
+        (unsigned)LOG_RECORD_VERSION,
+        (unsigned)LOG_RECORD_SIZE,
+        (unsigned)LOG_SEGMENT_SIZE,
+        (unsigned)LOG_SEGMENT_COUNT,
+        (unsigned)LOG_SEGMENT_CAPACITY,
+        (unsigned)LOG_BATCH_FMT,
+        log_contract_self_check() ? "PASS" : "FAIL");
     // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
