@@ -26,6 +26,7 @@
 // 必须被某个编译单元包含，否则 log_events.h 里的 static_assert 不会被求值。
 // 此处包含即完成 P1.1 的 Contract Test（编译期校验）。
 #include "log_events.h"
+#include "log_manager.h"
 
 // BinStorage 错误日志 → 串口（模块默认静默，注册后便于上板诊断）
 static void bin_log_serial(const char *level, const char *message)
@@ -72,6 +73,11 @@ void setup()
         (unsigned)LOG_SEGMENT_CAPACITY,
         (unsigned)LOG_BATCH_FMT,
         log_contract_self_check() ? "PASS" : "FAIL");
+    // ===== LogManager P1.2：RAM 环（PSRAM 优先，失败回退 DRAM）=====
+    //
+    // 只分配 RAM 环，不写 Flash、不发 MQTT。
+    // 必须在 loop() 之前完成，保证后续模块可安全调用 log_emit()。
+    log_init();
     // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
@@ -173,6 +179,9 @@ void wfst_console(const String &cmd);
 void wfc_console(const String &cmd);
 // CommandManager 直通控制台（cm 命令，仅上板自测用）
 void cm_console(const String &cmd);
+
+// LogManager 上板测试控制台（P1.2）
+void logt_console(const String &cmd);
 // =====================================================
 // loop
 // =====================================================
@@ -199,6 +208,9 @@ void loop()
     computer_reset_task();     // 手动脉冲回收 + GPIO8 安全兜底
     MiThermometer_task();
     test_mqtt_task();//测试代码，需要删除
+    // ---- LogManager P1.2：消费 RAM 环 + Level → (Flash, Cloud) routing 决策 ----
+    // 不创建独立 Task（LittleFS 单写者模型）；每轮最多消费 LOG_DRAIN_MAX_PER_TASK 条。
+    log_task();
     serial_debug_command_process();
 }
 
@@ -269,6 +281,11 @@ void serial_debug_command_process(void)
                 // Workflow CRUD + 回归测试控制台（仅上板自测用）
                 wfc_console(serial_cmd_buffer);
             }
+            else if (serial_cmd_buffer.startsWith("logt "))
+            {
+                // LogManager 测试控制台（P1.2 上板自测用）
+                logt_console(serial_cmd_buffer);
+            }
             else
             {
                 Serial.println("unknown command");
@@ -281,6 +298,362 @@ void serial_debug_command_process(void)
         }
     }
 }
+// =====================================================
+// LogManager 测试控制台（P1.2，仅上板自测用）
+//
+// 命令（logt <op> ...）：
+//   help                                   显示帮助
+//   stats                                  打印统计（先排空 RAM 环）
+//   reset                                  清零统计 + 清 flush 请求
+//   ring                                   打印 RAM 环状态
+//   policy <level>                         打印该 Level 的 Flash/Cloud 策略
+//   emit <level> <event_hex> [pid:val ...] 发一条结构化日志（最多 8 参数）
+//   fill <level> <n> [event_hex]           连发 n 条（测环满 / 高频）
+//   mix <n>                                5 个 Level 各发 n 条
+//
+// level：dbg | info | warn | error | crit（或 0..4）
+// event_hex：16 进制事件 ID（如 401 = LOG_WF_START）
+// =====================================================
+
+static uint8_t logt_parse_level(const String &s, bool &ok)
+{
+    ok = true;
+
+    String v = s;
+    v.toLowerCase();
+
+    if (v == "dbg" || v == "debug" || v == "0")  return LOG_LVL_DEBUG;
+    if (v == "info" || v == "i" || v == "1")     return LOG_LVL_INFO;
+    if (v == "warn" || v == "w" || v == "2")     return LOG_LVL_WARN;
+    if (v == "error" || v == "err" || v == "e" || v == "3")
+    {
+        return LOG_LVL_ERROR;
+    }
+    if (v == "crit" || v == "critical" || v == "c" || v == "4")
+    {
+        return LOG_LVL_CRITICAL;
+    }
+
+    ok = false;
+    return LOG_LVL_INFO;
+}
+
+static const char *logt_level_name(uint8_t lv)
+{
+    switch (lv)
+    {
+        case LOG_LVL_DEBUG:    return "DEBUG";
+        case LOG_LVL_INFO:     return "INFO";
+        case LOG_LVL_WARN:     return "WARN";
+        case LOG_LVL_ERROR:    return "ERROR";
+        case LOG_LVL_CRITICAL: return "CRITICAL";
+        default:               return "?";
+    }
+}
+
+// 取空格分隔的第 n 个 token（0 = 操作名）
+static String logt_arg(const String &s, uint8_t n)
+{
+    int pos = 0;
+
+    for (uint8_t count = 0; count <= n; count++)
+    {
+        while (pos < (int)s.length() && s[pos] == ' ')
+        {
+            pos++;
+        }
+
+        int start = pos;
+
+        while (pos < (int)s.length() && s[pos] != ' ')
+        {
+            pos++;
+        }
+
+        if (start == pos)
+        {
+            return String();
+        }
+
+        if (count == n)
+        {
+            return s.substring(start, pos);
+        }
+    }
+
+    return String();
+}
+
+// 排空 RAM 环（每轮 log_task 最多消费 LOG_DRAIN_MAX_PER_TASK 条）
+static void logt_drain_all()
+{
+    for (uint8_t i = 0; i < 16; i++)
+    {
+        log_task();
+    }
+}
+
+static void logt_print_stats()
+{
+    LogStats st;
+    log_get_stats(st);
+
+    Serial.printf(
+        "[LogT] stats emit=%u debug=%u ring=%u/%u hw=%u drop=%u consumed=%u "
+        "flash=%u cloud=%u crit=%u flush=%u boot=%u seq=%u ready=%u psram=%u bytes=%u\n",
+        (unsigned)st.emit_total,
+        (unsigned)st.debug_dropped,
+        (unsigned)st.ring_used, (unsigned)LOG_RAM_QUEUE_SLOTS,
+        (unsigned)st.ring_high_water,
+        (unsigned)st.ring_drop,
+        (unsigned)st.consumed,
+        (unsigned)st.flash_routed,
+        (unsigned)st.cloud_routed,
+        (unsigned)st.critical_seen,
+        (unsigned)st.flush_requests,
+        (unsigned)st.boot_seq,
+        (unsigned)st.last_seq,
+        (unsigned)st.ring_ready,
+        (unsigned)st.ring_in_psram,
+        (unsigned)st.ring_bytes);
+}
+
+static void logt_print_ring()
+{
+    LogStats st;
+    log_get_stats(st);
+
+    Serial.printf(
+        "[LogT] ring used=%u/%u hw=%u drop=%u ready=%u psram=%u bytes=%u\n",
+        (unsigned)st.ring_used, (unsigned)LOG_RAM_QUEUE_SLOTS,
+        (unsigned)st.ring_high_water, (unsigned)st.ring_drop,
+        (unsigned)st.ring_ready, (unsigned)st.ring_in_psram,
+        (unsigned)st.ring_bytes);
+}
+
+static void logt_print_policy(const String &op)
+{
+    bool ok = false;
+    uint8_t lv = logt_parse_level(logt_arg(op, 1), ok);
+
+    if (!ok)
+    {
+        Serial.println("[LogT] bad level");
+        return;
+    }
+
+    Serial.printf(
+        "[LogT] policy %s flash=%d cloud=%d\n",
+        logt_level_name(lv),
+        log_level_to_flash((LogLevel)lv) ? 1 : 0,
+        log_level_to_cloud((LogLevel)lv) ? 1 : 0);
+}
+
+static void logt_do_emit(const String &op)
+{
+    bool ok = false;
+    uint8_t lv = logt_parse_level(logt_arg(op, 1), ok);
+
+    if (!ok)
+    {
+        Serial.println("[LogT] bad level");
+        return;
+    }
+
+    long ev = strtol(logt_arg(op, 2).c_str(), nullptr, 16);
+
+    LogParamIn args[LOG_MAX_PARAMS];
+    uint8_t n = 0;
+
+    for (uint8_t i = 3; i < 11 && n < LOG_MAX_PARAMS; i++)
+    {
+        String a = logt_arg(op, i);
+
+        if (a.length() == 0)
+        {
+            break;
+        }
+
+        int colon = a.indexOf(':');
+
+        if (colon <= 0)
+        {
+            continue;
+        }
+
+        long pid = strtol(a.substring(0, colon).c_str(), nullptr, 16);
+        uint32_t val = (uint32_t)strtoul(a.substring(colon + 1).c_str(), nullptr, 0);
+
+        args[n++] = log_arg_u32((uint8_t)pid, val);
+    }
+
+    bool queued = log_emit((LogEventId)ev, (LogLevel)lv, args, n);
+
+    Serial.printf(
+        "[LogT] emit level=%s event=0x%04X params=%u queued=%d\n",
+        logt_level_name(lv), (unsigned)ev, (unsigned)n, queued ? 1 : 0);
+}
+
+static void logt_do_fill(const String &op)
+{
+    bool ok = false;
+    uint8_t lv = logt_parse_level(logt_arg(op, 1), ok);
+
+    if (!ok)
+    {
+        Serial.println("[LogT] bad level");
+        return;
+    }
+
+    long n = strtol(logt_arg(op, 2).c_str(), nullptr, 10);
+
+    if (n <= 0)
+    {
+        Serial.println("[LogT] bad count");
+        return;
+    }
+
+    long ev = strtol(logt_arg(op, 3).c_str(), nullptr, 16);
+
+    if (ev <= 0)
+    {
+        ev = (long)LOG_WF_START;
+    }
+
+    uint32_t queued = 0;
+
+    for (long i = 0; i < n; i++)
+    {
+        LogParamIn a[1];
+        a[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+
+        if (log_emit((LogEventId)ev, (LogLevel)lv, a, 1))
+        {
+            queued++;
+        }
+    }
+
+    Serial.printf(
+        "[LogT] fill level=%s n=%ld event=0x%04lX queued=%u\n",
+        logt_level_name(lv), n, (unsigned long)ev, (unsigned)queued);
+}
+
+static void logt_do_mix(const String &op)
+{
+    long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+
+    if (n <= 0)
+    {
+        Serial.println("[LogT] bad count");
+        return;
+    }
+
+    const uint8_t levels[5] =
+    {
+        LOG_LVL_DEBUG, LOG_LVL_INFO, LOG_LVL_WARN, LOG_LVL_ERROR, LOG_LVL_CRITICAL
+    };
+
+    uint32_t queued = 0;
+
+    for (uint8_t k = 0; k < 5; k++)
+    {
+        for (long i = 0; i < n; i++)
+        {
+            if (log_emit0(LOG_WF_FINISHED, (LogLevel)levels[k]))
+            {
+                queued++;
+            }
+        }
+    }
+
+    Serial.printf("[LogT] mix n=%ld queued=%u levels=5\n", n, (unsigned)queued);
+}
+
+void logt_console(const String &cmd)
+{
+    String op = cmd.substring(5);
+    op.trim();
+
+    const String name = logt_arg(op, 0);
+
+    if (name.length() == 0 || name == "help")
+    {
+        Serial.println("[LogT] ops: stats reset ring policy emit fill mix");
+        Serial.println("[LogT]   emit <lv> <event_hex> [pid:val ...]  (max 8 params)");
+        Serial.println("[LogT]   fill <lv> <n> [event_hex]");
+        Serial.println("[LogT]   mix <n>");
+        Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
+        return;
+    }
+
+    if (name == "stats")
+    {
+        logt_drain_all();
+        logt_print_stats();
+        return;
+    }
+
+    if (name == "ring")
+    {
+        logt_drain_all();
+        logt_print_ring();
+        return;
+    }
+
+    if (name == "reset")
+    {
+        logt_drain_all();
+        log_stats_reset();
+        log_clear_flush_request();
+        Serial.println("[LogT] reset ok");
+        return;
+    }
+
+    if (name == "policy")
+    {
+        logt_print_policy(op);
+        return;
+    }
+
+    if (name == "emit")
+    {
+        logt_do_emit(op);
+        return;
+    }
+
+    if (name == "fill")
+    {
+        logt_do_fill(op);
+        return;
+    }
+
+    if (name == "mix")
+    {
+        logt_do_mix(op);
+        return;
+    }
+
+    if (name == "overlimit")
+    {
+        // 契约验证：param_count > LOG_MAX_PARAMS 必须**整体拒绝**（不截断）
+        LogParamIn args[LOG_MAX_PARAMS + 1];
+
+        for (uint8_t i = 0; i < LOG_MAX_PARAMS + 1; i++)
+        {
+            args[i] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+        }
+
+        bool queued = log_emit((LogEventId)LOG_WF_START, LOG_LVL_WARN,
+                               args, (uint8_t)(LOG_MAX_PARAMS + 1));
+
+        Serial.printf("[LogT] overlimit params=%u queued=%d (expect 0)\n",
+                      (unsigned)(LOG_MAX_PARAMS + 1), queued ? 1 : 0);
+        return;
+    }
+
+    Serial.println("[LogT] unknown op (try: logt help)");
+}
+
 // =====================================================
 // WorkflowStorage 独立测试控制台（仅上板自测用）
 //
