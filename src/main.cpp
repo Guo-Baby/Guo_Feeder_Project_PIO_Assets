@@ -516,6 +516,43 @@ static void logt_do_fwipe()
     Serial.printf("[LogT] fwipe ok=%d\n", ok ? 1 : 0);
 }
 
+// ---- P1.3 meta / sequence ----
+
+static void logt_print_meta()
+{
+    LogFlashInfo fi;
+    log_flash_get_info(fi);
+
+    Serial.printf(
+        "[LogT] meta boot=%u reserved=%u corrupt=%u reliable=%u base=%u limit=%u last=%u\n",
+        (unsigned)fi.boot_seq,
+        (unsigned)fi.seq_reserved,
+        (unsigned)fi.corrupt_count,
+        (unsigned)fi.seq_reliable,
+        (unsigned)fi.seq_base,
+        (unsigned)fi.seq_limit,
+        (unsigned)fi.seq_last);
+}
+
+static void logt_do_mwipe()
+{
+    const bool ok = log_meta_wipe();
+    Serial.printf("[LogT] mwipe ok=%d\n", ok ? 1 : 0);
+}
+
+static void logt_do_mcorrupt()
+{
+    const bool ok = log_meta_corrupt();
+    Serial.printf("[LogT] mcorrupt ok=%d\n", ok ? 1 : 0);
+}
+
+static void logt_do_mfail(const String &op)
+{
+    const long v = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    log_meta_test_fail_next(v != 0);
+    Serial.printf("[LogT] mfail armed=%ld\n", (v != 0) ? 1L : 0L);
+}
+
 static void logt_print_policy(const String &op)
 {
     bool ok = false;
@@ -669,6 +706,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   mix <n>");
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
+        Serial.println("[LogT] P1.3: meta | mwipe | mcorrupt");
         return;
     }
 
@@ -714,6 +752,30 @@ void logt_console(const String &cmd)
     if (name == "fwipe")
     {
         logt_do_fwipe();
+        return;
+    }
+
+    if (name == "meta")
+    {
+        logt_print_meta();
+        return;
+    }
+
+    if (name == "mwipe")
+    {
+        logt_do_mwipe();
+        return;
+    }
+
+    if (name == "mcorrupt")
+    {
+        logt_do_mcorrupt();
+        return;
+    }
+
+    if (name == "mfail")
+    {
+        logt_do_mfail(op);
         return;
     }
 

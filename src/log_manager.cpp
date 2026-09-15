@@ -62,21 +62,30 @@ static LogRecord *s_flash_batch = nullptr;
 static bool       s_flash_batch_in_psram = false;
 static uint32_t   s_flash_batch_bytes = 0;
 
-// seq / boot_seq
+// ---- seq / boot_seq（§13 / §15 / §16）----
 //
-// ⚠️ P1.2 为 **RAM 态** 占位实现：
-//    - boot_seq 固定为 1（P1.3 改为 log_init() 时从 /log/meta.bin 读取并 +1 落盘）
-//    - seq 由 0 单调递增（P1.3 改为 Boot 预留区间 seq_base..seq_base+255，
-//      允许空洞、不允许重复）
-//    本阶段只保证"本次开机内单调递增且不重复"。
-static uint32_t s_boot_seq = 1;
-static uint32_t s_seq = 0;
+// Boot 时从 /log/meta.bin 预留一个区间（LOG_SEQ_RESERVE = 256 个号）：
+//     seq_base = meta.seq_reserved + 1
+//     meta.seq_reserved += 256        ← 立即落盘
+// 本次开机使用 seq_base .. seq_base+255；用尽后再预留下一段。
+// **允许空洞，不允许重复**（未用掉的号直接废弃，不回收）。
+static uint32_t s_boot_seq = 1;           // 本次开机序号
+static uint32_t s_meta_reserved = 0;      // meta.seq_reserved（已预留高水位）
+static uint32_t s_meta_corrupt = 0;       // meta.corrupt_count
+static uint32_t s_seq_base = 0;           // 本区间首号
+static uint32_t s_seq_limit = 0;          // 本区间末号
+static uint32_t s_seq_last = 0;           // 最近一次分配出去的 seq
+static bool     s_seq_reliable = true;    // false = 可能重复（§15）
+static bool     s_seq_reserving = false;  // 预留进行中（避免并发重复写 meta）
+
+// 测试钩子：令下一次 meta_write 失败（一次性），用于验证 §15 / §41-4
+static bool s_meta_fail_next = false;
 
 static bool s_flush_requested = false;
 
 static LogStats s_stats;
 
-// 临界区：保护 s_wr / s_rd / s_ring 槽内容 / s_seq / s_stats
+// 临界区：保护 s_wr / s_rd / s_ring 槽内容 / s_seq_last / s_stats / s_flush_requested
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // =====================================================
@@ -483,6 +492,220 @@ static uint8_t flash_append_batch(const LogRecord *recs, uint8_t count)
     return written;
 }
 
+// =====================================================
+// P1.3 meta.bin / sequence reservation（§12 / §13 / §15 / §16）
+// =====================================================
+
+// 读 meta；false = 不存在 / 长度不符 / magic 或版本不符 / CRC 错
+static bool meta_read(uint32_t &boot_seq, uint32_t &seq_reserved, uint32_t &corrupt)
+{
+    if (!LittleFS.exists(LOG_META_PATH))
+    {
+        return false;
+    }
+
+    File f = LittleFS.open(LOG_META_PATH, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t buf[LOG_META_SIZE];
+    const bool got = (f.read(buf, sizeof(buf)) == (size_t)sizeof(buf));
+    f.close();
+
+    if (!got)
+    {
+        return false;
+    }
+
+    if (flash_get_u32(&buf[LOG_META_OFF_MAGIC]) != LOG_META_MAGIC)
+    {
+        return false;
+    }
+
+    if (flash_get_u32(&buf[LOG_META_OFF_FMT]) != LOG_META_VERSION)
+    {
+        return false;
+    }
+
+    if (flash_get_u32(&buf[LOG_META_OFF_CRC32]) != log_crc32(buf, LOG_META_CRC_SPAN))
+    {
+        return false;
+    }
+
+    boot_seq     = flash_get_u32(&buf[LOG_META_OFF_BOOT_SEQ]);
+    seq_reserved = flash_get_u32(&buf[LOG_META_OFF_SEQ_RESERVED]);
+    corrupt      = flash_get_u32(&buf[LOG_META_OFF_CORRUPT]);
+
+    return true;
+}
+
+// 写 meta（整块 32 B 覆写，含 CRC）
+static bool meta_write(uint32_t boot_seq, uint32_t seq_reserved, uint32_t corrupt)
+{
+    // 故障注入（仅测试用，一次性）
+    if (s_meta_fail_next)
+    {
+        s_meta_fail_next = false;
+        return false;
+    }
+
+    uint8_t buf[LOG_META_SIZE];
+    memset(buf, 0, sizeof(buf));
+
+    flash_put_u32(&buf[LOG_META_OFF_MAGIC], LOG_META_MAGIC);
+    flash_put_u32(&buf[LOG_META_OFF_FMT], LOG_META_VERSION);
+    flash_put_u32(&buf[LOG_META_OFF_BOOT_SEQ], boot_seq);
+    flash_put_u32(&buf[LOG_META_OFF_SEQ_RESERVED], seq_reserved);
+    flash_put_u32(&buf[LOG_META_OFF_CORRUPT], corrupt);
+    flash_put_u32(&buf[LOG_META_OFF_CRC32], log_crc32(buf, LOG_META_CRC_SPAN));
+
+    File f = LittleFS.open(LOG_META_PATH, "w");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const bool ok = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+    f.close();
+
+    return ok;
+}
+
+// 扫描全部有效 segment 求已使用的最大 seq（§16-1..4）
+//
+// 依赖 flash_scan_all() 建立的 s_seg_present / s_seg_records，
+// 因此必须在扫描之后调用。
+static uint32_t flash_find_max_seq()
+{
+    uint32_t max_seq = 0;
+    LogRecord rec;
+
+    for (uint32_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
+    {
+        if (!s_seg_present[seg])
+        {
+            continue;
+        }
+
+        char path[32];
+        flash_seg_path(seg, path, sizeof(path));
+
+        File f = LittleFS.open(path, "r");
+
+        if (!f)
+        {
+            continue;
+        }
+
+        for (uint8_t i = 0; i < s_seg_records[seg]; i++)
+        {
+            const uint32_t off =
+                LOG_SEGMENT_HEADER_SIZE + (uint32_t)i * LOG_RECORD_SIZE;
+
+            if (!f.seek(off))
+            {
+                break;
+            }
+
+            if (f.read((uint8_t *)&rec, LOG_RECORD_SIZE) != (size_t)LOG_RECORD_SIZE)
+            {
+                break;
+            }
+
+            if (rec.seq > max_seq)
+            {
+                max_seq = rec.seq;
+            }
+        }
+
+        f.close();
+    }
+
+    return max_seq;
+}
+
+// 预留一个新 seq 区间（§13）
+//
+//   seq_base = meta.seq_reserved + 1
+//   meta.seq_reserved += LOG_SEQ_RESERVE     ← 立即落盘
+//
+// 返回 false = meta 写入失败 → 调用方置 s_seq_reliable = false（§15）
+static bool seq_reserve_next()
+{
+    const uint32_t base = s_meta_reserved + 1;
+    const uint32_t next_reserved = s_meta_reserved + LOG_SEQ_RESERVE;
+
+    if (!meta_write(s_boot_seq, next_reserved, s_meta_corrupt))
+    {
+        return false;
+    }
+
+    s_meta_reserved = next_reserved;
+    s_seq_base = base;
+    s_seq_limit = base + LOG_SEQ_RESERVE - 1;
+
+    // 分配指针对齐到区间起点之前（不倒退已有进度）
+    if (s_seq_last < base - 1)
+    {
+        s_seq_last = base - 1;
+    }
+
+    return true;
+}
+
+// Boot 时初始化 sequence（§13 / §16）
+//
+// 必须在 flash_init()（含 flash_scan_all）之后调用。
+static void seq_init()
+{
+    uint32_t boot = 0;
+    uint32_t reserved = 0;
+    uint32_t corrupt = 0;
+
+    const bool have_meta = meta_read(boot, reserved, corrupt);
+
+    if (have_meta)
+    {
+        s_meta_corrupt = corrupt;
+    }
+    else
+    {
+        // §16：meta 不存在或损坏 → 扫描现有 segment 取最大 seq，向上对齐重建
+        const uint32_t max_seq = flash_find_max_seq();
+
+        reserved = ((max_seq + LOG_SEQ_RESERVE - 1) / LOG_SEQ_RESERVE) * LOG_SEQ_RESERVE;
+        corrupt = corrupt + 1;                       // §16-7
+
+        s_meta_corrupt = corrupt;
+
+        Serial.printf(
+            "[Log] meta missing/corrupt -> rebuild: max_seq=%u reserved=%u corrupt=%u\n",
+            (unsigned)max_seq, (unsigned)reserved, (unsigned)corrupt);
+    }
+
+    s_meta_reserved = reserved;
+    s_boot_seq = boot + 1;                            // §13：boot_seq++
+
+    if (!seq_reserve_next())
+    {
+        // §15：写失败 → 明确标记不可信，但**不阻塞、不死等**，继续以本地区间工作
+        s_seq_reliable = false;
+        s_seq_base = s_meta_reserved + 1;
+        s_seq_limit = s_seq_base + LOG_SEQ_RESERVE - 1;
+
+        if (s_seq_last < s_seq_base - 1)
+        {
+            s_seq_last = s_seq_base - 1;
+        }
+
+        Serial.println("[Log] seq reservation failed -> seq_reliable=false");
+    }
+}
+
 // Flash 层初始化：建目录 + 批量缓冲（PSRAM 优先）+ 全量扫描
 static bool flash_init()
 {
@@ -577,8 +800,7 @@ bool log_init()
 
     s_wr = 0;
     s_rd = 0;
-    s_seq = 0;
-    s_boot_seq = 1;          // P1.3：改为 meta.bin 读取 + 1
+    // boot_seq / seq 区间由 seq_init() 在 Flash 扫描之后统一建立（§13）
 
     // 与运行期保持同一保护规则：stats / flush 状态一律经 s_mux 访问
     // （init 期虽无并发，但统一规则可避免将来出现"漏锁"的访问点）
@@ -608,6 +830,18 @@ bool log_init()
         // 不阻塞、不死等；具体失败计数由 log_task() 的 I/O 区累加。
         Serial.println("[Log] Flash ring unavailable (degraded)");
     }
+
+    // ---- P1.3：meta.bin / sequence reservation（依赖 scan 结果）----
+    seq_init();
+
+    Serial.printf(
+        "[Log] seq: boot_seq=%u base=%u limit=%u reserved=%u reliable=%u corrupt=%u\n",
+        (unsigned)s_boot_seq,
+        (unsigned)s_seq_base,
+        (unsigned)s_seq_limit,
+        (unsigned)s_meta_reserved,
+        s_seq_reliable ? 1u : 0u,
+        (unsigned)s_meta_corrupt);
 
     return true;
 }
@@ -693,11 +927,52 @@ bool log_emit(LogEventId event_id, LogLevel level,
         dst[5] = (uint8_t)((raw >> 24) & 0xFFu);
     }
 
+    // ---- seq 区间用尽则先预留（§13）----
+    //
+    // 预留需要写 meta.bin（Flash I/O）→ **禁止放进临界区**（§3）。
+    // 用 s_seq_reserving 门闩避免多任务重复预留；实际分配仍在线性临界区内。
+    {
+        bool need_reserve = false;
+
+        portENTER_CRITICAL(&s_mux);
+
+        if (s_seq_last + 1 > s_seq_limit && !s_seq_reserving)
+        {
+            s_seq_reserving = true;
+            need_reserve = true;
+        }
+
+        portEXIT_CRITICAL(&s_mux);
+
+        if (need_reserve)
+        {
+            const bool ok = seq_reserve_next();   // Flash I/O，位于临界区【外】
+
+            portENTER_CRITICAL(&s_mux);
+            s_seq_reserving = false;
+
+            if (!ok)
+            {
+                // §15：meta 写失败 → sequence 可能重复，明确降级后继续工作
+                s_seq_reliable = false;
+                s_seq_base = s_meta_reserved + 1;
+                s_seq_limit = s_seq_base + LOG_SEQ_RESERVE - 1;
+
+                if (s_seq_last < s_seq_base - 1)
+                {
+                    s_seq_last = s_seq_base - 1;
+                }
+            }
+
+            portEXIT_CRITICAL(&s_mux);
+        }
+    }
+
     portENTER_CRITICAL(&s_mux);
 
-    // seq / boot_seq 在临界区内推进，保证唯一且单调
-    s_seq++;
-    rec.seq = s_seq;
+    // seq 在临界区内推进：唯一、单调（跨区间允许空洞）
+    s_seq_last++;
+    rec.seq = s_seq_last;
     rec.boot_seq = s_boot_seq;
 
     // CRC32 覆盖 [0..LOG_OFF_CRC32)
@@ -720,7 +995,7 @@ bool log_emit(LogEventId event_id, LogLevel level,
     const uint32_t now_used = s_wr - s_rd;
 
     s_stats.emit_total++;
-    s_stats.last_seq = s_seq;
+    s_stats.last_seq = s_seq_last;
     s_stats.ring_used = (uint8_t)now_used;
 
     if (now_used > (uint32_t)s_stats.ring_high_water)
@@ -923,7 +1198,17 @@ void log_flash_get_info(LogFlashInfo &out)
 
     out.batch_bytes    = s_flash_batch_bytes;
     out.batch_in_psram = s_flash_batch_in_psram ? 1u : 0u;
-    out.seq_reliable   = 1u;   // Commit 3 接入 meta.bin 后改为真实状态
+
+    // seq / meta 状态（与 log_emit 的写入统一用 s_mux）
+    portENTER_CRITICAL(&s_mux);
+    out.seq_reliable  = s_seq_reliable ? 1u : 0u;
+    out.boot_seq      = s_boot_seq;
+    out.seq_reserved  = s_meta_reserved;
+    out.corrupt_count = s_meta_corrupt;
+    out.seq_base      = s_seq_base;
+    out.seq_limit     = s_seq_limit;
+    out.seq_last      = s_seq_last;
+    portEXIT_CRITICAL(&s_mux);
 }
 
 bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out)
@@ -1032,4 +1317,57 @@ bool log_flash_wipe()
     flash_scan_all();   // 重建元信息（空 ring）
 
     return ok;
+}
+
+bool log_meta_wipe()
+{
+    if (LittleFS.exists(LOG_META_PATH))
+    {
+        return LittleFS.remove(LOG_META_PATH);
+    }
+
+    return true;
+}
+
+bool log_meta_corrupt()
+{
+    // 翻转文件最后一个字节（落在 crc32 字段内）→ CRC 校验必然失败
+    File f = LittleFS.open(LOG_META_PATH, "r+");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const size_t sz = f.size();
+
+    if (sz != (size_t)LOG_META_SIZE)
+    {
+        f.close();
+        return false;
+    }
+
+    uint8_t b = 0;
+
+    if (!f.seek((uint32_t)(sz - 1)) || (f.read(&b, 1) != 1))
+    {
+        f.close();
+        return false;
+    }
+
+    b ^= 0xFFu;
+
+    if (!f.seek((uint32_t)(sz - 1)) || (f.write(&b, 1) != 1))
+    {
+        f.close();
+        return false;
+    }
+
+    f.close();
+    return true;
+}
+
+void log_meta_test_fail_next(bool enable)
+{
+    s_meta_fail_next = enable;
 }

@@ -1,0 +1,21 @@
+# =====================================================
+# LogManager P1.3 — meta / sequence 测试（Run C）
+#
+# 前提：Run B 已把 meta（boot_seq=1, seq_reserved=256）持久化。
+# 覆盖：§41-2 第二次启动 boot_seq=2 + 下一段 reservation
+# 结尾：删除 meta.bin，使下次启动走 §16 恢复路径
+# 运行：python test/serial_batch.py COM8 <log> test/log_meta_c.txt 3
+# =====================================================
+
+# ---------- §41-2 第二次启动 ----------
+logt meta ||| boot=2 reserved=512
+logt meta ||| base=257 limit=512
+logt meta ||| reliable=1
+logt meta ||| corrupt=1
+
+# ---------- 段内容跨重启保持 ----------
+logt flash ||| total=5
+logt flash ||| segs=1
+
+# ---------- §16 准备：删除 meta ----------
+logt mwipe ||| mwipe ok=1
