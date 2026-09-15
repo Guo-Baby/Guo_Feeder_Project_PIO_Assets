@@ -1,0 +1,13 @@
+# =====================================================
+# LogManager P1.3 — meta / sequence 测试（Run A：准备空基线）
+#
+# 目的：清空 segment + 删除 meta.bin，使【下一次启动】走 §16 恢复路径。
+# 运行：
+#   python test/serial_batch.py COM8 <log> test/log_meta_a.txt 3
+# =====================================================
+
+logt flash ||| ready=1
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt flash ||| segs=0
+logt flash ||| total=0

@@ -65,6 +65,26 @@
 #define LOG_SEG_OFF_CRC32      12u
 #define LOG_SEG_CRC_SPAN       12u   // 头 CRC 覆盖字节数
 
+// meta.bin 布局（固定 32 B，不得增删字段；§12）
+//   0   magic         uint32  0x474C4F47 ("GLOG")
+//   4   fmt_version   uint32  = 2
+//   8   boot_seq      uint32  每次 log_init() +1
+//   12  seq_reserved  uint32  已预留出去的 seq 高水位
+//   16  corrupt_count uint32  损坏段 / meta 丢失累计
+//   20  reserved      8 B
+//   28  crc32         uint32（覆盖 [0..27]）
+//
+// 注：log_events.h 中同一区域写作 "fmt_version(1) + reserved(1) +
+//     reserved16(2)"，产生的字节序列与 uint32 fmt_version 完全一致
+//     （均为 02 00 00 00），故两者不冲突。
+#define LOG_META_OFF_MAGIC          0u
+#define LOG_META_OFF_FMT            4u
+#define LOG_META_OFF_BOOT_SEQ       8u
+#define LOG_META_OFF_SEQ_RESERVED   12u
+#define LOG_META_OFF_CORRUPT        16u
+#define LOG_META_OFF_CRC32          28u
+#define LOG_META_CRC_SPAN           28u
+
 // =====================================================
 // 统计（侧信道：LogManager 自身状态，不产生 Log，避免递归）
 // =====================================================
@@ -205,7 +225,15 @@ struct LogFlashInfo
     uint32_t first_seq_newest;  // 最新 segment 的 first_seq
     uint32_t batch_bytes;       // Flash 批量工作缓冲字节数
     uint8_t  batch_in_psram;    // 该缓冲是否落在 PSRAM（0/1）
-    uint8_t  seq_reliable;      // seq 可信（meta 写入成功）；Commit 3 接入
+
+    // ---- meta.bin / sequence（§12 / §13 / §15 / §16）----
+    uint8_t  seq_reliable;      // 0 = sequence 可能重复（meta 写入失败，§15）
+    uint32_t boot_seq;          // 本次开机序号（每次 log_init() +1）
+    uint32_t seq_reserved;      // meta.seq_reserved 高水位
+    uint32_t corrupt_count;     // meta.corrupt_count
+    uint32_t seq_base;          // 本区间首号
+    uint32_t seq_limit;         // 本区间末号（seq_base + LOG_SEQ_RESERVE - 1）
+    uint32_t seq_last;          // 最近一次分配出去的 seq
 };
 
 void log_flash_get_info(LogFlashInfo &out);
@@ -228,5 +256,15 @@ bool log_flash_peek_record(uint32_t seg, uint8_t rec, LogRecord &out, uint8_t &c
 
 // 删除 /log 下全部文件（测试基线复位）
 bool log_flash_wipe();
+
+// 删除 /log/meta.bin（测试 §16 的"meta 丢失 → 扫描重建"路径）
+bool log_meta_wipe();
+
+// 破坏 /log/meta.bin 的 CRC（测试 §16 的"meta 损坏 → 扫描重建"路径）
+bool log_meta_corrupt();
+
+// 一次性故障注入：令下一次 meta 写入失败（测试 §15 / §41-4 的
+// "reservation 写失败 → s_seq_reliable = false"）
+void log_meta_test_fail_next(bool enable);
 
 #endif // LOG_MANAGER_H

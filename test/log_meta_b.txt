@@ -1,0 +1,23 @@
+# =====================================================
+# LogManager P1.3 — meta / sequence 测试（Run B）
+#
+# 前提：Run A 已删除 meta.bin 与全部 segment ⇒ 本次启动走 §16 恢复路径。
+# 覆盖：§41-1 首次启动 boot_seq=1 / reservation=256
+#       §16-7 meta 丢失 → corrupt_count++
+# 运行：python test/serial_batch.py COM8 <log> test/log_meta_b.txt 3
+# =====================================================
+
+# ---------- §41-1 首次启动 ----------
+logt meta ||| boot=1 reserved=256
+logt meta ||| base=1 limit=256
+logt meta ||| reliable=1
+
+# ---------- §16-7：meta 不存在 → corrupt_count = 1 ----------
+logt meta ||| corrupt=1
+
+# ---------- 写入 5 条（供下次启动扫描 max_seq）----------
+logt fill warn 5 ||| queued=5
+logt flush ||| flush done
+logt flash ||| total=5
+logt flash ||| segs=1
+logt fver 0 0 ||| crc=1

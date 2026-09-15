@@ -1,0 +1,32 @@
+# =====================================================
+# LogManager P1.3 — meta / sequence 测试（Run D）
+#
+# 前提：Run C 结尾已删除 meta.bin，但 segment 保留了 5 条 record
+#       （seq 1..5）⇒ 本次启动走 §16「扫描重建」路径。
+# 覆盖：§16-1..7 扫描 + 向上取整重建 + corrupt_count++
+#       §41-3 256 条耗尽 → 自动再预留
+#       §41-4 meta 写失败 → s_seq_reliable = false
+# 运行：python test/serial_batch.py COM8 <log> test/log_meta_d.txt 3
+# =====================================================
+
+# ---------- §16：扫描得 max_seq=5 → 向上取整 256，再预留一段 → 512 ----------
+# （logt meta 显示的是"已预留出去的高水位"，因此为 512；
+#   base 用的是预留【前】的值 + 1 = 257）
+logt meta ||| reliable=1
+logt meta ||| corrupt=1
+logt meta ||| reserved=512
+logt meta ||| base=257 limit=512
+logt flash ||| total=5
+
+# ---------- §41-3：256 条耗尽 → 自动再预留（base 257..512 → 513..768）----------
+logt fill warn 300 ||| queued=300
+logt flush ||| flush done
+logt meta ||| reserved=768
+logt meta ||| base=513 limit=768
+logt meta ||| reliable=1
+
+# ---------- §41-4：meta 写失败 → sequence 降级为不可信 ----------
+logt mfail 1 ||| mfail armed=1
+logt fill warn 300 ||| queued=300
+logt flush ||| flush done
+logt meta ||| reliable=0
