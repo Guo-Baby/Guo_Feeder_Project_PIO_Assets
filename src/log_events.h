@@ -99,9 +99,11 @@ enum LogParamType : uint8_t
 // 4. ParamId（冻结，全局共享，跨事件复用）
 //
 // 类型见设计报告附录 A 的字典表。
-// ⚠️ 已知不一致（待下次契约修订确认）：
-//    LOG_P_BOOT_SEQ(0x21) 字典表标注 U16，但 P1 §3.3 与 Record 字段
-//    均为 uint32 ⇒ 实际按 LOG_PTYPE_U32 使用（ID 未变）。
+// ⚠️ 已确认（P1.1 收尾）：
+//    LOG_P_BOOT_SEQ 保持 Param ID 0x21，类型为 uint32_t
+//    （与 LogRecord 的 boot_seq 字段一致）。
+//    设计报告附录 A 字典表标注 U16 属笔误，以 uint32_t 为准。
+//    ★ ID 与数值布局不变。
 // =====================================================
 
 enum LogParamId : uint8_t
@@ -257,7 +259,7 @@ enum LogEventId : uint16_t
     LOG_WF_MIGRATED                = 0x0409,   // INFO
     LOG_WF_TEMP_ACTION_TIMEOUT     = 0x040A,   // WARN
     LOG_WF_RUNTIME_ALLOC_FAILED    = 0x040B,   // ERROR
-    LOG_WF_SAVE_PARTIAL_RETRY_OK   = 0x040C,   // INFO
+    LOG_WF_SAVE_PARTIAL_RETRY_OK   = 0x040C,   // INFO（ID 保留不变；是否实现待 P2 决定）
 
     // ---- 0x05xx Water（Dispense / Valve / Weight）----
     LOG_DISPENSE_START             = 0x0501,   // INFO
@@ -293,9 +295,9 @@ enum LogEventId : uint16_t
     LOG_MQTT_PUBLISH_FAIL          = 0x0704,   // WARN
     LOG_MQTT_CMD_EXEC_FAILED       = 0x0705,   // WARN
     LOG_CLOUD_FRAG_FAIL            = 0x0706,   // WARN
-    LOG_LOG_UPLOAD_FAIL            = 0x0707,   // WARN（自身故障，Flash NO）
-    LOG_LOG_ACK_TIMEOUT            = 0x0708,   // WARN（Flash NO）
-    LOG_LOG_RING_OVERFLOW          = 0x0709,   // WARN（不可落盘：环已满）
+    LOG_LOG_UPLOAD_FAIL            = 0x0707,   // WARN（LogManager 自身故障；策略仍为 Flash + Cloud）
+    LOG_LOG_ACK_TIMEOUT            = 0x0708,   // WARN（策略 Flash + Cloud）
+    LOG_LOG_RING_OVERFLOW          = 0x0709,   // WARN（策略 Flash + Cloud；段环已满时物理无处可写，改由批次头侧信道计数上报）
     LOG_LOG_ACK_LOST               = 0x070A,   // WARN
     LOG_LOG_SELF_DEGRADED          = 0x070B,   // ERROR
 
@@ -304,7 +306,7 @@ enum LogEventId : uint16_t
     LOG_TIME_NTP_FAIL              = 0x0802,   // WARN
     LOG_TIME_VALID_ENTER           = 0x0803,   // INFO（P1 撤销 Flash 例外 → Flash NO）
     LOG_TIME_INVALID_ENTER         = 0x0804,   // WARN
-    LOG_TIME_RTC_PROBE             = 0x0805,   // INFO（失败时 WARN + Flash YES）
+    LOG_TIME_RTC_PROBE             = 0x0805,   // INFO（探测成功）/ WARN（探测失败）；Flash 由 Level Policy 决定
     LOG_TIME_RTC_BOOT_RESTORE      = 0x0806,   // INFO
     LOG_TIME_RTC_CALIBRATED        = 0x0807,   // INFO
     LOG_TIME_RTC_WRITE_FAILED      = 0x0808,   // WARN
@@ -328,8 +330,8 @@ enum LogEventId : uint16_t
     LOG_REG_SAVE_FAILED            = 0x0B02,   // ERROR
 
     // ---- 0x0Cxx Event Manager ----
-    LOG_EVT_QUEUE_FULL             = 0x0C01,   // WARN（走计数，Flash NO）
-    LOG_EVT_STORM_DROPPED          = 0x0C02,   // WARN（走计数，Flash NO）
+    LOG_EVT_QUEUE_FULL             = 0x0C01,   // WARN（策略 Flash + Cloud；走侧信道计数上报）
+    LOG_EVT_STORM_DROPPED          = 0x0C02,   // WARN（策略 Flash + Cloud；走侧信道计数上报）
 
     // ---- 0x0Dxx ComputerReset ----
     LOG_CRESET_PULSE               = 0x0D01,   // INFO
@@ -464,7 +466,9 @@ struct __attribute__((packed)) LogRecord
 // =====================================================
 // 9. Flash Segment（冻结）
 //
-//   段头 16 B + 31 × 128 B = 3984 B < 4096（严格单 LittleFS block）
+//   段头 16 B + 31 × 128 B = 3984 B（逻辑段大小）
+//   ★ 设计目标：适配 4 KB block（3984 < 4096），
+//     不对 LittleFS 物理层布局做严格映射假设
 //   段数 16 ⇒ 容量 496 条 ≈ 63.7 KB
 //   文件名 s%07u.log（字典序 = 数值序）
 //
@@ -517,7 +521,7 @@ struct __attribute__((packed)) LogRecord
 #define LOG_ACK_MAX_RETRY         5u
 #define LOG_ACK_BACKOFF_MAX_MS    60000u
 
-// CBOR 批次头整数键（冻结，不得重编号）
+// CBOR 批次头整数键（冻结，共 12 个，键值 0..11，不得重编号）
 #define LOG_BKEY_FMT              0u
 #define LOG_BKEY_EVENT_DICT_VER   1u
 #define LOG_BKEY_BOOT_SEQ         2u
@@ -558,7 +562,7 @@ static_assert(LOG_SEGMENT_SIZE ==
               "segment size must equal 16 + 31*128 = 3984");
 
 static_assert(LOG_SEGMENT_SIZE < 4096u,
-              "segment must fit in a single 4KB LittleFS block");
+              "segment logical size target: within one 4KB block");
 
 static_assert(LOG_SEGMENT_CAPACITY == LOG_RECORDS_PER_SEGMENT * LOG_SEGMENT_COUNT,
               "capacity must equal 31*16 = 496");
