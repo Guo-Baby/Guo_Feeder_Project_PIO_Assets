@@ -1057,13 +1057,28 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
         Serial.println("[Cloud] Missing command");
         return;
     }
+    // FIX-4：协议级 log_ack 必须绕过"命令 id 必需性"与"命令去重缓存"
+    //
+    // 理由（三条）：
+    //   ① log_ack 是**自描述**的（p.b / p.f / p.t 已足够定位区间），不需要 i；
+    //   ② MQTT QoS1 的重复投递复用**完全相同**的 payload ⇒ 同一个 i ⇒
+    //      若走去重会被当作"重复命令"静默丢弃（设备丢 ACK ⇒ 无谓重传 ⇒
+    //      放大 give-up 概率 ⇒ 与空洞压力联动）；
+    //   ③ ACK 频率最高 1 条 / 500 ms（LOG_TX_MIN_INTERVAL_MS），而命令去重
+    //      缓存只有 10 项 / 30 s TTL ⇒ 持续日志流量会在数秒内把缓存刷满，
+    //      把**真实命令**的 id 挤出去 ⇒ 命令去重整体失效（同一条命令可能被
+    //      执行两次）。这是比"丢一条 ACK"更严重的副作用。
+    //
+    // 重复 ACK 无需在此拦截：log_ack_classify() 会判为 DUPLICATE（幂等无副作用）。
+    const bool is_log_ack = (strcmp(c, LOG_ACK_COMMAND) == 0);
+
     String cmd_id = compact ? (doc["i"] | "") : (doc["id"] | "");
-    if(cmd_id.length() == 0)
+    if(!is_log_ack && cmd_id.length() == 0)
     {
         Serial.println("[Cloud] Missing id");
         return;
     }
-    if(cloud_check_duplicate_cmd(cmd_id))
+    if(!is_log_ack && cloud_check_duplicate_cmd(cmd_id))
     {
         Serial.println("[Cloud] Command duplicate");
         return;
