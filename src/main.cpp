@@ -443,6 +443,16 @@ static void logt_print_stats()
         (unsigned)st.cloud_flash_drop,
         (unsigned)st.self_degraded,
         (unsigned)st.cloud_q_used);
+
+    // P1.5：ACK / Retry / Offline 观测
+    Serial.printf(
+        "[LogT] ackst ignored=%u partial=%u segdel=%u replay=%u offskip=%u giveup=%u\n",
+        (unsigned)st.cloud_ack_ignored,
+        (unsigned)st.cloud_ack_partial,
+        (unsigned)st.cloud_seg_acked_del,
+        (unsigned)st.cloud_replay_records,
+        (unsigned)st.cloud_offline_skip,
+        (unsigned)st.cloud_give_up);
 }
 
 static void logt_print_ring()
@@ -604,6 +614,18 @@ static void logt_print_cloud()
         (unsigned)ci.gave_up,
         (unsigned)ci.connected,
         (unsigned)ci.last_batch_bytes);
+
+    // P1.5：补发游标 / 放弃水位 / 下次可发送时间
+    Serial.printf(
+        "[LogT] cloud2 giveup_seq=%u replay_seq=%u replay_done=%u next_tx_in=%u "
+        "force_online=%u ackto=%u backoff_base=%u\n",
+        (unsigned)ci.give_up_seq,
+        (unsigned)ci.replay_seq,
+        (unsigned)ci.replay_done,
+        (unsigned)ci.next_tx_in_ms,
+        (unsigned)ci.force_online,
+        (unsigned)ci.ack_timeout_ms,
+        (unsigned)ci.backoff_base_ms);
 }
 
 // 直接入队 n 条 INFO（不经 RAM 环 / 不落 Flash），用于无 MQTT 条件下
@@ -628,6 +650,100 @@ static void logt_do_creset()
 {
     log_cloud_test_reset();
     Serial.println("[LogT] creset ok");
+}
+
+// ---- P1.5：ACK / 离线注入 ----
+
+// 注入一条 log_ack（走真实 ACK 状态机，只跳过 MQTT 传输）：
+//   logt ack <boot_seq> <seq_from> <seq_to>
+static void logt_do_ack(const String &op)
+{
+    const uint32_t boot = (uint32_t)strtoul(logt_arg(op, 1).c_str(), nullptr, 10);
+    const uint32_t from = (uint32_t)strtoul(logt_arg(op, 2).c_str(), nullptr, 10);
+    const uint32_t to = (uint32_t)strtoul(logt_arg(op, 3).c_str(), nullptr, 10);
+
+    log_cloud_test_ack(boot, from, to);
+
+    // 立刻驱动一轮消费，让断言能直接看到结果（无需等 loop 下一拍）
+    log_task();
+
+    LogCloudInfo ci;
+    log_cloud_get_info(ci);
+
+    Serial.printf(
+        "[LogT] ack boot=%u from=%u to=%u -> acked=%u qused=%u inflight=%u\n",
+        (unsigned)boot, (unsigned)from, (unsigned)to,
+        (unsigned)ci.acked_seq, (unsigned)ci.queue_used,
+        (unsigned)ci.inflight);
+}
+
+// 令接下来 n 次 cloud_send_log() 失败（模拟离线）
+static void logt_do_cfail(const String &op)
+{
+    const long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const uint8_t v = (n > 0 && n < 256) ? (uint8_t)n : (uint8_t)0;
+
+    log_cloud_test_fail_next(v);
+
+    Serial.printf("[LogT] cfail armed=%u\n", (unsigned)v);
+}
+
+// 强制"在线"并跳过真实 cloud_send_log() —— 无 MQTT 对端时驱动 ACK 全链路
+static void logt_do_sonline(const String &op)
+{
+    const long v = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+
+    log_cloud_test_set_online(v != 0);
+
+    Serial.printf("[LogT] sonline=%ld\n", (v != 0) ? 1L : 0L);
+}
+
+// 上板自测：临时缩短 ACK 超时 / 退避基数（毫秒；0 = 恢复冻结默认）
+static void logt_do_atiming(const String &name, const String &op)
+{
+    const uint32_t ms = (uint32_t)strtoul(logt_arg(op, 1).c_str(), nullptr, 10);
+
+    if (name == "atimeout")
+    {
+        log_cloud_test_set_ack_timeout(ms);
+    }
+    else
+    {
+        log_cloud_test_set_backoff_base(ms);
+    }
+
+    Serial.printf("[LogT] %s=%u\n", name.c_str(), (unsigned)ms);
+}
+
+// 按当前在途批次自动构造 ACK（seq 由 Boot 区间预留分配，脚本无法预知）
+//   ackauto 0 [k]  完整覆盖 -> ACCEPT
+//   ackauto 1 <k>  只覆盖前 k 条 -> PARTIAL
+//   ackauto 2      回退到已确认水位 -> DUPLICATE
+//   ackauto 3      错误 boot_seq -> IGNORE
+static void logt_do_ackauto(const String &op)
+{
+    const uint8_t mode = (uint8_t)strtoul(logt_arg(op, 1).c_str(), nullptr, 10);
+    const uint8_t k = (uint8_t)strtoul(logt_arg(op, 2).c_str(), nullptr, 10);
+
+    const bool ok = log_cloud_test_ack_inflight(mode, k);
+
+    if (!ok)
+    {
+        Serial.printf("[LogT] ackauto mode=%u FAIL no-inflight\n", (unsigned)mode);
+        return;
+    }
+
+    // 立刻驱动一轮消费，让断言能直接看到结果（无需等 loop 下一拍）
+    log_task();
+
+    LogCloudInfo ci;
+    log_cloud_get_info(ci);
+
+    Serial.printf(
+        "[LogT] ackauto mode=%u k=%u -> acked=%u qused=%u inflight=%u\n",
+        (unsigned)mode, (unsigned)k,
+        (unsigned)ci.acked_seq, (unsigned)ci.queue_used,
+        (unsigned)ci.inflight);
 }
 
 // ---- P1.3 损坏注入 ----
@@ -810,6 +926,8 @@ void logt_console(const String &cmd)
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
         Serial.println("[LogT] P1.3: stats | mwipe | mcorrupt | mfail <0|1> | ffail <n>");
         Serial.println("[LogT] P1.4: cloud | cpush <n> | creset");
+        Serial.println("[LogT] P1.5: ack <boot> <from> <to> | ackauto <mode> [k] | cfail <n> | sonline <0|1>");
+        Serial.println("[LogT] P1.5: atimeout <ms> | abackoff <ms>   (0 = 恢复默认)");
         Serial.println("[LogT] P1.3: meta | mwipe | mcorrupt");
         return;
     }
@@ -904,6 +1022,36 @@ void logt_console(const String &cmd)
     if (name == "creset")
     {
         logt_do_creset();
+        return;
+    }
+
+    if (name == "ack")
+    {
+        logt_do_ack(op);
+        return;
+    }
+
+    if (name == "cfail")
+    {
+        logt_do_cfail(op);
+        return;
+    }
+
+    if (name == "sonline")
+    {
+        logt_do_sonline(op);
+        return;
+    }
+
+    if (name == "ackauto")
+    {
+        logt_do_ackauto(op);
+        return;
+    }
+
+    if (name == "atimeout" || name == "abackoff")
+    {
+        logt_do_atiming(name, op);
         return;
     }
 

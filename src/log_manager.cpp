@@ -30,6 +30,9 @@
 // P1.4：CBOR 批次编码器（独立头文件，可主机编译验证）
 #include "log_cbor.h"
 
+// P1.5：ACK / Retry / Offline 的纯决策逻辑（独立头文件，可主机编译验证）
+#include "log_ack.h"
+
 #include "time_manager.h"
 
 // =====================================================
@@ -114,7 +117,8 @@ static uint32_t   s_cloud_q_wr = 0;
 static uint32_t   s_cloud_q_rd = 0;
 static bool       s_cloud_q_in_psram = false;
 static uint32_t   s_cloud_q_bytes = 0;
-static uint32_t   s_cloud_q_last_seq = 0;   // 去重守卫：已入队的最大 seq
+static uint32_t   s_cloud_q_last_seq = 0;   // 去重守卫：最近一次入队的 seq
+static uint32_t   s_cloud_q_last_boot = 0;  // 去重守卫：与之配对的 boot_seq
 
 // 批次缓冲（LOG_BATCH_MAX_RECORDS × 128 B）与 CBOR 输出缓冲
 static LogRecord *s_cloud_batch = nullptr;
@@ -132,6 +136,51 @@ static uint32_t s_cloud_last_tx_ms = 0;
 static uint32_t s_cloud_acked_seq = 0;      // 已确认高水位（RAM；重启归 0）
 static uint8_t  s_cloud_flags = 0;          // 在途批次的 flags（bit0 seq_reliable）
 
+// ---- P1.5：ACK / Retry / Offline ----
+//
+// 语义要点（冻结）：
+//   · ACK = 云端已持久化该区间，**不是**"以后不会再收到" ⇒ at-least-once
+//   · 重试耗尽 = GIVE_UP_NOT_ADVANCE：放弃**发送**，但 ack 水位与 Flash 段
+//     都不推进（记录留待下次开机重试）
+//   · 部分覆盖只推进被覆盖前缀；段删除必须整段被覆盖（log_ack.h 判定）
+static uint32_t s_cloud_retry_n = 0;        // 当前在途批次的超时次数
+static bool     s_cloud_gave_up = false;    // 本批次已放弃发送（仅标志，不影响 ack 水位）
+static uint32_t s_cloud_give_up_seq = 0;    // 本 boot 已放弃重发的水位
+static uint32_t s_cloud_deadline_ms = 0;    // 在途批次的 ACK 超时时刻
+static uint32_t s_cloud_backoff_until_ms = 0;  // 下次允许发送的时刻（退避）
+
+// ACK 注入（CloudManager 回调 / 串口测试钩子共用；仅做轻量赋值，
+// 真正的判定与落账在 cloud_poll() 内完成 —— 回调上下文不碰 Flash）
+static volatile bool s_cloud_ack_pending = false;
+static uint32_t s_cloud_ack_boot = 0;
+static uint32_t s_cloud_ack_from = 0;
+static uint32_t s_cloud_ack_to = 0;
+
+// Flash → 云 补发游标（重启后 / RAM 队列排空后把未确认的历史记录重新送出）
+static uint32_t s_replay_seq = 0;      // 下一个待补发的 seq（0 = 需重算起点）
+static bool     s_replay_done = true;  // 已无可补发内容
+
+// 发送失败注入（模拟离线；一次性计数）
+static uint8_t  s_cloud_fail_next = 0;
+
+// 上板自测旁路（仅测试钩子可置位）
+//
+// 目的：本设备在开发期长期没有可用的 MQTT 对端，而 ACK 状态机必须存在
+// "在途批次"才能进入 ACCEPT / PARTIAL / 超时重试分支。置位后：
+//   · 在线判定恒为 true（不受 cloud_is_connected() 影响）
+//   · cloud_send_log() 被跳过，直接视为发送成功
+// 这样整条 ACK / 超时 / 退避 / 放弃 / 段回收链路都能在纯串口下跑通。
+// **正式固件不得置位**（默认 false）。
+static bool     s_cloud_force_online = false;
+
+// 上板自测可调项（默认 = 冻结值，生产行为不受影响）
+//
+// 为什么需要：默认 ACK_TIMEOUT=15 s + 退避 2/4/8/16/32 s 下，走完
+// "重试耗尽 → GIVE_UP_NOT_ADVANCE" 需要 ≈152 s 纯等待，超出本项目
+// "单条命令 200 s 上限"的预算，那条冻结语义将无法被验证。
+static uint32_t s_ack_timeout_ms = LOG_ACK_TIMEOUT_MS;
+static uint32_t s_backoff_base_ms = LOG_ACK_BACKOFF_BASE_MS;
+
 // 批次头"自上次上报"增量计数基线
 static uint32_t s_cloud_rep_ring = 0;
 static uint32_t s_cloud_rep_overflow = 0;
@@ -141,6 +190,25 @@ static uint32_t s_cloud_rep_degraded = 0;
 static void cloud_poll();
 static void cloud_queue_push(const LogRecord &rec);
 static bool cloud_init_buffers();
+static void cloud_handle_ack();
+static void cloud_delete_acked_segments();
+static void cloud_replay_step();
+static bool cloud_try_send_batch(uint8_t n);
+
+// CloudManager 的 log_ack 回调（运行在 esp-mqtt 任务上下文）
+//
+// 只做一件事：把区间存进字段并置标志。
+// **禁止**在这里做 LittleFS / Serial / 任何长耗时操作 —— 判定与落账
+// 全部由 loopTask 的 cloud_poll() 完成（§26 回调限制 / §35 单写者）。
+static void log_cloud_ack_callback(uint32_t boot_seq, uint32_t seq_from, uint32_t seq_to)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_ack_boot = boot_seq;
+    s_cloud_ack_from = seq_from;
+    s_cloud_ack_to = seq_to;
+    s_cloud_ack_pending = true;
+    portEXIT_CRITICAL(&s_mux);
+}
 
 // =====================================================
 // CRC32（与项目既有实现一致：init 0xFFFFFFFF，
@@ -1087,6 +1155,39 @@ bool log_init()
         s_stats.self_degraded++;
         portEXIT_CRITICAL(&s_mux);
     }
+    else
+    {
+        // P1.5：ACK 回调注入。
+        // 依赖方向 CloudManager <- LogManager（单向），CloudManager 不反向依赖。
+        // 回调只置标志（MQTT 任务上下文禁止碰 Flash），判定与落账在 cloud_poll()。
+        cloud_set_log_ack_callback(log_cloud_ack_callback);
+
+        // P1.5 状态复位：
+        //   · acked_seq = 0 ⇒ 重启后曾发过的记录会重发（at-least-once，§25）
+        //   · replay 未完成 ⇒ 允许把离线期间落在 Flash 的 WARN+ 补送出去
+        portENTER_CRITICAL(&s_mux);
+        s_cloud_acked_seq = 0;
+        s_cloud_ack_pending = false;
+        s_cloud_ack_boot = 0;
+        s_cloud_ack_from = 0;
+        s_cloud_ack_to = 0;
+        portEXIT_CRITICAL(&s_mux);
+
+        s_cloud_inflight = false;
+        s_cloud_retry_n = 0;
+        s_cloud_gave_up = false;
+        s_cloud_give_up_seq = 0;
+        s_cloud_deadline_ms = 0;
+        s_cloud_backoff_until_ms = 0;
+        s_cloud_last_tx_ms = 0;
+
+        s_cloud_q_last_seq = 0;
+        s_cloud_q_last_boot = 0;
+
+        s_replay_seq = 0;
+        s_replay_done = false;
+        s_cloud_fail_next = 0;
+    }
 
     return true;
 }
@@ -1480,8 +1581,14 @@ static void cloud_queue_push(const LogRecord &rec)
 
     portENTER_CRITICAL(&s_mux);
 
-    // seq 守卫：同一条记录（落盘失败被保留后重新出现）不重复入队
-    if (rec.seq <= s_cloud_q_last_seq)
+    // 去重守卫：同一条记录（Flash 落盘失败被保留后重新路由）不重复入队。
+    //
+    // P1.5 调整为 (boot_seq, seq) 相等判定，而**不是** seq 单调判定：
+    // 单调判定会让 Flash 补发（replay）在 RAM 队列排空后永远被拒绝 ——
+    // 补发的都是旧 seq，而 s_cloud_q_last_seq 已经是新水位。
+    // 重复只可能发生在"相邻两次 push"，故相等判定已足够。
+    if (rec.boot_seq == s_cloud_q_last_boot &&
+        rec.seq == s_cloud_q_last_seq)
     {
         portEXIT_CRITICAL(&s_mux);
         return;
@@ -1498,6 +1605,7 @@ static void cloud_queue_push(const LogRecord &rec)
     memcpy(&s_cloud_q[slot], &rec, LOG_RECORD_SIZE);
     s_cloud_q_wr++;
     s_cloud_q_last_seq = rec.seq;
+    s_cloud_q_last_boot = rec.boot_seq;
     s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
 
     portEXIT_CRITICAL(&s_mux);
@@ -1585,7 +1693,327 @@ static uint32_t cloud_build_cbor(uint8_t n)
         LOG_BATCH_MAX_PAYLOAD);
 }
 
-// ---- 发送调度（≤1 批 / LOG_TX_MIN_INTERVAL_MS）----
+// ---- 发送调度（P1.5：ACK 驱动推进 + 超时重试退避 + 离线补发）----
+
+// 找包含指定 seq 的段；返回 0xFF 表示不存在（已删除 / 已被回收）
+static uint8_t flash_find_segment_of_seq(uint32_t seq)
+{
+    for (uint8_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
+    {
+        if (s_seg_present[seg] == 0 || s_seg_records[seg] == 0)
+        {
+            continue;
+        }
+
+        const uint32_t first = s_seg_first_seq[seg];
+        const uint32_t last = first + (uint32_t)s_seg_records[seg] - 1u;
+
+        if (seq >= first && seq <= last)
+        {
+            return seg;
+        }
+    }
+
+    return 0xFF;
+}
+
+// 回收"整段已被 ACK 覆盖"的 Flash 段
+//
+// §13-partial：部分覆盖**绝不**删段 —— 判定唯一入口是
+// log_ack_segment_deletable()（末条 seq <= acked_seq）。
+// 只由 loop 上下文调用（LittleFS I/O）。
+static void cloud_delete_acked_segments()
+{
+    if (!s_flash_ready || s_cloud_acked_seq == 0)
+    {
+        return;
+    }
+
+    for (uint8_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
+    {
+        if (s_seg_present[seg] == 0)
+        {
+            continue;
+        }
+
+        if (seg == s_append_segment)
+        {
+            continue;   // 追加目标不动
+        }
+
+        if (s_seg_records[seg] > 0 && !s_replay_done && s_replay_seq != 0 &&
+            s_replay_seq <= s_seg_first_seq[seg] + (uint32_t)s_seg_records[seg] - 1u)
+        {
+            continue;   // 补发游标还没越过这一段，先留着
+        }
+
+        if (!log_ack_segment_deletable(
+                s_seg_first_seq[seg], s_seg_records[seg], s_cloud_acked_seq))
+        {
+            continue;
+        }
+
+        if (flash_drop_segment(seg))
+        {
+            portENTER_CRITICAL(&s_mux);
+            s_stats.cloud_seg_acked_del++;
+            portEXIT_CRITICAL(&s_mux);
+
+            Serial.printf("[Log Cloud] segment %u fully acked -> deleted\n",
+                          (unsigned)seg);
+        }
+    }
+}
+
+// ACK 落账（只在 loop 上下文调用；回调只置标志，不在这里做 I/O）
+static void cloud_handle_ack()
+{
+    if (!s_cloud_ack_pending)
+    {
+        return;
+    }
+
+    uint32_t ack_boot = 0;
+    uint32_t ack_from = 0;
+    uint32_t ack_to = 0;
+
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_ack_pending = false;
+    ack_boot = s_cloud_ack_boot;
+    ack_from = s_cloud_ack_from;
+    ack_to = s_cloud_ack_to;
+    portEXIT_CRITICAL(&s_mux);
+
+    const LogAckResult r = log_ack_classify(
+        ack_boot, ack_from, ack_to,
+        s_cloud_inflight ? s_cloud_tx_boot : 0u,
+        s_cloud_inflight ? s_cloud_tx_from : 0u,
+        s_cloud_inflight ? s_cloud_tx_to : 0u,
+        s_cloud_acked_seq);
+
+    if (r != LOG_ACK_ACCEPT && r != LOG_ACK_PARTIAL)
+    {
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_ack_ignored++;
+        portEXIT_CRITICAL(&s_mux);
+
+        Serial.printf(
+            "[Log Cloud] ack ignored boot=%u from=%u to=%u r=%d\n",
+            (unsigned)ack_boot, (unsigned)ack_from, (unsigned)ack_to, (int)r);
+        return;
+    }
+
+    const uint8_t covered =
+        log_ack_covered_count(s_cloud_batch, s_cloud_tx_count, ack_to);
+
+    if (covered == 0)
+    {
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_ack_ignored++;
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
+
+    const uint32_t new_acked = s_cloud_batch[covered - 1u].seq;
+    const uint8_t tx_count = s_cloud_tx_count;
+
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_q_rd += covered;
+    if (new_acked > s_cloud_acked_seq)
+    {
+        s_cloud_acked_seq = new_acked;
+    }
+    s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
+    s_stats.cloud_ack_ok++;
+    if (r == LOG_ACK_PARTIAL)
+    {
+        s_stats.cloud_ack_partial++;
+    }
+    portEXIT_CRITICAL(&s_mux);
+
+    // 未被覆盖的尾部仍留在云队列里，下一轮重新组批发送（不丢、不重复记账）
+    s_cloud_inflight = false;
+    s_cloud_retry_n = 0;
+    s_cloud_gave_up = false;
+    s_cloud_backoff_until_ms = 0;
+
+    Serial.printf(
+        "[Log Cloud] ack ok boot=%u to=%u covered=%u/%u acked=%u r=%d\n",
+        (unsigned)ack_boot, (unsigned)ack_to,
+        (unsigned)covered, (unsigned)tx_count,
+        (unsigned)s_cloud_acked_seq, (int)r);
+
+    cloud_delete_acked_segments();
+}
+
+// Flash -> 云 补发一步
+//
+// 触发条件（cloud_poll 内）：在线、无在途批次、退避结束、RAM 云队列已空。
+// 目的：离线期间 WARN+ 已落 Flash（INFO 不落盘，只走 RAM 队列），
+//       重连后必须把这些记录补送出去，否则云端永久缺失。
+// 重启后 s_cloud_acked_seq 归 0 ⇒ 曾发过的记录会重发，这属**正常行为**
+// （§25），由云端按 (device_id, boot_seq, seq) 幂等去重消化。
+static void cloud_replay_step()
+{
+    if (!s_flash_ready || s_cloud_q == nullptr)
+    {
+        s_replay_done = true;
+        return;
+    }
+
+    if (s_replay_done)
+    {
+        return;
+    }
+
+    if (s_replay_seq == 0)
+    {
+        uint32_t start = s_cloud_acked_seq + 1u;
+
+        if (s_cloud_give_up_seq + 1u > start)
+        {
+            start = s_cloud_give_up_seq + 1u;
+        }
+
+        s_replay_seq = start;
+    }
+
+    uint8_t pushed = 0;
+    uint32_t guard = 0;
+    const uint32_t guard_max = (uint32_t)LOG_BATCH_MAX_RECORDS * 4u;
+
+    while (pushed < LOG_BATCH_MAX_RECORDS && guard < guard_max)
+    {
+        guard++;
+
+        // 水位跳过：两个分支都只会让 s_replay_seq 前进，故循环有界
+        if (s_cloud_acked_seq != 0 && s_replay_seq <= s_cloud_acked_seq)
+        {
+            s_replay_seq = s_cloud_acked_seq + 1u;
+            continue;
+        }
+
+        if (s_cloud_give_up_seq != 0 && s_replay_seq <= s_cloud_give_up_seq)
+        {
+            s_replay_seq = s_cloud_give_up_seq + 1u;
+            continue;
+        }
+
+        const uint8_t seg = flash_find_segment_of_seq(s_replay_seq);
+
+        if (seg == 0xFF)
+        {
+            s_replay_done = true;
+
+            Serial.printf("[Log Cloud] replay done at seq=%u\n",
+                          (unsigned)s_replay_seq);
+            break;
+        }
+
+        char path[32];
+        flash_seg_path(seg, path, sizeof(path));
+
+        File f = LittleFS.open(path, "r");
+
+        if (!f)
+        {
+            s_replay_done = true;
+            break;
+        }
+
+        const uint8_t idx = (uint8_t)(s_replay_seq - s_seg_first_seq[seg]);
+        const uint32_t off =
+            LOG_SEGMENT_HEADER_SIZE + (uint32_t)idx * LOG_RECORD_SIZE;
+
+        LogRecord rec;
+        const bool ok =
+            f.seek(off) &&
+            (f.read((uint8_t *)&rec, LOG_RECORD_SIZE) == (size_t)LOG_RECORD_SIZE) &&
+            flash_check_record(rec);
+
+        f.close();
+
+        if (!ok)
+        {
+            // 单条损坏不阻塞整轮补发（损坏语义由 §19 的扫描负责）
+            s_replay_seq++;
+            continue;
+        }
+
+        cloud_queue_push(rec);
+
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_replay_records++;
+        portEXIT_CRITICAL(&s_mux);
+
+        pushed++;
+        s_replay_seq++;
+    }
+}
+
+// 编码 + 发送一批；成功才置在途
+static bool cloud_try_send_batch(uint8_t n)
+{
+    const uint32_t len = cloud_build_cbor(n);
+
+    if (len == 0 || len > LOG_BATCH_MAX_PAYLOAD)
+    {
+        portENTER_CRITICAL(&s_mux);
+        s_stats.self_degraded++;
+        portEXIT_CRITICAL(&s_mux);
+        return false;
+    }
+
+    s_cloud_cbor_len = len;
+
+    if (s_cloud_fail_next > 0)
+    {
+        s_cloud_fail_next--;      // 故障注入：模拟离线
+        return false;
+    }
+
+    if (!s_cloud_force_online && !cloud_send_log(s_cloud_cbor, len))
+    {
+        return false;
+    }
+
+    s_cloud_inflight = true;
+    s_cloud_deadline_ms = millis() + s_ack_timeout_ms;
+
+    portENTER_CRITICAL(&s_mux);
+    s_stats.cloud_batch_sent++;
+    portEXIT_CRITICAL(&s_mux);
+
+    return true;
+}
+
+// 放弃当前批次（GIVE_UP_NOT_ADVANCE）
+//
+// 只放弃**发送**：把该批从 RAM 云队列移出并计入 drop_unacked，
+// 但 ack 水位与 Flash 段**都不推进** —— 记录仍在 Flash 中，
+// 下次开机（acked_seq 归 0）会重新补发。
+static void cloud_give_up_batch()
+{
+    const uint8_t n = s_cloud_tx_count;
+
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_q_rd += n;
+    s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
+    s_stats.cloud_flash_drop += n;   // -> drop_unacked
+    s_stats.cloud_ack_lost++;
+    s_stats.cloud_give_up++;
+    portEXIT_CRITICAL(&s_mux);
+
+    s_cloud_gave_up = true;
+    s_cloud_give_up_seq = s_cloud_tx_to;
+    s_cloud_inflight = false;
+    s_cloud_retry_n = 0;
+
+    Serial.printf(
+        "[Log Cloud] give up (NOT advance) boot=%u from=%u to=%u n=%u\n",
+        (unsigned)s_cloud_tx_boot, (unsigned)s_cloud_tx_from,
+        (unsigned)s_cloud_tx_to, (unsigned)n);
+}
 
 static void cloud_poll()
 {
@@ -1596,20 +2024,84 @@ static void cloud_poll()
 
     const uint32_t now = millis();
 
-    // ① 已有在途批次：P1.5 的 ACK / 超时 / 重试逻辑在此介入
+    // (1) ACK 落账 —— 回调只置标志，处理在这里做（可安全做 Flash I/O）
+    cloud_handle_ack();
+
+    // (2) 在途批次：等 ACK，或超时 → 重发 / 放弃
     if (s_cloud_inflight)
+    {
+        if ((int32_t)(now - s_cloud_deadline_ms) < 0)
+        {
+            return;
+        }
+
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_ack_timeout++;
+        portEXIT_CRITICAL(&s_mux);
+
+        s_cloud_retry_n++;
+
+        if (log_ack_should_give_up(s_cloud_retry_n))
+        {
+            cloud_give_up_batch();
+            return;
+        }
+
+        const uint32_t backoff =
+            log_ack_backoff_ms_ex(s_cloud_retry_n, s_backoff_base_ms);
+
+        Serial.printf(
+            "[Log Cloud] ack timeout retry=%u/%u backoff=%ums\n",
+            (unsigned)s_cloud_retry_n, (unsigned)LOG_ACK_MAX_RETRY,
+            (unsigned)backoff);
+
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_retx++;
+        portEXIT_CRITICAL(&s_mux);
+
+        s_cloud_backoff_until_ms = now + backoff;
+        s_cloud_inflight = false;   // 退避结束后由 (3)(7) 重新发送
+        return;
+    }
+
+    // (3) 退避中
+    if (s_cloud_backoff_until_ms != 0 &&
+        (int32_t)(now - s_cloud_backoff_until_ms) < 0)
     {
         return;
     }
 
-    // ② 节流：最快 1 批 / 500 ms（LOG_TX_MIN_INTERVAL_MS）
+    s_cloud_backoff_until_ms = 0;
+
+    // (4) 离线：不消费任何记录（留在云队列 / Flash，等重连）
+    if (!s_cloud_force_online && !cloud_is_connected())
+    {
+        portENTER_CRITICAL(&s_mux);
+        s_stats.cloud_offline_skip++;
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
+
+    // (5) 节流：最快 1 批 / LOG_TX_MIN_INTERVAL_MS
     if (s_cloud_last_tx_ms != 0 &&
         (uint32_t)(now - s_cloud_last_tx_ms) < LOG_TX_MIN_INTERVAL_MS)
     {
         return;
     }
 
-    // ③ 取一批
+    // (6) RAM 云队列已空 → 从 Flash 补发离线积压
+    uint32_t used = 0;
+
+    portENTER_CRITICAL(&s_mux);
+    used = cloud_queue_used_locked();
+    portEXIT_CRITICAL(&s_mux);
+
+    if (used == 0)
+    {
+        cloud_replay_step();
+    }
+
+    // (7) 取一批
     const uint8_t n = cloud_collect_batch();
 
     if (n == 0)
@@ -1617,50 +2109,14 @@ static void cloud_poll()
         return;
     }
 
-    const uint32_t len = cloud_build_cbor(n);
-
-    if (len == 0 || len > LOG_BATCH_MAX_PAYLOAD)
-    {
-        // 组包异常：保留记录，下轮再试（绝不静默丢）
-        portENTER_CRITICAL(&s_mux);
-        s_stats.self_degraded++;
-        portEXIT_CRITICAL(&s_mux);
-        return;
-    }
-
-    s_cloud_cbor_len = len;
-
-    if (!cloud_send_log(s_cloud_cbor, len))
-    {
-        // 离线 / 发送失败：不推进、不淘汰（记录留在队列里等重连）
-        s_cloud_last_tx_ms = now;
-        return;
-    }
-
-    // =================================================
-    // ④ P1.4：以"发布成功"为推进依据（乐观推进）
-    //
-    // ⚠️ P1.5 会把这里换成"收到 log_ack 才推进"，并加入
-    //    ACK_TIMEOUT_MS / 最多 5 次重试 / 2-4-8-16-32 s 退避。
-    //    因此本阶段 s_cloud_inflight 恒为 false。
-    // =================================================
-    portENTER_CRITICAL(&s_mux);
-    s_cloud_q_rd += n;
-    s_cloud_acked_seq = s_cloud_batch[n - 1].seq;
-    s_stats.cloud_batch_sent++;
-    s_stats.cloud_records_sent += n;
-    s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
-
-    // 本批已把增量带走 → 上报基线前移
-    s_cloud_rep_ring = s_stats.ring_drop;
-    s_cloud_rep_overflow = s_stats.cloud_q_drop;
-    s_cloud_rep_unacked = s_stats.cloud_flash_drop;
-    s_cloud_rep_degraded = s_stats.self_degraded;
-    portEXIT_CRITICAL(&s_mux);
-
     s_cloud_last_tx_ms = now;
-}
 
+    if (!cloud_try_send_batch(n))
+    {
+        // 发送失败：不推进、不淘汰；退避一小段再试（避免离线空转刷串口）
+        s_cloud_backoff_until_ms = now + LOG_TX_OFFLINE_BACKOFF_MS;
+    }
+}
 // ---- 云侧缓冲分配（PSRAM 优先 / DRAM 回退）----
 
 static bool cloud_init_buffers()
@@ -1767,8 +2223,36 @@ void log_cloud_get_info(LogCloudInfo &out)
     out.queue_bytes = s_cloud_q_bytes;
     out.last_batch_bytes = s_cloud_cbor_len;
     out.connected = cloud_is_connected() ? 1u : 0u;
-    out.retry = 0;      // 由 P1.5 填充
-    out.gave_up = 0;    // 由 P1.5 填充
+
+    // ---- P1.5 ----
+    out.retry = (uint8_t)((s_cloud_retry_n > LOG_ACK_MAX_RETRY)
+                              ? LOG_ACK_MAX_RETRY
+                              : s_cloud_retry_n);
+    out.gave_up = s_cloud_gave_up ? 1u : 0u;
+    out.give_up_seq = s_cloud_give_up_seq;
+    out.replay_seq = s_replay_seq;
+    out.replay_done = s_replay_done ? 1u : 0u;
+
+    const uint32_t now = millis();
+
+    if (s_cloud_inflight)
+    {
+        out.next_tx_in_ms = ((int32_t)(s_cloud_deadline_ms - now) > 0)
+                                ? (s_cloud_deadline_ms - now)
+                                : 0u;
+    }
+    else if ((int32_t)(s_cloud_backoff_until_ms - now) > 0)
+    {
+        out.next_tx_in_ms = s_cloud_backoff_until_ms - now;
+    }
+    else
+    {
+        out.next_tx_in_ms = 0u;
+    }
+
+    out.force_online = s_cloud_force_online ? 1u : 0u;
+    out.ack_timeout_ms = s_ack_timeout_ms;
+    out.backoff_base_ms = s_backoff_base_ms;
 }
 
 bool log_cloud_test_push(LogEventId event_id, LogLevel level)
@@ -1809,16 +2293,107 @@ void log_cloud_test_reset()
     portENTER_CRITICAL(&s_mux);
     s_cloud_q_rd = s_cloud_q_wr;         // 清空队列
     s_cloud_q_last_seq = 0;
+    s_cloud_q_last_boot = 0;
     s_cloud_acked_seq = 0;
     s_cloud_inflight = false;
     s_cloud_cbor_len = 0;
     s_cloud_last_tx_ms = 0;
+    s_cloud_ack_pending = false;
+    s_cloud_ack_boot = 0;
+    s_cloud_ack_from = 0;
+    s_cloud_ack_to = 0;
     s_stats.cloud_q_used = 0;
     s_cloud_rep_ring = s_stats.ring_drop;
     s_cloud_rep_overflow = s_stats.cloud_q_drop;
     s_cloud_rep_unacked = s_stats.cloud_flash_drop;
     s_cloud_rep_degraded = s_stats.self_degraded;
     portEXIT_CRITICAL(&s_mux);
+
+    s_cloud_retry_n = 0;
+    s_cloud_gave_up = false;
+    s_cloud_give_up_seq = 0;
+    s_cloud_deadline_ms = 0;
+    s_cloud_backoff_until_ms = 0;
+    s_cloud_fail_next = 0;
+    s_replay_seq = 0;
+    s_replay_done = false;
+    s_cloud_force_online = false;
+    s_ack_timeout_ms = LOG_ACK_TIMEOUT_MS;
+    s_backoff_base_ms = LOG_ACK_BACKOFF_BASE_MS;
+}
+
+// 直接注入一条 log_ack（不经过 MQTT）——上板自测用。
+//
+// 与 CloudManager 回调走**同一条**路径（置标志 → cloud_poll() 处理），
+// 因此它验证的是真实的 ACK 状态机，而不是测试专用的旁路。
+void log_cloud_test_ack(uint32_t boot_seq, uint32_t seq_from, uint32_t seq_to)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_ack_boot = boot_seq;
+    s_cloud_ack_from = seq_from;
+    s_cloud_ack_to = seq_to;
+    s_cloud_ack_pending = true;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void log_cloud_test_fail_next(uint8_t count)
+{
+    s_cloud_fail_next = count;
+}
+
+// 上板自测：强制"在线"，并跳过真实 cloud_send_log()。
+// 用于在没有 MQTT 对端的条件下驱动 ACK / 超时 / 退避 / 放弃全链路。
+void log_cloud_test_set_online(bool on)
+{
+    s_cloud_force_online = on;
+}
+
+// 上板自测：临时缩短 ACK 超时 / 退避基数（0 = 恢复冻结默认值）。
+// 用于把"超时重试 / 重试耗尽"压进秒级；正式固件不得调用。
+void log_cloud_test_set_ack_timeout(uint32_t ms)
+{
+    s_ack_timeout_ms = (ms == 0u) ? LOG_ACK_TIMEOUT_MS : ms;
+}
+
+void log_cloud_test_set_backoff_base(uint32_t ms)
+{
+    s_backoff_base_ms = (ms == 0u) ? LOG_ACK_BACKOFF_BASE_MS : ms;
+}
+
+bool log_cloud_test_ack_inflight(uint8_t mode, uint8_t k)
+{
+    if (!s_cloud_inflight || s_cloud_batch == nullptr || s_cloud_tx_count == 0u)
+    {
+        return false;
+    }
+
+    uint32_t boot = s_cloud_tx_boot;
+    uint32_t from = s_cloud_tx_from;
+    uint32_t to = s_cloud_tx_to;
+
+    if (mode == 1u)
+    {
+        uint8_t n = (k == 0u) ? 1u : k;
+
+        if (n > s_cloud_tx_count)
+        {
+            n = s_cloud_tx_count;
+        }
+
+        to = s_cloud_batch[n - 1u].seq;      // 只覆盖前 n 条
+    }
+    else if (mode == 2u)
+    {
+        from = 1u;
+        to = s_cloud_acked_seq;              // 回退到已确认水位
+    }
+    else if (mode == 3u)
+    {
+        boot = s_cloud_tx_boot + 1u;         // 错误 boot_seq
+    }
+
+    log_cloud_test_ack(boot, from, to);
+    return true;
 }
 
 // =====================================================
