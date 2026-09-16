@@ -64,6 +64,14 @@
 // 不做指数退避 —— MQTT 自身有重连节奏，Log 只需"别空转刷串口"。
 #define LOG_TX_OFFLINE_BACKOFF_MS 5000u
 
+// DIR-1：单次 cloud_poll() 内补发扫描最多读取的 record 条数（Flash I/O 上限）。
+//
+// 为什么需要上限：补发改为"按 slot 遍历"后，一个"全空洞段"需要逐条读过去才能
+// 确认它没有可补发内容。若不设上限，16 段 × 31 条 = 496 次读会在一次 loop 里
+// 完成（≈10–20 ms），违反"每轮只有一个 append 单元"的时间预算。
+// 32 条 = 4 KB 读，与一个 append 单元同量级。
+#define LOG_REPLAY_SCAN_MAX_PER_CALL 32u
+
 #define LOG_DIR_PATH        "/log"
 #define LOG_META_PATH       "/log/meta.bin"
 #define LOG_SEG_PATH_FMT    "/log/s%07u.log"   // s0000000.log .. s0000015.log
@@ -145,9 +153,13 @@ struct LogStats
     uint32_t cloud_ack_timeout;     // ACK 超时次数
     uint32_t cloud_ack_lost;        // 重试耗尽（放弃推进）次数
     uint32_t cloud_q_drop;          // 云队列溢出淘汰条数（→ drop_overflow）
-    uint32_t cloud_flash_drop;      // Flash 段淘汰中"未被 ACK"条数（→ drop_unacked）
+    uint32_t cloud_flash_drop;      // Flash 段淘汰 / give-up 中"未被 ACK"条数（→ drop_unacked）
     uint32_t self_degraded;         // LogManager 自降级次数（§29 / §39）
     uint8_t  cloud_q_used;          // 当前云队列占用（≤ LOG_CLOUD_QUEUE_SLOTS）
+    uint32_t cloud_q_evict_inflight; // 淘汰落在**在途批次窗口**内的条数（FIX-1，仅观测：
+                                     // 这些条已在批次副本内、仍可能被 ACK，故不计 drop_overflow）
+    uint32_t flash_seg_evict_unacked; // 段环压力淘汰中被销毁的**未确认**记录数
+                                      // （FIX-3，与 cloud_flash_drop 同步累加，此处单列以便区分来源）
 
     // ---- P1.5 ACK / Retry / Offline ----
     uint32_t cloud_ack_ignored;     // 被忽略的 ACK 数（boot 不匹配 / 回退 / 区间非法）
@@ -292,6 +304,9 @@ struct LogSegmentHead
     uint32_t index;
     uint32_t first_seq;
     uint32_t crc32;
+    uint32_t last_seq;     // 末槽记录的 seq（**直接从 Flash 读取**，用于断言
+                           // "缓存 == 真相"；与 `first_seq + records - 1` 的
+                           //  差值 = 段内 INFO 空洞数，暴露 seq 稀疏性）
 };
 
 bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out);
@@ -352,12 +367,21 @@ struct LogCloudInfo
 
     // ---- P1.5 ACK / Retry / Offline ----
     uint32_t give_up_seq;       // 本 boot 已放弃重发的水位（0 = 未放弃过）
-    uint32_t replay_seq;        // 补发游标：下一个待补发的 seq（0 = 需重算起点）
-    uint8_t  replay_done;       // 本轮补发已无内容可取出（0/1）
+    uint32_t replay_seq;        // 最近一次补发扫描到的 record seq（诊断）
+    uint8_t  replay_done;       // 旧字段（保留兼容）：1 = 本轮补发已无内容
     uint32_t next_tx_in_ms;     // 距离下次可发送还需等待的毫秒数（0 = 现在就可发）
     uint8_t  force_online;      // 上板自测旁路是否置位（正式固件恒 0）
     uint32_t ack_timeout_ms;    // 当前 ACK 超时（默认 = LOG_ACK_TIMEOUT_MS）
     uint32_t backoff_base_ms;   // 当前退避基数（默认 = LOG_ACK_BACKOFF_BASE_MS）
+
+    // ---- FIX-1 / FIX-2 / FIX-3 / DIR-1 新增观测 ----
+    uint8_t  tx_valid;          // 最近一次成功发送的批次描述符是否仍可被 ACK 匹配（FIX-5）
+    uint32_t tx_rd_base;        // 该批次的队首绝对基准（FIX-1）
+    uint8_t  hole_count;        // 空洞表条目数（FIX-2）
+    uint8_t  hole_overflow;     // 空洞表溢出 ⇒ 停止回收（FIX-2）
+    uint8_t  replay_seg;        // 补发游标：段索引（0xFF = 未开始）（DIR-1）
+    uint8_t  replay_idx;        // 补发游标：段内 slot 下标（DIR-1）
+    uint8_t  replay_armed;      // 补发游标是否处于"待扫描"状态（DIR-1）
 };
 
 void log_cloud_get_info(LogCloudInfo &out);

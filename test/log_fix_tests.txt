@@ -1,0 +1,123 @@
+# =====================================================
+# P1.5 修复（FIX-1 / FIX-2 / FIX-3 / FIX-5 / DIR-1）上板回归用例
+#
+# ⚠️ 状态：**校准草稿**。开发板未连接，本文件尚未在硬件上执行过。
+#    数值按代码推导（LOG_CLOUD_QUEUE_SLOTS=128 / LOG_BATCH_MAX_RECORDS=16 /
+#    LOG_RECORDS_PER_SEGMENT=31 / LOG_SEGMENT_COUNT=16）。
+#    上板后若某条不符：先确认设备实际输出，再判断是断言错还是代码错。
+#
+# 运行：python test/serial_batch.py COM8 <log> test/log_fix_tests.txt 3.0 0.35
+# 用法行格式： <命令> ||| 期望子串
+# =====================================================
+
+# =====================================================
+# F1 —— 稀疏 seq 暴露（FIX-3b 的存在前提必须被证实）
+#
+# `mix 2` 每轮 emit 5 条（dbg 被丢弃 / info / warn / error / crit），
+# 其中 **info 不落 Flash** ⇒ Flash 只得到 warn/error/crit。
+# 两轮后：Flash seqs = 2,3,4,6,7,8 ⇒ first=2, records=6,
+#         derived(旧的错误推导)=7, 真实 last=8 ⇒ **gap=1**
+# gap 与开机时刻无关，是最稳的断言。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt mix 2 ||| queued=8
+logt flush ||| flush done
+logt flash ||| total=6
+logt fseg 0 ||| recs=6
+logt fseg2 gap=1
+
+# =====================================================
+# F2 —— FIX-1：队列溢出淘汰与 ACK 落账叠加时**不跳条**
+#
+# 推导（相对计数）：
+#   creset 后 used=0
+#   cpush 20    → used=20，随后 collect 16 条在途（rd_base=R）
+#   cpush 120   → 前 108 条把 used 填到 128；后 12 条各淘汰 1 条，
+#                 淘汰下标 R..R+11 全在在途窗口 [R,R+16) 内
+#                 ⇒ evict_inf=12、qdrop 不增
+#                 （旧行为会把 12 条都记成 drop_overflow）
+#   ackauto 0   → covered=16, evicted=12 ⇒ rd = R + max(12,16) = R+16
+#                 ⇒ qused = 140 - 16 = **124**
+#                 （旧代码 rd = R+12+16 = R+28 ⇒ qused=112，且静默跳过 12 条）
+# =====================================================
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+logt cpush 20 ||| cpush n=20
+logt cloud ||| inflight=1
+logt cloud3 ||| tx_valid=1
+logt cpush 120 ||| cpush n=120
+logt cstats2 ||| evict_inf=12
+logt cstats ||| qdrop=0
+logt ackauto 0 ||| qused=124
+logt cloud3 ||| tx_valid=0
+
+# =====================================================
+# F3 —— FIX-2：give-up 登记空洞，且该段**不被回收**
+#        （GIVE_UP_NOT_ADVANCE"可重放"的前提）
+#
+# 用 RAM 通路产生 WARN（同时进 Flash 段与云队列），不 ACK 让其 give-up。
+# 超时/退避压到 200/100 ms ⇒ 6 次重试约 1.8 s 完成（下面的等待足够）。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 200 ||| atimeout=200
+logt abackoff 100 ||| abackoff=100
+logt fill warn 8 ||| queued=8
+logt flush ||| flush done
+logt cloud ||| inflight=1
+# 不 ACK → 重试耗尽 → GIVE_UP_NOT_ADVANCE
+logt ackst ||| giveup=1
+logt cloud3 ||| holes=1
+logt cloud2 ||| giveup_seq=
+# 空洞保护：段未被回收
+logt fstats ||| seg_del=0
+logt fseg 0 ||| ok=1
+# 该 boot 内不再重发（刻意），但补发扫描仍处于 armed（跨 boot 靠 replay）
+logt cloud3 ||| rarmed=
+
+# =====================================================
+# F4 —— DIR-1：补发**跨段**进行，不再在首段之后提前终止
+#
+# 40 条 WARN ⇒ 2 个段（31 + 9）。creset 后 acked=0 ⇒ 全部视为未确认。
+# 旧实现（按 seq 反查段）会在派生 last 处提前 replay_done，只送出首段的一部分；
+# 新实现应把 40 条全部取出（每轮最多推 16 条、每轮最多扫一个段）。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=40
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+# 给补发若干轮机会（500 ms 节流/批；等待已覆盖）
+logt ackst ||| replay=
+logt ackst ||| replay=40
+logt cloud3 ||| rarmed=0
+
+# =====================================================
+# F5 —— 回归：既有 ACK 语义不得被破坏
+# =====================================================
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt cpush 10 ||| cpush n=10
+# 部分覆盖：只推进被覆盖前缀（4 条），其余留在队列
+logt ackauto 1 4 ||| ackauto mode=1
+logt ackst ||| partial=1
+# 回退 ACK（to ≤ 已确认水位）→ DUPLICATE
+logt ackauto 2 ||| ackauto mode=2
+# 错误 boot_seq → IGNORE
+logt ackauto 3 ||| ackauto mode=3
+logt ackst ||| ignored=

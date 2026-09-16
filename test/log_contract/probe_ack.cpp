@@ -252,6 +252,81 @@ extern "C" int probe_run()
     check(log_ack_segment_deletable(1u, 1u, 1u),
           "single record fully acked -> deletable");
 
+    // ---------- ④′ FIX-2：空洞登记（可合并 / 有界）----------
+    pstr("  空洞表（FIX-2）:\n");
+
+    LogHole hs[LOG_HOLE_MAX];
+    uint8_t hn = 0;
+
+    for (uint8_t i = 0; i < LOG_HOLE_MAX; i++)
+    {
+        hs[i].from = 0;
+        hs[i].to = 0;
+    }
+
+    check(log_hole_add(hs, &hn, 10u, 20u) && hn == 1u, "add [10,20] -> count=1");
+    check(log_hole_add(hs, &hn, 21u, 30u) && hn == 1u, "adjacent [21,30] merges");
+    check(hs[0].from == 10u && hs[0].to == 30u, "merged range = [10,30]");
+    check(log_hole_add(hs, &hn, 15u, 17u) && hn == 1u, "contained [15,17] merges");
+    check(hs[0].from == 10u && hs[0].to == 30u, "contained merge keeps [10,30]");
+    check(log_hole_add(hs, &hn, 5u, 9u) && hn == 1u, "left-adjacent [5,9] merges");
+    check(hs[0].from == 5u && hs[0].to == 30u, "merged range = [5,30]");
+    check(log_hole_add(hs, &hn, 100u, 110u) && hn == 2u, "disjoint [100,110] -> count=2");
+
+    check(log_hole_add(hs, &hn, 200u, 201u) && hn == 3u, "add 3rd");
+    check(log_hole_add(hs, &hn, 300u, 301u) && hn == 4u, "add 4th");
+    check(log_hole_add(hs, &hn, 400u, 401u) && hn == 5u, "add 5th");
+    check(log_hole_add(hs, &hn, 500u, 501u) && hn == 6u, "add 6th");
+    check(log_hole_add(hs, &hn, 600u, 601u) && hn == 7u, "add 7th");
+    check(log_hole_add(hs, &hn, 700u, 701u) && hn == 8u, "add 8th (table now full)");
+
+    check(!log_hole_add(hs, &hn, 900u, 901u) && hn == 8u,
+          "9th disjoint -> REJECTED, count stays 8");
+    check(log_hole_add(hs, &hn, 700u, 720u) && hn == 8u,
+          "merge into a full table still allowed");
+
+    // 无法表示的区间（from > to）必须被拒
+    check(!log_hole_add(hs, &hn, 50u, 49u), "from > to -> rejected");
+
+    pstr("  空洞相交判定:\n");
+    check(log_hole_overlaps(hs, hn, 5u, 5u), "single seq 5 inside [5,30] -> overlap");
+    check(!log_hole_overlaps(hs, hn, 1u, 4u), "[1,4] before all holes -> no overlap");
+    check(!log_hole_overlaps(hs, hn, 31u, 99u), "[31,99] in the gap -> no overlap");
+    check(log_hole_overlaps(hs, hn, 99u, 100u), "touching [100,110] -> overlap");
+    check(log_hole_overlaps(hs, hn, 30u, 31u), "touching left edge -> overlap");
+    check(!log_hole_overlaps(nullptr, 0u, 1u, 9u), "null table -> no overlap");
+
+    // ---------- ④″ FIX-2 + FIX-3b：空洞感知回收 ----------
+    pstr("  空洞感知回收（FIX-2 + FIX-3b）:\n");
+
+    LogHole g1[1];
+    g1[0].from = 10u;
+    g1[0].to = 20u;
+
+    check(log_ack_segment_reclaimable(1u, 9u, 100u, g1, 1u, false),
+          "[1,9] acked=100 -> reclaimable");
+    check(!log_ack_segment_reclaimable(1u, 15u, 100u, g1, 1u, false),
+          "[1,15] overlaps hole -> KEEP (CRITICAL-2 fix)");
+    check(log_ack_segment_reclaimable(21u, 31u, 100u, g1, 1u, false),
+          "[21,31] above hole -> reclaimable");
+    check(!log_ack_segment_reclaimable(90u, 101u, 100u, g1, 1u, false),
+          "last=101 > acked=100 -> KEEP");
+    check(!log_ack_segment_reclaimable(5u, 4u, 100u, g1, 1u, false),
+          "empty (last<first) -> KEEP");
+    check(!log_ack_segment_reclaimable(1u, 9u, 100u, g1, 1u, true),
+          "hole table overflow -> NEVER reclaim");
+    check(log_ack_segment_reclaimable(1u, 9u, 100u, g1, 0u, false),
+          "no holes -> reclaimable when fully acked");
+
+    // ★ FIX-3b 的存在理由：段内 seq **稀疏**（INFO 不落 Flash）时，
+    //   `first + records - 1` 会**小于**真实末条 seq。
+    //   若用派生值判定，段 [first=1, n=3, derived=3] 在 acked=3 时会被误判可回收，
+    //   而真实末条 seq=5 尚未确认 ⇒ 记录被静默删除。
+    check(log_ack_segment_deletable(1u, 3u, 3u),
+          "legacy derived (first=1,n=3,acked=3) -> would DELETE  [wrong]");
+    check(!log_ack_segment_reclaimable(1u, 5u, 3u, nullptr, 0u, false),
+          "sparse truth (last=5, acked=3) -> KEEP                    [correct]");
+
     // ---------- ⑤ 退避序列 ----------
     pstr("  退避序列（期望 2/4/8/16/32/60 s）:\n");
 

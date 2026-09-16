@@ -444,14 +444,19 @@ static void logt_print_stats()
         (unsigned)st.self_degraded,
         (unsigned)st.cloud_q_used);
 
+    // FIX-1 / FIX-3：淘汰归因分离
+    Serial.printf(
+        "[LogT] cstats2 evict_inf=%u seg_evict_unacked=%u\n",
+        (unsigned)st.cloud_q_evict_inflight,
+        (unsigned)st.flash_seg_evict_unacked);
+
     // P1.5：ACK / Retry / Offline 观测
     Serial.printf(
         "[LogT] ackst ignored=%u partial=%u segdel=%u replay=%u offskip=%u giveup=%u\n",
         (unsigned)st.cloud_ack_ignored,
         (unsigned)st.cloud_ack_partial,
         (unsigned)st.cloud_seg_acked_del,
-        (unsigned)st.cloud_replay_records,
-        (unsigned)st.cloud_offline_skip,
+        (unsigned)st.cloud_replay_records,        (unsigned)st.cloud_offline_skip,
         (unsigned)st.cloud_give_up);
 }
 
@@ -514,6 +519,18 @@ static void logt_print_fseg(const String &op)
         "[LogT] fseg seg=%ld ok=%u magic=0x%08X index=%u first_seq=%u recs=%u crc=0x%08X\n",
         seg, (unsigned)h.ok, (unsigned)h.magic, (unsigned)h.index,
         (unsigned)h.first_seq, (unsigned)h.records, (unsigned)h.crc32);
+
+    // FIX-3b：暴露 seq 稀疏性 —— derived（旧的错误推导）vs last（Flash 真相）
+    // `gap` = last - derived = 该段内被 INFO 等"不落盘记录"消耗掉的 seq 个数。
+    // 这个差值与开机时刻无关，是**最稳的上板断言**。
+    {
+        const uint32_t derived =
+            (h.records > 0) ? (h.first_seq + (uint32_t)h.records - 1u) : 0u;
+        const uint32_t gap = (h.last_seq > derived) ? (h.last_seq - derived) : 0u;
+
+        Serial.printf("[LogT] fseg2 last=%u derived=%u gap=%u\n",
+                      (unsigned)h.last_seq, (unsigned)derived, (unsigned)gap);
+    }
 }
 
 static void logt_print_fver(const String &op)
@@ -626,6 +643,18 @@ static void logt_print_cloud()
         (unsigned)ci.force_online,
         (unsigned)ci.ack_timeout_ms,
         (unsigned)ci.backoff_base_ms);
+
+    // FIX-1 / FIX-2 / FIX-3 / DIR-1 观测
+    Serial.printf(
+        "[LogT] cloud3 tx_valid=%u rd_base=%u holes=%u hovf=%u "
+        "rseg=%u ridx=%u rarmed=%u\n",
+        (unsigned)ci.tx_valid,
+        (unsigned)ci.tx_rd_base,
+        (unsigned)ci.hole_count,
+        (unsigned)ci.hole_overflow,
+        (unsigned)ci.replay_seg,
+        (unsigned)ci.replay_idx,
+        (unsigned)ci.replay_armed);
 }
 
 // 直接入队 n 条 INFO（不经 RAM 环 / 不落 Flash），用于无 MQTT 条件下
@@ -633,17 +662,36 @@ static void logt_print_cloud()
 static void logt_do_cpush(const String &op)
 {
     const long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+
+    // 可选等级（默认 info）：便于验证 FIX-2 的"Flash-routed 淘汰登记空洞"
+    uint8_t lv = LOG_LVL_INFO;
+
+    if (logt_arg(op, 2).length() > 0)
+    {
+        bool ok = false;
+        const uint8_t parsed = logt_parse_level(logt_arg(op, 2), ok);
+
+        if (!ok)
+        {
+            Serial.println("[LogT] bad level");
+            return;
+        }
+
+        lv = parsed;
+    }
+
     long done = 0;
 
     for (long i = 0; i < n && i < 1024; i++)
     {
-        log_cloud_test_push(LOG_LOG_ACK_LOST, LOG_LVL_INFO);
+        log_cloud_test_push(LOG_LOG_ACK_LOST, (LogLevel)lv);
         done++;
     }
 
     LogCloudInfo ci;
     log_cloud_get_info(ci);
-    Serial.printf("[LogT] cpush n=%ld qused=%u\n", done, (unsigned)ci.queue_used);
+    Serial.printf("[LogT] cpush n=%ld lv=%u qused=%u\n",
+                  done, (unsigned)lv, (unsigned)ci.queue_used);
 }
 
 static void logt_do_creset()
@@ -925,7 +973,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
         Serial.println("[LogT] P1.3: stats | mwipe | mcorrupt | mfail <0|1> | ffail <n>");
-        Serial.println("[LogT] P1.4: cloud | cpush <n> | creset");
+        Serial.println("[LogT] P1.4: cloud | cpush <n> [lv] | creset");
         Serial.println("[LogT] P1.5: ack <boot> <from> <to> | ackauto <mode> [k] | cfail <n> | sonline <0|1>");
         Serial.println("[LogT] P1.5: atimeout <ms> | abackoff <ms>   (0 = 恢复默认)");
         Serial.println("[LogT] P1.3: meta | mwipe | mcorrupt");
