@@ -81,6 +81,9 @@ static bool     s_seq_reserving = false;  // 预留进行中（避免并发重�
 // 测试钩子：令下一次 meta_write 失败（一次性），用于验证 §15 / §41-4
 static bool s_meta_fail_next = false;
 
+// 测试钩子：令接下来 N 次 Flash append 整批失败，用于验证 §22/§23 / F10
+static uint8_t s_flash_fail_budget = 0;
+
 // 本次扫描新增的损坏 segment 数（§18），由 seq_init() 累加进 meta.corrupt_count
 static uint32_t s_scan_corrupt = 0;
 
@@ -620,6 +623,14 @@ static bool flash_ensure_append_target(uint32_t next_seq)
 static uint8_t flash_append_batch(const LogRecord *recs, uint8_t count)
 {
     uint8_t written = 0;
+
+    // 故障注入（§22/§23 / F10）：整批失败，不写入任何 record。
+    // 调用方会因 written==0 而**不推进 s_rd**，记录保留待重试。
+    if (s_flash_fail_budget > 0)
+    {
+        s_flash_fail_budget--;
+        return 0;
+    }
 
     for (uint8_t i = 0; i < count; i++)
     {
@@ -1194,24 +1205,30 @@ void log_task()
         return;
     }
 
-    // 本轮收集待落盘记录；循环结束后**一次性**写入
-    // （§30：一次 log_task() 最多执行一个 Flash append 单元）
-    uint8_t batch_n = 0;
+    // =================================================
+    // 阶段 1：窥视 + 分拣（**不推进 s_rd**）
+    //
+    // ★ §22 RAM → Flash 安全交接：
+    //   "Flash persistence 成功" 是 "RAM record 完成消费" 的前提。
+    //   所以这里只读不动游标；真正的推进在阶段 3 按"已提交前缀"完成。
+    // =================================================
+    uint8_t scanned = 0;       // 本轮考察并接收的记录数
+    uint8_t batch_n = 0;       // 其中需落盘、已装入批量缓冲的条数
+    uint8_t flash_flags = 0;   // bit i = 第 i 条需落 Flash
+    uint8_t blocked = 0;       // 队首无法被接收的条数（0 或 1）
 
-    uint8_t budget = LOG_DRAIN_MAX_PER_TASK;
-
-    while (budget > 0)
+    while (scanned < LOG_DRAIN_MAX_PER_TASK)
     {
         LogRecord rec;
         bool got = false;
 
+        // 窥视第 scanned 条：读内容但**不推进 s_rd**
         portENTER_CRITICAL(&s_mux);
 
-        if (s_rd != s_wr)
+        if ((uint32_t)scanned < (s_wr - s_rd))
         {
-            const uint32_t slot = s_rd % LOG_RAM_QUEUE_SLOTS;
+            const uint32_t slot = (s_rd + scanned) % LOG_RAM_QUEUE_SLOTS;
             memcpy(&rec, &s_ring[slot], LOG_RECORD_SIZE);
-            s_rd++;
             got = true;
         }
 
@@ -1219,10 +1236,8 @@ void log_task()
 
         if (!got)
         {
-            break;
+            break;                             // 环已空
         }
-
-        budget--;
 
         // ---- routing 决策（纯计算，不涉及任何 I/O）----
         const LogLevel lv = (LogLevel)rec.level;
@@ -1256,6 +1271,7 @@ void log_task()
             // 冻结语义（P1 修订）：CRITICAL = Flash 立即 + 进入
             // "最高优先级下一批次"，**不建独立通道、不承诺秒级**。
             // 边沿触发：只置一次，避免重复 flush。
+            // 因 CRITICAL 在本轮阶段 2 就会落盘，"立即"由此天然满足（§28）。
             if (!s_flush_requested)
             {
                 s_flush_requested = true;
@@ -1265,9 +1281,9 @@ void log_task()
 
         portEXIT_CRITICAL(&s_mux);
 
-        // ---- I/O 区 ----
+        // ---- I/O 区（准备）：只做内存拷贝，不写盘 ----
         //
-        // P1.3：把需落 Flash 的记录收集进批量缓冲 —— 真正的写盘在循环外，
+        // P1.3：把需落盘的记录收集进批量缓冲 —— 真正的写盘在循环外，
         //       以"一个 append 单元"为粒度（§30），避免长时间占用 loop。
         // P1.4：Cloud Log Queue 投递
         // ★ 严格要求：耗时 I/O 必须在临界区【外】执行 ——
@@ -1278,32 +1294,90 @@ void log_task()
                 batch_n < LOG_FLUSH_RECORDS)
             {
                 memcpy(&s_flash_batch[batch_n], &rec, LOG_RECORD_SIZE);
+                flash_flags |= (uint8_t)(1u << scanned);
                 batch_n++;
             }
             else
             {
-                // Flash 未就绪 / 缓冲异常：显式计失败，绝不静默丢弃
-                // （Commit 5 会把此处改为"记录保留 + 下一轮重试"）
-                portENTER_CRITICAL(&s_mux);
-                s_stats.flash_append_fail++;
-                portEXIT_CRITICAL(&s_mux);
+                // Flash 未就绪 / 缓冲异常 → 本轮无法接收该条。
+                // **不推进游标**：该条及其后全部保留在 RAM 环，下轮再试（§23）。
+                blocked++;
+                break;
             }
         }
+
+        scanned++;
     }
 
-    // ---- 本轮唯一的 Flash append 单元 ----
+    // =================================================
+    // 阶段 2：本轮唯一的 Flash append 单元（§30）
+    // =================================================
+    uint8_t written = 0;
+
     if (batch_n > 0)
     {
-        const uint8_t written = flash_append_batch(s_flash_batch, batch_n);
-
-        portENTER_CRITICAL(&s_mux);
-        s_stats.flash_append_ok += written;
-        s_stats.flash_append_fail += (uint32_t)(batch_n - written);
-        portEXIT_CRITICAL(&s_mux);
+        written = flash_append_batch(s_flash_batch, batch_n);
     }
 
+    // =================================================
+    // 阶段 3：按序提交 —— 只有"已落盘"的前缀才推进 s_rd
+    //
+    //   · INFO（Flash NO）不依赖落盘，天然可提交（§24）
+    //   · WARN / ERROR / CRITICAL 必须等自己的 append 成功
+    //   未提交的记录留在环内，下一轮 log_task() 重试（§23）。
+    // =================================================
+    uint8_t commit = 0;
+    uint8_t flash_seen = 0;
+
+    for (uint8_t i = 0; i < scanned; i++)
+    {
+        if (flash_flags & (uint8_t)(1u << i))
+        {
+            flash_seen++;
+
+            if (flash_seen > written)
+            {
+                break;                         // 该条未落盘 → 从此处截断
+            }
+        }
+
+        commit++;
+    }
+
+    // =================================================
+    // 阶段 4：提交游标 + 统计（统一 s_mux）
+    // =================================================
     portENTER_CRITICAL(&s_mux);
+
+    if (commit > 0)
+    {
+        const uint32_t avail = s_wr - s_rd;
+        s_rd += (commit > avail) ? avail : commit;   // 防御性钳位
+    }
+
+    s_stats.flash_append_ok += written;
+    s_stats.flash_append_fail += (uint32_t)(batch_n - written);
+
+    if (written < batch_n)
+    {
+        // 有记录被保留、下一轮重试（§23：绝不静默丢弃 WARN+）
+        s_stats.flash_retry++;
+    }
+
+    if (blocked > 0)
+    {
+        s_stats.flash_blocked_rounds++;
+    }
+
+    // CRITICAL 的 flush 请求在本轮确有落盘时视为已兑现并消费（§27）
+    if (written > 0 && s_flush_requested)
+    {
+        s_flush_requested = false;
+        s_stats.flush_honored++;
+    }
+
     s_stats.ring_used = (uint8_t)(s_wr - s_rd);
+
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -1545,6 +1619,15 @@ bool log_meta_corrupt()
 void log_meta_test_fail_next(bool enable)
 {
     s_meta_fail_next = enable;
+}
+
+// =====================================================
+// Commit 5：Flash append 故障注入（F10）
+// =====================================================
+
+void log_flash_test_fail_next(uint8_t count)
+{
+    s_flash_fail_budget = count;
 }
 
 // ---- Commit 4：损坏注入钩子（仅上板自测）----

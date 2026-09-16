@@ -1,0 +1,86 @@
+# =====================================================
+# LogManager P1.3 Commit 5 —— RAM → Flash 安全交接
+#
+#   覆盖 §22 / §23 / §27 / §28 / §39 + F10 / F11
+#
+#   F10：Flash append 失败 → 记录不被静默丢失 → 下一轮 retry
+#   F11：CRITICAL → 立即落盘（同一 log_task 内）+ flush 请求被兑现
+#
+# 用法：
+#   python test/serial_batch.py COM8 <log> test/log_flash_handoff_tests.txt 5.0 0.35
+#
+# 说明：失败预算只会被"真正发生的 append"消耗，因此下述计数与
+#       loop 时序无关，是确定性的。
+# =====================================================
+
+# ---------- H1：正常路径不得出现 retry / fail（防误报）----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 10 ||| queued=10
+logt flush ||| flush done
+logt stats ||| retry=0
+logt stats ||| fail=0
+logt stats ||| ok=10
+logt flash ||| total=10
+logt flash ||| append=0@10
+
+# ---------- F10：注入 2 次 append 失败 → 保留 → 第 3 轮全部落盘 ----------
+# 轮 1：fail 8；轮 2：fail 8；轮 3：ok 8
+# ⇒ retry=2 / fail=16 / ok=8；关键是 total=8（一条都没丢）
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt ffail 2 ||| ffail armed=2
+logt fill warn 8 ||| queued=8
+logt flush ||| flush done
+logt stats ||| retry=2
+logt stats ||| fail=16
+logt stats ||| ok=8
+logt stats ||| blocked=0
+logt flash ||| total=8
+logt flash ||| append=0@8
+
+# ---------- F10-b：INFO 不被失败的前序阻塞（§24）----------
+# 环形顺序 INFO,INFO,WARN,WARN + 注入 1 次失败：
+#   轮 1 → 2 条 INFO 正常提交，2 条 WARN 保留（retry=1 fail=2）
+#   轮 2 → 2 条 WARN 落盘（ok=2）
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt ffail 1 ||| ffail armed=1
+logt fill info 2 ||| queued=2
+logt fill warn 2 ||| queued=2
+logt flush ||| flush done
+logt stats ||| ok=2
+logt stats ||| fail=2
+logt stats ||| retry=1
+logt flash ||| total=2
+
+# ---------- F10-c：失败预算耗尽后自动恢复（无残留失败状态）----------
+logt reset ||| reset ok
+logt fill warn 5 ||| queued=5
+logt flush ||| flush done
+logt stats ||| retry=0
+logt stats ||| fail=0
+logt stats ||| ok=5
+
+# ---------- F11：CRITICAL → 同一轮立即落盘 + flush 请求被兑现 ----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt emit crit 0x0505 ||| queued=1
+logt flush ||| flush done
+logt stats ||| crit=1
+logt stats ||| flush=1
+logt stats ||| honored=1
+logt stats ||| ok=1
+logt stats ||| retry=0
+logt flash ||| total=1
+
+# ---------- F11-b：CRITICAL 与 WARN 混排，全部立即落盘 ----------
+logt fwipe ||| fwipe ok=1
+logt reset ||| reset ok
+logt fill warn 3 ||| queued=3
+logt emit crit 0x0505 ||| queued=1
+logt flush ||| flush done
+logt stats ||| crit=1
+logt stats ||| ok=4
+logt stats ||| retry=0
+logt flash ||| total=4

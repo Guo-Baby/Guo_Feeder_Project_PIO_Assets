@@ -114,6 +114,11 @@ struct LogStats
     uint32_t flash_segment_deleted; // 删除 segment 次数（ring 淘汰 / 损坏重建）
     uint32_t flash_crc_error;       // 扫描时发现的 record CRC 错误数
     uint32_t flash_corrupt_segment; // Header 损坏被废弃的 segment 数
+
+    // ---- Commit 5：RAM→Flash 安全交接（§22 / §23 / §39）----
+    uint32_t flash_retry;           // 因落盘失败而"保留记录 + 下一轮重试"的轮数
+    uint32_t flash_blocked_rounds;  // 队首记录无法被接收（Flash 未就绪）的轮数
+    uint32_t flush_honored;         // 被真正兑现的 CRITICAL flush 请求数
 };
 
 // =====================================================
@@ -123,8 +128,11 @@ struct LogStats
 // 分配 RAM 环（PSRAM 优先，失败回退 DRAM）。幂等，可重复调用。
 bool log_init();
 
-// 在 loop() 中调用：消费 RAM 环并做 routing 决策。
-// 不阻塞、不写 Flash、不发 MQTT（P1.2 范围）。
+// 在 loop() 中调用：消费 RAM 环 → routing 决策 → 一个 Flash append 单元。
+//
+// 不阻塞、无 delay / while 等待、不创建 FreeRTOS Task（§29）。
+// **安全交接（§22/§23）**：只有 Flash 持久化成功，对应 RAM record 才
+// 被认为已消费；失败则保留在环内、下一轮重试，绝不静默丢弃 WARN+。
 void log_task();
 
 // =====================================================
@@ -277,5 +285,11 @@ bool log_seg_corrupt_record(uint32_t seg, uint8_t rec);
 
 // 把某 segment 截断到 bytes 字节（模拟部分写入）并立即重扫描，用于 §19
 bool log_seg_truncate(uint32_t seg, uint32_t bytes);
+
+// ---- Commit 5：落盘失败注入（仅上板自测）----
+
+// 令接下来 count 次 Flash append **整批失败**（不写入任何 record），
+// 用于验证 §22/§23 的 RAM→Flash 安全交接与 F10 重试路径。
+void log_flash_test_fail_next(uint8_t count);
 
 #endif // LOG_MANAGER_H
