@@ -1,0 +1,50 @@
+# ============================================================
+# P1.5 —— 超时重试 / 重试耗尽（B：GIVE_UP_NOT_ADVANCE）
+#
+# 运行：
+#   python test/serial_batch.py COM8 .pio/logp15b.log test/log_p15_giveup_tests.txt 3.0 0.35
+#
+# 为什么需要 atimeout / abackoff：
+#   冻结默认值（ACK_TIMEOUT 15 s + 退避 2/4/8/16/32 s）下走完"重试耗尽"
+#   需要 ≈152 s 纯等待，超出本项目"单条命令 200 s 上限"的预算。
+#   这两个钩子把时间压到毫秒级，**默认值不变**（log_init 与 creset 复位）。
+#
+# 冻结语义：
+#   重试耗尽 = GIVE_UP_NOT_ADVANCE —— 只放弃**发送**，
+#   ack 水位与 Flash 段**都不推进**（记录留待下次开机重放）。
+# ============================================================
+
+# ---------- 干净基线 + 压缩时序 ----------
+logt reset ||| reset ok
+logt fwipe ||| fwipe ok=1
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 200 ||| atimeout=200
+logt abackoff 10 ||| abackoff=10
+logt cloud ||| ackto=200
+logt cloud ||| backoff_base=10
+
+# ---------- 造出一批但不注入 ACK ----------
+logt fill warn 5 ||| queued=5
+logt flush ||| flush done
+
+# ---------- 6 次超时后放弃（每轮 200 ms 超时 + 10/20/40/80/160 ms 退避）----------
+logt cloud
+logt cloud
+logt cloud
+logt cstats ||| retx=
+logt cstats ||| ack_to=
+logt cstats ||| ack_lost=1
+logt cstats ||| giveup=1
+
+# ---------- 放弃后：ack 水位不推进（NOT_ADVANCE）----------
+logt cloud ||| acked=0
+
+# ---------- 恢复冻结默认值 ----------
+logt atimeout 0 ||| atimeout=0
+logt abackoff 0 ||| abackoff=0
+logt cloud ||| ackto=15000
+logt cloud ||| backoff_base=2000
+
+# ---------- 无崩溃 ----------
+logt stats

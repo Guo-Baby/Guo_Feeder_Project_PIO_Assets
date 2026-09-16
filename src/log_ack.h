@@ -1,0 +1,239 @@
+// =====================================================
+// LogManager P1.5 —— ACK / Retry / Offline 的**纯决策逻辑**
+//
+// 为什么单独成头文件：
+//   · 只依赖 <stdint.h> + log_events.h，**不依赖 Arduino / LittleFS / MQTT**
+//     ⇒ 可用主机编译器编到 wasm32 并由 node 真实执行（见
+//       test/log_contract/probe_ack.cpp）。
+//   · 本设备在开发期长期没有可用的 MQTT 对端，ACK 语义若只写在
+//     log_manager.cpp 里就完全无法验证。把"判定"与"执行"分开后，
+//     判定部分可以被穷举测试，log_manager.cpp 只负责取数、调这里、落账。
+//
+// 冻结语义（LogManager-P1契约冻结0915.md §13）
+//   · ACK = 云端已持久化该 seq 区间，**不是**"以后不会再收到"
+//   · 全系统 at-least-once；云端按 (device_id, boot_seq, seq) 幂等去重
+//   · 重复 ACK → 无变化；回退 ACK → 忽略；错误 boot_seq → 忽略
+//   · 部分覆盖 → 只能推进被覆盖的前缀，**不得**删除仍含未确认 record 的段
+//   · 重试耗尽 → GIVE_UP_NOT_ADVANCE：不推进 ack 水位、不删段
+//   · 退避 2 / 4 / 8 / 16 / 32 s，上限 60 s
+// =====================================================
+
+#ifndef LOG_ACK_H
+#define LOG_ACK_H
+
+#include <stdint.h>
+
+#include "log_events.h"
+
+// ACK 判定结果
+enum LogAckResult
+{
+    LOG_ACK_IGNORE    = 0,   // 与本设备/在途批次无关，或区间非法
+    LOG_ACK_DUPLICATE = 1,   // 回退 / 重复确认：无变化（不是错误）
+    LOG_ACK_ACCEPT    = 2,   // 完整覆盖在途批次
+    LOG_ACK_PARTIAL   = 3    // 只覆盖前一部分（其余需重发）
+};
+
+// 退避基数（首次超时后等待 2 s）；序列 2/4/8/16/32 s，上限 60 s
+#define LOG_ACK_BACKOFF_BASE_MS 2000u
+
+// -----------------------------------------------------
+// ACK 区间校验：from <= to 且都非 0 才算合法
+// （seq 从 1 开始分配，0 表示"未分配"，因此 0 视为非法）
+// -----------------------------------------------------
+static inline bool log_ack_range_valid(uint32_t seq_from, uint32_t seq_to)
+{
+    if (seq_from == 0u || seq_to == 0u)
+    {
+        return false;
+    }
+    return seq_from <= seq_to;
+}
+
+// -----------------------------------------------------
+// 分类一条 log_ack
+//
+//   ack_boot            云端回执里的 boot_seq
+//   ack_from/ack_to     云端确认的 seq 区间（含两端）
+//   tx_boot             在途批次的 boot_seq（无在途时传 0）
+//   tx_from/tx_to       在途批次的 seq 区间（无在途时传 0/0）
+//   acked_seq           本 boot 内已经推进到的确认高水位（0 = 尚无）
+//
+// 判定顺序（顺序本身是语义的一部分）：
+//   ① 区间非法                → IGNORE
+//   ② 无在途批次              → IGNORE
+//   ③ boot_seq 不匹配          → IGNORE（重启前/其他设备的回执）
+//   ④ ack_to <= acked_seq     → DUPLICATE（回退或重复，无变化）
+//   ⑤ ack_to < tx_from        → IGNORE（确认的是更早的批次，与在途无关）
+//   ⑥ 完整覆盖 [tx_from,tx_to] → ACCEPT
+//   ⑦ 其余                    → PARTIAL
+// -----------------------------------------------------
+static inline LogAckResult log_ack_classify(
+    uint32_t ack_boot, uint32_t ack_from, uint32_t ack_to,
+    uint32_t tx_boot, uint32_t tx_from, uint32_t tx_to,
+    uint32_t acked_seq)
+{
+    if (!log_ack_range_valid(ack_from, ack_to))
+    {
+        return LOG_ACK_IGNORE;
+    }
+
+    if (tx_boot == 0u || tx_to == 0u)
+    {
+        return LOG_ACK_IGNORE;
+    }
+
+    if (ack_boot != tx_boot)
+    {
+        return LOG_ACK_IGNORE;
+    }
+
+    if (ack_to <= acked_seq)
+    {
+        return LOG_ACK_DUPLICATE;
+    }
+
+    if (ack_to < tx_from)
+    {
+        return LOG_ACK_IGNORE;
+    }
+
+    if (ack_from <= tx_from && ack_to >= tx_to)
+    {
+        return LOG_ACK_ACCEPT;
+    }
+
+    return LOG_ACK_PARTIAL;
+}
+
+// -----------------------------------------------------
+// 在途批次中被 ACK 覆盖的条数（前缀，含两端）
+//
+// records 必须按 seq 升序（cloud_collect_batch() 保证）。
+// 返回 0 表示一条都没覆盖到。
+// -----------------------------------------------------
+static inline uint8_t log_ack_covered_count(
+    const LogRecord *records, uint8_t n, uint32_t ack_to)
+{
+    uint8_t k = 0;
+
+    while (k < n)
+    {
+        if (records[k].seq > ack_to)
+        {
+            break;
+        }
+        k++;
+    }
+
+    return k;
+}
+
+// -----------------------------------------------------
+// 段是否已可删除（§20 / §13-partial）
+//
+// 仅当整段的 record 都被 ACK 覆盖（末条 seq <= acked_seq）才允许删除。
+// 空段（records == 0）不可删 —— 它可能是当前追加目标。
+// 这条函数是"部分覆盖不得删段"的唯一判定点。
+// -----------------------------------------------------
+static inline bool log_ack_segment_deletable(
+    uint32_t first_seq, uint8_t records, uint32_t acked_seq)
+{
+    if (records == 0u)
+    {
+        return false;
+    }
+
+    const uint32_t last_seq = first_seq + (uint32_t)records - 1u;
+
+    return last_seq <= acked_seq;
+}
+
+// -----------------------------------------------------
+// 退避时长：base / 2·base / 4·base ...，上限 LOG_ACK_BACKOFF_MAX_MS
+//
+// retry 为**已发生的超时次数**（1 = 第一次超时）。
+// retry == 0 时返回 base。
+//
+// 正式固件用 base = LOG_ACK_BACKOFF_BASE_MS(2 s)
+// ⇒ 2 / 4 / 8 / 16 / 32 s，随后被 60 s 上限截断。
+//
+// 为什么带 _ex 版本：上板自测需要把 6 次超时 + 退避压进秒级
+// （默认参数下仅退避就累计 62 s，加上 6×15 s 超时共 ≈152 s，
+//   超出本项目"单条命令 200 s 上限"的预算），否则
+// "重试耗尽 → GIVE_UP_NOT_ADVANCE" 这条冻结语义无法被验证。
+// 生产路径不经过 _ex（见下面的 log_ack_backoff_ms 包装）。
+// -----------------------------------------------------
+static inline uint32_t log_ack_backoff_ms_ex(uint32_t retry, uint32_t base)
+{
+    if (base == 0u)
+    {
+        base = LOG_ACK_BACKOFF_BASE_MS;
+    }
+
+    if (retry == 0u)
+    {
+        return (base > LOG_ACK_BACKOFF_MAX_MS) ? LOG_ACK_BACKOFF_MAX_MS : base;
+    }
+
+    if (retry > 16u)
+    {
+        retry = 16u;   // 防止移位溢出，结果必然已到上限（或按 base 截断）
+    }
+
+    const uint32_t ms = base << (retry - 1u);
+
+    // 溢出 / 越过上限 ⇒ 取上限；结果不可能小于 base
+    if (ms < base || ms > LOG_ACK_BACKOFF_MAX_MS)
+    {
+        return LOG_ACK_BACKOFF_MAX_MS;
+    }
+
+    return ms;
+}
+
+// 生产路径：固定 base = 2 s
+static inline uint32_t log_ack_backoff_ms(uint32_t retry)
+{
+    return log_ack_backoff_ms_ex(retry, LOG_ACK_BACKOFF_BASE_MS);
+}
+
+// -----------------------------------------------------
+// 是否应放弃本批次（GIVE_UP_NOT_ADVANCE）
+//
+// 语义：超时次数超过 LOG_ACK_MAX_RETRY(5) 即放弃**发送**该批次；
+//       但 ack 水位与 Flash 段**都不推进**（记录留待下次开机重试）。
+// -----------------------------------------------------
+static inline bool log_ack_should_give_up(uint32_t retry)
+{
+    return retry > LOG_ACK_MAX_RETRY;
+}
+
+// -----------------------------------------------------
+// 补发（replay）时是否应把这条从 Flash 取出重发
+//
+//   acked_seq     已确认高水位（重启后为 0 ⇒ 全部重放，属正常行为）
+//   give_up_seq   本次开机已放弃重发的水位（避免与云端无 ACK 时死循环）
+// -----------------------------------------------------
+static inline bool log_ack_should_replay(
+    uint32_t seq, uint32_t acked_seq, uint32_t give_up_seq)
+{
+    if (seq == 0u)
+    {
+        return false;
+    }
+
+    if (seq <= acked_seq)
+    {
+        return false;
+    }
+
+    if (give_up_seq != 0u && seq <= give_up_seq)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+#endif // LOG_ACK_H

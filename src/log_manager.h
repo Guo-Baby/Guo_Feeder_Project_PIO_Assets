@@ -60,6 +60,10 @@
 // 队列满 → FIFO 淘汰最旧并累计 drop_overflow（§27）
 #define LOG_CLOUD_QUEUE_SLOTS     128u
 
+// P1.5：发送失败（离线）后的重试间隔。
+// 不做指数退避 —— MQTT 自身有重连节奏，Log 只需"别空转刷串口"。
+#define LOG_TX_OFFLINE_BACKOFF_MS 5000u
+
 #define LOG_DIR_PATH        "/log"
 #define LOG_META_PATH       "/log/meta.bin"
 #define LOG_SEG_PATH_FMT    "/log/s%07u.log"   // s0000000.log .. s0000015.log
@@ -144,6 +148,14 @@ struct LogStats
     uint32_t cloud_flash_drop;      // Flash 段淘汰中"未被 ACK"条数（→ drop_unacked）
     uint32_t self_degraded;         // LogManager 自降级次数（§29 / §39）
     uint8_t  cloud_q_used;          // 当前云队列占用（≤ LOG_CLOUD_QUEUE_SLOTS）
+
+    // ---- P1.5 ACK / Retry / Offline ----
+    uint32_t cloud_ack_ignored;     // 被忽略的 ACK 数（boot 不匹配 / 回退 / 区间非法）
+    uint32_t cloud_ack_partial;     // 部分覆盖的 ACK 数（仅推进被覆盖前缀）
+    uint32_t cloud_seg_acked_del;   // 因整段被 ACK 覆盖而删除的段数
+    uint32_t cloud_replay_records;  // 从 Flash 补发（replay）出的 record 条数
+    uint32_t cloud_offline_skip;    // 因 MQTT 离线而跳过发送的轮数
+    uint32_t cloud_give_up;         // 重试耗尽而放弃发送的批次数
 };
 
 // =====================================================
@@ -337,6 +349,15 @@ struct LogCloudInfo
     uint8_t  gave_up;           // 重试耗尽（GIVE_UP_NOT_ADVANCE）标志
     uint8_t  connected;         // CloudManager 报告的 MQTT 在线状态
     uint32_t last_batch_bytes;  // 最近一次 CBOR 批次字节数
+
+    // ---- P1.5 ACK / Retry / Offline ----
+    uint32_t give_up_seq;       // 本 boot 已放弃重发的水位（0 = 未放弃过）
+    uint32_t replay_seq;        // 补发游标：下一个待补发的 seq（0 = 需重算起点）
+    uint8_t  replay_done;       // 本轮补发已无内容可取出（0/1）
+    uint32_t next_tx_in_ms;     // 距离下次可发送还需等待的毫秒数（0 = 现在就可发）
+    uint8_t  force_online;      // 上板自测旁路是否置位（正式固件恒 0）
+    uint32_t ack_timeout_ms;    // 当前 ACK 超时（默认 = LOG_ACK_TIMEOUT_MS）
+    uint32_t backoff_base_ms;   // 当前退避基数（默认 = LOG_ACK_BACKOFF_BASE_MS）
 };
 
 void log_cloud_get_info(LogCloudInfo &out);
@@ -348,5 +369,42 @@ bool log_cloud_test_push(LogEventId event_id, LogLevel level);
 // 复位云侧状态（acked 高水位 / 在途批次 / 重试计数 / gave_up），
 // 并清空云队列 —— 测试基线复位用
 void log_cloud_test_reset();
+
+// 直接对 LogManager 注入一条 log_ack（不经过 MQTT），
+// 用于在没有 MQTT 对端的条件下验证 ACK / 部分覆盖 / 段删除 / 重试复位。
+void log_cloud_test_ack(uint32_t boot_seq, uint32_t seq_from, uint32_t seq_to);
+
+// 令接下来 count 次 cloud_send_log() **失败**（模拟离线），用于验证
+// "离线不丢、不推进、重连后继续"的 P1.5 行为。
+void log_cloud_test_fail_next(uint8_t count);
+
+// 上板自测：强制"在线"并跳过真实 cloud_send_log()。
+//
+// 为什么需要它：ACK 的 ACCEPT / PARTIAL / 超时重试分支都要求先存在
+// 一个"在途批次"，而没有 MQTT 对端时永远走不到。置位后整条
+// ACK / 超时 / 退避 / 放弃 / 段回收链路都能在纯串口下跑通。
+// **正式固件不得置位**（log_init 与 log_cloud_test_reset 均复位为 false）。
+void log_cloud_test_set_online(bool on);
+
+// 上板自测：按**当前在途批次**自动构造一条 log_ack。
+//
+// 为什么需要：seq 由 Boot 区间预留分配，测试脚本无法预知具体数值，
+// 因此 ACK 必须能"自描述"。走的是与真实回调**完全相同**的注入路径。
+//
+//   mode 0 = 完整覆盖 [tx_from, tx_to]            → 期望 ACCEPT
+//   mode 1 = 只覆盖前 k 条（k 视为 1..tx_count）   → 期望 PARTIAL
+//   mode 2 = 回退（to = 已确认水位）               → 期望 DUPLICATE（需先前 ACK 过）
+//   mode 3 = 错误 boot_seq（tx_boot + 1）          → 期望 IGNORE
+//
+// 返回 false = 当前没有在途批次（无法构造）。
+bool log_cloud_test_ack_inflight(uint8_t mode, uint8_t k);
+
+// 上板自测：临时缩短 ACK 超时 / 退避基数（0 = 恢复冻结默认值）。
+//
+// 默认参数下走完"重试耗尽"需要 ≈152 s（6×15 s 超时 + 2/4/8/16/32 s 退避），
+// 超出单条命令 200 s 的预算。缩短后该路径可在秒级内验证。
+// 正式固件不得调用（log_cloud_test_reset 会复位）。
+void log_cloud_test_set_ack_timeout(uint32_t ms);
+void log_cloud_test_set_backoff_base(uint32_t ms);
 
 #endif // LOG_MANAGER_H

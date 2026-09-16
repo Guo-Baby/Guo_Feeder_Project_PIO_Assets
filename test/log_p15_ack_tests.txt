@@ -1,0 +1,76 @@
+# ============================================================
+# P1.5 ACK / Retry / Offline —— 上板串口用例（A：ACK 语义）
+#
+# 运行：
+#   python test/serial_batch.py COM8 .pio/logp15a.log test/log_p15_ack_tests.txt 5.0 0.35
+#
+# 设计要点
+#   · 用 `logt sonline 1` 打开"强制在线 + 跳过真实 publish"旁路，
+#     这样**没有 MQTT 对端**也能产生"在途批次"，从而进入 ACCEPT/PARTIAL。
+#   · `logt ackauto <mode>` 按当前在途批次自动构造 ACK ——
+#     seq 由 Boot 区间预留分配，测试脚本无法预知具体数值。
+#   · 走的是与 CloudManager 真实回调**完全相同**的注入路径（置标志 →
+#     cloud_poll 落账），不是测试专用旁路。
+#
+# ⚠️ 断言策略：loop 在两条命令之间会持续发送/重发，因此**不断言瞬时标志**
+#     （如 inflight=0），只断言**单调计数器**与结构性字段。
+#     首次上板时请对照日志校准（本项目历史上多次因断言值写错而误判 MISS）。
+# ============================================================
+
+# ---------- 干净基线 ----------
+logt reset ||| reset ok
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt creset ||| creset ok
+
+# ---------- 打开旁路 + 确认冻结默认值 ----------
+logt sonline 1 ||| sonline=1
+logt cloud ||| force_online=1
+logt cloud ||| ackto=15000
+logt cloud ||| backoff_base=2000
+logt cloud ||| ready=1
+
+# ---------- 造出在途批次（40 条 WARN → 落 Flash + 云队列）----------
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt cloud ||| inflight=1
+
+# ---------- T1 错误 boot_seq → IGNORE（状态不变）----------
+logt ackauto 3 ||| ackauto mode=3
+logt cstats ||| ignored=
+logt cloud ||| inflight=1
+
+# ---------- T2 部分覆盖 → PARTIAL（只推进被覆盖前缀）----------
+logt ackauto 1 4 ||| ackauto mode=1
+logt cstats ||| partial=
+logt cstats ||| ack_ok=
+
+# ---------- T3 回退 / 重复 → DUPLICATE（不推进 ack 水位）----------
+logt ackauto 2 ||| ackauto mode=2
+logt cstats ||| ignored=
+
+# ---------- T4 完整覆盖 → ACCEPT ----------
+logt ackauto 0 ||| ackauto mode=0
+logt cstats ||| ack_ok=
+logt cloud ||| acked=
+
+# ---------- T5 整段被 ACK 覆盖 → 段被回收 ----------
+# 40 条 WARN 落在 2 个段（31 + 9）；把前两批 ACK 掉后，
+# 首段（末条 seq <= acked）且非追加目标 ⇒ 可删。
+logt ackauto 0 ||| ackauto mode=0
+logt cstats ||| segdel=
+logt fstats ||| seg_del=
+
+# ---------- T6 离线：不消费、不推进 ----------
+logt sonline 0 ||| sonline=0
+logt cpush 5 ||| cpush n=5
+logt cloud ||| qused=
+logt cstats ||| offskip=
+logt cloud ||| force_online=0
+
+# ---------- T7 恢复在线后继续发送 ----------
+logt sonline 1 ||| sonline=1
+logt cloud ||| inflight=1
+
+# ---------- T8 无崩溃 ----------
+logt stats
