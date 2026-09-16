@@ -497,7 +497,7 @@ MQTT
 | 记录格式 | 128 B 定长：`version / level / flags / param_count / seq / boot_seq / event_id / uptime_ms / timestamp / blob / params[8] / crc32` |
 | 落盘级别 | 仅 WARN / ERROR / CRITICAL（INFO 不落 Flash） |
 | QoS / store | QoS1，**store=0**（耐久性由设备自身的 Flash 段环保证，避免双重持久化） |
-| ACK | **批次级**，走 **`down`** Topic：`{"c":"log_ack","i":"<id>","p":{"b":<boot_seq>,"f":<seq_from>,"t":<seq_to>}}`<br>在 `cloud_process_rx_message()` 里像 `change_msg_limit` 一样**旁路 CommandManager**（§3.4） |
+| ACK | **批次级**，走 **`down`** Topic：`{"c":"log_ack","p":{"b":<boot_seq>,"f":<seq_from>,"t":<seq_to>}}`<br>在 `cloud_process_rx_message()` 里像 `change_msg_limit` 一样**旁路 CommandManager**（§3.4）<br>**`i` 可选**（FIX-4）：`log_ack` 由 `b/f/t` 自描述；且它**不参与命令去重缓存** —— 否则高频 ACK 会把 10 项/30 s 的缓存刷满、挤掉真实命令的 id，并使 QoS1 重投的同一 ACK 被误判为重复命令。重复 ACK 由设备侧 `log_ack_classify()` 判为 `DUPLICATE`（幂等），无需云端配合 |
 | 去重键 | 云端用 `(device_id, boot_seq, seq)` 幂等；重传时 `seq` 不变 |
 | 新增订阅 | **无**。设备对 `log` 只发布不订阅；`log_ack` 复用已有的 `down` 订阅 |
 
