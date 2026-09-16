@@ -4,3 +4,6 @@
 data/
 Thumbs.db
 .workbuddy/
+
+# 含真实 MQTT 凭据（host / port / 用户名 / 密码），禁止入库；本地保留供 MQTT 测试
+AI_RULES.md
