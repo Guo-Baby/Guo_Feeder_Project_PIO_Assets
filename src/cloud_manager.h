@@ -33,21 +33,38 @@ bool cloud_upload_json(JsonDocument& doc);
 // 查询 MQTT 当前在线状态
 bool cloud_is_connected();
 
-// 调试消息 cbor/binary 化
-bool cloud_send_up_cbor(
-    const uint8_t* data,
-    size_t length
+// =====================================================
+// P1.4：多 Topic 上行（纯新增，不改动现有 Up / Down 语义）
+//
+//   down  : Cloud → Device   命令 + log_ack
+//   up    : Device → Cloud   现有业务上行（语义不变）
+//   log   : Device → Cloud   LogManager 专用（本 API）
+//
+// LogManager **不得**直接调用 MQTT；一律经此 API。
+// 原 `cloud_send_up_cbor` / `cloud_send_set_cbor` / `cloud_send_up_binary`
+// 三个声明从未实现、也无任何调用点（审计已标记为陷阱），
+// 现由下面这组真实 API 取代。
+// =====================================================
+
+// 上行路由（后续新增 Topic 时在此扩展，不改现有函数签名）
+enum CloudRoute
+{
+    CLOUD_ROUTE_UP  = 0,
+    CLOUD_ROUTE_LOG = 1
+};
+
+// 向 log Topic 发送二进制（CBOR）负载。
+// 离线 / 未连接时返回 false（**不排队、不落盘** —— 由 LogManager 负责重试）。
+bool cloud_send_log(const uint8_t* data, size_t length);
+
+// log_ack 回调（P1.5）：收到的下行 ACK 区间
+typedef void (*CloudLogAckCallback)(
+    uint32_t boot_seq,
+    uint32_t seq_from,
+    uint32_t seq_to
 );
 
-bool cloud_send_set_cbor(
-    const uint8_t* data,
-    size_t length
-);
-
-bool cloud_send_up_binary(
-    const uint8_t *data,
-    size_t length
-);
+void cloud_set_log_ack_callback(CloudLogAckCallback callback);
 
 // =====================================================
 // 协议枚举（云端协议定义）

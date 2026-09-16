@@ -23,6 +23,13 @@
 #include <string.h>
 #include <esp_heap_caps.h>
 
+// P1.4：LogManager 不得直接调用 MQTT —— 一律经 CloudManager 的 Log API。
+// 依赖方向：LogManager → CloudManager（单向，CloudManager 不反向依赖）
+#include "cloud_manager.h"
+
+// P1.4：CBOR 批次编码器（独立头文件，可主机编译验证）
+#include "log_cbor.h"
+
 #include "time_manager.h"
 
 // =====================================================
@@ -93,6 +100,47 @@ static LogStats s_stats;
 
 // 临界区：保护 s_wr / s_rd / s_ring 槽内容 / s_seq_last / s_stats / s_flush_requested
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// =====================================================
+// P1.4：Cloud Log Topic 状态
+//
+//   P1.4 只负责"把记录送出去"；ACK / 超时 / 重试 / 退避属 P1.5。
+//   依赖方向：LogManager → CloudManager（单向注入回调，无循环依赖）
+// =====================================================
+
+// 云待发队列（环形；PSRAM 优先，失败回退 DRAM）
+static LogRecord *s_cloud_q = nullptr;
+static uint32_t   s_cloud_q_wr = 0;
+static uint32_t   s_cloud_q_rd = 0;
+static bool       s_cloud_q_in_psram = false;
+static uint32_t   s_cloud_q_bytes = 0;
+static uint32_t   s_cloud_q_last_seq = 0;   // 去重守卫：已入队的最大 seq
+
+// 批次缓冲（LOG_BATCH_MAX_RECORDS × 128 B）与 CBOR 输出缓冲
+static LogRecord *s_cloud_batch = nullptr;
+static uint8_t   *s_cloud_cbor = nullptr;
+static bool       s_cloud_buf_in_psram = false;
+
+// 在途批次
+static bool     s_cloud_inflight = false;
+static uint32_t s_cloud_tx_boot = 0;
+static uint32_t s_cloud_tx_from = 0;
+static uint32_t s_cloud_tx_to = 0;
+static uint8_t  s_cloud_tx_count = 0;
+static uint32_t s_cloud_cbor_len = 0;
+static uint32_t s_cloud_last_tx_ms = 0;
+static uint32_t s_cloud_acked_seq = 0;      // 已确认高水位（RAM；重启归 0）
+static uint8_t  s_cloud_flags = 0;          // 在途批次的 flags（bit0 seq_reliable）
+
+// 批次头"自上次上报"增量计数基线
+static uint32_t s_cloud_rep_ring = 0;
+static uint32_t s_cloud_rep_overflow = 0;
+static uint32_t s_cloud_rep_unacked = 0;
+static uint32_t s_cloud_rep_degraded = 0;
+
+static void cloud_poll();
+static void cloud_queue_push(const LogRecord &rec);
+static bool cloud_init_buffers();
 
 // =====================================================
 // CRC32（与项目既有实现一致：init 0xFFFFFFFF，
@@ -1029,6 +1077,17 @@ bool log_init()
         s_seq_reliable ? 1u : 0u,
         (unsigned)s_meta_corrupt);
 
+    // ---- P1.4：Cloud Log Topic 缓冲（PSRAM 优先 / DRAM 回退）----
+    if (!cloud_init_buffers())
+    {
+        // 云侧缓冲不可用：RAM 环与 Flash 段环继续工作（受控 degraded，不阻塞）
+        Serial.println("[Log] Cloud log unavailable (degraded)");
+
+        portENTER_CRITICAL(&s_mux);
+        s_stats.self_degraded++;
+        portEXIT_CRITICAL(&s_mux);
+    }
+
     return true;
 }
 
@@ -1306,6 +1365,15 @@ void log_task()
             }
         }
 
+        // ---- P1.4：云待发入队（INFO 与 WARN+ 都要上云）----
+        //
+        // seq 守卫（在 cloud_queue_push 内部）：落盘失败被保留的记录下一轮
+        // 会以相同 seq 再次出现，靠 seq 去重，避免队列里出现两份。
+        if (to_cloud)
+        {
+            cloud_queue_push(rec);
+        }
+
         scanned++;
     }
 
@@ -1378,6 +1446,378 @@ void log_task()
 
     s_stats.ring_used = (uint8_t)(s_wr - s_rd);
 
+    portEXIT_CRITICAL(&s_mux);
+
+    // P1.4：云上行（内部节流 1 批 / 500 ms；不阻塞、不创建 Task）
+    cloud_poll();
+}
+
+// =====================================================
+// P1.4：Cloud Log Topic（CBOR Batch 上行）
+//
+//   依赖方向：LogManager → CloudManager（单向）
+//   本阶段只做"发出去"；ACK / 超时 / 重试 / 退避 / 段删除属 P1.5。
+// =====================================================
+
+// 说明：CBOR 写入器与批次编码已抽到 src/log_cbor.h ——
+// 那里只依赖 <stdint.h>/<stddef.h>/<string.h> + log_events.h，
+// 不依赖 Arduino，因此可用主机编译器直接编译运行做**字节级**验证
+// （见 test/log_contract/probe_cbor.cpp）。
+
+// ---- 云队列 ----
+
+static uint32_t cloud_queue_used_locked()
+{
+    return s_cloud_q_wr - s_cloud_q_rd;
+}
+
+static void cloud_queue_push(const LogRecord &rec)
+{
+    if (s_cloud_q == nullptr)
+    {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+
+    // seq 守卫：同一条记录（落盘失败被保留后重新出现）不重复入队
+    if (rec.seq <= s_cloud_q_last_seq)
+    {
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
+
+    if (cloud_queue_used_locked() >= LOG_CLOUD_QUEUE_SLOTS)
+    {
+        // §27：队列满 → FIFO 淘汰最旧，并累计 drop_overflow
+        s_cloud_q_rd++;
+        s_stats.cloud_q_drop++;
+    }
+
+    const uint32_t slot = s_cloud_q_wr % LOG_CLOUD_QUEUE_SLOTS;
+    memcpy(&s_cloud_q[slot], &rec, LOG_RECORD_SIZE);
+    s_cloud_q_wr++;
+    s_cloud_q_last_seq = rec.seq;
+    s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
+
+    portEXIT_CRITICAL(&s_mux);
+}
+
+// ---- 组批 ----
+
+// 取队首 ≤LOG_BATCH_MAX_RECORDS 条；**同一批次必须是同一个 boot_seq**
+// （批次头只有 1 个 boot_seq 字段），遇到 boot_seq 变化即停止。
+static uint8_t cloud_collect_batch()
+{
+    uint8_t n = 0;
+
+    portENTER_CRITICAL(&s_mux);
+
+    const uint32_t used = cloud_queue_used_locked();
+
+    while (n < LOG_BATCH_MAX_RECORDS && n < used)
+    {
+        const uint32_t slot = (s_cloud_q_rd + n) % LOG_CLOUD_QUEUE_SLOTS;
+
+        if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq)
+        {
+            break;
+        }
+
+        memcpy(&s_cloud_batch[n], &s_cloud_q[slot], LOG_RECORD_SIZE);
+        n++;
+    }
+
+    portEXIT_CRITICAL(&s_mux);
+
+    return n;
+}
+
+// 组装 CBOR 批次，返回字节数
+static uint32_t cloud_build_cbor(uint8_t n)
+{
+    const LogRecord &first = s_cloud_batch[0];
+    const LogRecord &last = s_cloud_batch[n - 1];
+
+    uint32_t drop_ring = 0;
+    uint32_t drop_overflow = 0;
+    uint32_t drop_unacked = 0;
+    uint32_t degraded = 0;
+    uint32_t flags = 0;
+
+    portENTER_CRITICAL(&s_mux);
+    // 增量：自上次上报以来新增的丢弃计数（§17 侧信道）
+    drop_ring = s_stats.ring_drop - s_cloud_rep_ring;
+    drop_overflow = s_stats.cloud_q_drop - s_cloud_rep_overflow;
+    drop_unacked = s_stats.cloud_flash_drop - s_cloud_rep_unacked;
+    degraded = s_stats.self_degraded - s_cloud_rep_degraded;
+
+    if (s_seq_reliable)
+    {
+        flags |= LOG_BATCH_FLAG_SEQ_RELIABLE;
+    }
+
+    s_cloud_tx_boot = first.boot_seq;
+    s_cloud_tx_from = first.seq;
+    s_cloud_tx_to = last.seq;
+    s_cloud_tx_count = n;
+    s_cloud_flags = (uint8_t)flags;
+    portEXIT_CRITICAL(&s_mux);
+
+    // 批次编码交给 src/log_cbor.h（可在主机上字节级验证）
+    LogCborBatchHeader h;
+    h.fmt = LOG_BATCH_FMT;
+    h.event_dict_ver = LOG_RECORD_VERSION;
+    h.boot_seq = first.boot_seq;
+    h.seq_from = first.seq;
+    h.seq_to = last.seq;
+    h.count = n;
+    h.drop_ring = drop_ring;
+    h.drop_overflow = drop_overflow;
+    h.drop_unacked = drop_unacked;
+    h.self_degraded = degraded;
+    h.flags = flags;
+
+    return log_cbor_encode_batch(
+        h,
+        s_cloud_batch,
+        s_cloud_cbor,
+        LOG_BATCH_MAX_PAYLOAD);
+}
+
+// ---- 发送调度（≤1 批 / LOG_TX_MIN_INTERVAL_MS）----
+
+static void cloud_poll()
+{
+    if (s_cloud_q == nullptr || s_cloud_batch == nullptr || s_cloud_cbor == nullptr)
+    {
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    // ① 已有在途批次：P1.5 的 ACK / 超时 / 重试逻辑在此介入
+    if (s_cloud_inflight)
+    {
+        return;
+    }
+
+    // ② 节流：最快 1 批 / 500 ms（LOG_TX_MIN_INTERVAL_MS）
+    if (s_cloud_last_tx_ms != 0 &&
+        (uint32_t)(now - s_cloud_last_tx_ms) < LOG_TX_MIN_INTERVAL_MS)
+    {
+        return;
+    }
+
+    // ③ 取一批
+    const uint8_t n = cloud_collect_batch();
+
+    if (n == 0)
+    {
+        return;
+    }
+
+    const uint32_t len = cloud_build_cbor(n);
+
+    if (len == 0 || len > LOG_BATCH_MAX_PAYLOAD)
+    {
+        // 组包异常：保留记录，下轮再试（绝不静默丢）
+        portENTER_CRITICAL(&s_mux);
+        s_stats.self_degraded++;
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
+
+    s_cloud_cbor_len = len;
+
+    if (!cloud_send_log(s_cloud_cbor, len))
+    {
+        // 离线 / 发送失败：不推进、不淘汰（记录留在队列里等重连）
+        s_cloud_last_tx_ms = now;
+        return;
+    }
+
+    // =================================================
+    // ④ P1.4：以"发布成功"为推进依据（乐观推进）
+    //
+    // ⚠️ P1.5 会把这里换成"收到 log_ack 才推进"，并加入
+    //    ACK_TIMEOUT_MS / 最多 5 次重试 / 2-4-8-16-32 s 退避。
+    //    因此本阶段 s_cloud_inflight 恒为 false。
+    // =================================================
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_q_rd += n;
+    s_cloud_acked_seq = s_cloud_batch[n - 1].seq;
+    s_stats.cloud_batch_sent++;
+    s_stats.cloud_records_sent += n;
+    s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
+
+    // 本批已把增量带走 → 上报基线前移
+    s_cloud_rep_ring = s_stats.ring_drop;
+    s_cloud_rep_overflow = s_stats.cloud_q_drop;
+    s_cloud_rep_unacked = s_stats.cloud_flash_drop;
+    s_cloud_rep_degraded = s_stats.self_degraded;
+    portEXIT_CRITICAL(&s_mux);
+
+    s_cloud_last_tx_ms = now;
+}
+
+// ---- 云侧缓冲分配（PSRAM 优先 / DRAM 回退）----
+
+static bool cloud_init_buffers()
+{
+    const size_t q_bytes = (size_t)LOG_CLOUD_QUEUE_SLOTS * LOG_RECORD_SIZE;
+    const size_t b_bytes = (size_t)LOG_BATCH_MAX_RECORDS * LOG_RECORD_SIZE;
+
+    bool psram = true;
+
+    void *mem = heap_caps_malloc(q_bytes, MALLOC_CAP_SPIRAM);
+
+    if (mem != nullptr)
+    {
+        psram = true;
+    }
+    else
+    {
+        mem = heap_caps_malloc(q_bytes, MALLOC_CAP_8BIT);
+        psram = false;
+    }
+
+    if (mem == nullptr)
+    {
+        Serial.printf("[Log] Cloud queue alloc failed (%u B)\n",
+                      (unsigned)q_bytes);
+        return false;
+    }
+
+    s_cloud_q = (LogRecord *)mem;
+    s_cloud_q_in_psram = psram;
+    s_cloud_q_bytes = (uint32_t)q_bytes;
+    memset(s_cloud_q, 0, q_bytes);
+
+    void *bmem = heap_caps_malloc(b_bytes, MALLOC_CAP_SPIRAM);
+
+    if (bmem == nullptr)
+    {
+        bmem = heap_caps_malloc(b_bytes, MALLOC_CAP_8BIT);
+    }
+
+    if (bmem == nullptr)
+    {
+        Serial.printf("[Log] Cloud batch alloc failed (%u B)\n",
+                      (unsigned)b_bytes);
+        return false;
+    }
+
+    s_cloud_batch = (LogRecord *)bmem;
+    memset(s_cloud_batch, 0, b_bytes);
+
+    void *cmem = heap_caps_malloc(LOG_BATCH_MAX_PAYLOAD, MALLOC_CAP_SPIRAM);
+
+    if (cmem == nullptr)
+    {
+        cmem = heap_caps_malloc(LOG_BATCH_MAX_PAYLOAD, MALLOC_CAP_8BIT);
+    }
+
+    if (cmem == nullptr)
+    {
+        Serial.printf("[Log] Cloud CBOR alloc failed (%u B)\n",
+                      (unsigned)LOG_BATCH_MAX_PAYLOAD);
+        return false;
+    }
+
+    s_cloud_cbor = (uint8_t *)cmem;
+    memset(s_cloud_cbor, 0, LOG_BATCH_MAX_PAYLOAD);
+
+    s_cloud_buf_in_psram = psram;
+
+    Serial.printf(
+        "[Log] Cloud queue ready: %u slots x %u B = %u B (q=%s), "
+        "batch=%u B, cbor=%u B in %s\n",
+        (unsigned)LOG_CLOUD_QUEUE_SLOTS,
+        (unsigned)LOG_RECORD_SIZE,
+        (unsigned)q_bytes,
+        psram ? "PSRAM" : "DRAM",
+        (unsigned)b_bytes,
+        (unsigned)LOG_BATCH_MAX_PAYLOAD,
+        (s_cloud_buf_in_psram && bmem != nullptr) ? "PSRAM" : "mix");
+
+    return true;
+}
+
+// =====================================================
+// P1.4 / P1.5 观测与测试钩子
+// =====================================================
+
+void log_cloud_get_info(LogCloudInfo &out)
+{
+    memset(&out, 0, sizeof(out));
+
+    portENTER_CRITICAL(&s_mux);
+    out.queue_used = (uint8_t)cloud_queue_used_locked();
+    out.acked_seq = s_cloud_acked_seq;
+    out.inflight = s_cloud_inflight ? 1u : 0u;
+    out.tx_boot_seq = s_cloud_tx_boot;
+    out.tx_from = s_cloud_tx_from;
+    out.tx_to = s_cloud_tx_to;
+    out.tx_count = s_cloud_tx_count;
+    portEXIT_CRITICAL(&s_mux);
+
+    out.queue_ready = (s_cloud_q != nullptr) ? 1u : 0u;
+    out.queue_in_psram = s_cloud_q_in_psram ? 1u : 0u;
+    out.queue_bytes = s_cloud_q_bytes;
+    out.last_batch_bytes = s_cloud_cbor_len;
+    out.connected = cloud_is_connected() ? 1u : 0u;
+    out.retry = 0;      // 由 P1.5 填充
+    out.gave_up = 0;    // 由 P1.5 填充
+}
+
+bool log_cloud_test_push(LogEventId event_id, LogLevel level)
+{
+    if (s_cloud_q == nullptr)
+    {
+        return false;
+    }
+
+    LogRecord rec;
+    memset(&rec, 0, sizeof(rec));
+
+    rec.version = (uint8_t)LOG_RECORD_VERSION;
+    rec.level = (uint8_t)level;
+    rec.flags = 0;
+    rec.param_count = 0;
+    rec.event_id = (uint16_t)event_id;
+    rec.packed = 0;
+    rec.uptime_ms = millis();
+    rec.timestamp = 0;
+    rec.blob_len = 0;
+    rec.reserved16 = 0;
+
+    portENTER_CRITICAL(&s_mux);
+    s_seq_last++;
+    rec.seq = s_seq_last;
+    rec.boot_seq = s_boot_seq;
+    portEXIT_CRITICAL(&s_mux);
+
+    rec.crc32 = log_crc32((const uint8_t *)&rec, LOG_OFF_CRC32);
+
+    cloud_queue_push(rec);
+    return true;
+}
+
+void log_cloud_test_reset()
+{
+    portENTER_CRITICAL(&s_mux);
+    s_cloud_q_rd = s_cloud_q_wr;         // 清空队列
+    s_cloud_q_last_seq = 0;
+    s_cloud_acked_seq = 0;
+    s_cloud_inflight = false;
+    s_cloud_cbor_len = 0;
+    s_cloud_last_tx_ms = 0;
+    s_stats.cloud_q_used = 0;
+    s_cloud_rep_ring = s_stats.ring_drop;
+    s_cloud_rep_overflow = s_stats.cloud_q_drop;
+    s_cloud_rep_unacked = s_stats.cloud_flash_drop;
+    s_cloud_rep_degraded = s_stats.self_degraded;
     portEXIT_CRITICAL(&s_mux);
 }
 

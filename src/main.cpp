@@ -429,6 +429,20 @@ static void logt_print_stats()
         (unsigned)st.flash_retry,
         (unsigned)st.flash_blocked_rounds,
         (unsigned)st.flush_honored);
+
+    Serial.printf(
+        "[LogT] cstats batch=%u rec=%u retx=%u ack_ok=%u ack_to=%u ack_lost=%u "
+        "qdrop=%u fdrop=%u deg=%u qused=%u\n",
+        (unsigned)st.cloud_batch_sent,
+        (unsigned)st.cloud_records_sent,
+        (unsigned)st.cloud_retx,
+        (unsigned)st.cloud_ack_ok,
+        (unsigned)st.cloud_ack_timeout,
+        (unsigned)st.cloud_ack_lost,
+        (unsigned)st.cloud_q_drop,
+        (unsigned)st.cloud_flash_drop,
+        (unsigned)st.self_degraded,
+        (unsigned)st.cloud_q_used);
 }
 
 static void logt_print_ring()
@@ -564,6 +578,56 @@ static void logt_do_ffail(const String &op)
     const uint8_t v = (n > 0 && n < 256) ? (uint8_t)n : (uint8_t)0;
     log_flash_test_fail_next(v);
     Serial.printf("[LogT] ffail armed=%u\n", (unsigned)v);
+}
+
+// ---- P1.4 / P1.5：云侧观测与测试钩子 ----
+
+static void logt_print_cloud()
+{
+    LogCloudInfo ci;
+    log_cloud_get_info(ci);
+
+    Serial.printf(
+        "[LogT] cloud ready=%u psram=%u bytes=%u qused=%u acked=%u "
+        "inflight=%u boot=%u from=%u to=%u n=%u retry=%u giveup=%u conn=%u lastlen=%u\n",
+        (unsigned)ci.queue_ready,
+        (unsigned)ci.queue_in_psram,
+        (unsigned)ci.queue_bytes,
+        (unsigned)ci.queue_used,
+        (unsigned)ci.acked_seq,
+        (unsigned)ci.inflight,
+        (unsigned)ci.tx_boot_seq,
+        (unsigned)ci.tx_from,
+        (unsigned)ci.tx_to,
+        (unsigned)ci.tx_count,
+        (unsigned)ci.retry,
+        (unsigned)ci.gave_up,
+        (unsigned)ci.connected,
+        (unsigned)ci.last_batch_bytes);
+}
+
+// 直接入队 n 条 INFO（不经 RAM 环 / 不落 Flash），用于无 MQTT 条件下
+// 验证云队列容量、FIFO 淘汰与 CBOR 组包
+static void logt_do_cpush(const String &op)
+{
+    const long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    long done = 0;
+
+    for (long i = 0; i < n && i < 1024; i++)
+    {
+        log_cloud_test_push(LOG_LOG_ACK_LOST, LOG_LVL_INFO);
+        done++;
+    }
+
+    LogCloudInfo ci;
+    log_cloud_get_info(ci);
+    Serial.printf("[LogT] cpush n=%ld qused=%u\n", done, (unsigned)ci.queue_used);
+}
+
+static void logt_do_creset()
+{
+    log_cloud_test_reset();
+    Serial.println("[LogT] creset ok");
 }
 
 // ---- P1.3 损坏注入 ----
@@ -745,6 +809,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
         Serial.println("[LogT] P1.3: stats | mwipe | mcorrupt | mfail <0|1> | ffail <n>");
+        Serial.println("[LogT] P1.4: cloud | cpush <n> | creset");
         Serial.println("[LogT] P1.3: meta | mwipe | mcorrupt");
         return;
     }
@@ -821,6 +886,24 @@ void logt_console(const String &cmd)
     if (name == "ffail")
     {
         logt_do_ffail(op);
+        return;
+    }
+
+    if (name == "cloud")
+    {
+        logt_print_cloud();
+        return;
+    }
+
+    if (name == "cpush")
+    {
+        logt_do_cpush(op);
+        return;
+    }
+
+    if (name == "creset")
+    {
+        logt_do_creset();
         return;
     }
 

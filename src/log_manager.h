@@ -47,6 +47,19 @@
 //   LOG_SEGMENT_COUNT / LOG_SEGMENT_CAPACITY
 // =====================================================
 
+// =====================================================
+// P1.4 常量（Cloud Log Topic）
+// =====================================================
+
+// 云待发队列槽数（128 × 128 B = 16 KB，PSRAM 优先 / DRAM 回退）
+//
+// 为什么需要这条独立队列：
+//   · INFO 是 Cloud YES / Flash NO —— 不落盘，无法从 Flash 补发
+//   · WARN+ 是 Cloud YES / Flash YES —— 离线时靠 Flash 保命，
+//     重启后可从段环回填（见 log_cloud_seed_from_flash()）
+// 队列满 → FIFO 淘汰最旧并累计 drop_overflow（§27）
+#define LOG_CLOUD_QUEUE_SLOTS     128u
+
 #define LOG_DIR_PATH        "/log"
 #define LOG_META_PATH       "/log/meta.bin"
 #define LOG_SEG_PATH_FMT    "/log/s%07u.log"   // s0000000.log .. s0000015.log
@@ -119,6 +132,18 @@ struct LogStats
     uint32_t flash_retry;           // 因落盘失败而"保留记录 + 下一轮重试"的轮数
     uint32_t flash_blocked_rounds;  // 队首记录无法被接收（Flash 未就绪）的轮数
     uint32_t flush_honored;         // 被真正兑现的 CRITICAL flush 请求数
+
+    // ---- P1.4 Cloud Log Topic ----
+    uint32_t cloud_batch_sent;      // 批次发送次数（含重发）
+    uint32_t cloud_records_sent;    // 累计首次发出的 record 条数
+    uint32_t cloud_retx;            // ACK 超时后的重发次数
+    uint32_t cloud_ack_ok;          // 成功确认的批次数
+    uint32_t cloud_ack_timeout;     // ACK 超时次数
+    uint32_t cloud_ack_lost;        // 重试耗尽（放弃推进）次数
+    uint32_t cloud_q_drop;          // 云队列溢出淘汰条数（→ drop_overflow）
+    uint32_t cloud_flash_drop;      // Flash 段淘汰中"未被 ACK"条数（→ drop_unacked）
+    uint32_t self_degraded;         // LogManager 自降级次数（§29 / §39）
+    uint8_t  cloud_q_used;          // 当前云队列占用（≤ LOG_CLOUD_QUEUE_SLOTS）
 };
 
 // =====================================================
@@ -291,5 +316,37 @@ bool log_seg_truncate(uint32_t seg, uint32_t bytes);
 // 令接下来 count 次 Flash append **整批失败**（不写入任何 record），
 // 用于验证 §22/§23 的 RAM→Flash 安全交接与 F10 重试路径。
 void log_flash_test_fail_next(uint8_t count);
+
+// =====================================================
+// P1.4 / P1.5 观测与测试钩子（仅上板自测）
+// =====================================================
+
+struct LogCloudInfo
+{
+    uint8_t  queue_ready;       // 云队列是否分配成功（0/1）
+    uint8_t  queue_in_psram;    // 是否落在 PSRAM（0/1）
+    uint32_t queue_bytes;       // 队列字节数
+    uint8_t  queue_used;        // 当前占用条数
+    uint32_t acked_seq;         // 已确认 seq 高水位（RAM；重启归 0 ⇒ 重放）
+    uint8_t  inflight;          // 是否有在途未确认批次（0/1）
+    uint32_t tx_boot_seq;       // 在途批次的 boot_seq
+    uint32_t tx_from;           // 在途批次 seq_from
+    uint32_t tx_to;             // 在途批次 seq_to
+    uint8_t  tx_count;          // 在途批次条数
+    uint8_t  retry;             // 当前重试计数（0..LOG_ACK_MAX_RETRY）
+    uint8_t  gave_up;           // 重试耗尽（GIVE_UP_NOT_ADVANCE）标志
+    uint8_t  connected;         // CloudManager 报告的 MQTT 在线状态
+    uint32_t last_batch_bytes;  // 最近一次 CBOR 批次字节数
+};
+
+void log_cloud_get_info(LogCloudInfo &out);
+
+// 直接向云队列注入一条记录（仅上板自测：不经过 RAM 环，
+// 便于在没有 MQTT 的条件下验证队列/CBOR/ACK 逻辑）
+bool log_cloud_test_push(LogEventId event_id, LogLevel level);
+
+// 复位云侧状态（acked 高水位 / 在途批次 / 重试计数 / gave_up），
+// 并清空云队列 —— 测试基线复位用
+void log_cloud_test_reset();
 
 #endif // LOG_MANAGER_H

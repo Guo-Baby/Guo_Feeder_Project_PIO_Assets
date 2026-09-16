@@ -6,6 +6,7 @@
     "password": "GuoBaby",
     "subscribe_topic": "guo_feeder/down",
     "publish_topic": "guo_feeder/up",
+    "log_topic": "guo_feeder/log",
     "ca_path": "/emqxsl-ca.crt",
     "retry_interval": 10000,
     "retry_max": 30,
