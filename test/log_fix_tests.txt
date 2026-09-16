@@ -1,47 +1,108 @@
 # =====================================================
-# P1.5 修复（FIX-1 / FIX-2 / FIX-3 / FIX-5 / DIR-1）上板回归用例
+# LogManager P1.5 修复（FIX-1/2/3/5 + DIR-1 + FIX-4）最终上板用例
 #
-# ⚠️ 状态：**校准草稿**。开发板未连接，本文件尚未在硬件上执行过。
-#    数值按代码推导（LOG_CLOUD_QUEUE_SLOTS=128 / LOG_BATCH_MAX_RECORDS=16 /
-#    LOG_RECORDS_PER_SEGMENT=31 / LOG_SEGMENT_COUNT=16）。
-#    上板后若某条不符：先确认设备实际输出，再判断是断言错还是代码错。
+# 状态：**未执行**（开发板未连接，list_ports 无 USB-Serial）。
+#       数值全部按代码推导；上板后若某条不符，先看设备实际输出再判定。
 #
-# 运行：python test/serial_batch.py COM8 <log> test/log_fix_tests.txt 3.0 0.35
-# 用法行格式： <命令> ||| 期望子串
+# 运行（分段执行，每段 ≤ 200 s 墙上时钟预算）：
+#   python test/serial_batch.py COM8 .pio/fix_f0.log test/log_fix_tests.txt 3.0 0.35
+#   （QUIET=3.0 是必需的：logt flush 落 62 条约 2.4 s；
+#     HIT_GRACE=0.35 让即时命令不白等）
+#
+# -----------------------------------------------------
+# 存在的关键常量（用于核对推导）
+#   LOG_CLOUD_QUEUE_SLOTS  = 128
+#   LOG_BATCH_MAX_RECORDS  = 16
+#   LOG_RECORDS_PER_SEGMENT= 31
+#   LOG_SEGMENT_COUNT      = 16
+#   LOG_HOLE_MAX           = 8
+#   LOG_TX_MIN_INTERVAL_MS = 500   （每批最少间隔）
+#   LOG_ACK_MAX_RETRY      = 5     （retry > 5 ⇒ give-up）
+# -----------------------------------------------------
+# 已验证的 logt 输出格式（断言串必须与之一致）
+#   [LogT] fseg  seg=%ld ok=%u magic=.. index=%u first_seq=%u recs=%u crc=..
+#   [LogT] fseg2 last=%u derived=%u gap=%u
+#   [LogT] flash ready=%u segs=%u oldest=%u newest=%u append=%u@%u total=%u ..
+#   [LogT] cloud ready=%u psram=%u bytes=%u qused=%u acked=%u inflight=%u
+#                boot=%u from=%u to=%u n=%u retry=%u giveup=%u conn=%u lastlen=%u
+#   [LogT] cloud2 giveup_seq=%u replay_seq=%u replay_done=%u next_tx_in=%u ..
+#   [LogT] cloud3 tx_valid=%u rd_base=%u holes=%u hovf=%u rseg=%u ridx=%u rarmed=%u
+#   [LogT] cstats batch=%u rec=%u retx=%u ack_ok=%u ack_to=%u ack_lost=%u
+#                 qdrop=%u fdrop=%u deg=%u qused=%u
+#   [LogT] cstats2 evict_inf=%u seg_evict_unacked=%u hole_evict=%u
+#   [LogT] ackst ignored=%u partial=%u segdel=%u replay=%u offskip=%u giveup=%u
+#   [LogT] fstats ok=%u fail=%u seg_new=%u seg_del=%u crc_err=%u corrupt=%u ..
+#   [LogT] cloud  … retry=%u  = 当前重试计数（超时后 inflight=0 时仍可见）
 # =====================================================
 
+
 # =====================================================
-# F1 —— 稀疏 seq 暴露（FIX-3b 的存在前提必须被证实）
+# F0 —— 稀疏 seq 模型 + DIR-1 slot 遍历补发（★ 本次修复的存在前提）
 #
-# `mix 2` 每轮 emit 5 条（dbg 被丢弃 / info / warn / error / crit），
-# 其中 **info 不落 Flash** ⇒ Flash 只得到 warn/error/crit。
-# 两轮后：Flash seqs = 2,3,4,6,7,8 ⇒ first=2, records=6,
-#         derived(旧的错误推导)=7, 真实 last=8 ⇒ **gap=1**
-# gap 与开机时刻无关，是最稳的断言。
+# 目的：证明 global seq != flash slot，且补发**不再因 seq 空洞提前终止**。
+#
+# 构造（3 条命令即可造出空洞，不需要逐条 emit）：
+#   fill warn 20   → Flash seq 连续
+#   fill info 15   → **只进云队列、不落 Flash** ⇒ 在 Flash 的 seq 空间里留下 15 个空洞
+#   fill warn 20   → Flash seq 继续
+#   ⇒ Flash 40 条 = 2 段：seg0 = 31 条（seq 跨 46）、seg1 = 9 条
+#
+#   first = a, records = 31, 真实 last = a+45
+#   derived（旧的错误推导）= a + 31 - 1 = a+30
+#   gap = last - derived = **15**       ← 与开机时刻无关，最稳的断言
+#
+# DIR-1 判别（新旧行为不同）：
+#   旧：按 idx = seq - first 反算槽位，走到 seq = a+31 时
+#       find_segment_of_seq() 返回 0xFF（seg0 派生区间 [a,a+30] 不含它，
+#       seg1 的 first 更大）⇒ replay_done=true ⇒ **seg1 的 9 条永久丢失**
+#       ⇒ ackst replay = 31
+#   新：按 slot 遍历 + 判定用记录自身 seq ⇒ 40 条全部送出
+#       ⇒ ackst replay = **40**
+#
+# 补发节奏（确定性，已按代码推导）：
+#   批1 = 16 条（seg0 slot 0..15）
+#   批2 = 15 条（seg0 slot 16..30，每轮只扫一个段 ⇒ 到段尾停）
+#   空转一轮（游标切到 seg1 后**直接返回**，不 push）
+#   批3 = 9 条（seg1 slot 0..8）→ 扫完 ⇒ rarmed=0
 # =====================================================
 logt fwipe ||| fwipe ok=1
 logt mwipe ||| mwipe ok=1
+logt fill warn 20 ||| queued=20
+logt fill info 15 ||| queued=15
+logt fill warn 20 ||| queued=20
+logt flush ||| flush done
+logt flash ||| segs=2
+logt flash ||| total=40
+logt fseg 0 ||| recs=31
+logt fseg 1 ||| recs=9
+logt fseg2 gap=15
 logt reset ||| reset ok
 logt creset ||| creset ok
-logt mix 2 ||| queued=8
-logt flush ||| flush done
-logt flash ||| total=6
-logt fseg 0 ||| recs=6
-logt fseg2 gap=1
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+logt cloud3 ||| rarmed=1
+logt ackst ||| replay=16
+logt ackauto 0 ||| acked=
+logt ackst ||| replay=31
+logt ackauto 0 ||| acked=
+logt ackst ||| replay=40
+logt ackauto 0 ||| acked=
+logt cloud3 ||| rarmed=0
+logt cloud2 ||| replay_done=1
+
 
 # =====================================================
-# F2 —— FIX-1：队列溢出淘汰与 ACK 落账叠加时**不跳条**
+# F1 —— FIX-1：队列溢出与 ACK 落账叠加时**不跳条**
 #
-# 推导（相对计数）：
-#   creset 后 used=0
-#   cpush 20    → used=20，随后 collect 16 条在途（rd_base=R）
-#   cpush 120   → 前 108 条把 used 填到 128；后 12 条各淘汰 1 条，
-#                 淘汰下标 R..R+11 全在在途窗口 [R,R+16) 内
-#                 ⇒ evict_inf=12、qdrop 不增
-#                 （旧行为会把 12 条都记成 drop_overflow）
-#   ackauto 0   → covered=16, evicted=12 ⇒ rd = R + max(12,16) = R+16
-#                 ⇒ qused = 140 - 16 = **124**
-#                 （旧代码 rd = R+12+16 = R+28 ⇒ qused=112，且静默跳过 12 条）
+#   creset 后 used=0、rd_base=0
+#   cpush 20     → 随后 loop 组批 16 条在途（rd_base = rd = 0，tx_count = 16）
+#   cpush 120    → 前 108 条把 used 填到 128；后 12 条各淘汰 1 条
+#                  淘汰下标 0..11 全在在途窗口内
+#                  ⇒ evict_inf = 12、qdrop **不增**、holes = 0（level=info 不落 Flash）
+#   ackauto 0    → covered=16、evicted = rd - rd_base = 12
+#                  ⇒ rd = 0 + max(16,12) = 16 ⇒ qused = 140 - 16 = **124**
+#   旧代码 rd = 0 + 12 + 16 = 28 ⇒ qused=112，且**静默跳过 12 条**
+#                  （既没发送、也没计入任何 drop 计数）
 # =====================================================
 logt reset ||| reset ok
 logt creset ||| creset ok
@@ -53,15 +114,21 @@ logt cloud3 ||| tx_valid=1
 logt cpush 120 ||| cpush n=120
 logt cstats2 ||| evict_inf=12
 logt cstats ||| qdrop=0
+logt cloud3 ||| holes=0
 logt ackauto 0 ||| qused=124
 logt cloud3 ||| tx_valid=0
 
+
 # =====================================================
-# F3 —— FIX-2：give-up 登记空洞，且该段**不被回收**
-#        （GIVE_UP_NOT_ADVANCE"可重放"的前提）
+# F2 —— FIX-2：give-up 登记空洞 + 空洞阻止段回收（第一段，本 Boot）
 #
-# 用 RAM 通路产生 WARN（同时进 Flash 段与云队列），不 ACK 让其 give-up。
-# 超时/退避压到 200/100 ms ⇒ 6 次重试约 1.8 s 完成（下面的等待足够）。
+# 用 RAM 通路产生 WARN（同时进 Flash 与云队列），不发 ACK 让它重试耗尽。
+#   atimeout 200 / abackoff 100 ⇒ 6 次超时约 4.3 s 内完成 give-up
+#   （0.2 +0.1 +0.2 +0.2 +0.4 +0.4 +0.8 +0.8 +1.6 +1.6 ≈ 4.3 s）
+#
+# 关键：give-up 后**必须**有空洞，否则后续更高的 ACK 水位会跨过这 8 条，
+#       段回收会把整段删掉 ⇒ "留待下次开机重放"落空。
+# 预期：holes=1、fdrop=8（→ drop_unacked）、seg_del=0（段被空洞保护）
 # =====================================================
 logt fwipe ||| fwipe ok=1
 logt mwipe ||| mwipe ok=1
@@ -72,52 +139,311 @@ logt atimeout 200 ||| atimeout=200
 logt abackoff 100 ||| abackoff=100
 logt fill warn 8 ||| queued=8
 logt flush ||| flush done
+logt flash ||| total=8
 logt cloud ||| inflight=1
-# 不 ACK → 重试耗尽 → GIVE_UP_NOT_ADVANCE
+# 不 ACK → 重试耗尽（6 次超时约 4.3 s）。本行在 batch 发出后 ≈1 s 即执行 ⇒ 第一次
+# 查询必然 giveup=0；而它的静默等待期正好覆盖整个重试过程（期间 loop 持续打印
+# `ack timeout retry=`，静默计时被不断重置）⇒ 连查两次才能真正捕获 giveup=1。
 logt ackst ||| giveup=1
+logt ackst ||| giveup=1
+logt cstats ||| fdrop=8
 logt cloud3 ||| holes=1
 logt cloud2 ||| giveup_seq=
-# 空洞保护：段未被回收
 logt fstats ||| seg_del=0
-logt fseg 0 ||| ok=1
-# 该 boot 内不再重发（刻意），但补发扫描仍处于 armed（跨 boot 靠 replay）
-logt cloud3 ||| rarmed=
+logt flash ||| total=8
+logt fseg 0 ||| recs=8
+# -----------------------------------------------------
+# ★★ 复位开发板（重新打开串口即复位），再运行下面的 F2-B 段 ★★
+# -----------------------------------------------------
+
 
 # =====================================================
-# F4 —— DIR-1：补发**跨段**进行，不再在首段之后提前终止
+# F2-B —— 重启后补发 + 确认后才回收（★ 本修复的核心承诺）
 #
-# 40 条 WARN ⇒ 2 个段（31 + 9）。creset 后 acked=0 ⇒ 全部视为未确认。
-# 旧实现（按 seq 反查段）会在派生 last 处提前 replay_done，只送出首段的一部分；
-# 新实现应把 40 条全部取出（每轮最多推 16 条、每轮最多扫一个段）。
+# 重启 ⇒ acked_seq 归 0、空洞表清空（纯 RAM 态，无需任何 Flash 格式迁移）
+# ⇒ 那 8 条 WARN 重新可补发 ⇒ ACK 后段被正常回收
+#
+# 预期：rarmed=1 → replay=8 → rarmed=0 → segdel=1 / seg_del=1
+# =====================================================
+logt cloud3 ||| rarmed=1
+logt ackst ||| replay=0
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+logt ackst ||| replay=8
+logt ackauto 0 ||| acked=
+logt ackst ||| segdel=1
+logt fstats ||| seg_del=1
+logt cloud3 ||| rarmed=0
+
+
+# =====================================================
+# F3-A —— FIX-3：段环压力淘汰**未确认段**必须记账（HIGH-1）
+#
+# acked=0 ⇒ 没有任何段"已确认" ⇒ 受害者选择退化为最老段（seg0），
+# 且其中 31 条未确认 ⇒ cloud_flash_drop += 31、seg_evict_unacked = 31
+#   （旧实现：删了就删了，无任何记账 ⇒ 云端永远不知道丢过未确认数据）
+#
+# 写满 16 段需要 496 条：8 × fill warn 62 + flush
+# 第 497 条触发第一次压力淘汰 ⇒ total = 496 - 31 + 1 = **466**
 # =====================================================
 logt fwipe ||| fwipe ok=1
 logt mwipe ||| mwipe ok=1
 logt reset ||| reset ok
 logt creset ||| creset ok
-logt fill warn 40 ||| queued=40
+logt fill warn 62 ||| queued=62
 logt flush ||| flush done
-logt flash ||| segs=2
-logt flash ||| total=40
-logt creset ||| creset ok
-logt sonline 1 ||| sonline=1
-logt atimeout 60000 ||| atimeout=60000
-# 给补发若干轮机会（500 ms 节流/批；等待已覆盖）
-logt ackst ||| replay=
-logt ackst ||| replay=40
-logt cloud3 ||| rarmed=0
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt flash ||| segs=16
+logt flash ||| total=496
+logt flash ||| append=15@31
+logt cstats2 ||| seg_evict_unacked=0
+logt fill warn 1 ||| queued=1
+logt flush ||| flush done
+logt cstats2 ||| seg_evict_unacked=31
+logt cstats ||| fdrop=31
+logt fstats ||| seg_del=1
+logt flash ||| total=466
+logt flash ||| oldest=1
+
 
 # =====================================================
-# F5 —— 回归：既有 ACK 语义不得被破坏
+# F3-B —— 已确认段被回收时**不计** drop_unacked
+#
+# 40 条 → 2 段（seg0=31 / seg1=9），全部 ACK 后：
+#   seg0 已满且不是追加目标（追加目标是 seg1）⇒ 立即被回收
+#   ⇒ seg_del=1、segdel=1，而 seg_evict_unacked **保持 0**
+#
+# ⚠️ 说明：`flash_ensure_append_target()` 里"压力时优先挑已确认段"的分支
+#    在板上难以直接命中 —— 正常回收路径（cloud_delete_acked_segments，
+#    ACK 时触发）会先把已确认段清掉，压力到来时通常只剩未确认段。
+#    因此本段验证的是它的**等价保证**：已确认数据的释放不需要付
+#    drop_unacked 代价。该分支本身由代码审查覆盖（见审计报告 §3）。
 # =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
 logt reset ||| reset ok
 logt creset ||| creset ok
 logt sonline 1 ||| sonline=1
-logt cpush 10 ||| cpush n=10
-# 部分覆盖：只推进被覆盖前缀（4 条），其余留在队列
-logt ackauto 1 4 ||| ackauto mode=1
+logt atimeout 60000 ||| atimeout=60000
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| segs=2
+logt ackauto 0 ||| acked=
+logt ackauto 0 ||| acked=
+logt ackauto 0 ||| acked=
+logt fstats ||| seg_del=1
+logt cstats2 ||| seg_evict_unacked=0
+logt cstats ||| segdel=1
+logt flash ||| segs=1
+logt flash ||| total=9
+
+
+# =====================================================
+# F4 —— FIX-5：超时后批次描述符**仍然有效**（晚到 ACK 仍被接受）
+#
+# abackoff 20000 造出一个约 20 s 的稳定观察窗口：
+#   t≈1 s   超时 #1 → retx=1、inflight=0、**tx_valid 仍为 1**（FIX-5 核心）
+#   t≈15 s  把 atimeout 提到 60000，冻结后续超时（让状态稳定可断言）
+#   t≈21 s  退避到期 → 自动重发 → inflight=1
+#   ackauto 0 发的就是"对**第一次**传输的晚到 ACK"（区间完全相同）
+#   ⇒ ack_ok=1、tx_valid=0
+#
+# 旧实现把描述符有效期绑在 inflight 上 ⇒ 超时后 ACK 一定被
+# log_ack_classify 规则②丢弃 ⇒ ack_ok 永远到不了 1。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 1000 ||| atimeout=1000
+logt abackoff 20000 ||| abackoff=20000
+logt cpush 8 ||| cpush n=8
+logt cloud ||| inflight=1
+logt cstats ||| retx=1
+logt cloud3 ||| tx_valid=1
+logt cloud ||| inflight=0
+logt cloud ||| retry=1
+logt atimeout 60000 ||| atimeout=60000
+logt policy warn ||| flash=1
+logt policy error ||| flash=1
+logt policy debug ||| cloud=0
+logt cloud ||| inflight=1
+logt ackauto 0 ||| acked=
+logt cstats ||| ack_ok=1
+logt cloud3 ||| tx_valid=0
+
+
+# =====================================================
+# F5 —— FIX-4：log_ack 不得污染命令去重缓存（★ 需要 MQTT）
+#
+# `logt ack` / `ackauto` 直接注入 LogManager，**绕过** cloud_process_rx_message，
+# 因此 F5 无法用串口验证，必须走真实 MQTT（凭据见 AI_RULES.md 末尾）。
+#
+# 原理：命令去重缓存只有 10 项 / 30 s TTL（MQTT_DUP_CACHE_SIZE）。
+#       ACK 频率最高 1 条 / 500 ms ⇒ 若 log_ack 走去重缓存，数秒内就把它刷满，
+#       把**真实命令 id 挤出去** ⇒ 同一条命令可能被执行两次。
+#
+# 步骤（PC 端，设备在线）：
+#   1) 下发命令 id=DUPX 两次 → 第 2 次设备串口必须出现 "[Cloud] duplicate command"
+#      python test/mqtt_log_probe.py raw guo_feeder/down '{"c":"system","i":"DUPX","p":{"o":"memory"}}'
+#      （连发两次；注意两次间隔要 < 30 s）
+#   2) 连发 15 条 log_ack（**各不相同的 i**，b/f/t 用任意值即可 —— 会被判 IGNORE，
+#      但关键是它们**不得进入去重缓存**）：
+#      for i in $(seq 1 15); do
+#        python test/mqtt_log_probe.py raw guo_feeder/down \
+#          '{"c":"log_ack","i":"AK'$i'","p":{"b":1,"f":1,"t":1}}'
+#      done
+#   3) 再下发 id=DUPX 一次 → 设备**仍须**打印 "[Cloud] duplicate command"
+#      （若被打印，说明缓存未被 ACK 挤掉 ⇒ FIX-4 生效；
+#        若命令被执行了 ⇒ ACK 污染了缓存）
+#
+# 串口侧可观测串：
+#   [Cloud LOG] ack rx boot=%u from=%u to=%u     ← 每条 ACK 都应出现（含无 i 的情形）
+#   [Cloud] duplicate command                    ← 去重命中
+#   [Cloud] Command duplicate                    ← rx 分支的兜底日志
+#
+# ⚠️ 另需验证：**不带 i** 的 log_ack 必须被正常处理（不得打印 "Missing id"）。
+#      python test/mqtt_log_probe.py raw guo_feeder/down '{"c":"log_ack","p":{"b":1,"f":1,"t":1}}'
+# =====================================================
+# （本段无串口命令；执行方式见上方注释）
+
+
+# =====================================================
+# F7 —— FIX-H2：ACK 落账阶段为"淘汰间隙"补齐空洞（FIX-1 × FIX-2 交界）
+#
+# 场景：send batch → ACK 只覆盖前缀 → 期间 overflow evicted > covered
+#   ⇒ 下标 [covered, evicted) 的记录：已离开 RAM 队列 / 未被 ACK / 无空洞
+#   ⇒ 后续水位推过它们后段可被回收 ⇒ 重启也补不回
+#
+# 构造（全部用 WARN = Flash-routed，否则无物理副本可保护）：
+#   fill warn 20            → queue 20，loop 发出 batch1（16 条在途，rd_base=0）
+#   fill warn 62            → queue 82
+#   fill warn 58            → queue 140 ⇒ used 到 128 后另有 **12 次淘汰**
+#                             （全在在途窗口内 ⇒ evict_inf=12、qdrop 不增）
+#   ackauto 1 4             → 只覆盖前缀 4 条 ⇒ covered=4、evicted=12
+#                             ⇒ 补齐下标 4..11 = **8 条 WARN**
+#                             （seq 连续 ⇒ 合并成 **1 个**空洞表条目）
+#   rd = 0 + max(4,12) = 12 ⇒ qused = 140 - 12 = 128
+#
+# ★ 判别断言：`hole_evict=8`（修复前**恒为 0**）与 `holes=1`。
+# ★ 效果断言：把水位推过 seg0 之后，seg0 仍**不得**被回收
+#             （`segdel=0` / `seg_del=0`）—— 这正是空洞保护的意义。
+#             seg0 = Flash 前 31 条；batch1 的前 12 条（含被淘汰的 4..11）
+#             落在 seg0 内；水位到第 44 条时已超过 seg0 的末条 seq=31。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+logt fill warn 20 ||| queued=20
+logt flush ||| flush done
+logt cloud ||| inflight=1
+logt cloud3 ||| tx_valid=1
+logt fill warn 62 ||| queued=62
+logt flush ||| flush done
+logt fill warn 58 ||| queued=58
+logt flush ||| flush done
+logt cstats2 ||| evict_inf=12
+logt cstats ||| qdrop=0
+logt cstats2 ||| hole_evict=0
+logt ackauto 1 4 ||| acked=
 logt ackst ||| partial=1
-# 回退 ACK（to ≤ 已确认水位）→ DUPLICATE
-logt ackauto 2 ||| ackauto mode=2
-# 错误 boot_seq → IGNORE
-logt ackauto 3 ||| ackauto mode=3
-logt ackst ||| ignored=
+logt cstats2 ||| hole_evict=8
+logt cloud3 ||| holes=1
+logt cloud3 ||| hovf=0
+logt cloud3 ||| tx_valid=0
+logt cloud ||| qused=128
+# 把水位推过 seg0（再吃掉 2 批 = 记录 13..44）
+logt ackauto 0 ||| acked=
+logt ackauto 0 ||| acked=
+logt ackauto 0 ||| acked=
+# ★ 效果：seg0 已被水位越过，但被空洞保护 ⇒ 不得回收
+logt cstats ||| segdel=0
+logt fstats ||| seg_del=0
+logt cloud3 ||| holes=1
+
+
+# =====================================================
+# F8 —— FIX-D1：补发 sweep 中删除"游标所在段"后继续前进
+#
+# 构造：
+#   fill warn 40 + flush     → seg0=31 / seg1=9
+#   creset + sonline 1       → acked=0、arm；**强制 online** 使 replay 流程可执行
+#                              （replay 只在 used==0 时推进）⇒ 推 16 条后暂停，游标 = seg0@16
+#   fcorrupt 0               → 段头损坏 → 扫描删除 seg0
+#                              ⇒ D1：记下 seg0.first_seq 作为约束并重新 arm
+#   sonline 1（幂等）+ ackauto 0 → 排空 16 条 ⇒ 补发**从 seg0 之后继续**
+#                              ⇒ 命中 seg1，再推 9 条 ⇒ replay = 16 + 9 = 25
+#   ackauto 0                → 再排空 9 条 ⇒ sweep 完成（rarmed=0）
+#
+# ⚠️ 本段验证的是"删除 replay **当前段**后的 after_seq 约束"，
+#    **不验证 MQTT 离线行为**。必须 `sonline 1`：cloud_poll() 的离线分支
+#    （`!force_online && !cloud_is_connected()` ⇒ return）位于 replay 调用**之前**，
+#    真离线时 replay 根本不会执行 ⇒ 断言全 MISS 且 D1 的 re-arm 分支不会被触及。
+#
+# ⚠️ 诚实说明：本段验证的是**游标连续性与路径安全**（删除发生在 sweep 中时
+#    不丢记录、不空转、不无限循环）。**旧行为在本场景下结果相同** —— 因为
+#    游标只在 used==0 时前进 ⇒ 已扫描记录必已被 ACK ⇒ 即使回到最老段重扫，
+#    那些记录也会被 `log_ack_should_replay()`（seq <= acked）跳过。
+#    故 D1 是**预防性**修改（消除无谓重扫，并防止将来不变量变化后退化为重复投递），
+#    其行为差异在板上不可观测；逻辑差异由代码审查覆盖。
+# ⚠️ `fcorrupt` 是**故意破坏**段头：seg0 中尚未 push 的 15 条会随之丢失
+#    （这是损坏语义，不是 D1 的缺陷）。断言只统计"仍可补发"的条数。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt creset ||| creset ok
+logt sonline 1 ||| sonline=1
+logt atimeout 60000 ||| atimeout=60000
+logt fill warn 40 ||| queued=40
+logt flush ||| flush done
+logt flash ||| segs=2
+logt creset ||| creset ok
+logt cloud3 ||| rarmed=1
+logt ackst ||| replay=16
+logt cloud3 ||| rseg=0
+# ★ 删除"游标所在段"（段头损坏 → 扫描即删除）
+logt fcorrupt 0 ||| fcorrupt seg=0 ok=1
+logt fstats ||| seg_del=1
+logt cloud3 ||| rarmed=1
+# 保持在线（sonline 1 幂等）并排空 16 条 ⇒ 补发从 seg0 之后继续（命中 seg1）
+logt sonline 1 ||| sonline=1
+logt ackauto 0 ||| acked=
+logt ackst ||| replay=25
+logt cloud3 ||| rseg=1
+# 再排空 9 条 ⇒ sweep 正常收尾（不丢、不空转）
+logt ackauto 0 ||| acked=
+logt cloud3 ||| rarmed=0
+logt ackst ||| replay=25
+
+
+# =====================================================
+# F6 —— 既有回归必须同时复跑（不在本文件内，使用既有用例集）
+#
+#   python test/serial_batch.py COM8 .pio/fix_reg_core.log    test/log_core_tests.txt 5.0 0.35
+#   python test/serial_batch.py COM8 .pio/fix_reg_flash.log   test/log_flash_tests.txt 3.0 0.35
+#   python test/serial_batch.py COM8 .pio/fix_reg_recovery.log test/log_flash_recovery_tests.txt 3.0 0.35
+#   python test/serial_batch.py COM8 .pio/fix_reg_corrupt.log test/log_flash_corrupt_tests.txt 5.0 0.35
+#   python test/serial_batch.py COM8 .pio/fix_reg_handoff.log test/log_flash_handoff_tests.txt 5.0 0.35
+#
+# 预期：P1.2 核心 66/66、Flash 92/92、F5 恢复 34/34、F7-F9 43/43、交接 56/56
+# 注意：FIX-3 改变了**受害者选择**（有已确认段时优先删它）。上述用例中
+#       acked_seq 始终为 0（不发 ACK）⇒ 无已确认段 ⇒ 仍选最老段 ⇒ 不受影响。
+# =====================================================

@@ -160,6 +160,9 @@ struct LogStats
                                      // 这些条已在批次副本内、仍可能被 ACK，故不计 drop_overflow）
     uint32_t flash_seg_evict_unacked; // 段环压力淘汰中被销毁的**未确认**记录数
                                       // （FIX-3，与 cloud_flash_drop 同步累加，此处单列以便区分来源）
+    uint32_t cloud_hole_from_evict;   // FIX-H2：因"在途窗口内淘汰且未被 ACK 覆盖"
+                                      // 而补登记空洞的**记录条数**（观测用；
+                                      // 修复前该值恒为 0）
 
     // ---- P1.5 ACK / Retry / Offline ----
     uint32_t cloud_ack_ignored;     // 被忽略的 ACK 数（boot 不匹配 / 回退 / 区间非法）

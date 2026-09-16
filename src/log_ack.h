@@ -130,20 +130,33 @@ static inline uint8_t log_ack_covered_count(
 }
 
 // -----------------------------------------------------
-// 段是否已可删除（§20 / §13-partial）
+// ⚠️ DEPRECATED —— 段是否已可删除（**不得用于生产路径**）
+//
+// ****************************************************************
+// WARNING:
+//   deprecated.
+//   Do NOT use for production reclaim.
+//   It relies on dense seq assumption.
+// ****************************************************************
 //
 // 仅当整段的 record 都被 ACK 覆盖（末条 seq <= acked_seq）才允许删除。
 // 空段（records == 0）不可删 —— 它可能是当前追加目标。
 //
-// ⚠️ 本函数按 `first_seq + records - 1` **推导**末条 seq，该推导仅在
-//    "seq→slot 映射稠密"时成立。而 `seq` 在 `log_emit()` 中**每条非 DEBUG
+// 【为什么被弃用】本函数按 `first_seq + records - 1` **推导**末条 seq，该推导
+//    仅在 "seq→slot 映射稠密" 时成立。而 `seq` 在 `log_emit()` 中**每条非 DEBUG
 //    记录都消耗一个**（含 INFO），INFO 又不落 Flash ⇒ Flash 段内的 seq
-//    **必然稀疏** ⇒ 推导值系统性偏小（偏小量 = 段内 INFO 空洞数）。
-//    ⇒ **生产路径禁止再使用本函数**，一律改用 `log_ack_segment_reclaimable()`
-//      （接收**真实末条 seq**，由 `s_seg_last_seq[]` 提供）。
-//    保留本函数仅供既有离线探针回归与"稠密场景"证明。
+//    **必然稀疏** ⇒ 推导值系统性偏小（偏小量 = 段内 INFO 空洞数）⇒ 段会在
+//    尚有未确认记录时被判"可回收" ⇒ 静默丢失 WARN+。
+//
+// 【生产路径请改用】`log_ack_segment_reclaimable()`
+//    —— 它接收**真实末条 seq**（由 `s_seg_last_seq[]` 提供，来自扫描时读取
+//       末槽记录的 `rec.seq`），并额外要求"不与任何空洞相交"。
+//
+// 【保留本函数的原因】仅供 `test/log_contract/probe_ack.cpp` 的离线回归，
+//    以及"稠密场景下与 reclaimable 等价"的对照证明（两者在无 INFO 空洞时
+//    结果必然一致）。**不得**在任何 `.cpp` 的生产路径中引用 —— R1 改名即为此。
 // -----------------------------------------------------
-static inline bool log_ack_segment_deletable(
+static inline bool log_ack_segment_deletable_legacy(
     uint32_t first_seq, uint8_t records, uint32_t acked_seq)
 {
     if (records == 0u)
@@ -238,6 +251,87 @@ static inline bool log_hole_overlaps(const LogHole *holes, uint8_t count,
     }
 
     return false;
+}
+
+// -----------------------------------------------------
+// FIX-H2：为"在途窗口内被淘汰、且未被本次 ACK 覆盖"的区间补齐空洞保护
+//
+// 背景（FIX-1 × FIX-2 的交界缺口）：
+//   `cloud_queue_push()` 在 in-flight 窗口内淘汰时**不**登记空洞 —— 那本身是
+//   对的（那些记录仍可能被本次 ACK 覆盖，归宿由 ACK / give-up 收口；提前登记
+//   会留下永不复位的陈旧空洞、永久阻塞段回收）。
+//   但若本次 ACK **只覆盖前缀 covered**，而 `evicted > covered`，则下标区间
+//   [covered, evicted) 的记录同时具备三个坏性质：
+//     · 已离开 RAM 云队列（rd 已越过）⇒ 本 Boot 不会再发送
+//     · 未被本次 ACK 覆盖            ⇒ acked_seq 不会为它们停留
+//     · 也没有任何空洞               ⇒ 段回收对它们不设防
+//   后续批次把水位推过它们之后，其物理副本就可能被回收 ⇒ **重启也补不回**。
+//
+// 下标边界（与 push 的**非**在途分支互斥，不会重复登记）：
+//   [0, covered)         已被 ACK                        ⇒ 无需保护
+//   [covered, evicted)   被淘汰且未确认                    ⇒ ★本函数负责
+//   [evicted, tx_count)  由 push 的 else 分支已登记空洞    ⇒ 跳过
+//
+// 参数
+//   batch / tx_count   本次在途批次（本函数只读）
+//   covered            本次 ACK 覆盖的**前缀条数**（0..tx_count）
+//   evicted            在途期间从队首淘汰走的条数（可 > tx_count）
+//   holes / count      空洞表（原地追加）
+//   overflow           出参：表满且无法合并 ⇒ 置 true（调用方须停止段回收）
+// 返回
+//   实际登记保护成功的**记录条数**（merged 与 new 都计入；观测用）
+//
+// ⚠️ 只登记 Flash-routed 记录：INFO 不落 Flash，没有物理副本可保护。
+// ⚠️ 此处**不**校验 boot_seq（与 push 的写法不同）：补发批次里含上一 Boot
+//    写下的记录，它们的物理副本同样需要保护。
+// ⚠️ 纯函数、无 I/O、无动态分配 ⇒ 可在主机上编译运行并断言（见 probe_ack.cpp）。
+// -----------------------------------------------------
+static inline uint8_t log_hole_protect_gap(
+    const LogRecord *batch, uint8_t tx_count,
+    uint8_t covered, uint32_t evicted,
+    LogHole *holes, uint8_t *count, bool *overflow)
+{
+    if (overflow != nullptr)
+    {
+        *overflow = false;
+    }
+
+    if (batch == nullptr || holes == nullptr || count == nullptr)
+    {
+        return 0u;
+    }
+
+    if (evicted <= (uint32_t)covered)
+    {
+        return 0u;   // 没有"被淘汰且未确认"的区间
+    }
+
+    const uint32_t k_end = (evicted < (uint32_t)tx_count)
+                               ? evicted
+                               : (uint32_t)tx_count;
+
+    uint8_t added = 0u;
+
+    for (uint32_t k = (uint32_t)covered; k < k_end; k++)
+    {
+        const LogRecord &r = batch[k];
+
+        if (!log_level_to_flash((LogLevel)r.level))
+        {
+            continue;   // INFO / DEBUG：无物理副本可保护
+        }
+
+        if (log_hole_add(holes, count, r.seq, r.seq))
+        {
+            added++;
+        }
+        else if (overflow != nullptr)
+        {
+            *overflow = true;   // 表满 ⇒ 保守：停止回收
+        }
+    }
+
+    return added;
 }
 
 // -----------------------------------------------------
