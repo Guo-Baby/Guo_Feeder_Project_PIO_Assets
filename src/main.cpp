@@ -418,13 +418,17 @@ static void logt_print_stats()
         (unsigned)st.ring_bytes);
 
     Serial.printf(
-        "[LogT] fstats ok=%u fail=%u seg_new=%u seg_del=%u crc_err=%u corrupt=%u\n",
+        "[LogT] fstats ok=%u fail=%u seg_new=%u seg_del=%u crc_err=%u corrupt=%u "
+        "retry=%u blocked=%u honored=%u\n",
         (unsigned)st.flash_append_ok,
         (unsigned)st.flash_append_fail,
         (unsigned)st.flash_segment_created,
         (unsigned)st.flash_segment_deleted,
         (unsigned)st.flash_crc_error,
-        (unsigned)st.flash_corrupt_segment);
+        (unsigned)st.flash_corrupt_segment,
+        (unsigned)st.flash_retry,
+        (unsigned)st.flash_blocked_rounds,
+        (unsigned)st.flush_honored);
 }
 
 static void logt_print_ring()
@@ -551,6 +555,15 @@ static void logt_do_mfail(const String &op)
     const long v = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
     log_meta_test_fail_next(v != 0);
     Serial.printf("[LogT] mfail armed=%ld\n", (v != 0) ? 1L : 0L);
+}
+
+// Commit 5：令接下来 n 次 Flash append 整批失败（验证 §22/§23 安全交接）
+static void logt_do_ffail(const String &op)
+{
+    const long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const uint8_t v = (n > 0 && n < 256) ? (uint8_t)n : (uint8_t)0;
+    log_flash_test_fail_next(v);
+    Serial.printf("[LogT] ffail armed=%u\n", (unsigned)v);
 }
 
 // ---- P1.3 损坏注入 ----
@@ -731,6 +744,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   mix <n>");
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
+        Serial.println("[LogT] P1.3: stats | mwipe | mcorrupt | mfail <0|1> | ffail <n>");
         Serial.println("[LogT] P1.3: meta | mwipe | mcorrupt");
         return;
     }
@@ -801,6 +815,12 @@ void logt_console(const String &cmd)
     if (name == "mfail")
     {
         logt_do_mfail(op);
+        return;
+    }
+
+    if (name == "ffail")
+    {
+        logt_do_ffail(op);
         return;
     }
 
