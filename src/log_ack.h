@@ -134,7 +134,14 @@ static inline uint8_t log_ack_covered_count(
 //
 // 仅当整段的 record 都被 ACK 覆盖（末条 seq <= acked_seq）才允许删除。
 // 空段（records == 0）不可删 —— 它可能是当前追加目标。
-// 这条函数是"部分覆盖不得删段"的唯一判定点。
+//
+// ⚠️ 本函数按 `first_seq + records - 1` **推导**末条 seq，该推导仅在
+//    "seq→slot 映射稠密"时成立。而 `seq` 在 `log_emit()` 中**每条非 DEBUG
+//    记录都消耗一个**（含 INFO），INFO 又不落 Flash ⇒ Flash 段内的 seq
+//    **必然稀疏** ⇒ 推导值系统性偏小（偏小量 = 段内 INFO 空洞数）。
+//    ⇒ **生产路径禁止再使用本函数**，一律改用 `log_ack_segment_reclaimable()`
+//      （接收**真实末条 seq**，由 `s_seg_last_seq[]` 提供）。
+//    保留本函数仅供既有离线探针回归与"稠密场景"证明。
 // -----------------------------------------------------
 static inline bool log_ack_segment_deletable(
     uint32_t first_seq, uint8_t records, uint32_t acked_seq)
@@ -147,6 +154,127 @@ static inline bool log_ack_segment_deletable(
     const uint32_t last_seq = first_seq + (uint32_t)records - 1u;
 
     return last_seq <= acked_seq;
+}
+
+// -----------------------------------------------------
+// 空洞（hole）区间登记 —— FIX-2
+//
+// 为什么需要：`acked_seq` 是 ACK 驱动的**单点高水位**，不是"该区间内每条
+// 都已确认"的集合。以下两种情形会让水位**跨过**未确认记录：
+//   · GIVE_UP_NOT_ADVANCE：批次移出云队列，但刻意不推进 acked_seq
+//   · 云队列溢出淘汰（Flash-routed）：记录移出云队列，acked_seq 不动
+// 若回收只看水位，这些记录的**唯一物理副本**会随段一起被删除。
+//
+// 因此显式登记"未确认且已放弃本次 Boot 投递"的区间；回收必须与之不相交。
+// 区间可合并：give-up 与淘汰都按 seq 递增产生，相邻区间自动并成一条
+// （常态下恒为 1 条）。表满且无法合并 ⇒ 由调用方置 overflow，停止回收。
+// -----------------------------------------------------
+#define LOG_HOLE_MAX 8u
+
+struct LogHole
+{
+    uint32_t from;
+    uint32_t to;
+};
+
+// 追加一个空洞区间（闭区间）。
+// 返回 false = 表满且无法合并（调用方须置 overflow 并停止回收）。
+static inline bool log_hole_add(LogHole *holes, uint8_t *count,
+                                uint32_t from, uint32_t to)
+{
+    if (holes == nullptr || count == nullptr || from > to)
+    {
+        return false;
+    }
+
+    // ① 与已有条目重叠 / 相邻 → 合并
+    //    重叠：from <= holes[i].to  且  to >= holes[i].from
+    //    相邻：from == holes[i].to + 1  或  to + 1 == holes[i].from
+    //    两者合并为一条判定：from <= holes[i].to + 1  且  to + 1 >= holes[i].from
+    for (uint8_t i = 0; i < *count; i++)
+    {
+        if (from <= holes[i].to + 1u && to + 1u >= holes[i].from)
+        {
+            if (from < holes[i].from)
+            {
+                holes[i].from = from;
+            }
+            if (to > holes[i].to)
+            {
+                holes[i].to = to;
+            }
+            return true;
+        }
+    }
+
+    // ② 新条目
+    if (*count >= LOG_HOLE_MAX)
+    {
+        return false;
+    }
+
+    holes[*count].from = from;
+    holes[*count].to = to;
+    (*count)++;
+
+    return true;
+}
+
+// 段 [first, last] 是否与任何空洞相交
+static inline bool log_hole_overlaps(const LogHole *holes, uint8_t count,
+                                     uint32_t first, uint32_t last)
+{
+    if (holes == nullptr || first > last)
+    {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        if (!(holes[i].to < first || holes[i].from > last))
+        {
+            return true;   // 区间相交
+        }
+    }
+
+    return false;
+}
+
+// -----------------------------------------------------
+// 段是否可回收 —— **生产路径的唯一判定点**（FIX-2 + FIX-3b）
+//
+//   first_seq / last_seq  段的**真实** seq 范围（last_seq 来自
+//                         `s_seg_last_seq[]`，**禁止**用 `first + n - 1` 推导）
+//   acked_seq             已确认高水位
+//   holes/count           空洞表
+//   hole_overflow         空洞表溢出（true ⇒ 一律不可回收，保守）
+//
+// 四个条件：
+//   ① 段非空（last_seq >= first_seq）
+//   ② 整段 ≤ 水位：last_seq <= acked_seq
+//   ③ 与任何空洞不相交
+//   ④ 空洞表未溢出
+// -----------------------------------------------------
+static inline bool log_ack_segment_reclaimable(
+    uint32_t first_seq, uint32_t last_seq, uint32_t acked_seq,
+    const LogHole *holes, uint8_t hole_count, bool hole_overflow)
+{
+    if (hole_overflow)
+    {
+        return false;
+    }
+
+    if (last_seq < first_seq)
+    {
+        return false;   // 空段
+    }
+
+    if (last_seq > acked_seq)
+    {
+        return false;   // 尚有未确认记录
+    }
+
+    return !log_hole_overlaps(holes, hole_count, first_seq, last_seq);
 }
 
 // -----------------------------------------------------

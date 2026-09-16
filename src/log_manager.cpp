@@ -53,7 +53,19 @@ static uint32_t   s_ring_bytes = 0;
 static bool     s_flash_ready = false;
 
 // 每 segment 元信息（16 个小整数 —— 属"小型控制状态"，留内部 RAM，§32）
+//
+// ★ 单一真相源仍是**段文件内容**；下面三个数组是**同一份扫描派生缓存**，
+//   必须由同一组函数整体重建 / 整体维护（禁止任何一处单独修改）：
+//     重建：flash_scan_all()           维护：flash_append_batch()
+//     失效：flash_create_segment() / flash_drop_segment() / flash_drop_broken_segment()
+//
+// ★ 为什么需要 s_seg_last_seq（FIX-3b）：
+//   `seq` 在 log_emit() 中**每条非 DEBUG 记录都消耗一个**（含 INFO），而 INFO
+//   不落 Flash ⇒ Flash 段内的 seq **必然稀疏** ⇒ `first_seq + records - 1`
+//   系统性偏小（偏小量 = 段内 INFO 空洞数）⇒ 会**过早回收含未确认记录的段**。
+//   故末条 seq 必须**实测**，不得推导。
 static uint32_t s_seg_first_seq[LOG_SEGMENT_COUNT];   // 0 = 无有效首条
+static uint32_t s_seg_last_seq[LOG_SEGMENT_COUNT];    // 末槽记录的 seq（records==0 时 0）
 static uint8_t  s_seg_records[LOG_SEGMENT_COUNT];     // 已验证的有效 record 数
 static uint8_t  s_seg_present[LOG_SEGMENT_COUNT];     // 文件存在且头合法
 
@@ -136,6 +148,25 @@ static uint32_t s_cloud_last_tx_ms = 0;
 static uint32_t s_cloud_acked_seq = 0;      // 已确认高水位（RAM；重启归 0）
 static uint8_t  s_cloud_flags = 0;          // 在途批次的 flags（bit0 seq_reliable）
 
+// FIX-1：批次**绝对基准** —— cloud_collect_batch() 取批时的 s_cloud_q_rd
+//
+// 为什么必须绝对：`covered`（被 ACK 覆盖的条数）是"从取批时的队首起算"的
+// 相对量；而队列溢出淘汰会在批次在途期间推进 s_cloud_q_rd。
+// 若把相对量加到**已漂移**的游标上（原 `rd += covered`），就会**跳过**
+// 一条既未发送、也未计数的记录（INFO 永久丢失）。
+// 正确写法：rd = rd_base + max(evicted_since_collect, covered)。
+static uint32_t s_cloud_tx_rd_base = 0;
+
+// FIX-5：批次描述符**有效期**（与"是否正在等待"解耦）
+//
+// 原实现以 s_cloud_inflight 作为"能否匹配 ACK"的依据，而超时后
+// (`cloud_poll` 第 2 步) 会立刻 `inflight = false` 进入退避窗口 ⇒
+// 此期间到达的 ACK 被 `log_ack_classify()` 规则②判为 IGNORE 并**永久丢弃**
+// ⇒ 无谓重传、推进被推迟、give-up 概率上升（与 FIX-2 的空洞压力联动）。
+// 语义修正：只要"最近一次发送的批次"尚未被 ACK / 放弃 / 被新批次覆盖，
+// 它的描述符就仍然有效。
+static bool     s_cloud_tx_valid = false;
+
 // ---- P1.5：ACK / Retry / Offline ----
 //
 // 语义要点（冻结）：
@@ -156,9 +187,31 @@ static uint32_t s_cloud_ack_boot = 0;
 static uint32_t s_cloud_ack_from = 0;
 static uint32_t s_cloud_ack_to = 0;
 
-// Flash → 云 补发游标（重启后 / RAM 队列排空后把未确认的历史记录重新送出）
-static uint32_t s_replay_seq = 0;      // 下一个待补发的 seq（0 = 需重算起点）
-static bool     s_replay_done = true;  // 已无可补发内容
+// ---- FIX-2：空洞（未确认且本 Boot 已放弃投递）区间表 ----
+//
+// 只在 loopTask 上下文读写（give-up / 队列淘汰 / 回收判定 / 观测全在 loop 上），
+// 回调线程不碰它 ⇒ **无需进入 s_mux**。
+static LogHole  s_cloud_holes[LOG_HOLE_MAX];
+static uint8_t  s_cloud_hole_count = 0;
+static bool     s_cloud_hole_overflow = false;
+
+// ---- DIR-1：Flash → 云 补发游标（按 slot 遍历，不再按 seq 反算）----
+//
+// ★ 为什么必须按 slot 遍历：
+//   `seq` 在 log_emit() 中每条非 DEBUG 记录都消耗（含 INFO），INFO 不落 Flash
+//   ⇒ 段内的 seq **稀疏** ⇒ 旧实现的两处假设同时失效：
+//     ① `idx = seq - first_seq` 反算 slot ⇒ 指向**错误的槽位**
+//     ② 终止条件 `flash_find_segment_of_seq() == 0xFF` 会在
+//        `replay_seq > first + records - 1` 时立刻触发 ⇒ **补发提前终止**，
+//        其后所有段中从未确认的 WARN+ 全部静默丢失
+//   改为遍历 slot 并使用**记录自身的 seq** 后，两个问题同时消失。
+static uint8_t  s_replay_seg = 0xFF;   // 0xFF = 需从"first_seq 最小"的段重新开始
+static uint8_t  s_replay_idx = 0;      // 段内下一个待考察的 slot 下标
+static bool     s_replay_armed = false; // 是否有待补发工作（可由空洞/段删除重新 arm）
+static uint32_t s_replay_seq = 0;      // 诊断：最近一次考察到的 record seq
+
+// 保留字段（观测兼容）：= !s_replay_armed
+static bool     s_replay_done = true;
 
 // 发送失败注入（模拟离线；一次性计数）
 static uint8_t  s_cloud_fail_next = 0;
@@ -193,6 +246,7 @@ static bool cloud_init_buffers();
 static void cloud_handle_ack();
 static void cloud_delete_acked_segments();
 static void cloud_replay_step();
+static void cloud_replay_arm();
 static bool cloud_try_send_batch(uint8_t n);
 
 // CloudManager 的 log_ack 回调（运行在 esp-mqtt 任务上下文）
@@ -389,6 +443,7 @@ static void flash_drop_broken_segment(uint32_t seg, const char *path)
     s_seg_present[seg] = 0;
     s_seg_records[seg] = 0;
     s_seg_first_seq[seg] = 0;
+    s_seg_last_seq[seg] = 0;
 
     s_scan_corrupt++;
 
@@ -463,6 +518,7 @@ static bool flash_drop_segment(uint32_t seg)
         s_seg_present[seg] = 0;
         s_seg_records[seg] = 0;
         s_seg_first_seq[seg] = 0;
+        s_seg_last_seq[seg] = 0;
 
         if (s_valid_segment_count > 0)
         {
@@ -473,6 +529,16 @@ static bool flash_drop_segment(uint32_t seg)
     portENTER_CRITICAL(&s_mux);
     s_stats.flash_segment_deleted++;
     portEXIT_CRITICAL(&s_mux);
+
+    // DIR-1：补发游标可能正指向被删段 ⇒ 复位并重新 arm
+    //（否则游标指向不存在的段，扫描会提前结束、漏掉其后所有未确认记录）
+    if (s_replay_seg == (uint8_t)seg)
+    {
+        s_replay_seg = 0xFF;
+        s_replay_idx = 0;
+        s_replay_armed = true;
+        s_replay_done = false;
+    }
 
     flash_recompute_extremes();
     return true;
@@ -500,6 +566,7 @@ static void flash_scan_all()
         s_seg_present[i] = 0;
         s_seg_records[i] = 0;
         s_seg_first_seq[i] = 0;
+        s_seg_last_seq[i] = 0;
 
         char path[32];
         flash_seg_path(i, path, sizeof(path));
@@ -555,6 +622,32 @@ static void flash_scan_all()
         const uint32_t first_seq = flash_get_u32(&head[LOG_SEG_OFF_FIRST_SEQ]);
         const uint8_t records = flash_scan_records(f, true);
 
+        // FIX-3b：**实测**末条 seq（禁止用 `first_seq + records - 1` 推导）
+        //
+        // 追加严格按 seq 递增（Ring 顺序 = emit 顺序），且损坏恢复后的重写
+        // 使用更大的新 seq ⇒ 末槽恒为该段最大 seq。
+        // 读失败时取 UINT32_MAX：含义是"末条 seq 未知" ⇒ 该段在本次 Boot 内
+        // 永不满足 `last_seq <= acked_seq` ⇒ 不回收（保守，宁可少回收）。
+        uint32_t last_seq = 0;
+
+        if (records > 0)
+        {
+            LogRecord last_rec;
+            const uint32_t loff = LOG_SEGMENT_HEADER_SIZE +
+                                  (uint32_t)(records - 1u) * LOG_RECORD_SIZE;
+
+            if (f.seek(loff) &&
+                (f.read((uint8_t *)&last_rec, LOG_RECORD_SIZE) ==
+                 (size_t)LOG_RECORD_SIZE))
+            {
+                last_seq = last_rec.seq;
+            }
+            else
+            {
+                last_seq = 0xFFFFFFFFu;
+            }
+        }
+
         // §19：文件被截断（部分写入）→ 补零修复为定长；
         //       append 位置由 flash_scan_records 给出的"首条坏记录"决定
         if (fsize < (size_t)LOG_SEGMENT_SIZE)
@@ -567,6 +660,7 @@ static void flash_scan_all()
         s_seg_present[i] = 1;
         s_seg_records[i] = records;
         s_seg_first_seq[i] = first_seq;
+        s_seg_last_seq[i] = last_seq;
         s_valid_segment_count++;
         s_flash_total_records = (uint16_t)(s_flash_total_records + records);
 
@@ -657,6 +751,7 @@ static bool flash_create_segment(uint32_t seg, uint32_t first_seq)
     s_seg_present[seg] = 1;
     s_seg_records[seg] = 0;
     s_seg_first_seq[seg] = first_seq;
+    s_seg_last_seq[seg] = 0;
     s_valid_segment_count++;
     s_append_segment = seg;
     s_append_index = 0;
@@ -673,6 +768,67 @@ static bool flash_create_segment(uint32_t seg, uint32_t first_seq)
 //
 // ⚠️ Commit 2 范围：16 段全满时**返回 false**（暂不可写）。
 //    §20 的"删除最老段并复用"在 Commit 4 实现。
+// FIX-3：段环压力淘汰前的**未确认记录计数**
+//
+// 被淘汰段中 seq > acked_seq 的记录从未被云端确认，销毁它们必须**有账**
+// （→ drop_unacked，随批次头侧信道上行），否则云端永远不知道丢过 WARN+。
+//
+// ★ 计数方式：逐 slot 读取并用**记录自身的 seq** 比较。
+//   **不得**用 `records - (acked - first + 1)` 之类公式 —— 段内 seq 稀疏
+//   （INFO 不落 Flash），任何"稠密"假设都会漏报。
+// ★ 读失败时保守返回剩余条数（宁可多报，不可漏报）。
+static uint32_t flash_count_unacked(uint32_t seg, uint32_t acked_seq)
+{
+    if (!s_seg_present[seg] || s_seg_records[seg] == 0)
+    {
+        return 0;
+    }
+
+    if (acked_seq == 0)
+    {
+        return s_seg_records[seg];   // 尚无任何确认 ⇒ 全部未确认（省 31 次读）
+    }
+
+    if (s_seg_last_seq[seg] <= acked_seq)
+    {
+        return 0;                    // 整段低于水位（last_seq 为实测值）
+    }
+
+    char path[32];
+    flash_seg_path(seg, path, sizeof(path));
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        return s_seg_records[seg];   // 读不到 → 保守全计
+    }
+
+    uint32_t unacked = 0;
+    LogRecord rec;
+
+    for (uint8_t i = 0; i < s_seg_records[seg]; i++)
+    {
+        const uint32_t off =
+            LOG_SEGMENT_HEADER_SIZE + (uint32_t)i * LOG_RECORD_SIZE;
+
+        if (!f.seek(off) ||
+            f.read((uint8_t *)&rec, LOG_RECORD_SIZE) != (size_t)LOG_RECORD_SIZE)
+        {
+            unacked += (uint32_t)(s_seg_records[seg] - i);
+            break;
+        }
+
+        if (rec.seq > acked_seq)
+        {
+            unacked++;
+        }
+    }
+
+    f.close();
+    return unacked;
+}
+
 static bool flash_ensure_append_target(uint32_t next_seq)
 {
     // ① 当前目标段可用（存在且未满）
@@ -709,8 +865,59 @@ static bool flash_ensure_append_target(uint32_t next_seq)
 
         if (target >= LOG_SEGMENT_COUNT)
         {
-            // §20：段环已满 → 删除最老 segment 后复用该槽位
-            const uint32_t victim = s_oldest_segment;
+            // §20：段环已满 → 淘汰一个 segment 后复用其槽位
+            //
+            // FIX-3：**优先淘汰已完全被 ACK 覆盖、且不与空洞相交的段**
+            //        （删之无损：记录已确认送达）。仅当不存在这样的段时，
+            //        才退化为最老段（与旧行为一致），并对其中未确认的记录记账。
+            uint32_t victim = s_oldest_segment;
+            bool victim_confirmed = false;
+
+            for (uint32_t k = 0; k < LOG_SEGMENT_COUNT; k++)
+            {
+                const uint32_t idx = (s_oldest_segment + k) % LOG_SEGMENT_COUNT;
+
+                if (!s_seg_present[idx] || s_seg_records[idx] == 0)
+                {
+                    continue;
+                }
+
+                if (idx == s_append_segment)
+                {
+                    continue;   // 追加目标不动
+                }
+
+                if (log_ack_segment_reclaimable(
+                        s_seg_first_seq[idx], s_seg_last_seq[idx],
+                        s_cloud_acked_seq,
+                        s_cloud_holes, s_cloud_hole_count,
+                        s_cloud_hole_overflow))
+                {
+                    victim = idx;
+                    victim_confirmed = true;
+                    break;
+                }
+            }
+
+            if (!victim_confirmed)
+            {
+                // 只能牺牲未确认数据 → 必须记账（§20：drop_unacked 可见）
+                const uint32_t unacked =
+                    flash_count_unacked(victim, s_cloud_acked_seq);
+
+                if (unacked > 0)
+                {
+                    portENTER_CRITICAL(&s_mux);
+                    s_stats.cloud_flash_drop += unacked;
+                    s_stats.flash_seg_evict_unacked += unacked;
+                    portEXIT_CRITICAL(&s_mux);
+
+                    Serial.printf(
+                        "[Log] ring pressure: evict seg=%u unacked=%u acked=%u\n",
+                        (unsigned)victim, (unsigned)unacked,
+                        (unsigned)s_cloud_acked_seq);
+                }
+            }
 
             if (!flash_drop_segment(victim))
             {
@@ -785,6 +992,7 @@ static uint8_t flash_append_batch(const LogRecord *recs, uint8_t count)
 
         s_append_index++;
         s_seg_records[s_append_segment]++;
+        s_seg_last_seq[s_append_segment] = recs[i].seq;   // FIX-3b：与 records 同点维护
         s_flash_total_records++;
         written++;
     }
@@ -1184,8 +1392,15 @@ bool log_init()
         s_cloud_q_last_seq = 0;
         s_cloud_q_last_boot = 0;
 
-        s_replay_seq = 0;
-        s_replay_done = false;
+        // FIX-1 / FIX-5 / FIX-2
+        s_cloud_tx_rd_base = 0;
+        s_cloud_tx_valid = false;
+        s_cloud_hole_count = 0;
+        s_cloud_hole_overflow = false;
+
+        // DIR-1：arm 补发扫描（重启后 acked=0 ⇒ 全部未确认记录都会被重新投递）
+        cloud_replay_arm();
+
         s_cloud_fail_next = 0;
     }
 
@@ -1596,9 +1811,46 @@ static void cloud_queue_push(const LogRecord &rec)
 
     if (cloud_queue_used_locked() >= LOG_CLOUD_QUEUE_SLOTS)
     {
-        // §27：队列满 → FIFO 淘汰最旧，并累计 drop_overflow
+        // §27：队列满 → FIFO 淘汰最旧
+        //
+        // used == SLOTS ⇒ rd % SLOTS == wr % SLOTS，故"即将被覆盖的槽位"
+        // 就是被淘汰记录所在槽位，可在覆盖前读到它的元信息。
+        const uint32_t evict_slot = s_cloud_q_wr % LOG_CLOUD_QUEUE_SLOTS;
+        const uint8_t  evict_level = s_cloud_q[evict_slot].level;
+        const uint32_t evict_seq = s_cloud_q[evict_slot].seq;
+        const uint32_t evict_boot = s_cloud_q[evict_slot].boot_seq;
+
+        // FIX-1：淘汰落在**在途批次窗口**内的记录时不计 drop_overflow。
+        // 该记录已在 s_cloud_batch 副本内、仍可能被 ACK ⇒ 记成"丢弃"是多计；
+        // 它的最终归宿由 ACK / give-up 路径负责记账（每条只被计一次）。
+        const bool in_flight_window =
+            s_cloud_tx_valid &&
+            ((s_cloud_q_rd - s_cloud_tx_rd_base) < (uint32_t)s_cloud_tx_count);
+
         s_cloud_q_rd++;
-        s_stats.cloud_q_drop++;
+
+        if (in_flight_window)
+        {
+            s_stats.cloud_q_evict_inflight++;
+        }
+        else
+        {
+            s_stats.cloud_q_drop++;
+
+            // FIX-2：Flash-routed 记录在本次 Boot 内已不可能被 replay 取回
+            //（rd 只在 ACK / give-up / 淘汰时推进 ⇒ 队列真正排空必然伴随 ACK
+            //  落账 ⇒ 水位必然已越过它 ⇒ log_ack_should_replay() 会跳过）
+            // ⇒ 登记空洞，保护其物理副本不被段回收删除，留待下次开机重放。
+            if (evict_boot == s_boot_seq &&
+                log_level_to_flash((LogLevel)evict_level))
+            {
+                if (!log_hole_add(s_cloud_holes, &s_cloud_hole_count,
+                                  evict_seq, evict_seq))
+                {
+                    s_cloud_hole_overflow = true;
+                }
+            }
+        }
     }
 
     const uint32_t slot = s_cloud_q_wr % LOG_CLOUD_QUEUE_SLOTS;
@@ -1622,6 +1874,13 @@ static uint8_t cloud_collect_batch()
     portENTER_CRITICAL(&s_mux);
 
     const uint32_t used = cloud_queue_used_locked();
+
+    // FIX-1：登记本批次的**绝对基准**（ACK / give-up 做绝对推进的依据）
+    // 注意：只有真的取到记录（used > 0）时才更新，避免 n==0 的轮次污染基准。
+    if (used > 0)
+    {
+        s_cloud_tx_rd_base = s_cloud_q_rd;
+    }
 
     while (n < LOG_BATCH_MAX_RECORDS && n < used)
     {
@@ -1695,9 +1954,21 @@ static uint32_t cloud_build_cbor(uint8_t n)
 
 // ---- 发送调度（P1.5：ACK 驱动推进 + 超时重试退避 + 离线补发）----
 
-// 找包含指定 seq 的段；返回 0xFF 表示不存在（已删除 / 已被回收）
-static uint8_t flash_find_segment_of_seq(uint32_t seq)
+// DIR-1：取"first_seq 严格大于 after_seq"的、first_seq 最小的段
+//
+// 为什么不再按 seq 反查段（原 flash_find_segment_of_seq）：
+//   段内 seq **稀疏**（INFO 不落 Flash）⇒ `slots == seq 范围` 的假设不成立，
+//   按 `seq - first_seq` 反算 slot 会指向错误槽位；而用
+//   `first + records - 1` 判"该 seq 在不在本段"又会因派生值偏小**提前终止**补发。
+//   改为"按 first_seq 升序遍历段 + 段内按 slot 遍历 + 用记录自身 seq 判定"后，
+//   两个问题同时消失，且不再依赖任何稠密假设。
+//
+// have_after = false ⇒ 取全局 first_seq 最小者（补发起点）
+static uint8_t flash_next_segment_after(uint32_t after_seq, bool have_after)
 {
+    uint8_t best = 0xFF;
+    uint32_t best_first = 0;
+
     for (uint8_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
     {
         if (s_seg_present[seg] == 0 || s_seg_records[seg] == 0)
@@ -1706,15 +1977,20 @@ static uint8_t flash_find_segment_of_seq(uint32_t seq)
         }
 
         const uint32_t first = s_seg_first_seq[seg];
-        const uint32_t last = first + (uint32_t)s_seg_records[seg] - 1u;
 
-        if (seq >= first && seq <= last)
+        if (have_after && first <= after_seq)
         {
-            return seg;
+            continue;
+        }
+
+        if (best == 0xFF || first < best_first)
+        {
+            best = seg;
+            best_first = first;
         }
     }
 
-    return 0xFF;
+    return best;
 }
 
 // 回收"整段已被 ACK 覆盖"的 Flash 段
@@ -1741,14 +2017,20 @@ static void cloud_delete_acked_segments()
             continue;   // 追加目标不动
         }
 
-        if (s_seg_records[seg] > 0 && !s_replay_done && s_replay_seq != 0 &&
-            s_replay_seq <= s_seg_first_seq[seg] + (uint32_t)s_seg_records[seg] - 1u)
+        if (s_seg_records[seg] == 0)
         {
-            continue;   // 补发游标还没越过这一段，先留着
+            continue;   // 空段（可能是即将复用的槽位）
         }
 
-        if (!log_ack_segment_deletable(
-                s_seg_first_seq[seg], s_seg_records[seg], s_cloud_acked_seq))
+        if (s_replay_armed && s_replay_seg == seg)
+        {
+            continue;   // 补发游标正在扫这一段，先留着（DIR-1）
+        }
+
+        // FIX-2 + FIX-3b：整段 ≤ 水位 **且** 与空洞不相交 **且** 末条 seq 为实测值
+        if (!log_ack_segment_reclaimable(
+                s_seg_first_seq[seg], s_seg_last_seq[seg], s_cloud_acked_seq,
+                s_cloud_holes, s_cloud_hole_count, s_cloud_hole_overflow))
         {
             continue;
         }
@@ -1786,9 +2068,9 @@ static void cloud_handle_ack()
 
     const LogAckResult r = log_ack_classify(
         ack_boot, ack_from, ack_to,
-        s_cloud_inflight ? s_cloud_tx_boot : 0u,
-        s_cloud_inflight ? s_cloud_tx_from : 0u,
-        s_cloud_inflight ? s_cloud_tx_to : 0u,
+        s_cloud_tx_valid ? s_cloud_tx_boot : 0u,
+        s_cloud_tx_valid ? s_cloud_tx_from : 0u,
+        s_cloud_tx_valid ? s_cloud_tx_to : 0u,
         s_cloud_acked_seq);
 
     if (r != LOG_ACK_ACCEPT && r != LOG_ACK_PARTIAL)
@@ -1818,7 +2100,25 @@ static void cloud_handle_ack()
     const uint8_t tx_count = s_cloud_tx_count;
 
     portENTER_CRITICAL(&s_mux);
-    s_cloud_q_rd += covered;
+
+    // FIX-1：**绝对基准**推进
+    //
+    //   evicted = 本批次在途期间被溢出淘汰走的条数
+    //   rd      = rd_base + max(evicted, covered)
+    //
+    // 原写法 `rd += covered` 把"从取批时队首起算的相对量"加到**已漂移**的
+    // 游标上 ⇒ 跳过一条既未发送也未计数的记录。
+    const uint32_t evicted = s_cloud_q_rd - s_cloud_tx_rd_base;
+    const uint32_t adv = ((uint32_t)covered > evicted) ? (uint32_t)covered : evicted;
+    uint32_t new_rd = s_cloud_tx_rd_base + adv;
+
+    if (new_rd > s_cloud_q_wr)
+    {
+        new_rd = s_cloud_q_wr;   // 防御性钳位（正常不可能触发）
+    }
+
+    s_cloud_q_rd = new_rd;
+
     if (new_acked > s_cloud_acked_seq)
     {
         s_cloud_acked_seq = new_acked;
@@ -1833,6 +2133,7 @@ static void cloud_handle_ack()
 
     // 未被覆盖的尾部仍留在云队列里，下一轮重新组批发送（不丢、不重复记账）
     s_cloud_inflight = false;
+    s_cloud_tx_valid = false;   // FIX-5：描述符已消费
     s_cloud_retry_n = 0;
     s_cloud_gave_up = false;
     s_cloud_backoff_until_ms = 0;
@@ -1853,77 +2154,100 @@ static void cloud_handle_ack()
 //       重连后必须把这些记录补送出去，否则云端永久缺失。
 // 重启后 s_cloud_acked_seq 归 0 ⇒ 曾发过的记录会重发，这属**正常行为**
 // （§25），由云端按 (device_id, boot_seq, seq) 幂等去重消化。
+// DIR-1：重新 arm 补发扫描（从 first_seq 最小的段重新开始）
+static void cloud_replay_arm()
+{
+    s_replay_seg = 0xFF;
+    s_replay_idx = 0;
+    s_replay_armed = true;
+    s_replay_done = false;
+}
+
+// Flash -> 云 补发一步（DIR-1：**按 slot 遍历**，不再按 seq 反算）
+//
+// 触发条件（cloud_poll 内）：在线、无在途批次、退避结束、RAM 云队列已空。
+// 目的：离线期间 WARN+ 已落 Flash（INFO 不落盘，只走 RAM 队列），
+//       重连后必须把这些记录补送出去，否则云端永久缺失。
+// 重启后 s_cloud_acked_seq 归 0 ⇒ 曾发过的记录会重发，这属**正常行为**
+// （§25），由云端按 (device_id, boot_seq, seq) 幂等去重消化。
+//
+// ★ 为什么不按 seq 遍历（旧实现的 CRITICAL 级缺陷）：
+//   段内 seq **稀疏**（`seq` 每条非 DEBUG 记录都消耗，但 INFO 不落 Flash）⇒
+//     ① `idx = seq - first_seq` 指向**错误槽位**
+//     ② 终止判定 `first + records - 1 < seq` 会**提前成立** ⇒ 补发在本 Boot 内
+//        **永久终止**，其后所有段中未确认的 WARN+ 静默丢失
+//   改为按 slot 遍历后：读到的就是记录本身，判定用记录自身的 seq。
+//
+// ★ 每轮只扫**一个段**（I/O 有界，且只需 open 一次），段间切换放到下一次调用。
 static void cloud_replay_step()
 {
     if (!s_flash_ready || s_cloud_q == nullptr)
     {
+        s_replay_armed = false;
         s_replay_done = true;
         return;
     }
 
-    if (s_replay_done)
+    if (!s_replay_armed)
     {
         return;
     }
 
-    if (s_replay_seq == 0)
+    // 首轮：从 first_seq 最小的段开始
+    if (s_replay_seg == 0xFF)
     {
-        uint32_t start = s_cloud_acked_seq + 1u;
+        s_replay_seg = flash_next_segment_after(0u, false);
+        s_replay_idx = 0;
 
-        if (s_cloud_give_up_seq + 1u > start)
+        if (s_replay_seg == 0xFF)
         {
-            start = s_cloud_give_up_seq + 1u;
+            s_replay_armed = false;
+            s_replay_done = true;
+            return;
         }
+    }
 
-        s_replay_seq = start;
+    // 本段已扫完 → 游标移到下一段并**返回**（下次调用再扫，I/O 有界）
+    if (s_replay_idx >= s_seg_records[s_replay_seg])
+    {
+        const uint32_t cur_first = s_seg_first_seq[s_replay_seg];
+
+        s_replay_seg = flash_next_segment_after(cur_first, true);
+        s_replay_idx = 0;
+
+        if (s_replay_seg == 0xFF)
+        {
+            s_replay_armed = false;
+            s_replay_done = true;
+
+            Serial.printf("[Log Cloud] replay sweep done (acked=%u giveup=%u)\n",
+                          (unsigned)s_cloud_acked_seq,
+                          (unsigned)s_cloud_give_up_seq);
+        }
+        return;
+    }
+
+    char path[32];
+    flash_seg_path(s_replay_seg, path, sizeof(path));
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        // 段不可读 → 视为本段已扫完（下次调用切下一段）
+        s_replay_idx = s_seg_records[s_replay_seg];
+        return;
     }
 
     uint8_t pushed = 0;
-    uint32_t guard = 0;
-    const uint32_t guard_max = (uint32_t)LOG_BATCH_MAX_RECORDS * 4u;
+    uint32_t scanned = 0;
 
-    while (pushed < LOG_BATCH_MAX_RECORDS && guard < guard_max)
+    while (s_replay_idx < s_seg_records[s_replay_seg] &&
+           scanned < LOG_REPLAY_SCAN_MAX_PER_CALL &&
+           pushed < LOG_BATCH_MAX_RECORDS)
     {
-        guard++;
-
-        // 水位跳过：两个分支都只会让 s_replay_seq 前进，故循环有界
-        if (s_cloud_acked_seq != 0 && s_replay_seq <= s_cloud_acked_seq)
-        {
-            s_replay_seq = s_cloud_acked_seq + 1u;
-            continue;
-        }
-
-        if (s_cloud_give_up_seq != 0 && s_replay_seq <= s_cloud_give_up_seq)
-        {
-            s_replay_seq = s_cloud_give_up_seq + 1u;
-            continue;
-        }
-
-        const uint8_t seg = flash_find_segment_of_seq(s_replay_seq);
-
-        if (seg == 0xFF)
-        {
-            s_replay_done = true;
-
-            Serial.printf("[Log Cloud] replay done at seq=%u\n",
-                          (unsigned)s_replay_seq);
-            break;
-        }
-
-        char path[32];
-        flash_seg_path(seg, path, sizeof(path));
-
-        File f = LittleFS.open(path, "r");
-
-        if (!f)
-        {
-            s_replay_done = true;
-            break;
-        }
-
-        const uint8_t idx = (uint8_t)(s_replay_seq - s_seg_first_seq[seg]);
-        const uint32_t off =
-            LOG_SEGMENT_HEADER_SIZE + (uint32_t)idx * LOG_RECORD_SIZE;
+        const uint32_t off = LOG_SEGMENT_HEADER_SIZE +
+                             (uint32_t)s_replay_idx * LOG_RECORD_SIZE;
 
         LogRecord rec;
         const bool ok =
@@ -1931,12 +2255,20 @@ static void cloud_replay_step()
             (f.read((uint8_t *)&rec, LOG_RECORD_SIZE) == (size_t)LOG_RECORD_SIZE) &&
             flash_check_record(rec);
 
-        f.close();
+        s_replay_idx++;
+        scanned++;
 
         if (!ok)
         {
-            // 单条损坏不阻塞整轮补发（损坏语义由 §19 的扫描负责）
-            s_replay_seq++;
+            // 单条损坏：跳过该槽（损坏语义由 §19 的扫描阶段负责）
+            continue;
+        }
+
+        s_replay_seq = rec.seq;   // 诊断
+
+        // 水位判定用**记录自身的 seq**（不再依赖任何稠密假设）
+        if (!log_ack_should_replay(rec.seq, s_cloud_acked_seq, s_cloud_give_up_seq))
+        {
             continue;
         }
 
@@ -1947,8 +2279,9 @@ static void cloud_replay_step()
         portEXIT_CRITICAL(&s_mux);
 
         pushed++;
-        s_replay_seq++;
     }
+
+    f.close();
 }
 
 // 编码 + 发送一批；成功才置在途
@@ -1978,6 +2311,11 @@ static bool cloud_try_send_batch(uint8_t n)
     }
 
     s_cloud_inflight = true;
+
+    // FIX-5：描述符有效期与"是否正在等待"解耦 —— 超时进入退避后仍保持有效，
+    // 使晚到的 ACK 依然能被匹配（否则会被 log_ack_classify 规则②丢弃）。
+    s_cloud_tx_valid = true;
+
     s_cloud_deadline_ms = millis() + s_ack_timeout_ms;
 
     portENTER_CRITICAL(&s_mux);
@@ -1997,16 +2335,38 @@ static void cloud_give_up_batch()
     const uint8_t n = s_cloud_tx_count;
 
     portENTER_CRITICAL(&s_mux);
-    s_cloud_q_rd += n;
+
+    // FIX-1：与 ACK 落账同构的**绝对基准**推进（见 cloud_handle_ack 注释）
+    const uint32_t evicted = s_cloud_q_rd - s_cloud_tx_rd_base;
+    const uint32_t adv = ((uint32_t)n > evicted) ? (uint32_t)n : evicted;
+    uint32_t new_rd = s_cloud_tx_rd_base + adv;
+
+    if (new_rd > s_cloud_q_wr)
+    {
+        new_rd = s_cloud_q_wr;
+    }
+
+    s_cloud_q_rd = new_rd;
+
     s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
-    s_stats.cloud_flash_drop += n;   // -> drop_unacked
+    s_stats.cloud_flash_drop += n;   // -> drop_unacked（每条只在此处记一次）
     s_stats.cloud_ack_lost++;
     s_stats.cloud_give_up++;
     portEXIT_CRITICAL(&s_mux);
 
+    // FIX-2：登记空洞 —— 本批次不再于本 Boot 内重发，但**物理副本必须留住**
+    //（GIVE_UP_NOT_ADVANCE 的语义是"留待下次开机重放"）。
+    // 若不登记，后续更高的 ACK 水位会跨过它们，段回收会把整段删掉。
+    if (!log_hole_add(s_cloud_holes, &s_cloud_hole_count,
+                      s_cloud_tx_from, s_cloud_tx_to))
+    {
+        s_cloud_hole_overflow = true;   // 表满 ⇒ 停止回收（保守）
+    }
+
     s_cloud_gave_up = true;
     s_cloud_give_up_seq = s_cloud_tx_to;
     s_cloud_inflight = false;
+    s_cloud_tx_valid = false;   // FIX-5：描述符已作废
     s_cloud_retry_n = 0;
 
     Serial.printf(
@@ -2253,6 +2613,15 @@ void log_cloud_get_info(LogCloudInfo &out)
     out.force_online = s_cloud_force_online ? 1u : 0u;
     out.ack_timeout_ms = s_ack_timeout_ms;
     out.backoff_base_ms = s_backoff_base_ms;
+
+    // ---- FIX-1 / FIX-2 / FIX-3 / DIR-1 观测 ----
+    out.tx_valid = s_cloud_tx_valid ? 1u : 0u;
+    out.tx_rd_base = s_cloud_tx_rd_base;
+    out.hole_count = s_cloud_hole_count;
+    out.hole_overflow = s_cloud_hole_overflow ? 1u : 0u;
+    out.replay_seg = s_replay_seg;
+    out.replay_idx = s_replay_idx;
+    out.replay_armed = s_replay_armed ? 1u : 0u;
 }
 
 bool log_cloud_test_push(LogEventId event_id, LogLevel level)
@@ -2315,8 +2684,11 @@ void log_cloud_test_reset()
     s_cloud_deadline_ms = 0;
     s_cloud_backoff_until_ms = 0;
     s_cloud_fail_next = 0;
-    s_replay_seq = 0;
-    s_replay_done = false;
+    s_cloud_tx_rd_base = 0;
+    s_cloud_tx_valid = false;
+    s_cloud_hole_count = 0;
+    s_cloud_hole_overflow = false;
+    cloud_replay_arm();
     s_cloud_force_online = false;
     s_ack_timeout_ms = LOG_ACK_TIMEOUT_MS;
     s_backoff_base_ms = LOG_ACK_BACKOFF_BASE_MS;
@@ -2513,6 +2885,22 @@ bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out)
     out.crc32     = flash_get_u32(&head[LOG_SEG_OFF_CRC32]);
     out.ok        = flash_check_head(head, seg) ? 1u : 0u;
     out.records   = out.ok ? flash_scan_records(f, false) : 0u;
+
+    // FIX-3b 验证专用：**直接从 Flash** 读末槽记录的 seq（不读缓存），
+    // 以便上板断言"扫描派生缓存 == Flash 真相"，并暴露 `first + records - 1`
+    // 的偏小量（= 段内 INFO 空洞数）。
+    if (out.records > 0)
+    {
+        LogRecord last_rec;
+        const uint32_t loff = LOG_SEGMENT_HEADER_SIZE +
+                              (uint32_t)(out.records - 1u) * LOG_RECORD_SIZE;
+
+        if (f.seek(loff) &&
+            (f.read((uint8_t *)&last_rec, LOG_RECORD_SIZE) == (size_t)LOG_RECORD_SIZE))
+        {
+            out.last_seq = last_rec.seq;
+        }
+    }
 
     f.close();
     return true;
