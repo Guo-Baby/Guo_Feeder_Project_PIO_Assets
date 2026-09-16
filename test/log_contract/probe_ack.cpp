@@ -237,19 +237,19 @@ extern "C" int probe_run()
     // ---------- ④ 段可删性（"部分覆盖不得删段"）----------
     pstr("  段可删性:\n");
 
-    check(!log_ack_segment_deletable(1u, 0u, 1000u),
+    check(!log_ack_segment_deletable_legacy(1u, 0u, 1000u),
           "empty segment -> not deletable");
-    check(!log_ack_segment_deletable(1u, 10u, 9u),
+    check(!log_ack_segment_deletable_legacy(1u, 10u, 9u),
           "last=10 > acked=9 -> not deletable");
-    check(log_ack_segment_deletable(1u, 10u, 10u),
+    check(log_ack_segment_deletable_legacy(1u, 10u, 10u),
           "last=10 <= acked=10 -> deletable");
-    check(log_ack_segment_deletable(1u, 10u, 11u),
+    check(log_ack_segment_deletable_legacy(1u, 10u, 11u),
           "last=10 <= acked=11 -> deletable");
-    check(!log_ack_segment_deletable(31u, 31u, 60u),
+    check(!log_ack_segment_deletable_legacy(31u, 31u, 60u),
           "first=31,n=31,acked=60 (last=61) -> not deletable");
-    check(log_ack_segment_deletable(31u, 31u, 61u),
+    check(log_ack_segment_deletable_legacy(31u, 31u, 61u),
           "first=31,n=31,acked=61 -> deletable");
-    check(log_ack_segment_deletable(1u, 1u, 1u),
+    check(log_ack_segment_deletable_legacy(1u, 1u, 1u),
           "single record fully acked -> deletable");
 
     // ---------- ④′ FIX-2：空洞登记（可合并 / 有界）----------
@@ -322,10 +322,108 @@ extern "C" int probe_run()
     //   `first + records - 1` 会**小于**真实末条 seq。
     //   若用派生值判定，段 [first=1, n=3, derived=3] 在 acked=3 时会被误判可回收，
     //   而真实末条 seq=5 尚未确认 ⇒ 记录被静默删除。
-    check(log_ack_segment_deletable(1u, 3u, 3u),
+    check(log_ack_segment_deletable_legacy(1u, 3u, 3u),
           "legacy derived (first=1,n=3,acked=3) -> would DELETE  [wrong]");
     check(!log_ack_segment_reclaimable(1u, 5u, 3u, nullptr, 0u, false),
           "sparse truth (last=5, acked=3) -> KEEP                    [correct]");
+
+    // ---------- ④‴ FIX-H2：淘汰间隙补齐空洞（FIX-1 × FIX-2 交界缺口）----------
+    //
+    // 场景：send batch → ACK 只覆盖前缀 covered → 期间 overflow evicted > covered
+    //   ⇒ 下标 [covered, evicted) 的记录：已离开 RAM 队列 / 未被 ACK / 无空洞
+    //   ⇒ 必须在此补齐保护，且**只**保护 Flash-routed（INFO 无物理副本可保护）。
+    pstr("  淘汰间隙补齐空洞（FIX-H2）:\n");
+
+    LogRecord gap_batch[LOG_BATCH_MAX_RECORDS];
+    memset(gap_batch, 0, sizeof(gap_batch));
+
+    for (uint8_t i = 0; i < 12u; i++)
+    {
+        gap_batch[i].seq = 100u + (uint32_t)i;     // 100..111
+        gap_batch[i].boot_seq = 7u;
+        // 偶数下标 = WARN（落 Flash）；奇数下标 = INFO（不落 Flash）
+        gap_batch[i].level = ((i % 2u) == 0u) ? (uint8_t)LOG_LVL_WARN
+                                              : (uint8_t)LOG_LVL_INFO;
+    }
+
+    LogHole h2[LOG_HOLE_MAX];
+    uint8_t h2n = 0u;
+    bool h2ovf = false;
+
+    // covered=4, evicted=12 ⇒ 保护下标 4..11 中的 WARN（seq 104/106/108/110）= 4 条
+    checkv(log_hole_protect_gap(gap_batch, 12u, 4u, 12u, h2, &h2n, &h2ovf) == 4u,
+           "covered=4 evicted=12 -> 4 Flash-routed protected",
+           log_hole_protect_gap(gap_batch, 12u, 4u, 12u, h2, &h2n, &h2ovf));
+    checkv(h2n == 4u, "4 separate holes (104/106/108/110 not adjacent)", h2n);
+    check(!h2ovf, "no overflow");
+
+    check(log_hole_overlaps(h2, h2n, 104u, 104u), "seq 104 protected");
+    check(log_hole_overlaps(h2, h2n, 106u, 106u), "seq 106 protected");
+    check(log_hole_overlaps(h2, h2n, 108u, 108u), "seq 108 protected");
+    check(log_hole_overlaps(h2, h2n, 110u, 110u), "seq 110 protected");
+
+    check(!log_hole_overlaps(h2, h2n, 105u, 105u), "seq 105 (INFO) NOT protected");
+    check(!log_hole_overlaps(h2, h2n, 100u, 100u), "seq 100 (covered) NOT protected");
+    check(!log_hole_overlaps(h2, h2n, 102u, 102u), "seq 102 (covered) NOT protected");
+
+    // ★ 保护生效的实证：含 seq 104 的段必须被拒绝回收，直到水位越过它
+    check(!log_ack_segment_reclaimable(100u, 111u, 111u, h2, h2n, false),
+          "segment [100,111] fully acked BUT overlaps gap hole -> KEEP");
+
+    // 边界 1：evicted == covered ⇒ 无间隙，不登记任何空洞
+    h2n = 0u;
+    h2ovf = false;
+    checkv(log_hole_protect_gap(gap_batch, 12u, 12u, 12u, h2, &h2n, &h2ovf) == 0u,
+           "evicted == covered -> gap is empty",
+           log_hole_protect_gap(gap_batch, 12u, 12u, 12u, h2, &h2n, &h2ovf));
+    checkv(h2n == 0u, "no hole added", h2n);
+
+    // 边界 2：evicted < covered（正常 ACK 多于淘汰）⇒ 同样无间隙
+    h2n = 0u;
+    h2ovf = false;
+    checkv(log_hole_protect_gap(gap_batch, 12u, 12u, 5u, h2, &h2n, &h2ovf) == 0u,
+           "evicted < covered -> gap is empty",
+           log_hole_protect_gap(gap_batch, 12u, 12u, 5u, h2, &h2n, &h2ovf));
+
+    // 边界 3：covered == 0（本次 ACK 未覆盖任何内容）⇒ 保护 [0, evicted) 中的 WARN
+    //   下标 0,2,4,6,8,10 = 6 条
+    h2n = 0u;
+    h2ovf = false;
+    checkv(log_hole_protect_gap(gap_batch, 12u, 0u, 12u, h2, &h2n, &h2ovf) == 6u,
+           "covered=0 evicted=12 -> 6 Flash-routed protected",
+           log_hole_protect_gap(gap_batch, 12u, 0u, 12u, h2, &h2n, &h2ovf));
+    check(log_hole_overlaps(h2, h2n, 100u, 100u), "seq 100 protected when covered=0");
+
+    // 边界 4：evicted > tx_count ⇒ 只处理到 tx_count（其后由 push 的 else 分支负责）
+    //   tx_count=8, covered=2, evicted=99 ⇒ 扫描下标 [2,8) 中的 WARN：2,4,6 = 3 条
+    h2n = 0u;
+    h2ovf = false;
+    checkv(log_hole_protect_gap(gap_batch, 8u, 2u, 99u, h2, &h2n, &h2ovf) == 3u,
+           "evicted > tx_count -> clamped to tx_count",
+           log_hole_protect_gap(gap_batch, 8u, 2u, 99u, h2, &h2n, &h2ovf));
+    check(!log_hole_overlaps(h2, h2n, 108u, 108u),
+          "index 8 (>= tx_count) NOT handled here");
+
+    // 边界 5：空指针 / 零批 ⇒ 安全返回 0
+    h2n = 0u;
+    h2ovf = false;
+    checkv(log_hole_protect_gap(nullptr, 12u, 0u, 12u, h2, &h2n, &h2ovf) == 0u,
+           "null batch -> 0", log_hole_protect_gap(nullptr, 12u, 0u, 12u, h2, &h2n, &h2ovf));
+    checkv(log_hole_protect_gap(gap_batch, 12u, 0u, 12u, nullptr, &h2n, &h2ovf) == 0u,
+           "null holes -> 0", log_hole_protect_gap(gap_batch, 12u, 0u, 12u, nullptr, &h2n, &h2ovf));
+
+    // 边界 6：空洞表已满且无法合并 ⇒ overflow 置位（调用方须停止回收）
+    h2n = LOG_HOLE_MAX;
+    h2ovf = false;
+    for (uint8_t i = 0; i < LOG_HOLE_MAX; i++)
+    {
+        h2[i].from = 1000u + (uint32_t)i * 10u;   // 1000,1010,1020,... 互不相邻
+        h2[i].to   = h2[i].from;
+    }
+    checkv(log_hole_protect_gap(gap_batch, 12u, 0u, 12u, h2, &h2n, &h2ovf) == 0u,
+           "full table -> 0 protected",
+           log_hole_protect_gap(gap_batch, 12u, 0u, 12u, h2, &h2n, &h2ovf));
+    check(h2ovf, "full table -> overflow flag set");
 
     // ---------- ⑤ 退避序列 ----------
     pstr("  退避序列（期望 2/4/8/16/32/60 s）:\n");

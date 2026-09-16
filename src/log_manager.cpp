@@ -205,10 +205,23 @@ static bool     s_cloud_hole_overflow = false;
 //        `replay_seq > first + records - 1` 时立刻触发 ⇒ **补发提前终止**，
 //        其后所有段中从未确认的 WARN+ 全部静默丢失
 //   改为遍历 slot 并使用**记录自身的 seq** 后，两个问题同时消失。
-static uint8_t  s_replay_seg = 0xFF;   // 0xFF = 需从"first_seq 最小"的段重新开始
+static uint8_t  s_replay_seg = 0xFF;   // 0xFF = 需按 s_replay_after_* 重新选取起始段
 static uint8_t  s_replay_idx = 0;      // 段内下一个待考察的 slot 下标
-static bool     s_replay_armed = false; // 是否有待补发工作（可由空洞/段删除重新 arm）
-static uint32_t s_replay_seq = 0;      // 诊断：最近一次考察到的 record seq
+static bool     s_replay_armed = false; // 是否有待补发工作（可由段删除重新 arm）
+static uint32_t s_replay_diag_seq = 0; // 诊断：最近一次考察到的 record seq（**非游标**）
+
+// ---- FIX-D1：本轮 arm 的"起始段约束"（纯 RAM，无持久化）----
+//
+//   after_valid = false ⇒ 从 first_seq 最小的段开始（= 全新一轮 sweep）
+//   after_valid = true  ⇒ 从 first_seq **严格大于** after_seq 的段开始
+//
+// 为什么需要：补发 sweep 进行中，若 flash_drop_segment() 删掉的正是游标所在段，
+// 旧实现把游标复位成 0xFF（= 约束清零）⇒ 下一轮从**最老段重新扫**，已扫描
+// 区域被无谓地重复遍历。当前不变量下（游标只在 used==0 时前进 ⇒ 已扫描记录
+// 必已被 ACK/放弃）不会造成重复投递，但属**无谓扫描**，且一旦将来不变量变化
+// 就会升级为重复投递。改为记住被删段的 first_seq 并从其后继续 ⇒ 扫描严格单调。
+static uint32_t s_replay_after_seq = 0;
+static bool     s_replay_after_valid = false;
 
 // 保留字段（观测兼容）：= !s_replay_armed
 static bool     s_replay_done = true;
@@ -492,6 +505,11 @@ static void flash_recompute_extremes()
 // §20：删除某个 segment（ring 淘汰 / 损坏重建）
 static bool flash_drop_segment(uint32_t seg)
 {
+    // FIX-D1：必须在清空段元信息**之前**记下 first_seq —— 若被删的正是补发游标
+    // 所在段，需要用它把下一轮扫描约束在"该 seq 之后"，而不是回到最老段重扫。
+    const uint32_t dropped_first_seq = s_seg_first_seq[seg];
+    const bool     dropped_present   = (s_seg_present[seg] != 0);
+
     char path[32];
     flash_seg_path(seg, path, sizeof(path));
 
@@ -530,10 +548,18 @@ static bool flash_drop_segment(uint32_t seg)
     s_stats.flash_segment_deleted++;
     portEXIT_CRITICAL(&s_mux);
 
-    // DIR-1：补发游标可能正指向被删段 ⇒ 复位并重新 arm
+    // FIX-D1：补发游标可能正指向被删段 ⇒ 复位并重新 arm
     //（否则游标指向不存在的段，扫描会提前结束、漏掉其后所有未确认记录）
+    //
+    // ★ 关键：**不要**无条件回到最老段。把被删段的 first_seq 记为约束，
+    //   下一轮从"first_seq > 该值"的段继续 ⇒ 扫描严格单调前进、不重复遍历。
+    //   `dropped_present == false`（删的是空段槽位）时退化为"从最老段开始"，
+    //   与旧行为一致且此时无可扫描内容，安全。
     if (s_replay_seg == (uint8_t)seg)
     {
+        s_replay_after_seq = dropped_first_seq;
+        s_replay_after_valid = (dropped_present && dropped_first_seq != 0u);
+
         s_replay_seg = 0xFF;
         s_replay_idx = 0;
         s_replay_armed = true;
@@ -1996,7 +2022,9 @@ static uint8_t flash_next_segment_after(uint32_t after_seq, bool have_after)
 // 回收"整段已被 ACK 覆盖"的 Flash 段
 //
 // §13-partial：部分覆盖**绝不**删段 —— 判定唯一入口是
-// log_ack_segment_deletable()（末条 seq <= acked_seq）。
+// log_ack_segment_reclaimable()（整段 ≤ 水位 ∧ 不与空洞相交 ∧ 空洞表未溢出）。
+// ⚠️ 禁止改用 log_ack_segment_deletable_legacy()（按稠密 seq 推导末条 seq，会被
+//    INFO 造成的 seq 空洞骗到 ⇒ 段在尚有未确认记录时被判可回收）。
 // 只由 loop 上下文调用（LittleFS I/O）。
 static void cloud_delete_acked_segments()
 {
@@ -2129,6 +2157,34 @@ static void cloud_handle_ack()
     {
         s_stats.cloud_ack_partial++;
     }
+
+    // ---- FIX-H2：为"在途窗口内被淘汰、且**未被本次 ACK 覆盖**"的区间
+    //      补齐空洞保护（FIX-1 × FIX-2 的交界缺口）----
+    //
+    // 判定与执行分离：区间/类型判定全部在 `log_hole_protect_gap()`
+    // （`src/log_ack.h`，freestanding ⇒ 可主机编译并用 node 跑 wasm 断言，
+    //   见 `test/log_contract/probe_ack.cpp`）；这里只做原地登记与记账。
+    //
+    // `evicted` 为在途期间从队首淘汰的条数（见上方 FIX-1 说明）：
+    //   [0, covered)        已被 ACK                     ⇒ 无需保护
+    //   [covered, evicted)  被淘汰且未确认                 ⇒ ★本段补齐
+    //   [evicted, tx_count) 已由 push 的 else 分支登记     ⇒ 跳过（互斥）
+    if (evicted > (uint32_t)covered)
+    {
+        bool gap_overflow = false;
+
+        const uint8_t gap_protected = log_hole_protect_gap(
+            s_cloud_batch, tx_count, covered, evicted,
+            s_cloud_holes, &s_cloud_hole_count, &gap_overflow);
+
+        s_stats.cloud_hole_from_evict += gap_protected;
+
+        if (gap_overflow)
+        {
+            s_cloud_hole_overflow = true;   // 表满 ⇒ 停止回收（保守）
+        }
+    }
+
     portEXIT_CRITICAL(&s_mux);
 
     // 未被覆盖的尾部仍留在云队列里，下一轮重新组批发送（不丢、不重复记账）
@@ -2161,6 +2217,11 @@ static void cloud_replay_arm()
     s_replay_idx = 0;
     s_replay_armed = true;
     s_replay_done = false;
+
+    // FIX-D1：全新一轮 sweep ⇒ 不携带"从某 seq 之后继续"的约束
+    //（该约束只由 flash_drop_segment() 在"游标段被删"时设置，消费一次即失效）
+    s_replay_after_seq = 0;
+    s_replay_after_valid = false;
 }
 
 // Flash -> 云 补发一步（DIR-1：**按 slot 遍历**，不再按 seq 反算）
@@ -2193,11 +2254,19 @@ static void cloud_replay_step()
         return;
     }
 
-    // 首轮：从 first_seq 最小的段开始
+    // 首轮 / 段删除后重新选取起始段（FIX-D1）
+    //
+    //   after_valid=false ⇒ 从 first_seq 最小的段开始（全新一轮 sweep）
+    //   after_valid=true  ⇒ 从 first_seq > after_seq 的段继续（游标段刚被删）
     if (s_replay_seg == 0xFF)
     {
-        s_replay_seg = flash_next_segment_after(0u, false);
+        s_replay_seg = flash_next_segment_after(s_replay_after_seq,
+                                                s_replay_after_valid);
         s_replay_idx = 0;
+
+        // 约束只作用于"本轮的起始段选择"，消费后立即清除，
+        // 避免后续 arm（正常情况下由 cloud_replay_arm 显式清零）误用陈旧值。
+        s_replay_after_valid = false;
 
         if (s_replay_seg == 0xFF)
         {
@@ -2264,7 +2333,7 @@ static void cloud_replay_step()
             continue;
         }
 
-        s_replay_seq = rec.seq;   // 诊断
+        s_replay_diag_seq = rec.seq;   // 诊断（非游标：游标是 seg/idx）
 
         // 水位判定用**记录自身的 seq**（不再依赖任何稠密假设）
         if (!log_ack_should_replay(rec.seq, s_cloud_acked_seq, s_cloud_give_up_seq))
@@ -2590,7 +2659,7 @@ void log_cloud_get_info(LogCloudInfo &out)
                               : s_cloud_retry_n);
     out.gave_up = s_cloud_gave_up ? 1u : 0u;
     out.give_up_seq = s_cloud_give_up_seq;
-    out.replay_seq = s_replay_seq;
+    out.replay_seq = s_replay_diag_seq;   // 公开观测名保持 replay_seq（诊断值）
     out.replay_done = s_replay_done ? 1u : 0u;
 
     const uint32_t now = millis();

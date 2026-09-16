@@ -444,11 +444,12 @@ static void logt_print_stats()
         (unsigned)st.self_degraded,
         (unsigned)st.cloud_q_used);
 
-    // FIX-1 / FIX-3：淘汰归因分离
+    // FIX-1 / FIX-3 / FIX-H2：淘汰归因分离 + 空洞补齐
     Serial.printf(
-        "[LogT] cstats2 evict_inf=%u seg_evict_unacked=%u\n",
+        "[LogT] cstats2 evict_inf=%u seg_evict_unacked=%u hole_evict=%u\n",
         (unsigned)st.cloud_q_evict_inflight,
-        (unsigned)st.flash_seg_evict_unacked);
+        (unsigned)st.flash_seg_evict_unacked,
+        (unsigned)st.cloud_hole_from_evict);
 
     // P1.5：ACK / Retry / Offline 观测
     Serial.printf(
