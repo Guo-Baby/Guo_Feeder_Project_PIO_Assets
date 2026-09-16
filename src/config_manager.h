@@ -631,6 +631,7 @@ String config_get_mqtt_subscribe_topic();
 String config_get_mqtt_username();
 String config_get_mqtt_password();
 String config_get_mqtt_publish_topic();
+String config_get_mqtt_log_topic();   // P1.4：LogManager 专用上行 Topic
 String config_get_mqtt_ca_path();
 unsigned long config_get_mqtt_retry_interval(); // MQTT 重连间隔(ms)
 int config_get_mqtt_retry_max();                // 最大快速重试次数

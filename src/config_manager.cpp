@@ -3586,6 +3586,13 @@ String config_get_mqtt_publish_topic()
            | String("guo_feeder/up");
 }
 
+// P1.4：LogManager 专用上行 Topic（独立于 up / down）
+String config_get_mqtt_log_topic()
+{
+    return module_ro(CONFIG_MODULE_MQTT)["log_topic"]
+           | String("guo_feeder/log");
+}
+
 String config_get_mqtt_ca_path()
 {
     return module_ro(CONFIG_MODULE_MQTT)["ca_path"]

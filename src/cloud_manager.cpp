@@ -12,6 +12,7 @@
 #include "time_manager.h"
 #include "command_manager.h"
 #include "capability_registry.h"
+#include "log_events.h"   // P1.4/P1.5：Log Topic 与 log_ack 常量（冻结契约）
 // =====================================================
 // MQTT QoS 测试开关
 //
@@ -62,6 +63,10 @@ static String mqtt_password;
 
 static String mqtt_sub_topic;
 static String mqtt_pub_topic;
+// P1.4：LogManager 专用上行 Topic（独立于 up / down）
+static String mqtt_log_topic;
+// P1.5：log_ack 回调（由 LogManager 注入，CloudManager 不反向依赖它）
+static CloudLogAckCallback s_log_ack_cb = nullptr;
 
 static String mqtt_ca_file;
 
@@ -1074,6 +1079,30 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
         return;
     }
 
+    // P1.5：log_ack —— 协议级消息，同样旁路 CommandManager（§19）
+    //   {"c":"log_ack","i":"<id>","p":{"b":<boot_seq>,"f":<seq_from>,"t":<seq_to>}}
+    // 不回 ACK：Log 通道是 at-least-once，重复发送由云端幂等去重消化，
+    // 再套一层 ACK 只会增加无意义的上下行流量。
+    if(strcmp(c, LOG_ACK_COMMAND) == 0)
+    {
+        JsonVariant pl = compact ? doc["p"] : doc["pl"];
+        const uint32_t boot_seq = pl[LOG_ACK_P_BOOT_SEQ] | 0u;
+        const uint32_t seq_from = pl[LOG_ACK_P_SEQ_FROM] | 0u;
+        const uint32_t seq_to   = pl[LOG_ACK_P_SEQ_TO]   | 0u;
+
+        Serial.printf(
+            "[Cloud LOG] ack rx boot=%u from=%u to=%u\n",
+            (unsigned)boot_seq,
+            (unsigned)seq_from,
+            (unsigned)seq_to);
+
+        if(s_log_ack_cb != nullptr)
+        {
+            s_log_ack_cb(boot_seq, seq_from, seq_to);
+        }
+        return;
+    }
+
     CommandMessage cmd;
     int error_code = ERROR_INVALID_COMMAND;
     String error_msg = "invalid command";
@@ -1304,6 +1333,9 @@ void cloud_init()
     mqtt_pub_topic = config_get_mqtt_publish_topic();
     Serial.print("MQTT publish=");
     Serial.println(mqtt_pub_topic);
+    mqtt_log_topic = config_get_mqtt_log_topic();
+    Serial.print("MQTT log=");
+    Serial.println(mqtt_log_topic);
     mqtt_ca_file = config_get_mqtt_ca_path();
     Serial.print("MQTT CA=");
     Serial.println(mqtt_ca_file);
@@ -1502,6 +1534,54 @@ bool cloud_send_up(const char* message)
         "[Cloud UP] FAIL"
     );
     return result;
+}
+
+// =====================================================
+// P1.4：Log Topic 上行（二进制 CBOR，独立于 up / down）
+//
+// - 复用现有 cloud_mqtt_publish_binary()，不改动它
+// - 离线时返回 false：保留记录 / 退避重试由 LogManager 负责
+//   （CloudManager 不为 Log 建立任何 TX 队列）
+// - 不做字段压缩、不分片：Batch 上界 LOG_BATCH_MAX_PAYLOAD = 4096 B
+// =====================================================
+bool cloud_send_log(const uint8_t* data, size_t length)
+{
+    if(data == nullptr || length == 0)
+    {
+        return false;
+    }
+
+    if(mqtt_log_topic.length() == 0)
+    {
+        mqtt_log_topic = "guo_feeder/log";   // 配置缺失时的兜底
+    }
+
+    if(mqtt_client == nullptr || !mqtt_connected)
+    {
+        Serial.println("[Cloud LOG] MQTT offline");
+        return false;
+    }
+
+    const bool ok = cloud_mqtt_publish_binary(
+        mqtt_log_topic,
+        data,
+        length,
+        1);
+
+    Serial.printf(
+        "[Cloud LOG] %s topic=%s len=%u t=%lu\n",
+        ok ? "OK" : "FAIL",
+        mqtt_log_topic.c_str(),
+        (unsigned)length,
+        (unsigned long)(millis() & 0xFFFFFFFFUL));
+
+    return ok;
+}
+
+// P1.5：由 LogManager 注入 ACK 处理回调（CloudManager 不反向依赖 LogManager）
+void cloud_set_log_ack_callback(CloudLogAckCallback callback)
+{
+    s_log_ack_cb = callback;
 }
 
 // =====================================================
