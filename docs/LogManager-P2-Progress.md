@@ -51,6 +51,30 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 
 （未实现的冻结 EventId：`LOG_CFG_FACTORY_RESET`(0x0208) —— 代码中**不存在** factory reset 函数，无宿主，记为未实现。）
 
+### P2-C 验证记录（2026-09-17，COM8，AP `wqs1`）
+
+| EventId | 验证方式 | 结论 |
+|---|---|---|
+| `LOG_WIFI_CONNECT_START` | 真机开机 + MQTT 解码 | ✅ 通过（解码到 `SSID_HASH=0x7c7a4fc9 ATTEMPT_N=1 WAS=0(IDLE) STATE=1(CONNECTING)`） |
+| `LOG_WIFI_CONNECTED` | 真机开机 + MQTT 解码 | ✅ 通过（解码到 `CONNECT_MS=1807 RSSI=-56 WAS=1 STATE=2`；`flash=0` 证明 INFO 不落盘） |
+| `LOG_WIFI_CONNECT_TIMEOUT` | 真机（SSID 指向不存在的 AP）+ 补发回传解码 | ✅ 通过（解码到 `TIMEOUT_MS=30000 ATTEMPT_N=1 WAS=1 STATE=3`，WARN 落 Flash） |
+| `LOG_WIFI_RECONNECT_TRY` | 同上 | ✅ 通过（解码到 `RETRY_N=1 ATTEMPT_N=1 WAS=3 STATE=1`；实测 4 轮循环只记 1 轮 ⇒ 节流生效） |
+| **`LOG_WIFI_LOST`** | **见下方专项说明** | ⚠️ **部分通过**（代码路径审查通过 / 参数语义已确认 / **真机断 AP 验证未完成**） |
+
+#### ⚠️ `LOG_WIFI_LOST` 专项说明
+
+| 项 | 状态 |
+|---|---|
+| **代码路径审查** | ✅ **通过**。埋点位于 `wifi_task()` 的 `case WIFI_CONNECTED` 内、紧邻 `WiFi.status() != WL_CONNECTED` 判定之后，**未改变任何分支与 return 路径**；与既有 `Serial.println("WiFi lost")` / `event_push(EVENT_WIFI_DISCONNECTED)` 同处一个边沿块，语义一致 |
+| **参数语义确认** | ✅ **已确认**：`CONNECTED_MS` = `millis() - wifi_connected_since`；`RSSI` = `state_get_int(STATE_WIFI_RSSI)`（**最后一次采样值**，因断连后 `WiFi.RSSI()` 只会返回 −100）；`CAUSE` = 断连瞬间 `WiFi.status()`（`WL_CONNECTION_LOST` / `WL_DISCONNECTED` / `WL_CONNECT_FAILED`…）；`WAS=2(CONNECTED)` / `STATE=3(DISCONNECTED)` |
+| **真机断 AP 验证** | ❌ **未完成 —— 列为后续测试项** |
+| 未完成原因 | 当前**没有任何钩子**可以强制断连：`WiFi.disconnect()` 在代码中无调用点；改 SSID 只影响下一次 `WiFi.begin()`，**不会**让已建立的连接掉线。本环境唯一办法是**物理关闭 AP** |
+| 后续测试项 | ①（推荐）后续加一个测试钩子（如 `wifi force-lost`）；或 ② 人工关闭 AP 一次后复测。验收标准：MQTT 侧能解码到一条 level=WARN、带 `CONNECTED_MS`/`RSSI`/`CAUSE`/`WAS=2`/`STATE=3` 的记录 |
+
+> 说明：本次**未**为 `LOST` 修改任何生产代码；`BT-10` / `BT-11` 按约定**不处理**，
+> 仅在「未决 / 阻塞事项」中记录。
+
+
 ---
 
 ## Next
@@ -138,4 +162,4 @@ WiFi 已接入完成（见上），回归 **195/195 全绿**。下一个按约�
 
 ---
 
-*最后更新：2026-09-17（P2-C WiFi 接入完成，回归 195/195；下一步 P2-D Cloud）*
+*最后更新：2026-09-18（P2-C WiFi 接入完成并补登验证记录；进行中：P2-D Cloud/MQTT）*
