@@ -4,6 +4,7 @@
 #include "system_state.h"
 #include "system_command.h"
 #include "json_storage.h"
+#include "file_storage.h"
 #include "bin_storage.h"
 #include "workflow_storage.h"
 #include "config_manager.h"
@@ -45,6 +46,194 @@ static void command_log_serial(const char *level, const char *message)
 }
 
 // =====================================================
+// P2-A：Storage 日志回调 → LogManager 桥接
+//
+// 背景：json_storage / file_storage 各自带回调接口，但**从未被注册**，
+//       其 67 处 E/W（json 30E+7W、file 24E+6W）完全静默丢弃。
+//       本桥接把它们接入 LogManager，同时保留串口输出（双路）。
+//
+// 只调用 log_emit()；不触碰 log_flash_* / log_meta_* / log_seg_* / log_cloud_test_*。
+//
+// 语义还原的限制（重要）：
+//   回调只给「自由文本」（level + message），无法还原精确事件语义。
+//   ⇒ EventId 由 message 的**前缀 op 词**分类；op 明细写入 LOG_P_ERR_CODE
+//   ⇒ LOG_P_MODULE 区分 json(0) / file(1)
+//   ⇒ 不做字符串参数（P2 已定版：字符串一律哈希/枚举化，不扩 LogManager API）
+//   ⇒ 若日后需要精确定位，应把回调改成结构化（level + op + path_hash + err），
+//     属 API 变更，需单独评审（见 docs/LogManager-Integration-Guide.md §Storage）
+//
+// 高频抑制：
+//   同一 (module, op) 在 STG_BRIDGE_DEDUP_MS 窗口内只上报 1 条，其余累加计数，
+//   下个窗口用 LOG_P_COUNT 上报。防止"FS 不可用"时按调用次数刷屏。
+//
+// 实现约束：纯静态表、零堆分配、无 String、无阻塞、无 ISR 调用。
+// =====================================================
+
+#define STG_BRIDGE_MODULE_JSON   0u
+#define STG_BRIDGE_MODULE_FILE   1u
+#define STG_BRIDGE_MODULE_COUNT  2u
+
+// op 分类（写入 LOG_P_ERR_CODE；本桥接私有枚举，不是冻结 ParamId）
+enum StgBridgeOp : uint8_t
+{
+    STG_OP_UNKNOWN = 0,
+    STG_OP_FS_UNAVAILABLE,   // LittleFS 未挂载（挂载失败）
+    STG_OP_NOT_INITIALIZED,  // 模块尚未 init
+    STG_OP_MKDIR,
+    STG_OP_REMOVE,
+    STG_OP_RENAME,
+    STG_OP_READ,
+    STG_OP_WRITE,
+    STG_OP_CRC32,
+    STG_OP_VERIFY,
+    STG_OP_FOREACH,
+    STG_OP_EXISTS,
+    STG_OP_SIZE,
+    STG_OP_RECOVER,
+    STG_OP_SEEK_TRUNC,
+    STG_OP_COUNT
+};
+
+// 同一 (module, op) 的上报抑制窗口
+#define STG_BRIDGE_DEDUP_MS 10000u
+
+static unsigned long s_stg_last_ms[STG_BRIDGE_MODULE_COUNT][STG_OP_COUNT];
+static uint16_t      s_stg_suppressed[STG_BRIDGE_MODULE_COUNT][STG_OP_COUNT];
+
+// message → op（定长前缀匹配，不构造 String）
+static StgBridgeOp stg_bridge_classify(const char *msg)
+{
+    if (msg == nullptr)
+        return STG_OP_UNKNOWN;
+
+    // 更具体的"原因"优先于"操作名"
+    if (strncmp(msg, "LittleFS", 8) == 0)  return STG_OP_FS_UNAVAILABLE;
+    if (strstr(msg, "not initialized"))    return STG_OP_NOT_INITIALIZED;
+
+    if (strncmp(msg, "mkdir", 5) == 0)     return STG_OP_MKDIR;
+    if (strncmp(msg, "remove", 6) == 0)    return STG_OP_REMOVE;
+    if (strncmp(msg, "rename", 6) == 0)    return STG_OP_RENAME;
+    if (strncmp(msg, "read", 4) == 0)      return STG_OP_READ;
+    if (strncmp(msg, "write", 5) == 0)     return STG_OP_WRITE;
+    if (strncmp(msg, "crc32", 5) == 0)     return STG_OP_CRC32;
+    if (strncmp(msg, "verify", 6) == 0)    return STG_OP_VERIFY;
+    if (strncmp(msg, "foreach", 7) == 0)   return STG_OP_FOREACH;
+    if (strncmp(msg, "exists", 6) == 0)    return STG_OP_EXISTS;
+    if (strncmp(msg, "size", 4) == 0)      return STG_OP_SIZE;
+    if (strncmp(msg, "recover", 7) == 0)   return STG_OP_RECOVER;
+    if (strncmp(msg, "seek", 4) == 0)      return STG_OP_SEEK_TRUNC;
+    if (strncmp(msg, "truncate", 8) == 0)  return STG_OP_SEEK_TRUNC;
+
+    return STG_OP_UNKNOWN;
+}
+
+// op → 冻结 EventId（全部取自 Storage 段 0x03，未新增任何 ID）
+static LogEventId stg_bridge_event(StgBridgeOp op, bool is_error)
+{
+    switch (op)
+    {
+        case STG_OP_FS_UNAVAILABLE:
+        case STG_OP_NOT_INITIALIZED:
+            return LOG_STG_FS_UNAVAILABLE;
+
+        case STG_OP_CRC32:
+            return LOG_STG_CRC_FAILED;
+
+        case STG_OP_VERIFY:
+            return LOG_STG_WRITE_VERIFY_FAILED;
+
+        case STG_OP_RECOVER:
+            return LOG_STG_TXN_RECOVERED;
+
+        case STG_OP_RENAME:
+        case STG_OP_WRITE:
+        case STG_OP_MKDIR:
+        case STG_OP_REMOVE:
+            return LOG_STG_ATOMIC_WRITE_FAILED;
+
+        case STG_OP_READ:
+        case STG_OP_FOREACH:
+        case STG_OP_EXISTS:
+        case STG_OP_SIZE:
+        case STG_OP_SEEK_TRUNC:
+            return LOG_STG_READ_FAILED;
+
+        case STG_OP_UNKNOWN:
+        default:
+            // 兜底：op 未识别时按严重度选读写侧；真实语义看 LOG_P_ERR_CODE
+            return is_error ? LOG_STG_ATOMIC_WRITE_FAILED : LOG_STG_READ_FAILED;
+    }
+}
+
+// 统一入口：只上报 'E' / 'W'，'I'（Storage 仅 "ready" 一条）不上报
+static void stg_bridge_emit(uint8_t module, const char *level, const char *message)
+{
+    if (level == nullptr || module >= STG_BRIDGE_MODULE_COUNT)
+        return;
+
+    const bool is_error = (level[0] == 'E');
+    const bool is_warn  = (level[0] == 'W');
+    if (!is_error && !is_warn)
+        return;
+
+    const StgBridgeOp op = stg_bridge_classify(message);
+
+    // ---- 抑制：同一 (module, op) 每 STG_BRIDGE_DEDUP_MS 只发 1 条 ----
+    const unsigned long now  = millis();
+    const unsigned long last = s_stg_last_ms[module][op];
+
+    if (last != 0 && (now - last) < STG_BRIDGE_DEDUP_MS)
+    {
+        if (s_stg_suppressed[module][op] < 0xFFFFu)
+        {
+            s_stg_suppressed[module][op]++;
+        }
+        return;
+    }
+    s_stg_last_ms[module][op] = now;
+
+    const uint32_t suppressed = (uint32_t)s_stg_suppressed[module][op];
+    s_stg_suppressed[module][op] = 0;
+
+    // 严重度：跟随回调的 level；但"LittleFS 未挂载"按冻结契约提升为 CRITICAL
+    //（LOG_STG_FS_UNAVAILABLE 在契约中即标注 CRITICAL：数据有损坏风险，触发立即 flush）
+    LogLevel lv = is_error ? LOG_LVL_ERROR : LOG_LVL_WARN;
+    if (op == STG_OP_FS_UNAVAILABLE)
+    {
+        lv = LOG_LVL_CRITICAL;
+    }
+
+    LogParamIn a[3];
+    uint8_t n = 0;
+    a[n++] = log_arg_u32(LOG_P_MODULE,   (uint32_t)module);
+    a[n++] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)op);
+    if (suppressed > 0)
+    {
+        a[n++] = log_arg_u32(LOG_P_COUNT, suppressed);
+    }
+
+    log_emit(stg_bridge_event(op, is_error), lv, a, n);
+}
+
+// ---- 两个模块的桥接回调（双路：串口 + LogManager）----
+
+static void json_storage_log_bridge(const char *level, const char *message)
+{
+    Serial.printf("[JStg][%s] %s\n",
+                  level   ? level   : "?",
+                  message ? message : "");
+    stg_bridge_emit(STG_BRIDGE_MODULE_JSON, level, message);
+}
+
+static void file_storage_log_bridge(const char *level, const char *message)
+{
+    Serial.printf("[FStg][%s] %s\n",
+                  level   ? level   : "?",
+                  message ? message : "");
+    stg_bridge_emit(STG_BRIDGE_MODULE_FILE, level, message);
+}
+
+// =====================================================
 // setup
 // =====================================================
 void setup()
@@ -78,6 +267,15 @@ void setup()
     // 只分配 RAM 环，不写 Flash、不发 MQTT。
     // 必须在 loop() 之前完成，保证后续模块可安全调用 log_emit()。
     log_init();
+    // ===== P2-A：Storage 日志回调桥接（必须早于各 Storage 模块自己的 init）=====
+    //
+    // 此前 json_storage / file_storage 的回调从未注册 ⇒ 67 处 E/W 完全静默。
+    // 在此注册（log_init 之后、json_storage_init / file_storage_init 之前），
+    // 才能把"初始化期"的 Storage 错误也捕获进来。
+    //
+    // 回调 setter 只做指针赋值，不依赖模块已 init，故可安全前置调用。
+    json_storage_set_log_callback(json_storage_log_bridge);
+    file_storage_set_log_callback(file_storage_log_bridge);
     // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
