@@ -910,3 +910,107 @@ log_emit(LOG_EVT_ID, LOG_LVL_WARN, p, 2);
 2. 不要在 ISR 中调用；
 3. 不要传字符串（当前 API 不支持）；
 4. 不要把周期性状态当事件打（只在**边**上打）。
+
+---
+
+## 10. ConfigManager 接入（**P2-B 已落地**）
+
+> 状态：已实现并上板验证。提交：`feat(log): integrate config manager logging`
+> 前置阅读：§9（Storage bridge）—— 本节的桥接与之同构，只看差异即可。
+
+### 10.1 与 P2-A（Storage）的三点关键差异
+
+| # | 差异 | 影响 |
+|---|---|---|
+| ① | **`cfg_log()` 在未注册回调时会兜底打串口**（`config_manager.cpp:220`）。一旦注册，兜底分支被跳过 | 桥接**必须自己补串口输出**，否则原有日志会突然消失（行为回退）⇒ 本桥接是"串口 + LogManager"双路 |
+| ② | **允许 INFO 上报**（Storage 桥接丢弃 INFO） | Config 的 INFO 承载真实诊断信息（`init done` / `boot validated`），且频率极低 |
+| ③ | **两个显式语义埋点必须在 ConfigManager 内部** | 因为对应事件在 `cfg_log` 里**没有文本**（见 §10.3） |
+
+### 10.2 桥接的语义映射（关键词分类）
+
+`cfg_log` 只给自由文本 ⇒ EventId 靠**关键词**分类，op 明细写入 `LOG_P_ERR_CODE`。
+
+| 关键词 | EventId | 说明 |
+|---|---|---|
+| `from backup` | `LOG_CFG_RECOVERED_FROM_BACKUP` (0x0206) | `loaded from backup` / `recovered from backup` |
+| `restart timeout` | `LOG_CFG_RESTART_TIMEOUT` (0x020A) | 倒计时超时后保存并重启 |
+| `init done` / `boot validated` | `LOG_CFG_LOAD_DONE` (0x0201) | 二者同 op ⇒ 被 10 s 去重合并为**每 Boot 1 条**（正是想要的效果） |
+| `version` | `LOG_CFG_VERSION_REBUILT` (0x0207) | 缺失/损坏/重建 |
+| `rejected` / `set failed` | `LOG_CFG_WRITE_REJECTED` (0x0209) | 写入被拒 |
+| `rotate to backup` / `write active` / `commit` / `rollback` / `save failed` / `save:` | `LOG_CFG_COMMIT_FAILED_ROLLBACK` (0x0205) | 提交/回滚/原子写失败（含"保存失败"；Config 段无独立 SAVE_FAILED ID） |
+| 其余 `E` | `LOG_CFG_MODULE_LOAD_FAILED` (0x0202) | **兜底桶**：真实语义看串口原文 + `LOG_P_ERR_CODE`，不要依赖事件名 |
+| 其余 `W` | `LOG_CFG_WRITE_REJECTED` (0x0209) | 同上 |
+| 其余 `I` | **不上报** | ⚠️ INFO 的兜底分类不可靠（`critical op acquired` / `restart timer refreshed` 无对应事件）⇒ 错标比不报更糟，只在串口保留 |
+
+**明确跳过（`CFG_OP_SKIP`，避免与其它机制 / 其它段重复）**
+
+| 文本 | 为什么跳过 |
+|---|---|
+| `enqueue accepted, pending=%d` | **入队 ≠ 生效**；"生效"由 §10.3 的显式埋点负责 |
+| `restart requested by caller, delegating to SystemCommand` | 重启请求归 **System 段** `LOG_SYS_RESTART_REQUESTED`，跨段会重复 |
+
+**参数（只用现有 ParamId）**：`LOG_P_ERR_CODE`(0x0C) = 桥接私有 op 枚举；
+`LOG_P_COUNT`(0x45) = 10 s 窗口内被抑制的条数（仅当 > 0）。
+
+### 10.3 两个显式语义埋点（桥接覆盖不到的部分）
+
+| 事件 | 落点 | 参数 | 为什么必须显式 |
+|---|---|---|---|
+| `LOG_CFG_CHANGE_APPLIED` (0x0203) | `exec_set_field()` 成功尾部（**单键**路径，`config_set` 走这里）**和** `exec_set_module()` 成功尾部（**整模块**路径） | `LOG_P_MODULE`(哈希) + `LOG_P_KEY`(哈希) + `LOG_P_COUNT`(生效字段数) | `cfg_log` 里没有"变更生效"的文本 |
+| `LOG_CFG_SAVE_OK` (0x0204) | `exec_save()` 成功尾部（**命令通道**）**和** `config_save()` 成功尾部（**内部 API 通道**） | 无 | `cfg_log` 里没有"保存成功"的文本 |
+
+> ⚠️ **`exec_save()` 与 `config_save()` 是保存事务的两份实现**，前者**不经过**后者。
+> 只在一处埋点会漏掉另一条通道 ⇒ 两处都要。二者互斥执行，**不会重复上报**。
+> 同理 `exec_set_field()` 与 `exec_set_module()` 是两个互斥入口。
+
+**`LOG_CFG_SAVE_OK` 只在"真实写入"路径发射**：`config_save()` / `exec_save()` 的
+"无 dirty → 幂等返回"是 no-op，**不发射**（否则每次空调用都会留一条 INFO）。
+
+### 10.4 字符串哈希（`LOG_P_MODULE` / `LOG_P_KEY`）
+
+`LogParamIn` 无 blob 字段、`LOG_PTYPE_STR` 不可构造 ⇒ 按 P2 定版做 **FNV-1a 32 位**哈希
+（`config_manager.cpp` 内的 `cfg_hash32()`，8 行、无表、无堆）。
+
+```
+uint32_t h = 2166136261u;            // FNV offset basis
+while (*s) { h ^= (uint8_t)*s++; h *= 16777619u; }
+```
+
+**已知限制**：① 不可逆 ⇒ 云端需维护"模块名 / 键名 → 哈希"字典；② 理论碰撞 ⇒ 哈希只用于
+**聚合与筛选**，精确定位以串口原文为准；③ 该 helper 目前是 ConfigManager 的局部实现，
+多模块共用时应上移为共享工具（Future Improvement）。
+
+### 10.5 上板验证结果（P2-B，2026-09-17）
+
+```
+[CFG][I] init done, loaded 8/8 modules      ← 双路串口（若未补串口则本行消失）
+[CFG][I] boot validated
+[Cloud LOG] OK topic=guo_feeder/log len=147 ← 1 条记录（LOAD_DONE；INFO 只上云）
+[LogT] stats emit=1 ... flash=0 cloud=1     ← flash=0 证明 INFO 不走 Flash（符合 Level Policy）
+
+-- config_set（valve.open_duration_ms，同值写入）--
+{"m":"field updated, restart required","e":0}
+[LogT] stats emit=2 ... flash=0 cloud=2     ← +1 = LOG_CFG_CHANGE_APPLIED ✅
+[CFG][I] enqueue accepted, pending=1        ← 被 SKIP ⇒ 未产生第二条（无重复上报 ✅）
+
+-- config_save --
+{"m":"config saved","e":0,"data":{"saved":true,"dirty":false}}
+[Cloud LOG] OK topic=guo_feeder/log len=407 ← ★ 147 → 407 = 1 → 3 条
+                                               （+CHANGE_APPLIED +SAVE_OK = LOG_CFG_SAVE_OK ✅）
+rst:0xc (RTC_SW_CPU_RST)                    ← 安全重启正常（boot_seq 15 → 16），Critical Op 未被破坏
+```
+
+**验证要点**：双路串口 ✅ · LOAD_DONE 每 Boot 1 条 ✅ · SKIP 无重复 ✅ ·
+CHANGE_APPLIED ✅ · SAVE_OK ✅ · INFO 只上云（`flash=0`）✅ · 安全重启语义未受影响 ✅
+
+**未验证**：桥接的 `E`/`W` 分支（需真实的配置加载失败 / 写被拒；现有钩子无法在不破坏设备配置的前提下触发）。
+
+### 10.6 命令通道备忘（写用例/联调时容易踩）
+
+- `config_*` 命令**不在顶层分发**，而在 `system_router()` 内 ⇒ 报文必须是
+  `{"cmd":"system","ob":"config_query|config_set|config_save|...","id":"<唯一>","p":{...}}`。
+  用 `{"cmd":"config_query",...}` 会得到 `Unknown command: config_query`。
+- `config_set` 需要 `module` **和** `key`；省略 `expect_version` 表示**不做乐观锁校验**；
+  显式传入过期版本会得到 `version mismatch`（**这是正确行为，不是缺陷**）。
+- 配置写入会走 **Safe Restart**（Critical Op + 5 分钟倒计时）⇒ 测试后设备会自行重启，
+  `logt stats` 的计数会被重置，**不要**把重启后的计数当作同一会话的延续。

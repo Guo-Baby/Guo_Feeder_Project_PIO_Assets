@@ -2,6 +2,12 @@
 
 #include "json_storage.h"
 
+// P2-B：Config 语义埋点（LOG_CFG_* / log_emit）。
+//
+// 依赖方向：ConfigManager → LogManager **单向**（LogManager 不反向依赖任何业务
+// 模块）。二者同属服务层，不违反分层约束。
+#include "log_manager.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -224,6 +230,42 @@ static void cfg_log(const char *level, const char *fmt, ...)
     }
 
     s_log_cb(level, buf);
+}
+
+// =====================================================
+// P2-B：字符串标识 → u32 哈希（供 LogManager 参数使用）
+//
+// 为什么要哈希：
+//   LogManager 的 `LogParamIn` 没有 blob 字段，`LOG_PTYPE_STR` 当前**无法构造**
+//   （详见 docs/LogManager-Integration-Guide.md §7.2 F-2）。
+//   P2 定版：**字符串一律哈希/枚举化，不扩 LogManager API**。
+//   于是 `LOG_P_MODULE` / `LOG_P_KEY` 承载的是 FNV-1a 32 位哈希。
+//
+// ⚠️ 已知限制（必须知悉）：
+//   ① 哈希**不可逆** ⇒ 云端需维护"模块名/键名 → 哈希"字典才能反查；
+//   ② 理论上存在碰撞 ⇒ 哈希只用于**聚合与筛选**，精确定位仍以串口原文为准。
+//   ③ 本函数是 ConfigManager 的局部实现；若后续多个模块都需要，
+//      应上移为共享工具（记为 Future Improvement，不属本次范围）。
+//
+// 采用 FNV-1a：实现 8 行、无表、无堆、编译期常量，适合资源受限目标。
+// =====================================================
+static uint32_t cfg_hash32(const char *s)
+{
+    if (s == nullptr)
+    {
+        return 0u;
+    }
+
+    uint32_t h = 2166136261u;          // FNV offset basis
+
+    while (*s != '\0')
+    {
+        h ^= (uint32_t)(unsigned char)(*s);
+        h *= 16777619u;                // FNV prime
+        s++;
+    }
+
+    return h;
 }
 
 // 模块表初始化
@@ -1298,6 +1340,12 @@ bool config_save()
     // 不会执行到本行 —— 失败路径保持占用、不请求重启（需求文档 §九）。
     pending_save_finalize();
 
+    // P2-B：一次**真实**的持久化提交已完成。
+    //
+    // 只在本路径发射 —— 上面"无变化 → 幂等返回"是 no-op，不算一次保存
+    // （否则每次空调用都会留下一条 INFO，属噪音）。
+    log_emit0(LOG_CFG_SAVE_OK, LOG_LVL_INFO);
+
     return true;
 }
 
@@ -2359,6 +2407,30 @@ static ExecResult exec_set_field(
         return result_fail(CONFIG_ERR_VALUE_REJECTED, "value apply failed");
     }
 
+    // P2-B：**单键**配置变更已在内存中生效（命令通道 `config_set` 的真实路径）
+    //
+    // ⚠️ 与 `exec_set_module()` 的关系：二者是**不同的入口**，互斥执行 ——
+    //    · `exec_set_field()`  = 单键（module + key + value）← `config_set` 走这里
+    //    · `exec_set_module()` = 整模块（module + value:object）
+    //    各自在自己的成功尾部发射一次，不会重复上报。
+    //
+    // module / key 是字符串 ⇒ 按 P2 定版做 FNV-1a 哈希（见 cfg_hash32）。
+    {
+        LogParamIn args[3];
+        uint8_t n = 0;
+
+        args[n++] = log_arg_u32(LOG_P_MODULE, cfg_hash32(t.module));
+
+        if (t.key[0] != '\0')
+        {
+            args[n++] = log_arg_u32(LOG_P_KEY, cfg_hash32(t.key));
+        }
+
+        args[n++] = log_arg_u32(LOG_P_COUNT, 1u);   // 单键路径：本次生效 1 个字段
+
+        log_emit(LOG_CFG_CHANGE_APPLIED, LOG_LVL_INFO, args, n);
+    }
+
     return result_ok("field updated, restart required");
 }
 
@@ -2489,6 +2561,8 @@ static ExecResult exec_set_module(
         return result_fail(CONFIG_ERR_MODULE_NOT_FOUND, "module not found");
     }
 
+    uint32_t applied = 0u;
+
     for (JsonPairConst kv : incoming.as<JsonObjectConst>())
     {
         if (!target->data[kv.key().c_str()].set(kv.value()))
@@ -2498,6 +2572,30 @@ static ExecResult exec_set_module(
                 "module field write failed"
             );
         }
+        applied++;
+    }
+
+    // P2-B：配置变更**已在内存中生效**（命令层面已完成；持久化由 config_save 负责）
+    //
+    // 与 `LOG_CFG_SAVE_OK` 的分工（**不是重复上报**）：
+    //   · 本事件      = "变更生效"（apply 完成）
+    //   · SAVE_OK     = "变更已持久化提交"（config_save 完成）
+    //
+    // module / key 是字符串 ⇒ 按 P2 定版做 FNV-1a 哈希（见 cfg_hash32）。
+    {
+        LogParamIn args[3];
+        uint8_t n = 0;
+
+        args[n++] = log_arg_u32(LOG_P_MODULE, cfg_hash32(t.module));
+
+        if (t.key[0] != '\0')
+        {
+            args[n++] = log_arg_u32(LOG_P_KEY, cfg_hash32(t.key));
+        }
+
+        args[n++] = log_arg_u32(LOG_P_COUNT, applied);
+
+        log_emit(LOG_CFG_CHANGE_APPLIED, LOG_LVL_INFO, args, n);
     }
 
     return result_ok("module updated, restart required");
@@ -2719,6 +2817,14 @@ static ExecResult exec_save(JsonDocument &out)
     // 前面的任何失败都已 commit_fail_and_rollback() 提前返回，
     // 保持 Critical Operation 占用、不请求重启（需求文档 §九）。
     pending_save_finalize();
+
+    // P2-B：命令通道的一次**真实**持久化提交完成。
+    //
+    // ⚠️ 这里必须单独发射：`exec_save()` 是保存事务的**另一份实现**，
+    //    它**不经过** `config_save()`（后者是给内部 API 用的路径）。
+    //    两条路径都是"一次真实的保存"，各自在自己的成功尾部发射，
+    //    互斥执行 ⇒ 不会重复上报。
+    log_emit0(LOG_CFG_SAVE_OK, LOG_LVL_INFO);
 
     return result_ok("config saved");
 }

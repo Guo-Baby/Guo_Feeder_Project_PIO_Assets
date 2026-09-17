@@ -20,6 +20,7 @@
 | **测试资产修正** | 按首轮归因修正 14 处预期值 + 回归器加 `<BOOT>` 宏 + 重录基线 | `test(log): fix P1.5 case expectations and re-baseline` | ✅ 已提交 |
 | **收尾 · BT-1** | 云端 `log_ack`：**Worker 不在本仓库** ⇒ 仅记录接口要求，未改设备协议 | — | 📝 已记录 |
 | **收尾 · holes=2** | 代码审查结论：**设计行为**（两个独立来源、相邻才合并）⇒ 更新用例而不改实现 | 见上方提交 | ✅ |
+| **阶段 2-B** | **P2-B ConfigManager 接入**：`config_log_bridge` 桥接（关键词分类 + 10 s 去重 + SKIP 防重复）+ 2 个显式语义埋点（`CHANGE_APPLIED` / `SAVE_OK`）+ `cfg_hash32()` | `feat(log): integrate config manager logging` | ✅ 已提交 |
 
 ---
 
@@ -36,32 +37,37 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | 模块 | 接入方式 | 事件覆盖 | 提交 |
 |---|---|---|---|
 | **Storage（json_storage / file_storage）** | `main.cpp` 回调桥接（`json_storage_log_bridge` / `file_storage_log_bridge`） | `LOG_STG_FS_UNAVAILABLE` / `ATOMIC_WRITE_FAILED` / `CRC_FAILED` / `TXN_RECOVERED` / `WRITE_VERIFY_FAILED` / `READ_FAILED` | P2-A |
-| 其余 10 个模块 | **未接入** | — | — |
+| **Config（ConfigManager）** | `main.cpp` 桥接（`config_log_bridge`，**双路串口**）+ `config_manager.cpp` 内 2 处显式埋点 | `LOG_CFG_LOAD_DONE` / `MODULE_LOAD_FAILED` / `RECOVERED_FROM_BACKUP` / `COMMIT_FAILED_ROLLBACK` / `VERSION_REBUILT` / `WRITE_REJECTED` / `RESTART_TIMEOUT` + **`CHANGE_APPLIED`** / **`SAVE_OK`** | P2-B |
+| 其余 9 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Config → WiFi → Cloud → Time → Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**WiFi → Cloud → Time → Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
+
+（未实现的冻结 EventId：`LOG_CFG_FACTORY_RESET`(0x0208) —— 代码中**不存在** factory reset 函数，无宿主，记为未实现。）
 
 ---
 
 ## Next
 
-### 下一步：**Config 接入**（P2-B）
+### 下一步：**WiFi 接入**（P2-C）
 
-依据 `docs/P2_Log_Integration_Matrix.md` §2 与 `log模块历史/LogManager-P2接入准备审查0918.md`：
+Config 已接入完成（见上）。下一个按约定顺序是 **WiFi**（`src/wifi_module.cpp`，347 行）：
 
-1. **第一步仍用桥接**：`config_set_log_callback()` 已在 `main.cpp` 之外从未注册
-   （当前 `main.cpp` 只注册了 `bin_storage` / `command_manager` / 新增的两个 Storage）
-   ⇒ 先在 `setup()` 注册 `config_log_bridge`，零侵入拿到 ConfigManager 既有 E/W。
-2. **第二步补语义埋点**（约 12 处，全部用已冻结的 10 个 Config EventId）：
-   `LOG_CFG_LOAD_DONE` / `MODULE_LOAD_FAILED` / `RECOVERED_FROM_BACKUP` / `SAVE_OK` /
-   `COMMIT_FAILED_ROLLBACK` / `VERSION_REBUILT` / `FACTORY_RESET` / `WRITE_REJECTED` /
-   `CHANGE_APPLIED` / `RESTART_TIMEOUT`。
-3. ⚠️ `LOG_P_KEY`（0x1E）为字符串语义、**当前不可达** ⇒ 按 P2 定版走"哈希/枚举化"
-   （沿用 `LOG_P_SSID_HASH` 先例）或省略，不得为此扩 API。
-4. 提交主题建议：`feat(log): integrate config manager logging`
+1. **WiFi 没有日志回调接口**（与 Storage/Config 不同）⇒ 桥接方案不适用，只能**直接加显式埋点**。
+2. 埋点位置（6 个，全部用已冻结的 WiFi 段 EventId）：
+   `wifi_start_connect()` → `LOG_WIFI_CONNECT_START`(0x0601)；
+   `wifi_task()` CONNECTING→CONNECTED 边沿 → `LOG_WIFI_CONNECTED`(0x0602)；
+   :235 超时 → `LOG_WIFI_CONNECT_TIMEOUT`(0x0603)；
+   :262 断线 → `LOG_WIFI_LOST`(0x0604)；
+   :294 重连 → `LOG_WIFI_RECONNECT_TRY`(0x0605)。
+3. ⚠️ **必须限流**：`reconnect_interval` 默认 10 s ⇒ 无限制会产生 6 条/分钟；
+   按 `docs/P2_Log_Integration_Matrix.md` §5.3 用"N 次记 1 次"或"首末两条"模式。
+4. ⚠️ 状态迁移建议成对带 `LOG_P_WAS`(0x47) + `LOG_P_STATE`(0x44)。
+5. ⚠️ 保持非阻塞：埋点只能放在已有分支里，**不得**新增等待。
+6. 提交主题建议：`feat(log): integrate wifi module logging`
 
 ### 之后（严格一次一个模块）
 
-`WiFi → Cloud → Time → Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry`
+`Cloud → Time → Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry`
 
 ⚠️ **Workflow 接入前必须先评审** `workflow_terminate()` 的 Critical Op release 收口路径
 （项目铁律：release 不能放在会中途 return 的函数里）。详见
