@@ -25,6 +25,9 @@
 | **BT-9 回归** | 全量重跑 **195/195 = 100%，0 MISS**（首轮 167/187 → R1 187/189 → 195/195；**此后 P2-D 夹具加固 ⇒ 现基线 196/196**）；F2-B 两条原 KNOWN-FAIL 断言（`replay=8` / `qused=8`）**由 FAIL 转真实 PASS** | 同上 | ✅ |
 | **阶段 2-C** | **P2-C WiFi 接入**（`src/wifi_module.cpp`，唯一改动文件）：5 个埋点（`CONNECT_START` / `CONNECTED` / `CONNECT_TIMEOUT` / `LOST` / `RECONNECT_TRY`）+ 失败循环节流（N 次记 1 次 **AND** ≥60s）+ `wifi_ssid_hash32()` | `feat(log): integrate wifi module logging` | ✅ 已提交 |
 | **阶段 2-D** | **P2-D Cloud/MQTT 接入**（`src/cloud_manager.cpp`，唯一改动文件，**纯增量 +233/−0**）：5 个埋点（`CONNECTED` / `DISCONNECTED` / `SLEEP_ENTER` / `PUBLISH_FAIL` 聚合 / `CMD_EXEC_FAILED`）+ 发布失败计数聚合（60s 窗口） | `feat(log): integrate cloud manager logging` | ✅ 已提交 |
+| **阶段 2-E** | **P2-E TimeManager 接入**（`src/time_manager.cpp`，唯一生产代码改动文件，**纯增量 +210/−0**）：9 个埋点覆盖 `NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`（**三分支**）/ `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID`；RTC 异常**边沿锁**去重；`time_source_code()` 枚举化 | `feat(log): integrate time manager logging` | ✅ 已提交 |
+| **阶段 2-E · 夹具** | P2-E 引发的 F2-B 4 条真失败：根因＝`cloud_collect_batch()` **在 `boot_seq` 变化处截断批次**，而每个 Boot 多 1 条 Flash 记录（`RTC_PROBE` 是 WARN）⇒ 积压跨 2 个 boot_seq ⇒ 单批永远排不空 ⇒ `qused=0`/`rarmed=0` 不可能达成。**只改夹具**：回归器新增**内联正则期望**（`replay=/[1-9][0-9]*/`），F2-B 判据改为"非零"+结构性事实，**断言总数 196 条不变** | 同上 | ✅ |
+| **阶段 2-E · 发现** | ① `LOG_TIME_NTP_FAIL`(0x0802) **确认无宿主**（SDK 只提供成功通知、状态枚举无失败态）⇒ 记为**未实现**，不新增看门狗；② `rtc_init()` 内的"配置禁用"分支是**死代码**（`rtc_enabled && rtc_init()` 短路求值）⇒ 埋点移到 `time_init()` 可达分支；③ `VALID_ENTER.SOURCE` 存在**实测竞态**（边沿可能早于来源确认，实测两种顺序都出现过） | 同上 | ✅ 已处理并记录 |
 
 ---
 
@@ -34,9 +37,11 @@
 HEAD:           见 `git log --oneline -1`（每次提交后更新本行）
 分支:           wb
 P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
-回归基线:       ✅ 196/196 = 100%，0 MISS（test/log_fix_tests.txt，P2-D 期间夹具加固后全量重跑）
-                   首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195 → 本轮 196/196
-                   （B 段 65 → 66：F2-B 增加一步 `logt cpush 1` + 一次 `ackauto`，见下方「回归夹具加固」）
+回归基线:       ✅ 196/196 = 100%，0 MISS（test/log_fix_tests.txt，P2-E 最终固件 + 恢复配置后全量重跑）
+                   首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195
+                   → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）后仍 **196/196**
+                   （断言总数保持不变：F2-B 去掉 3 条与积压历史相关的绝对计数，
+                     换成 3 条结构性判据 + 补 1 条 `giveup=0`）
 合约测试:       ✅ 4/4 ALL PASS（含新增第 ⑧ 组 23 条 BT-9 断言，其中 3 条负向探针）
 ```
 
@@ -48,11 +53,18 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Config（ConfigManager）** | `main.cpp` 桥接（`config_log_bridge`，**双路串口**）+ `config_manager.cpp` 内 2 处显式埋点 | `LOG_CFG_LOAD_DONE` / `MODULE_LOAD_FAILED` / `RECOVERED_FROM_BACKUP` / `COMMIT_FAILED_ROLLBACK` / `VERSION_REBUILT` / `WRITE_REJECTED` / `RESTART_TIMEOUT` + **`CHANGE_APPLIED`** / **`SAVE_OK`** | P2-B |
 | **WiFi（`wifi_module.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处，全在既有分支内） | `LOG_WIFI_CONNECT_START` / `CONNECTED` / `CONNECT_TIMEOUT` / `LOST` / `RECONNECT_TRY` | P2-C |
 | **Cloud（`cloud_manager.cpp`）** | 复用既有"回调置标志 → `cloud_task()` 消费"机制 ⇒ 埋点挂在**标志被消费处**（loop 上下文，边沿由单槽标志保证） | `LOG_MQTT_CONNECTED` / `DISCONNECTED` / `SLEEP_ENTER` / `PUBLISH_FAIL`（聚合）/ `CMD_EXEC_FAILED` | P2-D |
-| 其余 7 个模块 | **未接入** | — | — |
+| **Time（`time_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（9 个事件 / 11 个埋点，全在既有分支内）；RTC 异常用**边沿锁**；`SOURCE` 走**枚举化**（0=INVALID 1=RTC 2=SNTP 3=MANUAL） | `LOG_TIME_NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`(**INFO·WARN 三分支**) / `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | P2-E |
+| 其余 6 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Time → Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
 
-（未实现的冻结 EventId：`LOG_CFG_FACTORY_RESET`(0x0208) —— 代码中**不存在** factory reset 函数，无宿主，记为未实现。）
+（未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
+
+| EventId | 原因 |
+|---|---|
+| `LOG_CFG_FACTORY_RESET`(0x0208) | 代码中**不存在** factory reset 函数 |
+| `LOG_CLOUD_FRAG_FAIL`(0x0706) | `cloud_publish_fragmented()` 全仓库无调用者（死代码） |
+| **`LOG_TIME_NTP_FAIL`(0x0802)** | **SDK 只提供成功通知（`sntp_sync_time_cb_t`），状态枚举无失败态（`RESET`/`COMPLETED`/`IN_PROGRESS`）⇒ 设备无法观测 NTP 失败。要产出它必须新增 SNTP 超时看门狗（＝扩展状态机），超出 P2「只加观测」范围。详见 Guide §14.3** |
 
 ### P2-C 验证记录（2026-09-17，COM8，AP `wqs1`）
 
@@ -98,7 +110,44 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 > `LOG_CLOUD_FRAG_FAIL`(0x0706) **未埋点**：`cloud_publish_fragmented()` 全仓库无调用者（死代码），埋点不可达。
 > 回归：埋点后全量重跑 **196/196 = 100%，0 MISS**（含夹具加固，见下）。
 
-### ★ 回归夹具加固（P2-D 期间发现，**后续每个模块都会遇到**）
+### P2-E 验证记录（2026-09-18，COM8，broker `guo_feeder/log`）
+
+**验证手段**：`.pio/p15run/p2e_probe.py`（先订阅再烧录/复位 ⇒ 才能抓到 Boot 头几秒的记录）
++ `log_decode.py` 解到记录级。**注意本阶段同时修好了 `log_decode.py` 的批次头字段错位**：
+CBOR 批次的 `array(12)` 顺序是
+`[fmt, dict_ver, **boot_seq**, seq_from, seq_to, count, drop_ring, drop_overflow, drop_unacked, self_degraded, flags, [records]]`
+（原实现漏了 `boot_seq`，把 `v[2]` 当 `seq_from`，导致 `boot=` 打印成 seq 值）。
+
+| EventId | 验证方式 | 结论 |
+|---|---|---|
+| `LOG_TIME_NTP_OK` | 真机开机 + MQTT 解码 | ✅ 通过（`UNIX=1789666817 DURATION_MS=454 ATTEMPT_N=1`；**挂在 settled 确认点**，非 callback） |
+| `LOG_TIME_VALID_ENTER` | 真机开机 | ✅ 通过（`UNIX=<同步时刻> SOURCE=2(SNTP)`） |
+| `LOG_TIME_RTC_PROBE`（**失败**） | 真机开机（板上无 RTC 芯片） | ✅ 通过（**WARN** `ADDR=81 STATE=1 ERR_CODE=2`）—— **首次用日志解释了 `rtc_present=false`** |
+| `LOG_TIME_RTC_PROBE`（**配置禁用**） | `config_set rtc.enable=false` + `config_save` ⇒ 重启 | ✅ 通过（**INFO** `STATE=0`，无 ADDR/ERR_CODE）。⚠️ **修复后才可达**，见下 |
+| `LOG_TIME_RTC_PROBE`（**探测成功**） | —— | ❌ 需真实 PCF8563T 芯片 |
+| `LOG_TIME_RTC_BOOT_RESTORE` | —— | ❌ 需 RTC 芯片 |
+| `LOG_TIME_RTC_CALIBRATED` | —— | ❌ 需 RTC 芯片 |
+| `LOG_TIME_RTC_WRITE_FAILED` | —— | ❌ 需 RTC 芯片 |
+| `LOG_TIME_RTC_VL_FLAG` | —— | ❌ 需 RTC 芯片 + **电池耗尽** |
+| `LOG_TIME_RTC_BCD_INVALID` | —— | ❌ 需 RTC 芯片 |
+| `LOG_TIME_INVALID_ENTER` | 代码路径审查 | ⚠️ **审查通过，运行时不可触发** —— 需"有效→无效"迁移（把时钟设到 2026-07-01 之前），而设备**没有** `set_time` 通道（`time_set_manual*` 无调用者）。同函数的**有效边沿已上板验证**（互为镜像分支，共用同一 `last_reported` 门控） |
+| **`LOG_TIME_NTP_FAIL`** | —— | ⛔ **冻结 EventId / 无宿主 / 未实现**（见 `Current baseline` 的说明表与 Guide §14.3） |
+
+**★ P2-E 期间发现并修复的三件事**（详见 Guide §14.4 / §14.6 / §14.9）：
+
+1. **`rtc_init()` 里的"配置禁用"分支是死代码**：`time_init()` 是它唯一调用者，而调用条件是
+   `rtc_enabled && rtc_init()`（**短路求值**）⇒ `!rtc_enabled` 时它根本不会被调用。
+   埋点曾写在那里，**实测该记录完全不出现**。已移到 `time_init()` 中可达的 `else` 分支。
+   ⇒ **教训：分支存在 ≠ 分支可达，埋点必须验证可达性。**
+2. **`VALID_ENTER.SOURCE` 存在实测竞态**：SMOOTH 同步下系统时间会在 SNTP **确认之前**
+   就越过有效阈值 ⇒ 两次实测拿到两种顺序（`NTP_OK → VALID_ENTER(SOURCE=2)` 与
+   `VALID_ENTER(SOURCE=0) → NTP_OK`）。`SOURCE=0` 不是错值，但**来源应以
+   `NTP_OK` / `RTC_BOOT_RESTORE` 为准**。
+3. **夹具根因比 P2-D 那次更根本**（见下节）。
+
+**现场状态**：`rtc.enable` 已恢复 `true`（`config_query` 确认，且启动日志回到 WARN 版）。
+
+### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
 **现象**：P2-D 埋点后 B 段稳定 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`）。
 
@@ -125,33 +174,79 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
    **判据是串口出现 `MQTT error event` / `Writing didn't complete`**；遇到大面积 MISS
    先查这个，再怀疑固件（见 PIO 技能 §10 的排查顺序）。
 
+#### P2-E 加深的一层：**`boot_seq` 截断使"排空队列"不再可达**
+
+P2-E 又出现同样的 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`），
+但**根因不同、更根本**：
+
+```c
+// cloud_collect_batch()
+if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq) break;
+```
+
+⇒ 批次**在 `boot_seq` 变化处截断**。于是"一批装下全部补发记录 ⇒ `used` 归 0
+⇒ sweep 走完 ⇒ `rarmed=0`"这个前提，**只在积压同属一个 Boot 且不超批次上限时成立**。
+
+P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN**，在无 RTC 的板上
+**必现**）⇒ 积压 = 上一 Boot 8 条 + 本 Boot 1 条（**两个 boot_seq**）⇒ 单批永远排不空。
+（**实现无缺陷**：`cloud_poll()` 会把余下记录作为下一批继续发，只是夹具没有足够 ACK 轮次；
+所需轮次数 = 积压里不同 `boot_seq` 的个数，同样与历史相关。）
+
+**加固做法（P2-E）**：
+
+| 动作 | 内容 |
+|---|---|
+| **回归器新增内联正则期望** | 期望串里成对的 `/正则/` 片段按正则处理，其余按字面量。**向后完全兼容**（无 `/` ⇒ 仍子串匹配）。自检：`.pio/p15run/expect_hit_selftest.py`（13 例含 4 条**负向探针**） |
+| **F2-B 判据改为"非零"** | `replay` 修复前在该场景**恒为 0** ⇒ `replay=/[1-9][0-9]*/` 精确且与积压历史无关 |
+| **换成结构性事实** | `gcfloor=/[1-9][0-9]*/`（钳制生效）· `replay_seq=/[1-9][0-9]*/`（游标已推进）· `ack ok boot=`（旧批次 ACK **被接受**而非 DUPLICATE）· `giveup=0` |
+| **断言总数不变** | 去掉 3 条与积压历史相关的绝对计数，换成 3 条结构性判据 + 补 1 条 ⇒ 仍 **196 条** |
+
+> ⚠️⚠️ **写内联正则必须把字段名写进字面量**：`replay=/[1-9][0-9]*/`，
+> **不是** `/[1-9][0-9]*/`。纯正则会 `search` **整行**，`offskip=1`、`ack_ok=2`
+> 等其它数字会造成**假命中** —— 实测 `replay=0` 也被判 OK。
+
+**⇒ 给后续模块（Workflow 起）的结论**：Boot 期**新增任何 Flash 记录**（即 WARN+）
+都会改变补发积压的 boot_seq 构成。**凡是与"补发条数 / 队列排空"相关的断言，
+一律不要写绝对值**，改用"非零"或结构性判据。
+
 
 
 ---
 
 ## Next
 
-### 下一步：**Time / RTC 接入**（P2-E）
+### 下一步：**Workflow 接入**（P2-F）
 
-Cloud 已接入完成（见上），回归 **196/196 全绿**。下一个按约定顺序是 **Time**（`src/time_manager.cpp`，879 行）：
+Time 已接入完成（见上），回归 **196/196 全绿**。下一个按约定顺序是 **Workflow**
+（`src/workflow.cpp` 4465 行 + `workflow_storage.cpp` 1583 + `capability_registry.cpp` 1007）。
 
-1. 关键点（矩阵 §6.2）：`time_init()` 完成 / SNTP 同步成功 / SNTP 失败 / RTC 探测
-   （`rtc_present`）/ 时间回退或跳变。
-2. ⚠️ **SNTP 陷阱**（项目铁律）：IDF v4.4 的 SNTP 在 `COMPLETED` 后会**瞬时**回落到 `RESET`，
-   "从未同步"也是 `RESET` ⇒ **禁止用 `status != IN_PROGRESS` 判成功**，必须用
-   「callback 通知 + loop 延迟确认」。埋点要挂在**确认成功**的那一处，不要挂在 SNTP 回调里。
-3. ⚠️ 上板 `RTC` 仍 `rtc_present=false` ⇒ RTC 相关埋点只能走"探测失败"分支，成功分支无法上板验证。
-4. ⚠️ 时间跳变（SNTP 校正）会产生**时间倒退/跳跃** ⇒ 埋点不要依赖"时间单调"，
-   用 `LOG_P_UNIX` / `LOG_P_DRIFT_MS` 表达（已有 ParamId）。
-5. 提交主题建议：`feat(log): integrate time manager logging`
+1. ⚠️⚠️ **开工前必须先评审 `workflow_terminate()` 的 Critical Op release 收口路径**
+   （项目铁律：`release` 不能放在会中途 `return` 的函数里 —— 曾因 `workflow_notify_finish()`
+   在 callback 为空时提前返回导致漏 release = **永久无法重启**）。详见
+   `log模块历史/LogManager-P2接入准备审查0918.md` §7 R-7。
+   埋点若要插在这些函数里，必须先证明**不引入任何新的提前 return**。
+2. `workflow_terminate()` 有 **6 个终止路径目前零日志**（矩阵 §7.1），这是本模块最大缺口。
+   冻结 EventId 覆盖极好：`SLOT` / `WF_ID` / `VARIANT` / `STEPS_DONE` / `STUCK_STEP` /
+   `FAIL_STEP` / `DURATION_MS` / `TIMEOUT_MS` / `SAVED` / `TOTAL` / `OP` / `ACTION_ID` 全部已有。
+3. ⚠️ **`LOG_P_WF_ID`(0x02) / `LOG_P_ACTION_ID`(0x0B) 是字符串语义且当前不可达**
+   ⇒ 按 P2 定版走**哈希/枚举化**（参考 `cfg_hash32()` / `wifi_ssid_hash32()`），
+   或优先用已有的 **`LOG_P_SLOT`(0x01) 整数**定位（`p.id` 就是 Slot）——
+   **Slot 比哈希更可靠**，建议优先。
+4. ⚠️ `CloudManager` 下发的 workflow 命令在 **esp-mqtt 任务**上下文、
+   `workflow_task()` 在 **loop** 任务 ⇒ 埋点要放在**既有分支**里，注意跨任务可见性
+   （收口必须"先 Release、后置 state"）。
+5. ⚠️ **启动 / 保存事务是高频候选**：`workflow_save_transaction()` 若每个 Workflow 各发一条，
+   16 个 Workflow 就是 16 条 ⇒ 参考 §12 的**计数聚合**或"仅记失败者"。
+6. 提交主题建议：`feat(log): integrate workflow logging`
 
 ### 之后（严格一次一个模块）
 
-`Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry`
+`Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry`
 
-⚠️ **Workflow 接入前必须先评审** `workflow_terminate()` 的 Critical Op release 收口路径
-（项目铁律：release 不能放在会中途 return 的函数里）。详见
-`log模块历史/LogManager-P2接入准备审查0918.md` §7 R-7。
+⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
+先有 Weight 日志才能解释强制关阀。
+⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
+先有 Weight 日志才能解释强制关阀。
 
 ---
 
@@ -167,6 +262,9 @@ Cloud 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | P2-A 未验证项 | Storage bridge 的 **ERROR / CRITICAL 分支**与 **10 s 抑制窗口**无法用现有钩子触发 | 桥接层完整性 | ⏳ 待"结构化回调 + 故障注入"一并解决 |
 | F2 决策 | 字符串参数是否改结构化回调（现为哈希/枚举化） | Storage 路径、Config key、Workflow id/action id 等 7 个 ParamId 的可用性 | ⏳ 已按"暂不扩 API"执行，未来可评审 |
 | F6 基线 | P1.5 之前的既有回归集（P1.2 核心 66 / Flash 92 / F5 恢复 34 / F7-F9 43 / 交接 56）**未复跑** | P2 首个模块接入前的回归基线 | ⏳ 建议尽快补跑 |
+| **NTP 失败不可观测**（P2-E 发现） | **设备无法知道 SNTP 是否失败**：SDK 只提供成功通知，状态枚举无失败态。⇒ "设备联网正常但 NTP 一直没同步"这种故障**完全静默**（板上若 UDP 123 被墙就是这种状态） | Time 模块的诊断能力；云端的"NTP 是否可用"判断 | ⏳ **未解决**（P2-E 按约定不新增状态机）。若要做 = 加"已启动 N 秒仍无 `sntp_sync_seq` ⇒ 发 `LOG_TIME_NTP_FAIL`"的**纯观测看门狗**（约 5 行 + 1 个阈值常量 + 1 个 latch）。**建议单独评审后在 P2 收尾或 P3 处理** |
+| **RTC 芯片缺失**（P2-E 发现） | 板上 `rtc_present=false`（`ERR_CODE=2` = Wire 地址 NACK ⇒ 芯片不在）⇒ 5 个 RTC 事件（`BOOT_RESTORE` / `CALIBRATED` / `WRITE_FAILED` / `VL_FLAG` / `BCD_INVALID`）与 `RTC_PROBE` 的**成功分支**无法上板验证 | RTC 路径的观测完整性 | ⏳ **待硬件**。焊上 PCF8563T（0x51，与 OLED 共用 I2C）即可验证前 4 个；`VL_FLAG` 还需**电池耗尽** |
+| **无 `set_time` 通道**（P2-E 发现） | `time_set_manual()` / `time_set_manual_string()` **全仓库无调用者**（`time_manager_set_time()` 是预留空实现）⇒ ① `INVALID_ENTER` 无法运行时触发（需把时钟设到 2026-07-01 之前）；② `time_set_manual()` 的 RTC 写失败埋点不可达（本次**未埋点**） | `INVALID_ENTER` 的真机验证；手动校时功能本身 | ⏳ **未解决**（属功能缺失，不是日志问题）。P2-E 已按"埋点不放在不可达分支"处理并在 Guide §14.8 记录复测方法 |
 
 ---
 
@@ -200,6 +298,7 @@ Cloud 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | `docs/LogManager-Integration-Guide.md` **§11** | **新增**：**watermark 语义分离（FIX-BT9）** —— 根因 / 两个标量 / 为何 classify 也要改 / `gc_floor` 生命周期 / 刻意未改的部分 / 残余 BT-10 / 观测 / 验收 |
 | `docs/LogManager-Integration-Guide.md` **§12** | **新增**：**WiFi 接入** —— 无回调接口⇒显式埋点 / 5 个埋点表 / 失败循环节流（N 次记 1 **AND** ≥60s）/ 为何重连不发 CONNECT_START / WAS·STATE 编码 / 参数语义 / 上板验证 / 已知限制 |
 | `docs/LogManager-Integration-Guide.md` **§13** | **新增**：**Cloud/MQTT 接入** —— 复用既有单槽标志做边沿 / 5 个埋点表 / 发布失败计数聚合 / WAS·STATE 编码 / 刻意未做 / 上板验证（含 session takeover 触发技巧）/ 两项未触发的复测方法 |
+| `docs/LogManager-Integration-Guide.md` **§14** | **新增**：**TimeManager 接入** —— 10 个冻结 EventId 的最终处置（含 `NTP_FAIL` **无宿主**的 SDK 证据）/ 11 个埋点表 / **SNTP 特殊处理**（为何挂在 settled 确认点、为何禁用 `status != IN_PROGRESS`、为何不拿平滑超时当失败）/ RTC 探测三分支 + **一处不可达陷阱**（`rtc_enabled && rtc_init()` 短路）/ 边沿锁去重 / `VALID_ENTER.SOURCE` 竞态 / 上板验证 / 未验证项 / **回归夹具加固（boot_seq 截断 + 内联正则期望）** |
 | `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题）；**附录 R1**（用例修正与基线重录）；**附录 R2**（BT-9 分析·修复·验证 + 新基线 195/195） |
 | `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查 —— 已随 `85c88b5` 入库 |
 
@@ -211,6 +310,16 @@ Cloud 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | `log模块历史/LogManager-P2接入准备审查0918.md` | ✅ 已入库（`85c88b5`） |
 | `AI_RULES.md` | 已加「§9 Build/Test/Cleanup Rules」，但该文件**已被 `.gitignore` 忽略**（见 commit `1d0b47c`）⇒ 改动不会入库 |
 
+### 未入库的过程工具（落 `.pio/`，被 ignore；供后续会话复用）
+
+| 文件 | 用途 |
+|---|---|
+| `.pio/p15run/log_decode.py` | CBOR 批次 → **记录级**解码（`event_id` + 每个 ParamId 真值）。P2-E 期间修正了批次头**字段错位**（`v[2]` 是 `boot_seq`，不是 `seq_from`） |
+| `.pio/p15run/p2e_probe.py` | 订阅 `guo_feeder/log` 跨一次复位抓 Boot 记录（**必须"先订阅、后复位"**，否则 Boot 头几秒的记录抓不到） |
+| `.pio/p15run/p2d_probe.py` | 含 **session takeover 踢会话**技巧（用设备自己的 `client_id` 再连一次 ⇒ 产生真实 `DISCONNECTED`） |
+| `.pio/p15run/expect_hit_selftest.py` | `serial_batch.py` 的 **`expect_hit` 真值表自检**（13 例含 4 条负向探针）——改匹配逻辑后必须跑 |
+| `.pio/p15run/p2e_patch.py` | P2-E 的 14 处精确插入式补丁脚本（每处断言恰好命中 1 次） |
+
 ---
 
-*最后更新：2026-09-18（P2-C WiFi 接入完成并补登验证记录；进行中：P2-D Cloud/MQTT）*
+*最后更新：2026-09-18（**P2-E Time/RTC 接入完成**，回归 196/196；下次：**P2-F Workflow 接入**）*
