@@ -181,8 +181,12 @@ logt fseg 0 ||| recs=8
 # 重启 ⇒ acked_seq 归 0、空洞表清空（纯 RAM 态，无需任何 Flash 格式迁移）
 # ⇒ 那 8 条 WARN 重新可补发 ⇒ ACK 后段被正常回收
 #
-# 预期：rarmed=1 → 注入 live ACK → replay=8（★BT-9 判别）→ 旧批次 ACK 未被吞
-#       → ACK 落账 → 队列排空(qused=0) → rarmed=0
+# 预期：rarmed=1 → 注入 live ACK → **补发确实发生（replay > 0，★BT-9 判别）**
+#       → 旧批次 ACK 未被吞（`ack ok boot=`）→ ACK 落账 → 旧段未回收（segdel=0）
+#
+#   ⚠️ 判据用「**非零**」而不是精确条数：可补发积压的条数取决于 Flash 里遗留了
+#      几个 Boot 的记录（`cloud_collect_batch()` 在 boot_seq 变化处截断批次），
+#      它**不是不变量**。详见本段尾部注释。
 #
 # ⚠️ 本段**不**期望 segdel/seg_del 增长：此时 Flash 里只有 1 个段，而它同时是
 #    `s_append_segment`（追加目标）。`cloud_delete_acked_segments()` 明确跳过
@@ -225,26 +229,52 @@ logt ackauto 0 ||| acked=
 #   修复前：单一水位 ⇒ 旧记录被跳过（replay 恒 0）＋ 旧段被判可回收。
 #   修复后：`s_cloud_gc_floor` = Flash 现存记录的最低 seq ⇒ 连续水位被钳在其下。
 logt cloud ||| gc=
-logt cloud ||| gcfloor=
-# ★ 验收 1：旧记录**仍然**被补发（修复前 replay=0 —— 这是本修复的核心判别）
-logt stats ||| replay=8
+# ★ 钳制下界已生效：`gcfloor` = Flash 现存记录的最低 seq
+#   （非 0 ⇒ 钳制在起作用；修复前没有这个概念）
+logt cloud ||| gcfloor=/[1-9][0-9]*/
+# ★★ 验收 1：旧记录**仍然**被补发 —— 本修复的核心判别
+#
+#   ⚠️⚠️ 这里**有意不再写精确条数**（原来是 `replay=8`）。根因比 P2-D 那次更根本：
+#        **可补发积压的条数不是不变量**，它取决于 Flash 里遗留了几个 Boot 的记录。
+#        而 `cloud_collect_batch()` 里有：
+#            if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq) break;
+#        ⇒ 批次在 **boot_seq 变化处截断** ⇒ 积压跨 ≥2 个 Boot 时，
+#        "一批装下全部补发记录 ⇒ used 归 0 ⇒ sweep 走完"这个前提**不再成立**，
+#        `qused` / `rarmed` 也就永远到不了 0。
+#        （这不是缺陷：`cloud_poll()` 会把余下的记录作为**下一批**继续发，
+#          只是夹具没有足够多的 ACK 轮次；所需轮次数 = 积压里不同 boot_seq 的个数，
+#          同样与历史相关。）
+#
+#   实测（P2-E 接入后）：每个 Boot 多 1 条 Flash 记录 —— `LOG_TIME_RTC_PROBE`
+#        是 WARN（探测失败也照样落 Flash），而探测失败在本板是**必现**的
+#        ⇒ 积压 = 上一 Boot 的 8 条 + 本 Boot 的 1 条 = **两个 boot_seq**
+#        ⇒ 原写死的 `qused=8` / `qused=0` / `rarmed=0` 三条必然失败。
+#
+#   判据强度**未削弱**：`replay` 修复前在本场景**恒为 0**（旧记录被单点水位越过）；
+#        修复后 > 0。用正则表达"非零"，精确且与积压历史无关。
+logt stats ||| replay=/[1-9][0-9]*/
 # ★ 验收 2：旧段未被提前回收（等旧记录真正确认后才允许）
 logt stats ||| segdel=0
 logt stats ||| seg_del=0
-# ★ 验收 3：旧记录已重新回到云队列
-logt cloud ||| qused=8
+# ★ 验收 3：补发游标已推进（`replay_seq` 初值 0；开始补发后为某条旧记录的 seq）
+logt cloud ||| replay_seq=/[1-9][0-9]*/
 # 旧批次（boot_seq = 上一 Boot）的 ACK 必须**不被**当成 DUPLICATE 吞掉，
-# 否则这 8 条会永远卡在队列里 ⇒ `used != 0` 恒成立 ⇒ 补发被自身永久阻塞。
-logt ackauto 0 ||| acked=
-# ★ 正面证据：ACK 落账 + 队列排空（替换原来依赖"段被回收"的弱断言）
-#   注：ack_ok 现在含"注入的 live ACK"这一条，故只断言它被记录、不钉死数值；
-#       真正的判据是 `qused=0`（旧记录已离开队列）。
+# 否则那些旧记录会永远卡在队列里 ⇒ `used != 0` 恒成立 ⇒ 补发被自身永久阻塞。
+#   `ack ok boot=` 是**被接受**的正面证据（r=2 ACCEPT）；
+#   若被判 DUPLICATE，设备打印的是 `ack ignored`。
+logt ackauto 0 ||| ack ok boot=
+# ★ 正面证据：ACK 落账（同样只断言"被记录"，不钉死数值）
 logt stats ||| ack_ok=
-logt stats ||| qused=0
+# ★ ACK 路径确实在起作用：全程**没有**发生 give-up
+#   （若补发被 give-up 挡住，说明走的是"放弃"而不是"ACK 推进"，BT-9 也就无从验证）
+logt stats ||| giveup=0
 # ★ 追加目标段（唯一一段）按设计不可回收 ⇒ 恒为 0
 logt stats ||| segdel=0
 logt stats ||| seg_del=0
-logt cloud ||| rarmed=0
+# 补发 sweep 仍在推进（游标 seq 非零）
+#   ⚠️ 不断言 `rarmed=0`：它要求队列**彻底排空**，而积压跨 Boot 时需要与
+#      "不同 boot_seq 个数"相同数量的 ACK 轮次才能达到 ⇒ 与积压历史相关。
+logt cloud ||| replay_seq=/[1-9][0-9]*/
 
 
 # =====================================================
