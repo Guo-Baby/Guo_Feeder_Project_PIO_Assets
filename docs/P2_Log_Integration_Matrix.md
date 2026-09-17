@@ -1,0 +1,438 @@
+# P2 模块日志接入矩阵
+
+> 版本：v1.0（P2 前置准备）
+> 基线 commit：`65b4523 fix(log): complete P1.5 ack hole and replay cursor fixes`（其后 `1d0b47c` 为仓库整理，不含代码）
+> 性质：**分析文档**。未修改任何 `src/` 生产代码、未新增 EventId、未新增 ParamId、未修改 LogManager API。
+> 配套文档：`log模块历史/LogManager-P2接入准备审查0918.md`（EventId / ParamId / 高频风险 / 初始化顺序 / 风险清单）
+> 接口细节见：`docs/LogManager-Integration-Guide.md`
+
+---
+
+## 0. 阅读约定
+
+### 0.1 事实来源
+
+本矩阵所有 `文件:行号` 均来自当前工作区实读（HEAD `65b4523` + 未提交的 0 处 src 改动）。
+
+### 0.2 Level 判定（冻结，无 EventId 级例外）
+
+| Level | Flash | Cloud | 判定规则 |
+|---|---|---|---|
+| `LOG_LVL_DEBUG` | ✗ | ✗ | **不进 Log 系统**（`log_emit` 直接 return false）。仅侧信道计数 |
+| `LOG_LVL_INFO` | ✗ | ✓ | 正常状态变化 / 动作完成 / 成功结果 |
+| `LOG_LVL_WARN` | ✓ | ✓ | 可自愈的异常、重试、降级、超时 |
+| `LOG_LVL_ERROR` | ✓ | ✓ | 功能失败但系统仍可运行 |
+| `LOG_LVL_CRITICAL` | ✓ | ✓ | 安全相关 / 数据可能损坏 / 需要立刻 flush（IMM） |
+
+> ⚠️ **INFO 不落盘但占 RAM 环与云队列**——"INFO 洪泛"同样会挤掉真正的 WARN+。见 §7 与审查报告 §5。
+
+### 0.3 硬约束（写代码时必须遵守）
+
+1. `log_emit()` 内部用 `portENTER_CRITICAL()`（**非 `_ISR` 变体**）⇒ **禁止在 ISR 调用**。NimBLE 回调（`MiAdvCallback::onResult`）虽非 ISR，但属 BLE host 任务上下文，**同样禁止**（见 §11 BLE）。
+2. 参数 `param_count > LOG_MAX_PARAMS(8)` ⇒ **整体拒绝**，不截断。
+3. `log_emit()` 返回值必须检查的场景：CRITICAL 级。返回 `false` = 未进环（环未就绪 / 参数超限 / DEBUG）。
+4. `log_emit()` **线程安全**（临界区保护），多任务可调用；但仍建议集中在 `*_task()`（loop 上下文）调用。
+5. **业务模块禁止调用** `log_flash_*` / `log_meta_*` / `log_seg_*` / `log_cloud_test_*`。
+
+---
+
+## 1. System / Boot
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/main.cpp`（1748 行）、`src/system_command.cpp`（624）、`src/system_state.cpp`（464）、`src/computer_reset.cpp`（475） |
+
+### 1.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | **仅 41 处 `LOG_`/`log_` 引用，全部是 `main.cpp` 的串口测试钩子**（`logtest` / `logfill` 等命令），不是业务埋点 |
+| 错误处理 | `system_command.cpp` 有完整 Safe Restart V2 状态机（`RESTART_IDLE/REQUESTED/PENDING/RESTARTING`）+ Critical Operation 计数（acquire/release/count） |
+| 状态机 | ✅ 有：Safe Restart 状态机、ComputerReset 脉冲状态机 |
+| 关键状态迁移点 | 重启请求 → 10s 安全窗口 → `ESP.restart()`（`system_command.cpp:312`，全系统唯一）；Critical Op 计数归零/泄漏 |
+
+### 1.2 建议接入
+
+| 位置（文件:行 / 函数） | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `main.cpp:58` `setup()` LittleFS 挂载失败 | FS 挂载失败 | `LOG_SYS_FS_MOUNT_FAILED` | CRITICAL | — | **该点在 `log_init()`（:80）之前**，见风险 R-1 |
+| `main.cpp:170` `config_boot_validate()` 失败 | 上次启动未完成 | `LOG_SYS_BOOT_INCOMPLETE_PREV` | CRITICAL | `LOG_P_BOOT_SEQ` | 反复重启的核心判据；当前只打串口 |
+| `main.cpp:173` setup 走完 | 启动完成 | `LOG_SYS_BOOT_COMPLETE` | INFO | `LOG_P_BOOT_SEQ`, `LOG_P_INIT_MS`, `LOG_P_RESET_REASON` | 每次启动 1 条，建立日志时间轴原点 |
+| 启动后（读 `system_command_reset_reason()`） | 复位来源 | `LOG_SYS_RESET_NORMAL` / `LOG_SYS_RESET_ABNORMAL` | INFO / CRITICAL | `LOG_P_RESET_REASON` | 区分正常重启与 panic；**当前 `reset_reason` 从不落盘** |
+| `system_command_request_restart()` :326 | 请求重启 | `LOG_SYS_RESTART_REQUESTED` | INFO | `LOG_P_REASON`, `LOG_P_HOLD_MS` | 解释后续所有重启的发起方 |
+| `system_command_task()` :312 `ESP.restart()` 前 | 执行重启 | `LOG_SYS_RESTART_EXECUTED` | INFO（IMM） | `LOG_P_HOLD_MS` | IMM = 立即 flush；重启前最后一条 |
+| 重启取消路径 | 取消重启 | `LOG_SYS_RESTART_CANCELLED` | INFO | `LOG_P_REASON` | 与 REQUESTED 配对，便于对账 |
+| `system_command_critical_operation_release()` :452 计数下溢 | Critical Op 泄漏/重复释放 | `LOG_SYS_CRITICAL_OP_UNDERFLOW` | CRITICAL | `LOG_P_COUNT` | **P0 类缺陷**：泄漏 = 永久无法重启 |
+| 堆低水位检测（新增周期检查） | 堆不足 | `LOG_SYS_HEAP_LOW` | WARN | `LOG_P_FREE_BYTES`, `LOG_P_MIN_FREE` | 需模块侧限流（避免每 loop 一条） |
+| PSRAM 分配失败点 | PSRAM 耗尽 | `LOG_SYS_PSRAM_ALLOC_FAILED` | CRITICAL | `LOG_P_NEED_BYTES`, `LOG_P_FREE_BYTES` | 项目铁律：PSRAM 失败回退 DRAM，需可见 |
+| `computer_reset_trigger()` :441 | 电脑重启脉冲 | `LOG_CRESET_PULSE` | INFO | `LOG_P_HOLD_MS` | 动作完成 |
+| `computer_reset_task()` 安全超时 | 脉冲回收超时 | `LOG_CRESET_SAFETY_TIMEOUT` | WARN | `LOG_P_HOLD_MS` | GPIO 卡在 active 有硬件风险 |
+| `computer_reset_ctx_release()` / 池耗尽 | 上下文池耗尽 | `LOG_CRESET_POOL_EXHAUSTED` | ERROR | `LOG_P_ACTIVE`, `LOG_P_CAPACITY` | 需扩容依据 |
+
+---
+
+## 2. Config
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/config_manager.cpp`（3695）、`src/config_manager.h`（684） |
+
+### 2.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无 LogManager 接入。有内部 `cfg_log(level, fmt, ...)`（`config_manager.cpp:207`）→ 走 `ConfigLogCallback`，**默认静默**，且**未在 main.cpp 注册**（已注册的只有 `bin_storage` 与 `command_manager`） |
+| 错误处理 | ✅ 非常完整：Active/Backup 双版本、原子写、Boot Validation、Backup 恢复、提交回滚、版本重建、出厂重置 |
+| 状态机 | ✅ `CONFIG_COMMIT_*` 提交状态机 + 重启倒计时状态机（`config_restart_pending/now/cancel`） |
+| 关键状态迁移点 | 模块加载（Active→Backup 回退）、Save 事务（轮转→写→校验→提交/回滚）、Boot Validation（成功/失败→Backup 恢复）、重启倒计时（PENDING→执行/超时） |
+
+### 2.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `config_init()` :1034 各模块加载完成 | 配置加载完成 | `LOG_CFG_LOAD_DONE` | INFO | `LOG_P_MODULE`, `LOG_P_VERSION`, `LOG_P_COUNT` | 每次启动 N 条（N = 模块数），说明用的是哪份配置 |
+| `load_module()` :373 单模块加载失败 | 模块加载失败 | `LOG_CFG_MODULE_LOAD_FAILED` | ERROR | `LOG_P_MODULE`, `LOG_P_ERR_CODE` | 配置损坏的首发信号 |
+| `load_module()` :394-401 回退 Backup | 从 Backup 恢复 | `LOG_CFG_RECOVERED_FROM_BACKUP` | WARN | `LOG_P_MODULE` | 说明 Active 已损坏 |
+| `recover_module()` :524/537/547 恢复失败 | 恢复失败 | `LOG_CFG_MODULE_LOAD_FAILED` | ERROR | `LOG_P_MODULE`, `LOG_P_ERR_CODE` | 两份都坏 = 即将出厂重置 |
+| `config_save()` :1213 成功 | 保存成功 | `LOG_CFG_SAVE_OK` | INFO | `LOG_P_MODULE`, `LOG_P_COUNT` | — |
+| `config_save()` :1213 失败 | 保存失败 | **建议新增 `LOG_CFG_SAVE_FAILED`** | ERROR | `LOG_P_MODULE`, `LOG_P_ERR_CODE` | 现有只有 COMMIT_FAILED_ROLLBACK，覆盖不到"保存整体失败但没回滚" |
+| 提交失败回滚 | 提交失败已回滚 | `LOG_CFG_COMMIT_FAILED_ROLLBACK` | ERROR | `LOG_P_MODULE`, `LOG_P_ERR_CODE` | 数据安全事件 |
+| 版本文件重建 | 版本重建 | `LOG_CFG_VERSION_REBUILT` | WARN | `LOG_P_MODULE`, `LOG_P_VERSION` | 说明 version.json 丢失 |
+| 出厂重置 | 恢复出厂 | `LOG_CFG_FACTORY_RESET` | WARN | `LOG_P_MODULE`, `LOG_P_REASON` | 不可逆变 |
+| 写请求被拒 | 写被拒 | `LOG_CFG_WRITE_REJECTED` | WARN | `LOG_P_MODULE`, `LOG_P_REASON` | 常见于重启待决期间 |
+| 配置变更生效 | 变更应用 | `LOG_CFG_CHANGE_APPLIED` | INFO | `LOG_P_MODULE`, `LOG_P_KEY` | ⚠️ `LOG_P_KEY` 语义为字符串，**当前不可达**（见审查报告 §4.2） |
+| `config_restart_pending()` :3309 倒计时超时 | 重启超时 | `LOG_CFG_RESTART_TIMEOUT` | INFO | `LOG_P_REMAIN_MS` | — |
+
+> **接入方式建议（不改 ConfigManager 内部结构）**：在 `main.cpp` 注册 `config_set_log_callback()` 的 bridge，把 `cfg_log("E"/"W"/"I")` 直接映射到 LogManager；再在 8 个关键语义点（上表）补显式 `log_emit()`。前者零侵入拿到全部既有错误，后者补足语义。
+
+---
+
+## 3. Storage
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/file_storage.cpp`（782）、`src/json_storage.cpp`（994）、`src/bin_storage.cpp`（733）、`src/workflow_storage.cpp`（1583） |
+
+### 3.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ⚠️ **有回调机制但从未注册，静默丢弃**：`json_storage` 有 **37 处 E/W**（`js_log("E")` 30 + `js_log("W")` 7）、`file_storage` 有 **30 处 E/W**（`fs_log("E")` 24 + `fs_log("W")` 6）⇒ 共 **67 条**错误/警告完全不可见；`bin_storage` 16 处 E/W 只打到串口（`main.cpp:95` 注册 `bin_log_serial`） |
+| 错误处理 | ✅ 完整：原子写（tmp→rename）、CRC 校验、写后校验、事务恢复、目录创建 |
+| 状态机 | 无显式状态机；函数级同步返回码 |
+| 关键状态迁移点 | FS 可用/不可用、写入成功/失败、rename 成功/失败（= 原子写是否成立）、CRC 校验通过/失败 |
+
+### 3.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `file_storage.cpp:129` "LittleFS unavailable" | FS 不可用 | `LOG_STG_FS_UNAVAILABLE` | CRITICAL | — | FS 挂了 = LogManager 自己也落不了盘 |
+| rename 失败 `:277` | 原子写失败 | `LOG_STG_ATOMIC_WRITE_FAILED` | ERROR | `LOG_P_PATH`⚠️, `LOG_P_ERR_CODE` | 原子性被破坏，可能产生 tmp 残留 |
+| 写校验失败 | 写校验失败 | `LOG_STG_WRITE_VERIFY_FAILED` | ERROR | `LOG_P_PATH`⚠️, `LOG_P_STORED_CRC`, `LOG_P_CALC_CRC` | 静默数据损坏 |
+| CRC 失败 | CRC 校验失败 | `LOG_STG_CRC_FAILED` | CRITICAL | `LOG_P_STORED_CRC`, `LOG_P_CALC_CRC` | — |
+| 读失败 `:390` | 读失败 | `LOG_STG_READ_FAILED` | WARN | `LOG_P_PATH`⚠️ | — |
+| 事务恢复 | 事务已恢复 | `LOG_STG_TXN_RECOVERED` | WARN | `LOG_P_STAGE` | 上次写入被打断 |
+
+> **最高性价比动作**：P2 第一步只需在 `main.cpp` 加两行注册 `json_storage_set_log_callback()` / `file_storage_set_log_callback()`（bridge 到 LogManager + 保留串口），即可让 **67 条静默错误**变为可观测，且**零业务代码改动**。
+> ⚠️ `LOG_P_PATH` 是字符串语义，**当前 `LOG_PTYPE_STR` 不可达**（`LogParamIn` 无 blob 字段）⇒ 路径只能哈希化或省略，见审查报告 §4.2。
+
+---
+
+## 4. WiFi
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/wifi_module.cpp`（347）、`src/wifi_module.h`（19） |
+
+### 4.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无 LogManager 接入，无 `log_` 引用；只有 `Serial.println` |
+| 错误处理 | ⚠️ 弱：超时/断线只有状态迁移 + 串口打印，**无错误计数、无失败原因记录** |
+| 状态机 | ✅ 完整 4 态：`WIFI_IDLE → CONNECTING → CONNECTED → DISCONNECTED → (重连) CONNECTING` |
+| 关键状态迁移点 | `wifi_start_connect()`（:157，含 init 阶段 :151 提前一次）、CONNECTING→CONNECTED（:206）、CONNECTING→超时（:235）、CONNECTED→LOST（:262）、DISCONNECTED→重连（:294） |
+
+### 4.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `wifi_start_connect()` :157 | 开始连接 | `LOG_WIFI_CONNECT_START` | INFO | `LOG_P_SSID_HASH`, `LOG_P_ATTEMPT_N` | ⚠️ 每次重连都会产生 ⇒ **需限流**，见 §7 |
+| `wifi_task()` :206 WL_CONNECTED 边沿 | 已连接 | `LOG_WIFI_CONNECTED` | INFO | `LOG_P_CONNECT_MS`, `LOG_P_RSSI`, `LOG_P_SSID_HASH` | 必须在 `if(!wifi_connected)` 边沿内发 |
+| `wifi_task()` :235 超时 | 连接超时 | `LOG_WIFI_CONNECT_TIMEOUT` | WARN | `LOG_P_TIMEOUT_MS`, `LOG_P_ATTEMPT_N` | — |
+| `wifi_task()` :262 断线 | WiFi 丢失 | `LOG_WIFI_LOST` | WARN | `LOG_P_CONNECTED_MS`, `LOG_P_RSSI`, `LOG_P_CAUSE` | 现场断网首因判据 |
+| `wifi_task()` :294 重连尝试 | 尝试重连 | `LOG_WIFI_RECONNECT_TRY` | WARN | `LOG_P_RETRY_N`, `LOG_P_ATTEMPT_N` | ⚠️ 默认 10s 一次 = 6 条/分钟 ⇒ **必须限流** |
+| `wifi_update_signal()` :75 RSSI 过低 | 信号弱 | **建议新增 `LOG_WIFI_RSSI_LOW`** | WARN | `LOG_P_RSSI` | 预测性诊断（断线前兆） |
+| — | Provisioning | `LOG_WIFI_PROVISION_ENTER/DONE` (0x0606/0x0607) | INFO | — | ⚠️ **当前代码无任何 provisioning 实现**，两个 EventId 暂无触发点，P2 可不实现 |
+
+> ⚠️ 状态迁移必须写 `LOG_P_STATE`(0x44) + `LOG_P_WAS`(0x47) 成对，便于云端还原迁移图。
+
+---
+
+## 5. Cloud / MQTT
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/cloud_manager.cpp`（1656）、`src/cloud_manager.h`（125）、`src/test_mqtt.cpp`（319，**测试代码，待删**） |
+
+### 5.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ⚠️ 有 7 处 `LOG_*` 引用，但**全部是 P1.5 的 `log_ack` 协议常量与常量包含**（`LOG_ACK_COMMAND` / `LOG_ACK_P_*`），**不是业务埋点**。LogManager 自身的 6 个事件（`LOG_LOG_UPLOAD_FAIL`…`LOG_LOG_SELF_DEGRADED`）由 LogManager 内部产生，Cloud 侧无需再记 |
+| 错误处理 | ✅ 完整：重连计数、sleep 退避、发布失败检测、分片失败、命令去重、协议错误 |
+| 状态机 | ✅ `mqtt_connected` / `mqtt_sleep_mode` / `mqtt_retry_count`；`cloud_task()` 每 loop 推进 |
+| 关键状态迁移点 | MQTT_EVENT_CONNECTED(:233) / DISCONNECTED(:258) / PUBLISHED(:266) / ERROR(:314)；`cloud_task()` WiFi 断开(:1435)、进入 sleep(:1490)、退出 sleep(:1470) |
+
+### 5.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `mqtt_event_handler()` :233 `MQTT_EVENT_CONNECTED` | MQTT 已连接 | `LOG_MQTT_CONNECTED` | INFO | `LOG_P_OUTBOX`, `LOG_P_SERVER`⚠️ | 需在 `mqtt_connected` 由 false→true 的边沿发 |
+| `mqtt_event_handler()` :258 DISCONNECTED | MQTT 断开 | `LOG_MQTT_DISCONNECTED` | WARN | `LOG_P_ERR_CODE`, `LOG_P_OUTBOX` | ⚠️ 该事件可能连续触发，**必须边沿去重** |
+| `mqtt_event_handler()` :314 ERROR（CONNACK 非 0 / TLS） | 认证或连接被拒 | **建议新增 `LOG_MQTT_AUTH_FAILED`** | ERROR | `LOG_P_ERR_CODE` | 凭据错误的唯一可观测点；当前只有串口 |
+| `cloud_task()` :1490 进入 sleep | 进入休眠退避 | `LOG_MQTT_SLEEP_ENTER` | ERROR（IMM） | `LOG_P_RETRY_N`, `LOG_P_SLEEP_MS` | 连续重连失败的终态 |
+| `cloud_mqtt_publish_binary()` :363 发布失败 | 发布失败 | `LOG_MQTT_PUBLISH_FAIL` | WARN | `LOG_P_QUEUE_SIZE`, `LOG_P_ERR_CODE` | ⚠️ **必须限流**（离线时每 loop 可能失败多次） |
+| `cloud_mqtt_publish_text()` :416 同上 | 发布失败 | `LOG_MQTT_PUBLISH_FAIL` | WARN | 同上 | 同上 |
+| `cloud_publish_fragmented()` :440 分片失败 | 分片失败 | `LOG_CLOUD_FRAG_FAIL` | WARN | `LOG_P_COUNT`, `LOG_P_ERR_CODE` | — |
+| 下行消息解析/协议错误 | 下行非法 | **建议新增 `LOG_CLOUD_RX_INVALID`** | WARN | `LOG_P_CMD`⚠️, `LOG_P_ERR_CODE` | 云端协议演进期的高价值信号 |
+| 命令执行失败 | 命令执行失败 | `LOG_MQTT_CMD_EXEC_FAILED` | WARN | `LOG_P_CMD_ID`⚠️, `LOG_P_ERR_CODE` | — |
+
+> `LOG_P_SERVER` / `LOG_P_CMD` / `LOG_P_CMD_ID` 均为字符串语义 ⇒ 见审查报告 §4.2。
+
+---
+
+## 6. Time / RTC
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/time_manager.cpp`（879）、`src/time_manager.h`（195） |
+
+### 6.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无 LogManager 接入，无 `log_` 引用；约 20 处 `Serial.printf` |
+| 错误处理 | ✅ 完整：SNTP 失败、RTC 探测失败、VL 标志、BCD 越界、写 NACK、年范围拒绝、校准跳过 |
+| 状态机 | ✅ 时间有效性状态机（`STATE_TIME_VALID`）+ SNTP 状态机 + RTC 校准状态机 |
+| 关键状态迁移点 | `time_update_valid_event()` :393（valid↔invalid）、SNTP 同步回调 :171、RTC 探测 :250、RTC 校准 :426、boot restore :44 |
+
+### 6.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `time_on_sntp_sync()` :171 成功 | NTP 同步成功 | `LOG_TIME_NTP_OK` | INFO | `LOG_P_SERVER`⚠️, `LOG_P_UNIX`, `LOG_P_DRIFT_MS` | 时间可信的起点；**日志 timestamp 依赖它** |
+| SNTP 失败/超时 | NTP 失败 | `LOG_TIME_NTP_FAIL` | WARN | `LOG_P_SERVER`⚠️, `LOG_P_ERR_CODE`, `LOG_P_ATTEMPT_N` | — |
+| `time_update_valid_event()` :393 → valid | 进入时间有效 | `LOG_TIME_VALID_ENTER` | INFO | `LOG_P_UNIX`, `LOG_P_SOURCE` | ⚠️ P1 已撤销 Flash 例外 ⇒ **Flash NO**，仅上云 |
+| `time_update_valid_event()` :393 → invalid | 进入时间无效 | `LOG_TIME_INVALID_ENTER` | WARN | `LOG_P_CAUSE` | — |
+| `time_init()` :250 RTC 探测 | RTC 探测结果 | `LOG_TIME_RTC_PROBE` | INFO（成功）/ WARN（失败） | `LOG_P_ADDR`, `LOG_P_SDA`→用 `LOG_P_ERR_CODE` | ⚠️ **上板实测 `rtc_present=false`**，此事件是定位依据 |
+| `time_init()` :44 boot restore 成功 | RTC 开机恢复 | `LOG_TIME_RTC_BOOT_RESTORE` | INFO | `LOG_P_UNIX`, `LOG_P_DRIFT_MS` | — |
+| `time_init()` :301 VL 标志置位 | RTC 掉电 | `LOG_TIME_RTC_VL_FLAG` | WARN | — | 电池没电 |
+| `time_init()` :321 BCD 越界 | RTC 数据非法 | `LOG_TIME_RTC_BCD_INVALID` | WARN | `LOG_P_RAW` | — |
+| `time_rtc_calibrate()` :468 写成功 | RTC 已校准 | `LOG_TIME_RTC_CALIBRATED` | INFO | `LOG_P_DRIFT_MS` | — |
+| `time_rtc_calibrate()` :470 写失败 | RTC 写失败 | `LOG_TIME_RTC_WRITE_FAILED` | WARN | `LOG_P_ERR_CODE`, `LOG_P_DRIFT_MS` | ⚠️ 该路径已接入 Critical Op，日志不得改变 release 语义 |
+
+---
+
+## 7. Workflow
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/workflow.cpp`（4465）、`src/workflow.h`（827）、`src/workflow_storage.cpp`（1583）、`src/capability_registry.cpp`（1007） |
+
+### 7.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ **0 处** `log_`/`LOG_` 引用。全部为 `Serial.printf` |
+| 错误处理 | ✅ 完整但**静默**：`workflow_terminate()` 六个终止路径零日志；save 事务 partial 只打串口 |
+| 状态机 | ✅ 核心：`WORKFLOW_IDLE/RUNNING/WAITING/FINISHED/TIMEOUT/ERROR` + Step Trigger/Action 子状态机 |
+| 关键状态迁移点 | `workflow_start()` :3497（含 Critical Op acquire 失败 :3539）、超时 :3981、Trigger 失败 :4050、Action 失败 :4098、临时 Action 超时 :4120、`workflow_terminate()` :3644、`workflow_save_transaction()` :1730 |
+| **风险** | ⚠️ `workflow_terminate()` 是 Critical Op release 的收口点，日志接入**不得改变任何 return 路径**（记忆铁律：release 不能放在会中途 return 的函数里） |
+
+### 7.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `workflow_start()` :3497 成功 | Workflow 启动 | `LOG_WF_START` | INFO | `LOG_P_SLOT`, `LOG_P_WF_ID`⚠️, `LOG_P_STEPS_DONE` | **以 `p.id`(slot) 为主键** |
+| `workflow_start()` :3539 acquire 被拒 | 启动被拒 | **建议新增 `LOG_WF_STOPPED`** 或复用 `LOG_WF_FAILED` | WARN | `LOG_P_SLOT`, `LOG_P_CAUSE` | 安全窗口内拒绝启动，需可审计 |
+| 正常完成 | 完成 | `LOG_WF_FINISHED` | INFO | `LOG_P_SLOT`, `LOG_P_DURATION_MS`, `LOG_P_STEPS_DONE` | — |
+| `workflow_task()` :3981 超时 | 超时 | `LOG_WF_TIMEOUT` | WARN | `LOG_P_SLOT`, `LOG_P_TIMEOUT_MS`, `LOG_P_STUCK_STEP` | — |
+| Trigger 失败 :4050 | Workflow 失败 | `LOG_WF_FAILED` | WARN | `LOG_P_SLOT`, `LOG_P_FAIL_STEP`, `LOG_P_CAUSE` | — |
+| Action 失败 :4098 | Action 失败 | `LOG_WF_ACTION_FAILED` | WARN | `LOG_P_SLOT`, `LOG_P_FAIL_STEP`, `LOG_P_ACTION_ID`⚠️ | — |
+| 临时 Action 超时 :4120 | 临时动作超时 | `LOG_WF_TEMP_ACTION_TIMEOUT` | WARN | `LOG_P_TIMEOUT_MS`, `LOG_P_ACTION_ID`⚠️ | — |
+| `workflow_save_transaction()` :1745 def 分配失败 | 运行时分配失败 | `LOG_WF_RUNTIME_ALLOC_FAILED` | ERROR | `LOG_P_NEED_BYTES` | ⚠️ 堆/PSRAM 不足 |
+| `workflow_save_transaction()` :1848 `all_ok=false` | 保存失败 | `LOG_WF_SAVE_FAILED` | WARN/ERROR | `LOG_P_SAVED`, `LOG_P_TOTAL`, `LOG_P_ERR_CODE` | — |
+| 部分成功 | 部分保存 | `LOG_WF_SAVE_PARTIAL` | WARN | `LOG_P_SAVED`, `LOG_P_TOTAL` | — |
+| 部分保存重试成功 | 重试成功 | `LOG_WF_SAVE_PARTIAL_RETRY_OK` | INFO | `LOG_P_RETRY_N` | ID 保留，P2 决定是否实现 |
+| `workflow_create/update/delete` | CRUD | `LOG_WF_CRUD` | INFO | `LOG_P_SLOT`, `LOG_P_OP`, `LOG_P_VARIANT` | — |
+| `workflow_migrate_to_storage()` :1968 | JSON→BIN 迁移 | `LOG_WF_MIGRATED` | INFO | `LOG_P_COUNT`, `LOG_P_STAGED_COUNT` | — |
+| `capability_registry` 重建/保存失败 | Registry | `LOG_REG_REBUILT` / `LOG_REG_SAVE_FAILED` | INFO / ERROR | `LOG_P_REG_TYPE`, `LOG_P_COUNT` | — |
+
+---
+
+## 8. Water / Dispense Guard
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/dispense_guard.cpp`（73）、`src/dispense_guard.h`（2） |
+
+### 8.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无，仅 4 处 `Serial.println` |
+| 错误处理 | ⚠️ 弱：`valve_force_close()` 返回 false 时只打印，**无状态记录、无重试** |
+| 状态机 | 无（纯事件回调） |
+| 关键状态迁移点 | `EVENT_WEIGHT_ERROR` 到达 → `valve_force_close()` → 成功/失败 |
+
+### 8.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `dispense_guard_event_callback()` :23 收到 weight error | 出水中断 | `LOG_DISPENSE_FAILED` | WARN | `LOG_P_CAUSE`, `LOG_P_WEIGHT_G`, `LOG_P_VALVE_OPEN_MS` | 说明"为什么关阀" |
+| `dispense_guard_init()` :68 订阅失败 | 保护未生效 | `LOG_WF_RUNTIME_ALLOC_FAILED`? 无合适 ID | ERROR | `LOG_P_CAUSE` | ⚠️ **EventId 缺口**：订阅失败后整个安全链失效，建议纳入新增清单 |
+| 出水开始/完成/超时 | — | `LOG_DISPENSE_START` / `LOG_DISPENSE_DONE` / `LOG_DISPENSE_TIMEOUT` (0x0501-0x0504) | INFO/INFO/WARN | `LOG_P_TARGET_G`, `LOG_P_FINAL_G`, `LOG_P_DURATION_MS` | ⚠️ **当前代码中不存在 Dispense 模块**，这三个 EventId 暂无宿主，需 P2 定义宿主（建议放在 Weight+Valve 协同层） |
+
+---
+
+## 9. Valve
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/valve.cpp`（350）、`src/valve.h`（42） |
+
+### 9.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无，仅 `Serial.printf` |
+| 错误处理 | ⚠️ 中等：GPIO 未配置/模块禁用只打串口；防风暴跳过只打串口；`valve_force_close()` **永远返回 true**（无失败分支）⇒ `LOG_VALVE_FORCE_CLOSE_FAILED` 无处可埋 |
+| 状态机 | 无显式状态机；`current_state` bool + 安全超时计时 |
+| 关键状态迁移点 | `valve_set_gpio()` :92（开/关切换 + 50ms 防风暴）、安全超时 :305、`valve_force_close()` :321（绕过防风暴） |
+
+### 9.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `valve_set_gpio()` :118 open 分支 | 阀门开启 | `LOG_VALVE_OPEN` | INFO | `LOG_P_STATE`, `LOG_P_WAS` | 与 `EVENT_VALVE_OPEN` 同点 |
+| `valve_set_gpio()` :121 close 分支 | 阀门关闭 | `LOG_VALVE_CLOSE` | INFO | `LOG_P_OPEN_MS`, `LOG_P_STATE`, `LOG_P_WAS` | `open_ms` = 本次开启时长 |
+| `valve_set_gpio()` :103 防风暴跳过 | 操作被限流 | `LOG_VALVE_RATE_LIMITED` | WARN | `LOG_P_LIMIT_MS` | ⚠️ 高频调用源会重复触发，**需边沿/计数去重** |
+| `valve_task()` :305 安全超时 | 安全超时强制关阀 | `LOG_VALVE_SAFETY_TIMEOUT` | WARN | `LOG_P_OPEN_MS`, `LOG_P_LIMIT_MS` | — |
+| `valve_force_close()` :321 | 强制关阀 | `LOG_VALVE_FORCE_CLOSE` | CRITICAL（IMM） | `LOG_P_CAUSE`, `LOG_P_VALVE_OPEN_MS`, `LOG_P_GAIN_AFTER_CLOSE_G` | 安全事件，必须立即 flush |
+| 强制关阀失败 | 强制关阀失败 | `LOG_VALVE_FORCE_CLOSE_FAILED` | CRITICAL（IMM） | `LOG_P_CAUSE` | ⚠️ **当前无失败分支**，需先补检测 |
+| 溢出风险检测 | 溢出风险 | `LOG_VALVE_OVERFLOW_RISK` | CRITICAL（IMM） | `LOG_P_WEIGHT_G`, `LOG_P_TARGET_G` | ⚠️ 注释标注"需新增检测"，当前无实现 |
+| `valve_init()` :198/:204 禁用或引脚未配置 | 阀门不可用 | **建议新增 `LOG_VALVE_NOT_READY`** | WARN | `LOG_P_CAUSE` | 配置错误首发信号 |
+| `valve_init()` :227/:231 注册失败 | 注册失败 | `LOG_WF_RUNTIME_ALLOC_FAILED`? 无合适 ID | ERROR | `LOG_P_ACTION_ID`⚠️ | ⚠️ **EventId 缺口** |
+
+> **埋点注意**：`valve_set_gpio()` 在 `open == current_state` 时直接 return（:97），因此重复调用 `valve_open()` **不会产生第二条日志** —— 天然边沿去重，可直接埋点。
+
+---
+
+## 10. Weight / HX711
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/weight.cpp`（645）、`src/weight.h`（41） |
+
+### 10.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无，仅 `Serial.printf`（含一段已注释的 5s 调试打印 :379-400） |
+| 错误处理 | ✅ 完整：三类异常（HX711 无数据 5s / raw 连续为 0 5s / 5s 内跳变 ≥5 次），**且已有边沿检测**（`if(err != error_state)` :204） |
+| 状态机 | ✅ 零点校准状态机（`calibrating` / `calibrate_ok`）+ Trigger 状态机（`weight_active`） |
+| 关键状态迁移点 | `weight_refresh_error_state()` :204（error 边沿）、`weight_task()` :281（校准完成）、`weight_trigger_start()` :463/:483（异常/参数非法）、`weight_trigger_poll()` :525（触发成功） |
+| **高频源** | ⚠️ HX711 ≈10Hz，每 5 点出一次滤波值（≈0.5s）；`weight_record_jump()` :216 每次跳变都 push `EVENT_WEIGHT_ERROR` — **若在此埋点会造成洪泛** |
+
+### 10.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `weight_refresh_error_state()` :204 `err=true` | 称重异常进入 | `LOG_WEIGHT_ERROR_ENTER` | WARN | `LOG_P_CAUSE`(1=not_ready / 2=raw_zero / 3=jump), `LOG_P_WEIGHT_G`, `LOG_P_RAW` | **唯一允许的称重错误埋点**（天然边沿） |
+| `weight_refresh_error_state()` :204 `err=false` | 称重异常解除 | `LOG_WEIGHT_ERROR_EXIT` | INFO | `LOG_P_CAUSE`, `LOG_P_WEIGHT_G` | — |
+| `weight_task()` :281 校准完成且保存成功 | 零点校准完成 | `LOG_WEIGHT_ZERO_DONE` | INFO | `LOG_P_OFFSET`, `LOG_P_SAMPLES`, `LOG_P_SAVED` | — |
+| `weight_task()` :281 校准完成但保存失败 | 校准失败 | `LOG_WEIGHT_CALIB_FAILED` | ERROR | `LOG_P_OFFSET`, `LOG_P_ERR_CODE` | 校准值写不进配置 = 白校准 |
+| `weight_zero_calibrate()` :634 | 校准开始 | **建议新增 `LOG_WEIGHT_CALIB_START`** | INFO | `LOG_P_SAMPLES` | 与 DONE 配对，判断"卡在中途" |
+| `weight_trigger_poll()` :525 触发成功 | 重量触发成功 | `LOG_WEIGHT_TRIGGER_FIRED` | INFO | `LOG_P_TARGET_G`, `LOG_P_DELTA_G`, `LOG_P_WEIGHT_G` | ⚠️ 一次出水只触发一次，安全 |
+| `weight_trigger_start()` :463 异常中止 | — | `LOG_WEIGHT_ERROR_ENTER` + `LOG_P_CAUSE=4` | WARN | 同上 | 复用已有 ID，不新增 |
+| `weight_trigger_start()` :483 参数非法 | — | `LOG_WEIGHT_ERROR_ENTER` + `LOG_P_CAUSE=5` | WARN | `LOG_P_TARGET_G` | 同上 |
+
+> **禁止埋点位置**：`weight_record_jump()` :216（每次跳变都调用，5s 内最多 5 次）与 `weight_task()` 的 not-ready 分支 :323（已有 5s 节流但仍是重复源）。二者都应通过 `error_state` 边沿间接体现。
+
+---
+
+## 11. BLE / MiThermometer
+
+| 项 | 内容 |
+|---|---|
+| 源码文件 | `src/MiThermometer.cpp`（655）、`src/MiThermometer.h`（26） |
+
+### 11.1 当前状态
+
+| 检查项 | 现状 |
+|---|---|
+| 已有日志 | ❌ 无。有已知缺陷：`MiAdvCallback::onResult()` :117-123 **逐字节 `Serial.printf` 打印整个 ADV payload**（每包数十次串口调用） |
+| 错误处理 | ✅ 三级降级：LEVEL0 → LEVEL1 → LEVEL2（禁用扫描，`MI_THERMO_MAX_FAIL=4`）；解码失败、bindkey/MAC 缺失、队列创建失败均有处理 |
+| 状态机 | ✅ 7 态：`BOOT_DELAY / SLEEP / SCAN_WINDOW_RUN / SCAN_WINDOW_WAIT / SCAN_ON / SCAN_OFF / DISABLED` |
+| 关键状态迁移点 | 扫描窗口结束判定 :316-343（成功/fail_count++/LEVEL 迁移/禁扫）、解码队列消费 :419-457、`mi_thermo_start_scan()` :531 / `stop_scan()` :564 |
+| **高频源** | 🔴 **最高风险**：1s 扫描窗口内可能收到数十个 ADV；队列 16 槽，`xQueueSend` 返回值被忽略（:127，静默丢包）；`xQueueReceive` 循环每轮最多消费 16 条 |
+
+### 11.2 建议接入
+
+| 位置 | 事件 | EventId | Level | Params | 原因 |
+|---|---|---|---|---|---|
+| `MiThermometer_task()` :419 解码成功 | 数据解码成功 | `LOG_BLE_DATA_DECODED` | INFO | `LOG_P_TEMP`, `LOG_P_HUMID`, `LOG_P_BATT_V`, `LOG_P_MAC_SUFFIX` | ⚠️ **必须每次扫描窗口最多 1 条**（收到 temp+humid 后置位 `s_got_*`，需加"本窗口已上报"标志） |
+| `MiThermometer_task()` :424 解码失败 | 解码失败 | `LOG_BLE_DECODE_FAIL` | WARN | `LOG_P_FAIL_COUNT`, `LOG_P_FAIL_KIND` | 🔴 契约已标注"限流"（:318）⇒ **建议 ≤1 条 / 扫描窗口，其余只累加计数** |
+| 扫描窗口失败 / LEVEL 迁移 | 传感器失联 | `LOG_BLE_SENSOR_LOST` | WARN | `LOG_P_FAIL_COUNT`, `LOG_P_BLE_LEVEL` | 窗口级事件（15/30 分钟一次），安全 |
+| :337 进入 LEVEL2 禁扫 | 扫描已禁用 | `LOG_BLE_SCAN_DISABLED` | INFO | `LOG_P_BLE_LEVEL`, `LOG_P_FAIL_COUNT` | — |
+| `MiThermometerInit()` :210 MAC/bindkey 缺失 | 初始化失败 | **建议新增 `LOG_BLE_INIT_FAILED`** | ERROR | `LOG_P_CAUSE` | 配置错误首发信号 |
+| `MiThermometerInit()` :241 队列创建失败 | 初始化失败 | **建议新增 `LOG_BLE_INIT_FAILED`** | ERROR | `LOG_P_NEED_BYTES`, `LOG_P_FREE_BYTES` | — |
+| `onResult()` :127 `xQueueSend` 失败 | 广播队列满 | **建议新增 `LOG_BLE_QUEUE_FULL`** | WARN | `LOG_P_QUEUE_SIZE`, `LOG_P_DROP_RING` | 🔴 当前静默丢包；**但不能在回调里 `log_emit`**，需在 `MiThermometer_task()` 侧用计数+标志上报 |
+
+> 🔴 **硬禁令**：**不得在 `MiAdvCallback::onResult()` 中调用 `log_emit()`**。理由：① 运行在 NimBLE host 任务上下文，非 loop；② 该回调已被逐字节串口打印拖慢；③ 每包一条会瞬间填满 64 槽 RAM 环。正确做法：回调内只置计数/标志，日志在 `MiThermometer_task()` 中按窗口聚合上报。
+
+---
+
+## 12. Command / Event / OLED（收尾）
+
+| 模块 | 源码 | 现状 | 建议接入 |
+|---|---|---|---|
+| Command | `command_manager.cpp`（3204） | 有 `command_manager_set_log_callback()` 且**已在 `main.cpp:135` 注册**（打到串口） | `LOG_CMD_APPLIED`(INFO) / `LOG_CMD_REJECTED`(WARN) / `LOG_CMD_RUNTIME_QUEUE_FULL`(WARN) / `LOG_CMD_RUNTIME_TIMEOUT`(WARN) + `LOG_P_CMD_ID`⚠️ / `LOG_P_QUEUE_SIZE`。建议把已注册的 bridge 改为"串口 + LogManager"双路 |
+| Event | `event_manager.cpp`（379） | 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。契约已注明"走侧信道计数上报" ⇒ **不要为每条丢弃事件发日志**，改为周期聚合 1 条 |
+| OLED | `oled.cpp`（301） | 无日志 | `LOG_OLED_INIT_FAILED`(WARN) —— 单点，低风险 |
+| ComputerReset | `computer_reset.cpp`（475） | 见 §1 | `LOG_CRESET_*` 三个 |
+| Registry | `capability_registry.cpp`（1007） | 无日志 | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) |
+
+---
+
+## 13. 全矩阵速览（接入优先级 × 工作量 × 风险）
+
+| # | 模块 | 现有日志 | 建议埋点数 | 阻塞项 | 优先级 | 风险 |
+|---|---|---|---|---|---|---|
+| 1 | System/Boot | 仅测试钩子 | ~11 | R-1（FS 失败在 log_init 前） | P0 | 低 |
+| 2 | Storage | 回调存在但**静默**（json 37 + file 30） | 6 类（+67 条自动） | 字符串 `LOG_P_PATH` 不可达 | P0 | 低（零侵入） |
+| 3 | Config | 静默 | ~12 | `LOG_P_KEY` 不可达；缺 SAVE_FAILED | P0 | 中（事务语义） |
+| 4 | WiFi | 无 | ~6 | 重连洪泛需限流 | P1 | 低 |
+| 5 | Cloud/MQTT | 仅 log_ack 常量 | ~9 | 发布失败洪泛；缺 AUTH_FAILED | P1 | 中（IMM 语义） |
+| 6 | Time/RTC | 无 | ~10 | 无 | P1 | 低 |
+| 7 | Workflow | **0** | ~13 | 🔴 Critical Op release 收口；缺 WF_STOPPED | P1 | **高** |
+| 8 | Weight | 无 | ~8 | 🔴 高频源，必须边沿 | P1 | 中 |
+| 9 | Valve | 无 | ~8 | 缺 NOT_READY；FORCE_CLOSE 无失败分支 | P1 | 中（安全） |
+| 10 | Dispense | 无 | ~3 | 模块不存在，缺宿主 | P2 | 中 |
+| 11 | BLE | 无 | ~6 | 🔴 最高频 + 回调上下文禁令 | P2 | **高** |
+| 12 | Command/Event/OLED/Registry | 部分 | ~8 | 侧信道聚合 | P2 | 低 |
+
+---
+
+## 14. 本矩阵未做的事
+
+- ❌ 未新增任何 EventId（§2.2 / §4.2 / §5.2 / §7.2 / §9.2 / §10.2 / §11.2 中的"建议新增"仅为提案）
+- ❌ 未新增任何 ParamId
+- ❌ 未修改 `src/log_events.h`
+- ❌ 未修改 LogManager API
+- ❌ 未修改任何 `src/` 生产代码
+
+---
+
+*文档结束 —— 待人工审核*
