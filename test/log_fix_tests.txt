@@ -206,7 +206,20 @@ logt sonline 1 ||| sonline=1
 # 拉长超时，避免 live 批次在本段中途 give-up；stats 顺带刷新 <BOOT>（取当前 boot_seq）
 logt atimeout 60000 ||| atimeout=60000
 logt stats ||| boot=
+# ★ 确定性制造一条 "live 尾巴"（boot_seq = 当前）
+#
+#   为什么必须显式造：注入的 ACK 只覆盖**当时的在途批次**。若队列在 ACK 后正好为空，
+#   补发 sweep 会立刻推进；若还残留记录，sweep 就被 `used != 0` 挡住 ⇒ **同一个断言
+#   会因"Boot 期记录落在哪一批"而时通时不通**。
+#   ⚠️ 实测：P2-D 接入后新增 `LOG_MQTT_CONNECTED`（它比 WiFi 记录晚 ~4s 落地，
+#      因为要等 TLS 握手）⇒ 队列里**必然**多出一条尾巴，本段因此由"通常通"变为"必失"。
+#   用 cpush 显式补一条，使两种情形都收敛到同一条路径（不依赖时序）。
+logt cpush 1
+# 1) 注入 live 批次 ACK（把水位抬到 live 记录之上）
 logt ack <BOOT> 1 4294967295 ||| ack ok boot=
+# 2) 再 ACK 掉那条 live 尾巴 ⇒ 队列排空 ⇒ 补发 sweep 得以推进（这一步本就是真实
+#    云端会做的事：每条批次各回一次 ACK）
+logt ackauto 0 ||| acked=
 #
 # 此刻状态：acked = live 记录的 seq（**大于**旧记录），而旧记录一次都还没补发过。
 #   修复前：单一水位 ⇒ 旧记录被跳过（replay 恒 0）＋ 旧段被判可回收。

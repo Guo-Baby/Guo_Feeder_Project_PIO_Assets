@@ -1302,6 +1302,7 @@ pc=4  level=WARN  RETRY_N=1         ATTEMPT_N=1  WAS=3(DISCONNECTED) STATE=1(CON
 ```
 
 **③ 回归**：埋点后全量重跑 **195/195 = 100%，0 MISS**，未破坏任何既有断言。
+（P2-D 期间夹具加固后 B 段断言数 65 → 66 ⇒ 当前基线为 **196/196**，见 §13.7）
 
 ### 12.9 已知限制 / 新发现
 
@@ -1311,3 +1312,194 @@ pc=4  level=WARN  RETRY_N=1         ATTEMPT_N=1  WAS=3(DISCONNECTED) STATE=1(CON
 | **新发现 BT-11（与 LogManager 基线有关，本次不改）** | `s_cloud_give_up_seq` 是**单点水位**：若**较新**的批次先 give-up（实测 INFO 批次 seq 3073-3075 放弃 ⇒ `give_up_seq=3075`），那么 seq 更小、仍在 Flash 等待补发的旧记录（seq≈1800）会被 `log_ack_should_replay(seq <= give_up_seq)` **跳过** ⇒ 本 Boot 补发不到（下次 Boot `give_up_seq` 归 0 后恢复）。**与 BT-9 同源**（单点水位越过旧记录），但属 replay 语义，需在 LogManager 侧单独评审。规避：让补发先于 live 批次发生，或把 give-up 也改成按区间/连续水位记账 |
 | **`LOG_WIFI_LOST` 验证状态（三项分开看）** | ① **代码路径审查 ✅ 通过**（埋点在 `case WIFI_CONNECTED` 的 `WiFi.status() != WL_CONNECTED` 分支内，未改动任何分支/return 路径，与既有 `Serial.println("WiFi lost")` 同处一个边沿块）；② **参数语义 ✅ 已确认**（见 §12.6：`CONNECTED_MS` / `RSSI`=最后采样值 / `CAUSE`=断连瞬间 `WiFi.status()` / `WAS=2` `STATE=3`）；③ **真机断 AP 验证 ❌ 未完成 —— 列为后续测试项**（无强制断连钩子：`WiFi.disconnect()` 无调用点，改 SSID 只影响下次 `WiFi.begin()`。建议加 `wifi force-lost` 钩子或人工关 AP 复测）。详见 Progress 文档「P2-C 验证记录」 |
 | SSID 哈希不可逆 | 与 §10.4 同：云端需维护"SSID → 哈希"字典；哈希只用于聚合/筛选 |
+
+---
+
+## 13. Cloud / MQTT 接入（**P2-D 已落地**）
+
+> 状态：已实现并上板验证。提交：`feat(log): integrate cloud manager logging`
+> 源码：`src/cloud_manager.cpp`（**唯一改动文件**，纯增量 +233 / −0 —— 没有任何既有行被修改）
+
+### 13.1 与 Storage / Config / WiFi 的差异
+
+Cloud **既没有**日志回调接口（不像 Storage/Config 可桥接），**也不该**在 MQTT 回调里埋点
+（回调运行在 esp-mqtt 任务上下文）。它已经有现成的**"回调置标志 → `cloud_task()` 处理"**
+同步机制 ⇒ 埋点应当**挂在标志被消费的地方**（loop 上下文），边沿性由标志本身保证。
+
+### 13.2 埋点表
+
+| 位置 | 事件 | EventId | Level | 参数 | 限流 |
+|---|---|---|---|---|---|
+| `cloud_process_mqtt_events()` `mqtt_connect_pending` 分支 | MQTT 已连接 | `LOG_MQTT_CONNECTED` (0x0701) | INFO | `OUTBOX`(0x2B)、`WAS`(0x47)、`STATE`(0x44) | 边沿即天然限流 |
+| `cloud_process_mqtt_events()` `mqtt_disconnect_pending` 分支 | MQTT 断开 | `LOG_MQTT_DISCONNECTED` (0x0702) | WARN | `OUTBOX`、`RETRY_N`(0x29)、`WAS`、`STATE` | 同上 |
+| `cloud_task()` 进入 sleep 退避分支 | 进入休眠退避 | `LOG_MQTT_SLEEP_ENTER` (0x0703) | ERROR | `RETRY_N`、`SLEEP_MS`(0x2A) | 同上 |
+| `cloud_task()` 顶部（周期窗口） | 发布失败（聚合） | `LOG_MQTT_PUBLISH_FAIL` (0x0704) | WARN | `FAIL_COUNT`(0x3F) | **计数聚合：60 s 窗口 1 条** |
+| `cloud_process_rx_message()` 命令执行失败 | 命令执行失败 | `LOG_MQTT_CMD_EXEC_FAILED` (0x0705) | WARN | `CMD_ID`(0x2D, **哈希**) | 无需（频率由云端下发速率决定） |
+
+### 13.3 ★ 边沿触发是**制度性**保证，不靠"记得去重"
+
+| 事件 | 边沿来源 |
+|---|---|
+| `LOG_MQTT_CONNECTED` | `mqtt_connect_pending` 是**单槽标志**，回调置位、`cloud_process_mqtt_events()` **进入即清零** ⇒ 一次连接只记一条；底层 `MQTT_EVENT_CONNECTED` 重复到达时，标志已被消费，下一次才会有新记录 |
+| `LOG_MQTT_DISCONNECTED` | 同上（`mqtt_disconnect_pending`）。MQTT 抖动时 DISCONNECTED 可能连续上报，但单槽标志使得**每个 loop 至多一条**，不会与重连计数一起放大 |
+| `LOG_MQTT_SLEEP_ENTER` | 该分支之前有 `if(mqtt_sleep_mode) { ... return; }` ⇒ **"已在休眠"的状态提前返回**，只有 `false→true` 的迁移能走到这里 |
+
+**为什么不直接在 `mqtt_event_handler()` 里埋点**：① 那是 esp-mqtt 任务上下文，与"集中在
+`*_task()` 调用"的约定不符；② 直接在回调里发日志会失去上述标志提供的**天然去重**，
+反而需要额外写一套边沿判断。**复用既有标志 = 零新增机制**。
+
+### 13.4 ★ 发布失败：计数聚合（**绝不逐条记**）
+
+离线时发布失败可能**每 loop 发生多次**。采用审查报告 §5.3「**计数聚合**」：
+
+```c
+static uint32_t      cloud_publish_fail_count     = 0;   // 只累加
+static unsigned long cloud_publish_fail_report_ms = 0;
+
+static void cloud_note_publish_fail();     // 失败点调用：只 ++
+static void cloud_report_publish_fail();   // cloud_task() 顶部调用：窗口到才发射 1 条
+```
+
+- **累加点（4 处，全在底层发布函数）**：`cloud_mqtt_publish_binary()` 的
+  "client 为空 / 未连接" 与 `msg_id < 0`；`cloud_mqtt_publish_text()` 的同一对。
+  只在这两个函数里计，避免同一失败被上层重复计数。
+- **发射点（1 处）**：`cloud_task()` **最顶部**，`cloud_report_publish_fail()`。
+  ⚠️ 必须在任何早期 `return` **之前** —— 离线正是 `if(!wifi_connected) return;` 的情形，
+  放后面就永远发不出来。
+- **窗口**：`CLOUD_PUBLISH_FAIL_REPORT_MS = 60000`。窗口内无失败 ⇒ **完全静默**。
+- **不丢信息**：被抑制的次数放在 `LOG_P_FAIL_COUNT` 里（例如 `fail_count=37` 表示
+  这 60 s 内失败了 37 次）。
+
+> 语义边界：`cloud_send_up()` / `cloud_send_log()` 在离线时会**先行返回**，不会调用底层
+> 发布函数 ⇒ 这类"根本没尝试发"**不计入** PUBLISH_FAIL（离线状态由
+> `LOG_MQTT_DISCONNECTED` 单独表达）。PUBLISH_FAIL 表达的是"**尝试了但失败**"。
+
+### 13.5 `WAS` / `STATE` 编码
+
+底层只有一个 `bool mqtt_connected` ⇒ 用最小两值枚举（`cloud_manager.cpp` 内 `#define`）：
+
+| 值 | 状态 |
+|---|---|
+| 0 | `CLOUD_MQTT_STATE_OFFLINE` |
+| 1 | `CLOUD_MQTT_STATE_ONLINE` |
+
+> ⚠️ 这是 CloudManager 的局部约定；若将来出现第三态（如"认证被拒"）必须先冻结取值再扩展。
+
+### 13.6 刻意未做的事
+
+| 项 | 原因 |
+|---|---|
+| `LOG_CLOUD_FRAG_FAIL` (0x0706) 埋点 | **`cloud_publish_fragmented()` 全仓库无调用者（死代码）** ⇒ 埋点不可达。不记，也不删（删函数属另一主题，超出"只加日志"的范围） |
+| `LOG_MQTT_AUTH_FAILED` / `LOG_CLOUD_RX_INVALID` | 矩阵列为"**建议新增** EventId" ⇒ 违反 P2 定版"暂不新增 EventId"，本次不做 |
+| `LOG_P_SERVER` / `LOG_P_CMD` / `LOG_P_CMD_ID` 传明文 | 均为字符串语义、当前不可达 ⇒ 按 P2 定版走哈希（`CMD_ID` 传 `cloud_cmd_id_hash32()`）；`SERVER` 直接省略 |
+| WiFi 掉线时的 `cloud_task()` 分支（:1435 附近） | **不重复埋点**：该场景已由 WiFi 模块的 `LOG_WIFI_LOST` 表达，Cloud 侧再记会变成同一事件两条 |
+| 改 MQTT 协议 / `log_ack` / replay / GC | 明令禁止；本次改动 **0 行删除**，纯新增 |
+| 给 `LOG_MQTT_SLEEP_ENTER` 强制 flush | 事件注释里的 "IMM" 是设计意图；`log_flush()` 并不存在（只有 `log_flush_requested()`/`log_clear_flush_request()`，且 flush 由 CRITICAL 驱动）⇒ 想强制落盘必须改 LogManager，超出本次范围 |
+
+### 13.7 上板验证（2026-09-18，COM8，AP `wqs1`，broker `emqxsl.cn:8883`）
+
+**验证方法（可复用）**：把收到的 CBOR 批次用 `.pio/p15run/log_decode.py` 解到
+**记录级**（`LogRecord` v2 的 `event_id` 在偏移 12，u16 LE；参数 `{id,type,u32le}` 从偏移 28 起，
+每项 6 B），直接打印 `event_id` 与每个 `ParamId` 的**真值**。比"只比对计数"强得多。
+
+**断连的确定性触发（关键技巧）**：用**设备自己的 `client_id`** 再连一次 broker
+⇒ EMQX 做 **session takeover**，把设备踢下线 ⇒ 设备侧收到**真实的**
+`MQTT_EVENT_DISCONNECTED`。这条路不需要改固件、不需要加钩子、不涉及协议改动。
+
+```
+设备串口（真实现场）：
+  01:02:01.957 [Cloud] MQTT connected
+  01:02:11.702 [Cloud] MQTT disconnected outbox=0        ← 被踢
+  01:02:22.075 [Cloud] MQTT connected                    ← 自动重连成功
+
+MQTT 侧解码（同一批，boot_seq=3）：
+  seq=1027 INFO LOG_WIFI_CONNECTED      CONNECT_MS(u32)=1757 RSSI(i32)=-57
+                                        SSID_HASH(u32)=2088390601 WAS(enum)=1 STATE(enum)=2   （P2-C 复现 ✅）
+  seq=1028 INFO LOG_MQTT_CONNECTED      OUTBOX(u32)=450  WAS(enum)=0 STATE(enum)=1   ✅
+  seq=1029 WARN LOG_MQTT_DISCONNECTED   OUTBOX(u32)=0    RETRY_N(u32)=1
+                                        WAS(enum)=1 STATE(enum)=0                    ✅
+  seq=1030 INFO LOG_MQTT_CONNECTED      OUTBOX(u32)=710  WAS(enum)=0 STATE(enum)=1   ✅（重连再次边沿触发）
+  seq=1031 WARN LOG_MQTT_CMD_EXEC_FAILED  CMD_ID(u32)=2977285702                    ✅
+  seq=1032 WARN LOG_MQTT_CMD_EXEC_FAILED  CMD_ID(u32)=2960508083                    ✅
+```
+
+- 两次 `LOG_MQTT_CMD_EXEC_FAILED` 对应向 `guo_feeder/down` 发的两条**不存在**的 action
+  （`{"cmd":"execute_action","id":"p2dx1|p2dx2","ob":"NO_SUCH_ACTION_P2D…"}`）
+  ⇒ 2 条命令 2 条记录，**未误触发**其他事件 ✅
+- `LOG_MQTT_CONNECTED` 出现两次（首连 + 重连）⇒ 边沿语义正确：**一次连接一条**，不多不少 ✅
+- `WAS/STATE` 成对且方向正确（0→1 连、1→0 断）✅
+
+| EventId | 结论 |
+|---|---|
+| `LOG_MQTT_CONNECTED` | ✅ 上板通过 |
+| `LOG_MQTT_DISCONNECTED` | ✅ 上板通过（真实被踢） |
+| `LOG_MQTT_CMD_EXEC_FAILED` | ✅ 上板通过 |
+| `LOG_MQTT_SLEEP_ENTER` | ⚠️ **代码路径审查通过，真机未触发**（原因见下） |
+| `LOG_MQTT_PUBLISH_FAIL` | ⚠️ **代码路径审查通过，真机未触发**（原因见下） |
+
+**回归**：埋点后全量重跑 **196/196 = 100%，0 MISS**（B 段断言数 65 → 66，见 §13.9）。
+
+### 13.9 ★ 回归夹具加固（本次踩到，**后续每个模块都会遇到**）
+
+**现象**：P2-D 埋点后 B 段（F2-B = BT-9 验收场景）**稳定** 4 条 MISS：
+`replay=8` / `qused=8` / `qused=0` / `rarmed=0`。
+
+**根因**：F2-B 的逻辑是"注入 live 批次 ACK ⇒ 队列排空 ⇒ 补发 sweep 推进 ⇒ 旧记录 replay"。
+但注入的 ACK **只覆盖当时的在途批次**。P2-D 新增的 `LOG_MQTT_CONNECTED` 比 WiFi 记录
+**晚约 4 s 落地**（要等 TLS 握手完成）⇒ 队列里**必然**多出一条尾巴（实测 `qused=4`，
+批次只有 3 条）⇒ ACK 后 `used != 0` ⇒ **补发被挡住**。
+（不是"没有补发"，是**观察不到**：再过一次 ACK 后 `replay=8` 立刻出现。）
+
+**加固做法（把时序依赖改成顺序无关）**：在注入 ACK **之前**用 `logt cpush 1` 显式造一条
+确定性的 live 尾巴，再在 ACK **之后**补一次 `logt ackauto 0` 排空它。
+于是"Boot 期记录落在哪一批"不再影响结果 —— 两种情形收敛到同一条路径。
+**断言强度未削弱**（`replay=8` 仍是精确值），只是夹具变确定性。
+
+**⚠️ 给后续模块（Time / Workflow / Weight …）的规矩**：
+
+1. **新模块的埋点会往同一条日志流里加记录**，`log_fix_tests.txt` 中的**绝对计数**断言
+   （`evict_inf` / `qtotal` / `replay` / `fdrop` / `total` / `recs` / `qused` …）都可能被扰动。
+   接入前先算清"我的埋点会在 Boot 期产生几条"，必要时在夹具里显式构造或排空。
+2. **不要让用例依赖"某一批恰好装下全部记录"**：只要有一条记录在
+   `cloud_collect_batch()` **之后**入队，它就会成为下一批。
+   （这属 P1.5 既有语义，不是缺陷；夹具必须显式处理。）
+3. **网络抖动会污染回归**：A 段首轮曾因 MQTT 写入超时
+   （`MQTT_CLIENT: Writing didn't complete in specified timeout: errno=119`）
+   阻塞 loop 约 8 s ⇒ 串口静默 ⇒ 命令未被及时处理 ⇒ **11 条假 MISS**。
+   复跑（无抖动）后 A 段 56/56 全绿。**判据：串口里出现 `MQTT error event` /
+   `Writing didn't complete`。** 遇到大面积 MISS 先查这个，再怀疑固件。
+
+
+### 13.8 已知限制（两项未做真机触发，原因与复测方法）
+
+**① `LOG_MQTT_SLEEP_ENTER` 真机未触发**
+
+代码路径审查：埋点在 `cloud_task()` 的 `mqtt_retry_count >= max_retries` 分支，
+**进入前已有 `if(mqtt_sleep_mode) { … return; }`** 保证只有 `false→true` 迁移能走到 ⇒ 天然边沿。
+
+为什么难触发：`mqtt_retry_count` 只在 `MQTT_EVENT_DISCONNECTED` 分支自增，
+而**每次成功连接都会把它清零**（CONNECTED 分支 `mqtt_retry_count = 0`）。
+所以要凑满 `retry_max`（配置值 **30**）次，必须"**连续 30 次断连且期间一次都没连上**"。
+在 broker 正常接受连接的情况下不可能出现（每次重连都会清零）。
+
+真正能命中它的场景：**broker 接受 TCP/TLS 但拒绝或关闭 MQTT 会话**
+（凭据错误、ACL 拒绝、client_id 被策略封禁）⇒ 不会有 CONNECTED，DISCONNECTED 持续到达 ⇒ 计数累积。
+
+复测方法（二选一，均需改配置或人工介入，本次未做）：
+- 把 `data/config/mqtt.json` 的 `password` 临时改成错值 → 重启 → 观察 30 次失败后进入休眠
+  （`retry_interval` 10 s × 30 ≈ 5 min）；**测完必须改回**（与 P2-C 的 SSID 复测同一套路）。
+- 或在 EMQX 侧临时禁用该 client_id。
+
+**② `LOG_MQTT_PUBLISH_FAIL` 真机未触发**
+
+代码路径审查：4 个累加点都在底层发布函数的"未连接"与 `msg_id < 0` 分支；发射点唯一且在
+`cloud_task()` 最顶部（任何早期 return 之前）。聚合窗口 60 s、`FAIL_COUNT` 承载被抑制次数。
+
+为什么难触发：**上层调用者都会先自查 `mqtt_connected`**
+（`cloud_send_up` / `cloud_send_set` / `cloud_send_log` 都如此）⇒ 离线时"根本不尝试发"，
+不会走到 `msg_id < 0`。真正会命中它的只有：
+- **竞态窗口**：连接刚断、`mqtt_connected` 还是 true 的那几毫秒内恰好有发布；
+- **`esp_mqtt_client_enqueue` 返回 -1**（outbox 满、载荷超限）。
+
+复测方法：把"踢会话"与"立即发命令/制造命令结果"压缩到同一瞬间（竞态窗口内），
+或在 outbox 打满时发布；都属于时序敏感场景，**不适合做稳定回归**，故本次仅记录。

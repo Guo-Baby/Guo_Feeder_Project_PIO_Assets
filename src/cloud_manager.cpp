@@ -13,6 +13,7 @@
 #include "command_manager.h"
 #include "capability_registry.h"
 #include "log_events.h"   // P1.4/P1.5：Log Topic 与 log_ack 常量（冻结契约）
+#include "log_manager.h"  // P2-D：Cloud/MQTT 日志埋点（只调 log_emit / log_arg_*）
 // =====================================================
 // MQTT QoS 测试开关
 //
@@ -81,6 +82,98 @@ static int keep_alive;
 static unsigned long mqtt_retry_timer = 0;
 static uint8_t mqtt_retry_count = 0;
 static bool mqtt_sleep_mode = false;
+
+// =====================================================
+// P2-D：LogManager 埋点用局部状态
+//
+// ⚠️ 以下变量**只服务于日志**，不参与任何连接判定、不改变重连/退避流程、
+//    不引入任何等待或阻塞。cloud_task() 的分支逻辑与接入前完全一致。
+// =====================================================
+
+// MQTT 状态迁移的 WAS/STATE 取值（与埋点强绑定，勿随意改值）
+//
+// 底层就是 bool `mqtt_connected` ⇒ 用最小两值枚举。
+// ⚠️ 这是 CloudManager 局部约定；若将来出现第三态必须先冻结再扩展。
+#define CLOUD_MQTT_STATE_OFFLINE  0u
+#define CLOUD_MQTT_STATE_ONLINE   1u
+
+// 发布失败聚合（离线时每 loop 可能失败多次 ⇒ **绝不逐条记**）
+//
+// 采用审查报告 §5.3「计数聚合」：失败只累加计数，由 cloud_task() 按周期窗口
+// 上报 1 条，被抑制的次数放进 LOG_P_FAIL_COUNT ⇒ 信息不丢、条目不洪泛。
+#define CLOUD_PUBLISH_FAIL_REPORT_MS   60000u
+
+static uint32_t cloud_publish_fail_count = 0;
+static unsigned long cloud_publish_fail_report_ms = 0;
+
+// 记一次发布失败（只累加，不发射）
+static void cloud_note_publish_fail()
+{
+    if(cloud_publish_fail_count < 0xFFFFFFFFu)
+    {
+        cloud_publish_fail_count++;
+    }
+}
+
+// 周期窗口到 ⇒ 上报一条 LOG_MQTT_PUBLISH_FAIL
+//（由 cloud_task() 在 loop 上下文调用；窗口内无失败 ⇒ 完全静默）
+static void cloud_report_publish_fail()
+{
+    if(cloud_publish_fail_count == 0)
+    {
+        return;
+    }
+
+    const unsigned long now = millis();
+
+    if(
+        cloud_publish_fail_report_ms != 0
+        &&
+        (now - cloud_publish_fail_report_ms)
+        <
+        CLOUD_PUBLISH_FAIL_REPORT_MS
+    )
+    {
+        return;
+    }
+
+    cloud_publish_fail_report_ms = now;
+
+    LogParamIn p[1];
+    p[0] =
+        log_arg_u32(
+            LOG_P_FAIL_COUNT,
+            cloud_publish_fail_count
+        );
+    log_emit(
+        LOG_MQTT_PUBLISH_FAIL,
+        LOG_LVL_WARN,
+        p,
+        1
+    );
+
+    cloud_publish_fail_count = 0;
+}
+
+// 命令 ID 哈希（FNV-1a 32）
+//
+// 为什么不直接传字符串：`LogParamIn` 的 union 只有 {i,u,f,b}，**无 blob 字段**，
+// `LOG_PTYPE_STR` 当前不可构造 ⇒ 按 P2 定版走「哈希/枚举化」（与
+// `config_manager.cpp` 的 `cfg_hash32()`、`wifi_module.cpp` 的
+// `wifi_ssid_hash32()` 同一套做法），不为此扩 LogManager API。
+// ⚠️ 三处重复实现，后续多模块共用时应上移为共享工具。
+static uint32_t cloud_cmd_id_hash32(const char *s)
+{
+    uint32_t h = 2166136261u;
+
+    while(s != nullptr && *s != '\0')
+    {
+        h ^= (uint8_t)(*s++);
+        h *= 16777619u;
+    }
+
+    return h;
+}
 
 // =====================================================
 // 防重复缓存
@@ -331,6 +424,8 @@ static bool cloud_mqtt_publish_binary(
 {
     if(mqtt_client == nullptr || !mqtt_connected)
     {
+        // P2-D：只累加计数，不逐条记（离线时可能每 loop 都走到这里）
+        cloud_note_publish_fail();
         return false;
     }
     int msg_id;
@@ -363,6 +458,8 @@ static bool cloud_mqtt_publish_binary(
             "[Cloud] publish FAIL %s len=%u\n",
             topic.c_str(),
             (unsigned)len);
+        // P2-D：只累加计数（真正的上报由 cloud_task() 按 60s 窗口做）
+        cloud_note_publish_fail();
         return false;
     }
     Serial.printf(
@@ -384,6 +481,8 @@ static bool cloud_mqtt_publish_text(
 {
     if(mqtt_client == nullptr || !mqtt_connected)
     {
+        // P2-D：只累加计数，不逐条记
+        cloud_note_publish_fail();
         return false;
     }
     int msg_id;
@@ -418,6 +517,8 @@ static bool cloud_mqtt_publish_text(
             CLOUD_MQTT_STORE,
             topic.c_str(),
             (unsigned)text.length());
+        // P2-D：只累加计数（真正的上报由 cloud_task() 按 60s 窗口做）
+        cloud_note_publish_fail();
         return false;
     }
 
@@ -1140,6 +1241,31 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
     {
         Serial.println(
             "[Cloud] Command execution failed (error result sent)");
+
+        // ---- P2-D 埋点：LOG_MQTT_CMD_EXEC_FAILED（WARN）----
+        //
+        // 命令 ID 以**哈希**承载：`LOG_P_CMD_ID`(0x2D) 是字符串语义，而
+        // `LogParamIn` 无 blob 字段、`LOG_PTYPE_STR` 不可构造 ⇒ 按 P2 定版走
+        // 哈希（与 `LOG_P_SSID_HASH` 先例一致），不为此扩 LogManager API。
+        // ⚠️ 因此云端只能按哈希聚合/比对，**无法从日志反查命令原文**。
+        //
+        // 无需限流：频率由云端下发速率决定（非 loop 驱动的循环）。
+        {
+            LogParamIn p[1];
+            p[0] =
+                log_arg_u32(
+                    LOG_P_CMD_ID,
+                    cloud_cmd_id_hash32(
+                        cmd.cmd_id.c_str()
+                    )
+                );
+            log_emit(
+                LOG_MQTT_CMD_EXEC_FAILED,
+                LOG_LVL_WARN,
+                p,
+                1
+            );
+        }
     }
 }
 
@@ -1400,6 +1526,41 @@ static void cloud_process_mqtt_events()
         state_set_int(STATE_MQTT_RETRY_COUNT, 0);
         state_set_string(STATE_MQTT_LAST_CONNECT_TIME, time_now_string());
         state_set_int(STATE_MQTT_LAST_ERROR, 0);
+
+        // ---- P2-D 埋点：LOG_MQTT_CONNECTED（INFO）----
+        //
+        // 边沿保证：本分支只由 mqtt_event_handler 的 MQTT_EVENT_CONNECTED 置位
+        // 的 `mqtt_connect_pending` 触发，且进入即清零 ⇒ **一次连接只记一条**，
+        // 事件重复到达不会重复发。
+        // 落点选在这里（loop 上下文）而不是 MQTT 回调里：符合"集中在 *_task()
+        // 调用 log_emit()"的约定，回调仍只做置标志。
+        {
+            LogParamIn p[3];
+            p[0] =
+                log_arg_u32(
+                    LOG_P_OUTBOX,
+                    (mqtt_client != nullptr)
+                        ? (uint32_t)esp_mqtt_client_get_outbox_size(mqtt_client)
+                        : 0u
+                );
+            p[1] =
+                log_arg_enum(
+                    LOG_P_WAS,
+                    CLOUD_MQTT_STATE_OFFLINE
+                );
+            p[2] =
+                log_arg_enum(
+                    LOG_P_STATE,
+                    CLOUD_MQTT_STATE_ONLINE
+                );
+            log_emit(
+                LOG_MQTT_CONNECTED,
+                LOG_LVL_INFO,
+                p,
+                3
+            );
+        }
+
         event_push(
             EVENT_CLOUD_CONNECTED,
             "",
@@ -1424,6 +1585,43 @@ static void cloud_process_mqtt_events()
             EVENT_POLICY_STATE);
         mqtt_retry_count++;
         state_set_int(STATE_MQTT_RETRY_COUNT, mqtt_retry_count);
+
+        // ---- P2-D 埋点：LOG_MQTT_DISCONNECTED（WARN）----
+        //
+        // 边沿保证：同样只由回调置位的 `mqtt_disconnect_pending` 触发且进入即清零。
+        // 底层 MQTT 抖动时 DISCONNECTED 可能连续上报，但标志是**单槽**的
+        // ⇒ 每个 loop 至多一条，不会与重连计数一起放大成洪泛。
+        {
+            LogParamIn p[4];
+            p[0] =
+                log_arg_u32(
+                    LOG_P_OUTBOX,
+                    (mqtt_client != nullptr)
+                        ? (uint32_t)esp_mqtt_client_get_outbox_size(mqtt_client)
+                        : 0u
+                );
+            p[1] =
+                log_arg_u32(
+                    LOG_P_RETRY_N,
+                    (uint32_t)mqtt_retry_count
+                );
+            p[2] =
+                log_arg_enum(
+                    LOG_P_WAS,
+                    CLOUD_MQTT_STATE_ONLINE
+                );
+            p[3] =
+                log_arg_enum(
+                    LOG_P_STATE,
+                    CLOUD_MQTT_STATE_OFFLINE
+                );
+            log_emit(
+                LOG_MQTT_DISCONNECTED,
+                LOG_LVL_WARN,
+                p,
+                4
+            );
+        }
     }
 }
 
@@ -1432,6 +1630,12 @@ static void cloud_process_mqtt_events()
 // =====================================================
 void cloud_task()
 {
+    // P2-D：发布失败的**周期聚合上报**
+    //
+    // ⚠️ 必须在任何早期 return **之前**：离线时最需要这条记录，而离线恰恰是
+    //    下面 `!wifi_connected` 直接 return 的情形。窗口内无失败 ⇒ 完全静默。
+    cloud_report_publish_fail();
+
     if(!wifi_connected)
     {
         if(mqtt_connected)
@@ -1488,6 +1692,35 @@ void cloud_task()
     if(mqtt_retry_count >= max_retries)
     {
         Serial.println("[Cloud] enter sleep retry");
+
+        // ---- P2-D 埋点：LOG_MQTT_SLEEP_ENTER（ERROR）----
+        //
+        // 落点天然边沿：进入本分支前已由上面的 `if(mqtt_sleep_mode) { ... return; }`
+        // 排除"已在休眠"的情形 ⇒ **一次连续失败只记一条**，休眠期间不再重复。
+        {
+            const unsigned long sleep_time_for_log =
+                (sleep_retry_interval > 0)
+                    ? sleep_retry_interval
+                    : (unsigned long)MQTT_FAIL_SLEEP_TIME;
+            LogParamIn p[2];
+            p[0] =
+                log_arg_u32(
+                    LOG_P_RETRY_N,
+                    (uint32_t)mqtt_retry_count
+                );
+            p[1] =
+                log_arg_u32(
+                    LOG_P_SLEEP_MS,
+                    (uint32_t)sleep_time_for_log
+                );
+            log_emit(
+                LOG_MQTT_SLEEP_ENTER,
+                LOG_LVL_ERROR,
+                p,
+                2
+            );
+        }
+
         mqtt_sleep_mode = true;
         mqtt_retry_timer = now;
         esp_mqtt_client_stop(mqtt_client);
