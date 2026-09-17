@@ -1156,3 +1156,157 @@ logt cloud ||| rarmed=0
 离线侧的等价证据在 `test/log_contract/probe_ack.cpp` 第 ⑧ 组：
 **23 条断言全部通过，含 3 条负向探针**（用修复前的单点水位时结论必须相反），
 证明这组断言具备可证伪性、且修复确实改变了行为。
+
+---
+
+## 12. WiFi 接入（**P2-C 已落地**）
+
+> 状态：已实现并上板验证。提交：`feat(log): integrate wifi module logging`
+> 源码：`src/wifi_module.cpp`（**唯一改动文件**）
+
+### 12.1 与 Storage / Config 的关键差异：**没有回调接口，只能显式埋点**
+
+Storage / Config 都有 `*_set_log_callback()` ⇒ 可用 `main.cpp` 里的桥接（§9 / §10）零侵入接入。
+**WiFi 没有** —— 全模块只有 5 处 `Serial.println` ⇒ 只能在状态机分支里直接调 `log_emit()`。
+
+本节的接入形态：**在既有分支里加一行 `log_emit()`，不改任何判定、不新增等待**。
+
+### 12.2 埋点表
+
+| 位置 | 事件 | EventId | Level | 参数 |
+|---|---|---|---|---|
+| `wifi_start_connect()`（**仅非重连**） | 发起连接 | `LOG_WIFI_CONNECT_START` (0x0601) | INFO | `SSID_HASH`(0x33)、`ATTEMPT_N`(0x30)、`WAS`(0x47)、`STATE`(0x44) |
+| `wifi_task()` WIFI_CONNECTING，`if(!wifi_connected)` 边沿内 | 已连接 | `LOG_WIFI_CONNECTED` (0x0602) | INFO | `CONNECT_MS`(0x32)、`RSSI`(0x31)、`SSID_HASH`、`WAS`、`STATE` |
+| `wifi_task()` WIFI_CONNECTING 超时分支 | 连接超时 | `LOG_WIFI_CONNECT_TIMEOUT` (0x0603) | WARN | `TIMEOUT_MS`(0x08)、`ATTEMPT_N`、`WAS`、`STATE` |
+| `wifi_task()` WIFI_CONNECTED 断线分支 | WiFi 丢失 | `LOG_WIFI_LOST` (0x0604) | WARN | `CONNECTED_MS`(0x2C)、`RSSI`、`CAUSE`(0x16)、`WAS`、`STATE` |
+| `wifi_task()` WIFI_DISCONNECTED 重连分支 | 尝试重连 | `LOG_WIFI_RECONNECT_TRY` (0x0605) | WARN | `RETRY_N`(0x29)、`ATTEMPT_N`、`WAS`、`STATE` |
+
+参数数量 4–5，均 ≤ `LOG_MAX_PARAMS`(8)。
+
+### 12.3 ★ 限流：失败循环（超时 + 重连）两个事件都要节流
+
+实测发现：**只节流 `RECONNECT_TRY` 是不够的**。本状态机里超时与重连是**同一个失败循环的两半**
+（超时 → `DISCONNECTED` → 重连 → 再超时…），默认 `connect_timeout=30s` ⇒ 循环每 ~30s 一轮 ⇒
+超时事件本身就有 **2 条/分钟**（WARN，**落 Flash**）。
+
+因此两个事件共用同一个节流门（各自独立计数 / 独立计时）：
+
+```c
+#define WIFI_FAIL_LOG_EVERY_N   5u      // 每 5 次记 1 次
+#define WIFI_FAIL_LOG_MIN_MS    60000u  // 最小间隔下限
+
+static bool wifi_fail_should_log(uint32_t n, unsigned long *last_ms)
+{
+    if ((n % WIFI_FAIL_LOG_EVERY_N) != 1u)                      return false;
+    if (*last_ms != 0 && (millis() - *last_ms) < WIFI_FAIL_LOG_MIN_MS) return false;
+    return true;
+}
+```
+
+⚠️ **用 AND 而不是 OR**（这是实测踩出来的）：
+- `MIN_MS` 的定位是"**最小间隔下限**"，用于防止把 `reconnect_interval` 配得过小（如 1s）时
+  "N 次"也很快 ⇒ 又变洪泛。
+- 若写成 **OR**，60s 会反过来变成**上限**：当尝试间隔本来就 > 12s 时，它会架空 N 次规则、
+  让日志**变多**（实测 30s 一轮时：OR 每 60s 一条、AND 每 150s 一条）。
+
+**效果（实测，SSID 指向不存在的 AP）**：4 轮失败循环（每轮 = 1 次超时 + 1 次重连）
+⇒ 只有第 1 轮产生了 2 条 WARN，第 2/3/4 轮**全部被抑制**（`flash` 计数不再增长）。
+全量应为 8 条，实际 2 条 ⇒ **4× 削减**。
+
+被抑制的轮次**不丢信息**：发出的记录带 `LOG_P_RETRY_N`（本次掉线第几次）与
+`LOG_P_ATTEMPT_N`（累计第几次连接尝试），云端可据此还原重试节奏。
+
+### 12.4 ★ 为什么重连时**不发** `CONNECT_START`
+
+`wifi_start_connect()` 同时承担"首次连接"和"每次重连"两种调用（后者在 `WIFI_DISCONNECTED`
+分支里）。若两个事件都按全量发，会在**同一个 tick 上重复**。
+
+| 场景 | 发哪个 |
+|---|---|
+| 非重连（`wifi_retry_n == 0`，开机 / IDLE 重入） | `LOG_WIFI_CONNECT_START`（INFO） |
+| 重连（`wifi_retry_n >= 1`） | `LOG_WIFI_RECONNECT_TRY`（WARN，节流） |
+
+判据 `if (wifi_retry_n == 0)` 放在 `wifi_start_connect()` 里，而 `wifi_retry_n++` 在**调用它之前**
+完成 —— 顺序本身是语义的一部分。⇒ `CONNECT_START` 天然低频（每 Boot 约 1 条），无需节流。
+
+### 12.5 状态迁移的 `WAS` / `STATE` 编码
+
+按 §2，状态迁移日志一律携带成对 `LOG_P_WAS` + `LOG_P_STATE`（便于云端还原迁移图）。
+取值 = `enum WifiState`（`wifi_module.cpp` 文件内枚举）：
+
+| 值 | 状态 |
+|---|---|
+| 0 | `WIFI_IDLE` |
+| 1 | `WIFI_CONNECTING` |
+| 2 | `WIFI_CONNECTED` |
+| 3 | `WIFI_DISCONNECTED` |
+
+> ⚠️ 该枚举是 `wifi_module.cpp` 的**文件内**枚举，不对外暴露。若将来有第二个模块需要表达
+> WiFi 状态，应先把它上移到头文件并冻结取值，避免出现第二套编码。
+
+### 12.6 参数语义（三个容易写错的点）
+
+| 参数 | 取值 | 为什么 |
+|---|---|---|
+| `LOG_P_SSID_HASH` | FNV-1a 32（`wifi_ssid_hash32()`） | `LogParamIn` 无 blob 字段、`LOG_PTYPE_STR` 不可构造 ⇒ 按 P2 定版走哈希（沿用 §10.4 的 `cfg_hash32()` 先例）。**不传明文 SSID**（隐私 + 定长） |
+| `LOG_P_CAUSE`（LOST） | 断连瞬间 `WiFi.status()`（`WL_CONNECTION_LOST` / `WL_DISCONNECTED` / `WL_CONNECT_FAILED` …） | 现场断网的**首因**判据 |
+| `LOG_P_RSSI`（LOST） | `state_get_int(STATE_WIFI_RSSI)` = **最后一次采样值** | 此刻已断连，`WiFi.RSSI()` 只会返回 −100；该状态量由 `wifi_update_signal()` 每 10 s 维护 |
+
+`LOG_P_CONNECTED_MS`（LOST）＝ `millis() - wifi_connected_since`（新增的**纯日志用**静态量，
+不参与任何判定）。
+
+### 12.7 刻意未做的事
+
+| 项 | 原因 |
+|---|---|
+| 新增 `LOG_WIFI_RSSI_LOW` | 需**新增 EventId**，违反 P2 定版"暂不新增 EventId" |
+| 实现 `LOG_WIFI_PROVISION_ENTER/DONE` (0x0606/0x0607) | 代码中**不存在任何 provisioning 实现**，无宿主 |
+| 把 `wifi_ssid_hash32()` 上移为共享工具 | 本次约束"只在 `wifi_module.cpp` 改动"。⚠️ 它现在与 `config_manager.cpp` 的 `cfg_hash32()` **重复**，多模块共用时应上移 |
+| 改状态机 / 连接流程 / 加等待 | 明令禁止；埋点全在既有分支内，且全部是非阻塞调用 |
+| 修 `give_up_seq` 越过旧记录（见 §12.9 新发现 BT-11） | 属 LogManager 基线（replay 语义），P2-C 明令"不改 ACK/replay/GC 逻辑" |
+
+### 12.8 上板验证（2026-09-17，COM8，AP `wqs1`）
+
+**① 正常连接（开机）**
+
+```
+WiFi init... / Connecting to:wqs1 / WiFi connected
+[LogT] stats emit=3 ... flash=0 cloud=3     ← 两条 WiFi 事件都是 INFO ⇒ 不落 Flash ✅
+```
+
+MQTT 侧解码（同批 3 条，`boot_seq=2`，seq 769..771）：
+
+```
+pc=4  SSID_HASH=0x7c7a4fc9  ATTEMPT_N=1  WAS=0(IDLE)        STATE=1(CONNECTING)   ⇒ CONNECT_START ✅
+pc=5  CONNECT_MS=1807  RSSI=-56  SSID_HASH=0x7c7a4fc9
+      WAS=1(CONNECTING) STATE=2(CONNECTED)                                        ⇒ CONNECTED     ✅
+```
+
+**② 失败循环（SSID 指向不存在的 AP）**
+
+```
+[00:16:28] WiFi connect timeout / Try reconnect     ← 第 1 轮
+[00:16:58] WiFi connect timeout / Try reconnect     ← 第 2 轮（未记日志）
+[00:17:28] WiFi connect timeout / Try reconnect     ← 第 3 轮（未记日志）
+[00:17:58] WiFi connect timeout / Try reconnect     ← 第 4 轮（未记日志）
+[LogT] stats ... flash: 0 → 2（仅第 1 轮）⇒ 之后三轮 flash 计数**不再增长** ✅ 节流生效
+```
+
+恢复 SSID 并重新联网后，这两个 WARN 由补发路径送到云端，实测解码：
+
+```
+pc=4  level=WARN  TIMEOUT_MS=30000  ATTEMPT_N=1  WAS=1(CONNECTING)   STATE=3(DISCONNECTED)
+                                                    ⇒ LOG_WIFI_CONNECT_TIMEOUT ✅
+pc=4  level=WARN  RETRY_N=1         ATTEMPT_N=1  WAS=3(DISCONNECTED) STATE=1(CONNECTING)
+                                                    ⇒ LOG_WIFI_RECONNECT_TRY   ✅
+```
+
+**③ 回归**：埋点后全量重跑 **195/195 = 100%，0 MISS**，未破坏任何既有断言。
+
+### 12.9 已知限制 / 新发现
+
+| 项 | 说明 |
+|---|---|
+| **`LOG_WIFI_LOST` 未做硬件触发验证** | 当前**没有任何钩子**可以强制断连（`WiFi.disconnect()` 无调用点；改 SSID 只会影响下次 `WiFi.begin()`，不会让已建立的连接掉线）。本环境唯一办法是**物理关掉 AP**。参数语义已做代码审查（§12.6）。建议后续加一个测试钩子（如 `wifi force-lost`），或由人工关 AP 复测 |
+| **新发现 BT-11（与 LogManager 基线有关，本次不改）** | `s_cloud_give_up_seq` 是**单点水位**：若**较新**的批次先 give-up（实测 INFO 批次 seq 3073-3075 放弃 ⇒ `give_up_seq=3075`），那么 seq 更小、仍在 Flash 等待补发的旧记录（seq≈1800）会被 `log_ack_should_replay(seq <= give_up_seq)` **跳过** ⇒ 本 Boot 补发不到（下次 Boot `give_up_seq` 归 0 后恢复）。**与 BT-9 同源**（单点水位越过旧记录），但属 replay 语义，需在 LogManager 侧单独评审。规避：让补发先于 live 批次发生，或把 give-up 也改成按区间/连续水位记账 |
+| SSID 哈希不可逆 | 与 §10.4 同：云端需维护"SSID → 哈希"字典；哈希只用于聚合/筛选 |
