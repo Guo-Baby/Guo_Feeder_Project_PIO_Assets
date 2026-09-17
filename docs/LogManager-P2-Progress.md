@@ -28,6 +28,8 @@
 | **阶段 2-E** | **P2-E TimeManager 接入**（`src/time_manager.cpp`，唯一生产代码改动文件，**纯增量 +210/−0**）：9 个埋点覆盖 `NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`（**三分支**）/ `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID`；RTC 异常**边沿锁**去重；`time_source_code()` 枚举化 | `feat(log): integrate time manager logging` | ✅ 已提交 |
 | **阶段 2-E · 夹具** | P2-E 引发的 F2-B 4 条真失败：根因＝`cloud_collect_batch()` **在 `boot_seq` 变化处截断批次**，而每个 Boot 多 1 条 Flash 记录（`RTC_PROBE` 是 WARN）⇒ 积压跨 2 个 boot_seq ⇒ 单批永远排不空 ⇒ `qused=0`/`rarmed=0` 不可能达成。**只改夹具**：回归器新增**内联正则期望**（`replay=/[1-9][0-9]*/`），F2-B 判据改为"非零"+结构性事实，**断言总数 196 条不变** | 同上 | ✅ |
 | **阶段 2-E · 发现** | ① `LOG_TIME_NTP_FAIL`(0x0802) **确认无宿主**（SDK 只提供成功通知、状态枚举无失败态）⇒ 记为**未实现**，不新增看门狗；② `rtc_init()` 内的"配置禁用"分支是**死代码**（`rtc_enabled && rtc_init()` 短路求值）⇒ 埋点移到 `time_init()` 可达分支；③ `VALID_ENTER.SOURCE` 存在**实测竞态**（边沿可能早于来源确认，实测两种顺序都出现过） | 同上 | ✅ 已处理并记录 |
+| **阶段 2-F · 审查** | **Workflow 接入前审查**（只审查、未改生产代码）：Critical Op 生命周期审计（3 acquire 全配对 / 两个释放函数幂等 / `workflow_terminate()` **零提前 return** / 6 个调用点全覆盖 / **无可达绕过路径、无永久锁死风险**）、生命周期状态流转、6 个 terminate 退出路径、矩阵与代码 **4 项不一致**、14 个推荐埋点位置（含频率与限流策略） | `docs(log): review workflow logging integration plan` | ✅ 已提交 |
+| **阶段 2-F · 发现 WF-1** | **保存失败后重试风暴**（`workflow.cpp:1744-1748` 与 `:1821-1830` 两条失败路径**不重置** `workflow_save_since_ms` ⇒ `workflow_delayed_save_poll()` **每个 loop** 触发完整保存事务：8.6 KB 分配 + 落盘尝试 + 串口刷屏）。**与 Critical Op 无关**，按规则**只报告不修复**；但 P2-F 埋点必须对它免疫（全部边沿锁）。详见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md` §3 | — | ⏳ **未修**（待单独评审） |
 
 ---
 
