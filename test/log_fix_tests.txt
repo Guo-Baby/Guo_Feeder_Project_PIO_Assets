@@ -75,20 +75,20 @@ logt flash ||| segs=2
 logt flash ||| total=40
 logt fseg 0 ||| recs=31
 logt fseg 1 ||| recs=9
-logt fseg2 gap=15
+logt fseg 0 ||| gap=15
 logt reset ||| reset ok
 logt creset ||| creset ok
 logt sonline 1 ||| sonline=1
 logt atimeout 60000 ||| atimeout=60000
-logt cloud3 ||| rarmed=1
-logt ackst ||| replay=16
+logt cloud ||| rarmed=1
+logt stats ||| replay=16
 logt ackauto 0 ||| acked=
-logt ackst ||| replay=31
+logt stats ||| replay=31
 logt ackauto 0 ||| acked=
-logt ackst ||| replay=40
+logt stats ||| replay=40
 logt ackauto 0 ||| acked=
-logt cloud3 ||| rarmed=0
-logt cloud2 ||| replay_done=1
+logt cloud ||| rarmed=0
+logt cloud ||| replay_done=1
 
 
 # =====================================================
@@ -110,13 +110,13 @@ logt sonline 1 ||| sonline=1
 logt atimeout 60000 ||| atimeout=60000
 logt cpush 20 ||| cpush n=20
 logt cloud ||| inflight=1
-logt cloud3 ||| tx_valid=1
+logt cloud ||| tx_valid=1
 logt cpush 120 ||| cpush n=120
-logt cstats2 ||| evict_inf=12
-logt cstats ||| qdrop=0
-logt cloud3 ||| holes=0
+logt stats ||| evict_inf=12
+logt stats ||| qdrop=0
+logt cloud ||| holes=0
 logt ackauto 0 ||| qused=124
-logt cloud3 ||| tx_valid=0
+logt cloud ||| tx_valid=0
 
 
 # =====================================================
@@ -144,12 +144,12 @@ logt cloud ||| inflight=1
 # 不 ACK → 重试耗尽（6 次超时约 4.3 s）。本行在 batch 发出后 ≈1 s 即执行 ⇒ 第一次
 # 查询必然 giveup=0；而它的静默等待期正好覆盖整个重试过程（期间 loop 持续打印
 # `ack timeout retry=`，静默计时被不断重置）⇒ 连查两次才能真正捕获 giveup=1。
-logt ackst ||| giveup=1
-logt ackst ||| giveup=1
-logt cstats ||| fdrop=8
-logt cloud3 ||| holes=1
-logt cloud2 ||| giveup_seq=
-logt fstats ||| seg_del=0
+logt stats ||| giveup=1
+logt stats ||| giveup=1
+logt stats ||| fdrop=8
+logt cloud ||| holes=1
+logt cloud ||| giveup_seq=
+logt stats ||| seg_del=0
 logt flash ||| total=8
 logt fseg 0 ||| recs=8
 # -----------------------------------------------------
@@ -165,15 +165,15 @@ logt fseg 0 ||| recs=8
 #
 # 预期：rarmed=1 → replay=8 → rarmed=0 → segdel=1 / seg_del=1
 # =====================================================
-logt cloud3 ||| rarmed=1
-logt ackst ||| replay=0
+logt cloud ||| rarmed=1
+logt stats ||| replay=0
 logt sonline 1 ||| sonline=1
 logt atimeout 60000 ||| atimeout=60000
-logt ackst ||| replay=8
+logt stats ||| replay=8
 logt ackauto 0 ||| acked=
-logt ackst ||| segdel=1
-logt fstats ||| seg_del=1
-logt cloud3 ||| rarmed=0
+logt stats ||| segdel=1
+logt stats ||| seg_del=1
+logt cloud ||| rarmed=0
 
 
 # =====================================================
@@ -209,12 +209,12 @@ logt flush ||| flush done
 logt flash ||| segs=16
 logt flash ||| total=496
 logt flash ||| append=15@31
-logt cstats2 ||| seg_evict_unacked=0
+logt stats ||| seg_evict_unacked=0
 logt fill warn 1 ||| queued=1
 logt flush ||| flush done
-logt cstats2 ||| seg_evict_unacked=31
-logt cstats ||| fdrop=31
-logt fstats ||| seg_del=1
+logt stats ||| seg_evict_unacked=31
+logt stats ||| fdrop=31
+logt stats ||| seg_del=1
 logt flash ||| total=466
 logt flash ||| oldest=1
 
@@ -244,9 +244,9 @@ logt flash ||| segs=2
 logt ackauto 0 ||| acked=
 logt ackauto 0 ||| acked=
 logt ackauto 0 ||| acked=
-logt fstats ||| seg_del=1
-logt cstats2 ||| seg_evict_unacked=0
-logt cstats ||| segdel=1
+logt stats ||| seg_del=1
+logt stats ||| seg_evict_unacked=0
+logt stats ||| segdel=1
 logt flash ||| segs=1
 logt flash ||| total=9
 
@@ -273,8 +273,8 @@ logt atimeout 1000 ||| atimeout=1000
 logt abackoff 20000 ||| abackoff=20000
 logt cpush 8 ||| cpush n=8
 logt cloud ||| inflight=1
-logt cstats ||| retx=1
-logt cloud3 ||| tx_valid=1
+logt stats ||| retx=1
+logt cloud ||| tx_valid=1
 logt cloud ||| inflight=0
 logt cloud ||| retry=1
 logt atimeout 60000 ||| atimeout=60000
@@ -283,8 +283,8 @@ logt policy error ||| flash=1
 logt policy debug ||| cloud=0
 logt cloud ||| inflight=1
 logt ackauto 0 ||| acked=
-logt cstats ||| ack_ok=1
-logt cloud3 ||| tx_valid=0
+logt stats ||| ack_ok=1
+logt cloud ||| tx_valid=0
 
 
 # =====================================================
@@ -354,29 +354,29 @@ logt atimeout 60000 ||| atimeout=60000
 logt fill warn 20 ||| queued=20
 logt flush ||| flush done
 logt cloud ||| inflight=1
-logt cloud3 ||| tx_valid=1
+logt cloud ||| tx_valid=1
 logt fill warn 62 ||| queued=62
 logt flush ||| flush done
 logt fill warn 58 ||| queued=58
 logt flush ||| flush done
-logt cstats2 ||| evict_inf=12
-logt cstats ||| qdrop=0
-logt cstats2 ||| hole_evict=0
+logt stats ||| evict_inf=12
+logt stats ||| qdrop=0
+logt stats ||| hole_evict=0
 logt ackauto 1 4 ||| acked=
-logt ackst ||| partial=1
-logt cstats2 ||| hole_evict=8
-logt cloud3 ||| holes=1
-logt cloud3 ||| hovf=0
-logt cloud3 ||| tx_valid=0
+logt stats ||| partial=1
+logt stats ||| hole_evict=8
+logt cloud ||| holes=1
+logt cloud ||| hovf=0
+logt cloud ||| tx_valid=0
 logt cloud ||| qused=128
 # 把水位推过 seg0（再吃掉 2 批 = 记录 13..44）
 logt ackauto 0 ||| acked=
 logt ackauto 0 ||| acked=
 logt ackauto 0 ||| acked=
 # ★ 效果：seg0 已被水位越过，但被空洞保护 ⇒ 不得回收
-logt cstats ||| segdel=0
-logt fstats ||| seg_del=0
-logt cloud3 ||| holes=1
+logt stats ||| segdel=0
+logt stats ||| seg_del=0
+logt cloud ||| holes=1
 
 
 # =====================================================
@@ -416,22 +416,22 @@ logt fill warn 40 ||| queued=40
 logt flush ||| flush done
 logt flash ||| segs=2
 logt creset ||| creset ok
-logt cloud3 ||| rarmed=1
-logt ackst ||| replay=16
-logt cloud3 ||| rseg=0
+logt cloud ||| rarmed=1
+logt stats ||| replay=16
+logt cloud ||| rseg=0
 # ★ 删除"游标所在段"（段头损坏 → 扫描即删除）
 logt fcorrupt 0 ||| fcorrupt seg=0 ok=1
-logt fstats ||| seg_del=1
-logt cloud3 ||| rarmed=1
+logt stats ||| seg_del=1
+logt cloud ||| rarmed=1
 # 保持在线（sonline 1 幂等）并排空 16 条 ⇒ 补发从 seg0 之后继续（命中 seg1）
 logt sonline 1 ||| sonline=1
 logt ackauto 0 ||| acked=
-logt ackst ||| replay=25
-logt cloud3 ||| rseg=1
+logt stats ||| replay=25
+logt cloud ||| rseg=1
 # 再排空 9 条 ⇒ sweep 正常收尾（不丢、不空转）
 logt ackauto 0 ||| acked=
-logt cloud3 ||| rarmed=0
-logt ackst ||| replay=25
+logt cloud ||| rarmed=0
+logt stats ||| replay=25
 
 
 # =====================================================
