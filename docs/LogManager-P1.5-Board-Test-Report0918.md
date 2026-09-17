@@ -418,3 +418,130 @@ F3-A 写满 16 段（8 × fill warn 62 + flush）
 ---
 
 *报告结束 —— 阶段 1 完成*
+
+---
+
+# 附录 R1 —— 测试资产修正与基线重录（0918 第二轮）
+
+> 本节在首轮报告（§1–§11）之后追加，记录"按归因修正用例预期值 → 重跑 → 建立新基线"的全过程。
+> 修正主题：**只改预期值与注释，不改命令顺序、不改测试意图、不改任何 `src/` 生产代码**。
+
+## R1.1 修正清单（14 处，commit `test(log): fix P1.5 case expectations and re-baseline`）
+
+| # | 位置 | 原预期 | 改为 | 依据 |
+|---|---|---|---|---|
+| 1 | F1 头注释 | "起点 used=0、批次 16 条" | 起点 used=9、批次 n=9 的完整推导 | `creset` 会 `cloud_replay_arm()` 把 F0 遗留的 9 条重新入队 |
+| 2 | F1 | `evict_inf=12` | **`evict_inf=9`** | 在途窗口宽度 = 批次**真实条数 9**（不是 16） |
+| 3 | F1 | `qdrop=0` | **`qdrop=12`** | 21 − 9 = 12；`9 + 12 = 21 = 149 − 128` 恒等式自洽 |
+| 4 | F1 | `qused=124` | `ack ok boot=`（改为断言"ACK 被接受"） | ACK 命中哪一批是**时序相关**的：9 条批次全被淘汰时 used=128；批次轮换后 used=112 ⇒ 不作为不变量 |
+| 5 | F1 尾 | `tx_valid=0` | **`tx_valid=1`** | ACK 后队列仍有记录 ⇒ loop 立即续发下一批 |
+| 6 | F2-A | `inflight=1` | **`giveup=1`** | 本段已设 `atimeout=200`/`abackoff=100`，批次在 `logt flash` 的等待窗口内就重试耗尽 |
+| 7 | F2-B 头注释 | "预期 segdel=1 / seg_del=1" | 说明追加目标段按设计不可回收 | `cloud_delete_acked_segments()` 显式 `continue` 跳过 `s_append_segment` |
+| 8 | F2-B | `replay=0` | **`qused=8`**（+ 注释） | 串口会话建立于 boot 之后，"replay 尚未开始"这个中间态**不可观测** |
+| 9 | F2-B | `segdel=1` / `seg_del=1` | **`ack_ok=1` / `qused=0` / `segdel=0` / `seg_del=0`** | 正面断言 ACK 落账 + 队列排空；段回收由 F3-B / F7 覆盖 |
+| 10 | F4 头注释 | "t≈21 s 退避到期 → inflight=1" | 澄清 `abackoff 20000` 是**退避**窗口；1 s 后已不在途 | `atimeout=1000` |
+| 11 | F4 | `inflight=1` ×2 | **`retry=1` / `tx_valid=1`** | 同上；`tx_valid=1` + `inflight=0` **正是 FIX-5 的核心证据** |
+| 12 | F4 | `logt ackauto 0` | **`logt ack <BOOT> 1 4294967295 \|\|\| ack ok boot=`** | `ackauto` → `log_cloud_test_ack_inflight()` **要求 `s_cloud_inflight`**；FIX-5 之后 inflight=0 ⇒ 恒 `FAIL no-inflight`。改用 `logt ack` 直接注入（同一条状态机） |
+| 13 | F7 头注释 + 命令 | `evict_inf=12` / `qdrop=0` / `hole_evict=8` / `holes=1` / `tx_valid=0` | **`evict_inf=8` / `qdrop=4` / `hole_evict=4` / `holes=2` / `tx_valid=1`** | 同一根因（批次真实条数 = 8）；`8+4=12=140−128` |
+| 14 | F8 | `seg_del=1` | **`corrupt=1`** | `fcorrupt` 只把段**判废**（`present=0`）并计入 `corrupt`/`crc_err`，**不删文件** |
+
+### R1.1.1 一处根因串联了 F1 与 F7
+
+两条段落的预期都错在**同一个假设**：
+
+> ❌ 假设：`evict_inf` 的上限是 `LOG_BATCH_MAX_RECORDS`(16)
+> ✅ 事实：`evict_inf` 的上限是**在途批次的真实条数**，而它受"当时队列里可用条数"限制
+> 　　　（F1 实测 n=9、F7 实测 n=8）
+
+修正后的判据统一为 **恒等式**：
+```
+evict_inf + qdrop == 入队总数 − 队列容量(=128)
+  F1: 9 + 12 = 21 = (9 + 20 + 120) − 128
+  F7: 8 +  4 = 12 = (20 + 62 + 58) − 128
+```
+
+### R1.1.2 `holes=2` 的代码审查结论 —— **设计行为，非缺陷**
+
+空洞有**两个相互独立、各自有文档的来源**：
+
+| 来源 | 代码位置 | 登记粒度 |
+|---|---|---|
+| ① `cloud_queue_push()` 的非在途分支 | `log_manager.cpp:1867-1876` | 每条被淘汰的 Flash-routed 记录各一次 `log_hole_add(seq, seq)` |
+| ② `log_hole_protect_gap()`（FIX-H2） | `log_manager.cpp:2176`、`log_ack.h:289-330` | 为 `[covered, evicted)` 逐条 `log_hole_add(seq, seq)` |
+
+`log_hole_add()`（`log_ack.h:195-234`）会**合并重叠或相邻**（`from <= holes[i].to + 1`）的区间。
+⇒ 每个来源内部必然合并成 1 条；**两个来源之间是否合并，取决于它们的 seq 是否相邻**。
+本项目 `seq` 允许空洞（INFO 消耗 seq 但不落 Flash），故**不能保证相邻** ⇒ 实测 **2 条**。
+
+**结论**：`holes` 的**条目数不是不变量**。修正后的断言口径：
+- 只断言 `hovf=0`（空洞表未溢出，`LOG_HOLE_MAX=8`）与 `hole_evict=4`（FIX-H2 的专有计数）
+- 段保护的真实判据是 `segdel=0` / `seg_del=0`（空洞存在 ⇒ 段不得回收）
+- `holes=2` 作为**钉住值**保留，并在注释中说明它不是不变量
+
+## R1.2 新基线（第二轮全量重跑）
+
+| 段 | 覆盖 | 断言 | OK | MISS |
+|---|---|---|---|---|
+| A | F0、F1、F2-A | 56 | **56** | 0 |
+| B | F2-B、F3-A、F3-B | 59 | **57** | **2** |
+| C | F4 | 21 | **21** | 0 |
+| D | F7 | 30 | **30** | 0 |
+| E | F8 | 23 | **23** | 0 |
+| **合计** | | **189** | **187 (98.9%)** | **2** |
+
+> 首轮：167 / 187（89.3%，20 MISS）
+> 本轮：**187 / 189（98.9%，2 MISS）**
+> 新增 2 条断言来自 F2-B（`ack_ok=1`、`qused=0`），断言总数 187 → 189。
+
+### R1.2.1 剩余 2 条 MISS —— 不是用例问题，是**新发现的设计级缺陷 BT-9**
+
+两条 MISS 都在 F2-B：`qused=8` 与 `replay=8`（实测 `qused=1`、`replay=0`）。
+
+**根因（P2-A 接入后暴露）**：
+
+```
+Boot 后：
+  [JStg][W] read: open failed: /config/.commit   ← P2-A 桥接注入的 live WARN（seq=2817）
+  → 立即被组批发出（n=1, len=147）
+  → cloud_poll() 的补发 sweep **只在 used == 0 时推进**  ⇒ 这条 live WARN 把 replay 挡住了
+  → 该 WARN 被 ACK ⇒ acked_seq 跳到 2817
+  → Flash 里 8 条未确认旧记录（seq 2500..2507）满足 seq <= acked_seq
+  → log_ack_should_replay() 判为"已覆盖" ⇒ **永久不再补发**（实测 replay=0）
+```
+
+⇒ **违反 at-least-once**：Boot 期任何 live 日志（P2-A 之后必然存在）都会
+**抢在旧未确认记录之前被 ACK**，从而把旧记录永久越过。
+
+| 项 | 内容 |
+|---|---|
+| 编号 | **BT-9** |
+| 严重度 | 🔴 **高**（静默丢失 WARN+，P1.5 核心承诺被破坏） |
+| 触发条件 | Boot 时 Flash 中存在未确认记录 **且** 本次 Boot 产生了 live 日志（P2-A 后为必现） |
+| 是否 P2-A 引入 | ❌ 不是 —— P1.5 已存在（原代码 `cloud_poll()` 的 `used == 0` 前置）⇒ P2-A 只是让它**必现** |
+| 处置 | **本次不改实现**（replay/ACK 水位语义属 P1.5 冻结契约，需单独评审） |
+| 用例处置 | F2-B 的 `qused=8` / `replay=8` **保留不动** —— 它们正是 BT-9 修复后的**验收标准** |
+
+**修复方向（候选，需评审）**：
+
+- **A**：`acked_seq` 不得越过"replay 游标起点"—— 即 ACK 推进时钳位到 `min(ack_to, replay_start_seq - 1)`，直到 sweep 完成；
+- **B**：把 replay 与 live 记录的 ACK 分开记账（ACK 只覆盖"本次实际发送过的区间"，而非全局单高水位）；
+- **C**：解除"replay 只在 used == 0 时推进"的约束，让 sweep 可与 live 混跑（需保证 seq 单调与不重复投递）。
+
+## R1.3 回归器的配套改动（`test/serial_batch.py`）
+
+新增 **`<BOOT>` 宏**：把命令里的 `<BOOT>` 替换为**最近一次从设备输出捕获到的 boot 值**
+（匹配 `boot=N` / `boot_seq=N`）。
+
+原因：`logt ack` 的 boot 参数必须**精确匹配**当前 `boot_seq`，而它跨会话不确定
+（取决于 meta 是否重建）。没有该宏，F4 只能写死一个会在下次运行失效的数字。
+未捕获到 boot 时该行记 `>>> SKIP` 并跳过（**不算 MISS**）。
+
+## R1.4 本节之后的状态
+
+| 项 | 状态 |
+|---|---|
+| P1.5 测试资产 | ✅ 预期值与设计语义一致，189 断言中 187 通过 |
+| 剩余 2 条 MISS | ⏳ 已归因 **BT-9**（设计级），保留为修复验收标准 |
+| 设备侧 BLOCKED | ✅ 已解除（A–E 全部可跑段落完成） |
+| `src/` 生产代码 | ✅ 本轮未改动（仅 P2-A 的 Storage 桥接为上一轮成果） |
+

@@ -10,7 +10,17 @@ quiet_sec：**未命中**时期望静默的秒数（默认 2.5）。
            用于等待同步阻塞型命令（如 logt flush 落盘 62 条约需 2.4s）。
 命中期望串后只再等 HIT_GRACE 秒即返回 —— 大量即时
 （flash/stats/emit）命令因此从 ~3.1s 降到 ~0.5s。
+
+宏（可选）：
+    <BOOT>  替换为**最近一次**从设备输出中捕获到的 boot 值
+            （匹配 `boot=N` 或 `boot_seq=N`）。
+            用途：`logt ack` 的 boot 参数必须精确匹配当前 boot_seq，而它跨会话
+            不确定（取决于 meta 是否重建）。有了本宏，用例可以写成
+                logt ack <BOOT> 1 4294967295 ||| acked=
+            由运行器在发命令前代入，无需人工改动用例文件。
+            若尚未捕获到 boot 值，该行记 `>>> SKIP` 并跳过（不算 MISS）。
 """
+import re
 import serial
 import sys
 import time
@@ -23,6 +33,16 @@ QUIET = float(sys.argv[4]) if len(sys.argv) > 4 else 2.5
 HIT_GRACE = float(sys.argv[5]) if len(sys.argv) > 5 else 0.35
 
 logf = open(LOG, "w", encoding="utf-8", errors="replace")
+
+# <BOOT> 宏：从设备输出里抓 `boot=N` / `boot_seq=N`（后写覆盖先写）
+BOOT_RE = re.compile(r"boot(?:_seq)?=(\d+)")
+LAST_BOOT = [None]
+
+
+def note_boot(s):
+    m = BOOT_RE.search(s)
+    if m:
+        LAST_BOOT[0] = m.group(1)
 
 
 def emit(s):
@@ -62,12 +82,20 @@ while True:
             line, buf = buf.split(b"\n", 1)
             line = line.replace(b"\r", b"")
             if line:
-                emit("[%s] %s" % (ts(), line.decode("utf-8", "replace")))
+                s = line.decode("utf-8", "replace")
+                note_boot(s)
+                emit("[%s] %s" % (ts(), s))
         last = time.time()
     elif time.time() - last >= 1.5:
         break
 
 for cmd, expect in cmds:
+    if "<BOOT>" in cmd:
+        if LAST_BOOT[0] is None:
+            emit("===== CMD: %s =====" % cmd)
+            emit("[%s] >>> SKIP : 尚未从设备输出捕获到 boot 值，无法代入 <BOOT>" % ts())
+            continue
+        cmd = cmd.replace("<BOOT>", LAST_BOOT[0])
     emit("===== CMD: %s =====" % cmd)
     ser.reset_input_buffer()
     ser.write((cmd + "\n").encode("utf-8"))
@@ -86,6 +114,7 @@ for cmd, expect in cmds:
                 if not line:
                     continue
                 s = line.decode("utf-8", "replace")
+                note_boot(s)
                 emit("[%s] %s" % (ts(), s))
                 if expect and expect in s:
                     hit = True
