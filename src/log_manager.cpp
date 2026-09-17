@@ -148,6 +148,36 @@ static uint32_t s_cloud_last_tx_ms = 0;
 static uint32_t s_cloud_acked_seq = 0;      // 已确认高水位（RAM；重启归 0）
 static uint8_t  s_cloud_flags = 0;          // 在途批次的 flags（bit0 seq_reliable）
 
+// ---- FIX-BT9：水位**语义分离**（两个标量，分工不同）----
+//
+//   s_cloud_acked_seq  云端确认过的**最大** seq（真实最大值）。只用于观测
+//                      （串口打印 / stats），**不参与任何放行判定**。
+//   s_cloud_gc_seq     **连续**可回收水位：保证 "任何 seq <= gc_seq 的记录都
+//                      已被云端确认"。所有放行判定都用它：
+//                        · log_ack_classify()  的重复/回退检测
+//                        · log_ack_should_replay()      （能否跳过补发）
+//                        · log_ack_segment_reclaimable()（能否回收段）
+//                        · flash_count_unacked()        （淘汰记账口径）
+//
+//   为什么不合并成一个（BT-9 根因）：ACK 只证明"刚发出的这一批被持久化"，
+//   不证明"比它小的都已持久化"。Boot 期 live 记录（seq 更大）先被 ACK 时，
+//   单点高水位会跨过仍在 Flash 等待补发的旧记录 ⇒ 补发被跳过 + 段被误回收
+//   ⇒ 违反 at-least-once（详见 log_ack.h 的 log_ack_gc_watermark 说明）。
+//
+//   两者关系恒为  gc_seq = log_ack_gc_watermark(acked_seq, gc_floor) <= acked_seq
+static uint32_t s_cloud_gc_seq = 0;
+
+// 尚未确认的 Flash backlog 的**最低 seq 下界**（0 = 无钳制）
+//
+//   设置点：cloud_replay_arm()（= 每次 arm 时 Flash 里现存记录的最低 first_seq）
+//   清除点：cloud_poll() —— 补发 sweep 已完成 **且** 队列里已无"上一 Boot 的
+//           记录"（它们构成队列前缀，见 cloud_queue_push 的说明）⇒ backlog
+//           已全部投递（被 ACK / 放弃(已登记空洞) / 淘汰(已登记空洞)）
+//   ⚠️ 清除条件里不能用 "队列已空"：持续有 live 记录时队列可能长期非空，
+//      会把钳制永久留在低位 ⇒ 段永不回收 ⇒ 环压力反而丢数据。用"前缀已消费"
+//      既安全（旧记录走光才放行）又不会饥饿。
+static uint32_t s_cloud_gc_floor = 0;
+
 // FIX-1：批次**绝对基准** —— cloud_collect_batch() 取批时的 s_cloud_q_rd
 //
 // 为什么必须绝对：`covered`（被 ACK 覆盖的条数）是"从取批时的队首起算"的
@@ -261,6 +291,8 @@ static void cloud_delete_acked_segments();
 static void cloud_replay_step();
 static void cloud_replay_arm();
 static bool cloud_try_send_batch(uint8_t n);
+static uint32_t flash_lowest_first_seq();
+static bool cloud_queue_head_is_current_boot();
 
 // CloudManager 的 log_ack 回调（运行在 esp-mqtt 任务上下文）
 //
@@ -913,9 +945,11 @@ static bool flash_ensure_append_target(uint32_t next_seq)
                     continue;   // 追加目标不动
                 }
 
+                // FIX-BT9：用**连续**水位 —— 否则会把"尚未补发/确认的旧记录"
+                // 所在段当作"可安全复用"，等价于在环压力下丢未投递数据。
                 if (log_ack_segment_reclaimable(
                         s_seg_first_seq[idx], s_seg_last_seq[idx],
-                        s_cloud_acked_seq,
+                        s_cloud_gc_seq,
                         s_cloud_holes, s_cloud_hole_count,
                         s_cloud_hole_overflow))
                 {
@@ -928,8 +962,9 @@ static bool flash_ensure_append_target(uint32_t next_seq)
             if (!victim_confirmed)
             {
                 // 只能牺牲未确认数据 → 必须记账（§20：drop_unacked 可见）
+                // FIX-BT9：口径与"未确认"的判定保持一致（> 连续水位 ⇒ 未确认）
                 const uint32_t unacked =
-                    flash_count_unacked(victim, s_cloud_acked_seq);
+                    flash_count_unacked(victim, s_cloud_gc_seq);
 
                 if (unacked > 0)
                 {
@@ -939,9 +974,9 @@ static bool flash_ensure_append_target(uint32_t next_seq)
                     portEXIT_CRITICAL(&s_mux);
 
                     Serial.printf(
-                        "[Log] ring pressure: evict seg=%u unacked=%u acked=%u\n",
+                        "[Log] ring pressure: evict seg=%u unacked=%u acked=%u gc=%u\n",
                         (unsigned)victim, (unsigned)unacked,
-                        (unsigned)s_cloud_acked_seq);
+                        (unsigned)s_cloud_acked_seq, (unsigned)s_cloud_gc_seq);
                 }
             }
 
@@ -1401,6 +1436,7 @@ bool log_init()
         //   · replay 未完成 ⇒ 允许把离线期间落在 Flash 的 WARN+ 补送出去
         portENTER_CRITICAL(&s_mux);
         s_cloud_acked_seq = 0;
+        s_cloud_gc_seq = 0;          // FIX-BT9：连续水位随 acked 一起归零
         s_cloud_ack_pending = false;
         s_cloud_ack_boot = 0;
         s_cloud_ack_from = 0;
@@ -1813,6 +1849,31 @@ static uint32_t cloud_queue_used_locked()
     return s_cloud_q_wr - s_cloud_q_rd;
 }
 
+// FIX-BT9：队首记录是否属于**本 Boot**（无记录时返回 true）
+//
+// 为什么用它判断"补发前缀已消费完"：
+//   补发只在 `used == 0` 时推进 ⇒ 每次 push 都是往**空队列**里放 ⇒ 补发的旧记录
+//   必然构成队列的**前缀**（live 记录只会在其后追加）。因此"队首已是本 Boot 记录"
+//   等价于"上一 Boot 的补发记录已全部离开队列"（被 ACK / 放弃 / 淘汰）。
+//   ⚠️ 不能用"队列已空"作判据：持续有 live 记录时队列可能长期非空 ⇒ 水位钳制
+//      永不解除 ⇒ 段永不回收（环压力反而丢数据）。
+static bool cloud_queue_head_is_current_boot()
+{
+    bool cur = true;
+
+    portENTER_CRITICAL(&s_mux);
+
+    if (cloud_queue_used_locked() > 0)
+    {
+        const uint32_t slot = s_cloud_q_rd % LOG_CLOUD_QUEUE_SLOTS;
+        cur = (s_cloud_q[slot].boot_seq == s_boot_seq);
+    }
+
+    portEXIT_CRITICAL(&s_mux);
+
+    return cur;
+}
+
 static void cloud_queue_push(const LogRecord &rec)
 {
     if (s_cloud_q == nullptr)
@@ -2019,6 +2080,37 @@ static uint8_t flash_next_segment_after(uint32_t after_seq, bool have_after)
     return best;
 }
 
+// FIX-BT9：Flash 里现存记录的**最低 seq**（= 尚未补发/确认的 backlog 下界）
+//
+// 用途：`s_cloud_gc_floor` 的取值 —— 只要它非 0，可回收水位就被钳在
+//       "backlog 下界之前"，从而保证补发不会被跳过的旧记录之外的高水位越过。
+//
+// 为什么取 `s_seg_first_seq[]` 的最小值（而不是逐条读记录）：
+//   · 段首 seq 是段的**下确界** ⇒ 用它做钳制只会**更保守**（不会放行不该放的）
+//   · 无需 Flash I/O、可在任意上下文调用（含临界区内）
+//   · 空段 / 不存在段跳过；全无 ⇒ 返回 0（无 backlog ⇒ 不钳制）
+static uint32_t flash_lowest_first_seq()
+{
+    uint32_t best = 0;
+
+    for (uint8_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
+    {
+        if (s_seg_present[seg] == 0 || s_seg_records[seg] == 0)
+        {
+            continue;
+        }
+
+        const uint32_t first = s_seg_first_seq[seg];
+
+        if (first != 0 && (best == 0 || first < best))
+        {
+            best = first;
+        }
+    }
+
+    return best;
+}
+
 // 回收"整段已被 ACK 覆盖"的 Flash 段
 //
 // §13-partial：部分覆盖**绝不**删段 —— 判定唯一入口是
@@ -2028,7 +2120,9 @@ static uint8_t flash_next_segment_after(uint32_t after_seq, bool have_after)
 // 只由 loop 上下文调用（LittleFS I/O）。
 static void cloud_delete_acked_segments()
 {
-    if (!s_flash_ready || s_cloud_acked_seq == 0)
+    // FIX-BT9：用**连续**水位（不再是"确认最大值"）。gc_seq == 0 ⇒ 没有任何
+    // 连续前缀被确认 ⇒ 一律不可回收（含"钳制到 0"的情形，保守且等价于早退）。
+    if (!s_flash_ready || s_cloud_gc_seq == 0)
     {
         return;
     }
@@ -2056,8 +2150,10 @@ static void cloud_delete_acked_segments()
         }
 
         // FIX-2 + FIX-3b：整段 ≤ 水位 **且** 与空洞不相交 **且** 末条 seq 为实测值
+        // FIX-BT9：水位用 `s_cloud_gc_seq`（连续水位）—— 用确认最大值会把
+        //          "尚未补发/确认的旧记录"所在段一并删掉。
         if (!log_ack_segment_reclaimable(
-                s_seg_first_seq[seg], s_seg_last_seq[seg], s_cloud_acked_seq,
+                s_seg_first_seq[seg], s_seg_last_seq[seg], s_cloud_gc_seq,
                 s_cloud_holes, s_cloud_hole_count, s_cloud_hole_overflow))
         {
             continue;
@@ -2099,7 +2195,10 @@ static void cloud_handle_ack()
         s_cloud_tx_valid ? s_cloud_tx_boot : 0u,
         s_cloud_tx_valid ? s_cloud_tx_from : 0u,
         s_cloud_tx_valid ? s_cloud_tx_to : 0u,
-        s_cloud_acked_seq);
+        // FIX-BT9：重复/回退检测必须用**连续**水位。用"确认最大值"会把
+        // "晚到的、属于更旧批次的合法 ACK"误判成 DUPLICATE 而丢弃 ⇒
+        // 那些记录永远留在云队列里（补发被自身阻塞 ⇒ 比 BT-9 更糟）。
+        s_cloud_gc_seq);
 
     if (r != LOG_ACK_ACCEPT && r != LOG_ACK_PARTIAL)
     {
@@ -2147,9 +2246,21 @@ static void cloud_handle_ack()
 
     s_cloud_q_rd = new_rd;
 
+    // FIX-BT9：两个水位分别推进（语义分离，见顶部 s_cloud_gc_seq 注释）
+    //   acked_seq = 真实最大值（观测用，单调）
+    //   gc_seq    = 连续可回收水位 = min(acked_seq, gc_floor - 1)，**单调不降**
     if (new_acked > s_cloud_acked_seq)
     {
         s_cloud_acked_seq = new_acked;
+    }
+
+    {
+        const uint32_t gc = log_ack_gc_watermark(s_cloud_acked_seq, s_cloud_gc_floor);
+
+        if (gc > s_cloud_gc_seq)
+        {
+            s_cloud_gc_seq = gc;
+        }
     }
     s_stats.cloud_q_used = (uint8_t)cloud_queue_used_locked();
     s_stats.cloud_ack_ok++;
@@ -2195,10 +2306,11 @@ static void cloud_handle_ack()
     s_cloud_backoff_until_ms = 0;
 
     Serial.printf(
-        "[Log Cloud] ack ok boot=%u to=%u covered=%u/%u acked=%u r=%d\n",
+        "[Log Cloud] ack ok boot=%u to=%u covered=%u/%u acked=%u gc=%u floor=%u r=%d\n",
         (unsigned)ack_boot, (unsigned)ack_to,
         (unsigned)covered, (unsigned)tx_count,
-        (unsigned)s_cloud_acked_seq, (int)r);
+        (unsigned)s_cloud_acked_seq, (unsigned)s_cloud_gc_seq,
+        (unsigned)s_cloud_gc_floor, (int)r);
 
     cloud_delete_acked_segments();
 }
@@ -2222,6 +2334,16 @@ static void cloud_replay_arm()
     //（该约束只由 flash_drop_segment() 在"游标段被删"时设置，消费一次即失效）
     s_replay_after_seq = 0;
     s_replay_after_valid = false;
+
+    // FIX-BT9：本轮补发的 backlog 下界 ⇒ 立即钳制可回收水位。
+    //
+    // 这是本修复的关键时序：**arm 发生在任何 ACK 之前**（log_init /
+    // log_cloud_test_reset / 游标段被删），因此"用 live 记录的批量 ACK 把
+    // 水位推高"这件事必然发生在钳制生效之后 ⇒ 旧记录不会被越过。
+    //
+    // 取"现存段最低 first_seq"而不是"本轮实际要补发的最低 seq"：
+    // 后者需要读记录（I/O），前者是下确界 ⇒ 只会更保守，且零 I/O。
+    s_cloud_gc_floor = flash_lowest_first_seq();
 }
 
 // Flash -> 云 补发一步（DIR-1：**按 slot 遍历**，不再按 seq 反算）
@@ -2289,8 +2411,10 @@ static void cloud_replay_step()
             s_replay_armed = false;
             s_replay_done = true;
 
-            Serial.printf("[Log Cloud] replay sweep done (acked=%u giveup=%u)\n",
+            Serial.printf("[Log Cloud] replay sweep done (acked=%u gc=%u floor=%u giveup=%u)\n",
                           (unsigned)s_cloud_acked_seq,
+                          (unsigned)s_cloud_gc_seq,
+                          (unsigned)s_cloud_gc_floor,
                           (unsigned)s_cloud_give_up_seq);
         }
         return;
@@ -2336,7 +2460,11 @@ static void cloud_replay_step()
         s_replay_diag_seq = rec.seq;   // 诊断（非游标：游标是 seg/idx）
 
         // 水位判定用**记录自身的 seq**（不再依赖任何稠密假设）
-        if (!log_ack_should_replay(rec.seq, s_cloud_acked_seq, s_cloud_give_up_seq))
+        //
+        // FIX-BT9：水位必须传**连续**水位 `s_cloud_gc_seq`，不能传
+        // `s_cloud_acked_seq`。否则 Boot 期一条 live 记录被 ACK 后，水位会
+        // 跨过本条（旧记录）⇒ 永久跳过补发（at-least-once 破坏）。
+        if (!log_ack_should_replay(rec.seq, s_cloud_gc_seq, s_cloud_give_up_seq))
         {
             continue;
         }
@@ -2530,6 +2658,35 @@ static void cloud_poll()
         cloud_replay_step();
     }
 
+    // (6b) FIX-BT9：解除水位钳制
+    //
+    // 条件 = ①本轮补发已结束（否则还有旧记录没投递）
+    //        ②队列里已无上一 Boot 的记录（队首即本 Boot ⇒ 旧记录构成的前缀已消费完）
+    // 两个条件同时成立 ⇒ backlog 已全部投递（被 ACK / 放弃(已登记空洞) /
+    // 淘汰(已登记空洞)）⇒ 可回收水位允许回到真实确认值。
+    //
+    // ⚠️ 与 `used` 无关地判定：队列可能因持续 live 记录而长期非空（永不为 0），
+    //    若把"队列空"当必要条件会导致钳制永不解除 ⇒ 段永不回收。
+    if (!s_replay_armed && s_cloud_gc_floor != 0 &&
+        cloud_queue_head_is_current_boot())
+    {
+        s_cloud_gc_floor = 0;
+
+        portENTER_CRITICAL(&s_mux);
+
+        const uint32_t gc = log_ack_gc_watermark(s_cloud_acked_seq, 0u);
+
+        if (gc > s_cloud_gc_seq)
+        {
+            s_cloud_gc_seq = gc;
+        }
+
+        portEXIT_CRITICAL(&s_mux);
+
+        // 钳制期间被抑制的回收在此补做一次（此后由 ACK 路径继续驱动）
+        cloud_delete_acked_segments();
+    }
+
     // (7) 取一批
     const uint8_t n = cloud_collect_batch();
 
@@ -2691,6 +2848,13 @@ void log_cloud_get_info(LogCloudInfo &out)
     out.replay_seg = s_replay_seg;
     out.replay_idx = s_replay_idx;
     out.replay_armed = s_replay_armed ? 1u : 0u;
+
+    // FIX-BT9：水位分离观测（gc_seq 是判定用值，acked_seq 是真实确认最大值）
+    portENTER_CRITICAL(&s_mux);
+    out.gc_seq = s_cloud_gc_seq;
+    portEXIT_CRITICAL(&s_mux);
+
+    out.gc_floor = s_cloud_gc_floor;
 }
 
 bool log_cloud_test_push(LogEventId event_id, LogLevel level)
@@ -2733,6 +2897,7 @@ void log_cloud_test_reset()
     s_cloud_q_last_seq = 0;
     s_cloud_q_last_boot = 0;
     s_cloud_acked_seq = 0;
+    s_cloud_gc_seq = 0;          // FIX-BT9：连续水位一并归零（floor 由 arm 重设）
     s_cloud_inflight = false;
     s_cloud_cbor_len = 0;
     s_cloud_last_tx_ms = 0;
@@ -2826,7 +2991,8 @@ bool log_cloud_test_ack_inflight(uint8_t mode, uint8_t k)
     else if (mode == 2u)
     {
         from = 1u;
-        to = s_cloud_acked_seq;              // 回退到已确认水位
+        // FIX-BT9：与 classify 的比较对象保持一致 ⇒ "回退/重复 ACK" 语义不变
+        to = s_cloud_gc_seq;                 // 回退到已确认（连续）水位
     }
     else if (mode == 3u)
     {

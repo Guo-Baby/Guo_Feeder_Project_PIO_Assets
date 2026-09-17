@@ -1035,6 +1035,14 @@ static void logt_print_cloud()
         (unsigned)ci.replay_seg,
         (unsigned)ci.replay_idx,
         (unsigned)ci.replay_armed);
+
+    // FIX-BT9：水位语义分离观测
+    //   gc < acked  ⟺ 存在"已被更新 ACK 越过、但仍未确认"的旧记录（钳制生效中）
+    Serial.printf(
+        "[LogT] cloud4 acked=%u gc=%u gcfloor=%u\n",
+        (unsigned)ci.acked_seq,
+        (unsigned)ci.gc_seq,
+        (unsigned)ci.gc_floor);
 }
 
 // 直接入队 n 条 INFO（不经 RAM 环 / 不落 Flash），用于无 MQTT 条件下

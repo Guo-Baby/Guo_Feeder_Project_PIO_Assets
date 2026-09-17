@@ -1014,3 +1014,145 @@ CHANGE_APPLIED ✅ · SAVE_OK ✅ · INFO 只上云（`flash=0`）✅ · 安全�
   显式传入过期版本会得到 `version mismatch`（**这是正确行为，不是缺陷**）。
 - 配置写入会走 **Safe Restart**（Critical Op + 5 分钟倒计时）⇒ 测试后设备会自行重启，
   `logt stats` 的计数会被重置，**不要**把重启后的计数当作同一会话的延续。
+
+---
+
+## 11. watermark 语义分离（**FIX-BT9，已落地**）
+
+> 状态：已实现并上板验证。提交：`fix(log): prevent ack watermark bypass replay records`
+> 前置阅读：§1 架构。**本节改变了"水位"的语义，凡涉及补发/段回收/ACK 匹配的理解都必须以本节为准。**
+
+### 11.1 问题：一个标量承担了两种互不相容的语义
+
+修复前只有 `s_cloud_acked_seq` 一个标量，被同时用于：
+
+| 用途 | 需要的语义 |
+|---|---|
+| ACK 的"重复/回退"检测（`log_ack_classify`） | 云端确认过的**最大** seq |
+| 能否跳过补发（`log_ack_should_replay`） | **连续**已确认水位（比它小的都已确认） |
+| 能否回收段（`log_ack_segment_reclaimable`） | **连续**已确认水位 |
+| 淘汰记账（`flash_count_unacked`） | 同上 |
+
+而 **ACK 只证明"我刚发出的这一批被云端持久化"，不证明"比它小的都已持久化"**。
+Boot 期一条 live 记录（seq 更大）先被 ACK 时，单点水位就会**跨过**仍躺在 Flash 里、
+本 Boot 还没补发过的旧记录：
+
+```
+Boot: [JStg][W] read: open failed: /config/.commit   ← live WARN（seq 较大）
+      → 进云队列 → 被 ACK ⇒ acked_seq 跳到较大值
+      → 队列排空 ⇒ 补发 sweep 开始扫 Flash 里的旧记录（seq 更小）
+      → should_replay(seq <= acked) == false  ⇒ 永久不再补发（静默丢失）
+      → segment_reclaimable(last_seq <= acked) == true ⇒ 段被删（重启也补不回）
+```
+
+⇒ 违反 at-least-once。记为 **BT-9**。
+
+**放大因素（不是根因）**：补发 sweep 只在 `used == 0` 时推进（§11.5），
+live 记录会把补发挡住；而 P2-A 之后每个 Boot 必有 live 记录 ⇒ P2-A 让 BT-9 由"偶发"变"必现"。
+
+### 11.2 方案：两个标量 + 一个钳制规则（状态语义分离）
+
+```c
+s_cloud_acked_seq   // 云端确认过的**最大** seq（真实值）。仅用于观测，不参与判定
+s_cloud_gc_seq      // **连续**可回收水位。所有放行判定都用它
+s_cloud_gc_floor    // 尚未确认的 Flash backlog 最低 seq 下界（0 = 无钳制）
+
+关系：gc_seq = (gc_floor == 0) ? acked_seq : min(acked_seq, gc_floor - 1)
+不变量：gc_seq <= acked_seq   （钳制只会更保守，永不抬高）
+```
+
+判定函数（纯逻辑，在 `src/log_ack.h`，可主机穷举）：
+
+```c
+static inline uint32_t log_ack_gc_watermark(uint32_t acked_max, uint32_t gc_floor);
+```
+
+**`s_cloud_gc_seq` 现在用于**（全部替换掉原来的 `s_cloud_acked_seq`）：
+
+1. `log_ack_classify()` 的重复/回退检测
+2. `log_ack_should_replay()`（能否跳过补发）
+3. `log_ack_segment_reclaimable()`（能否回收段 / 能否当作环压力受害者）
+4. `flash_count_unacked()`（淘汰记账口径）
+
+`s_cloud_acked_seq` 仅出现在串口打印与 `LogCloudInfo.acked_seq`。
+
+### 11.3 为什么必须把 `log_ack_classify` 也换成连续水位
+
+只改补发与段回收是**不够**的。旧批次（boot_seq 更小）晚到的 ACK 若与"确认最大值"
+比较，会被规则④判成 `DUPLICATE` 而丢弃 ⇒ `rd` 不推进 ⇒ 那 8 条永远留在云队列里 ⇒
+`used != 0` 恒成立 ⇒ **补发被自身永久阻塞**（比 BT-9 更糟）。
+
+换成 gc 水位后：旧批次 ACK 的 `ack_to` 恒 > gc（因为它本来就没被确认过）⇒ 正常 `ACCEPT`；
+而**真正的重复 ACK**（同一批已处理）在与 gc 比较时仍满足 `ack_to <= gc` ⇒ 仍判 `DUPLICATE`
+⇒ 幂等性没有被放掉（合约测试 ⑧-3 有正/负向两组断言钉住）。
+
+### 11.4 `gc_floor` 的生命周期（唯一容易写错的地方）
+
+| 事件 | 动作 |
+|---|---|
+| `cloud_replay_arm()`（log_init / `creset` / 游标段被删） | `gc_floor = flash_lowest_first_seq()` —— **发生在任何 ACK 之前**，这是修复的关键时序 |
+| `cloud_poll()` 每轮 | 仅在 `!s_replay_armed && gc_floor != 0 && cloud_queue_head_is_current_boot()` 时清零，并让 `gc_seq` 追平 `acked_seq`，随后补做一次段回收 |
+
+清除条件的两个分支缺一不可：
+
+- `!s_replay_armed` —— 还有旧记录没投递时不能放行；
+- `cloud_queue_head_is_current_boot()` —— 补发只在 `used == 0` 时推进 ⇒ 每次 push 都是
+  往**空队列**里放 ⇒ 补发的旧记录必然构成**队列前缀**；队首回到本 Boot ⇒ 那段前缀已全部离开
+  队列（被 ACK / 放弃（已登记空洞）/ 淘汰（已登记空洞））。
+
+⚠️ **不要用"队列已空"当清除条件**：持续有 live 记录时队列可能长期非空 ⇒ 钳制永不解除
+⇒ 段永不回收 ⇒ 环压力反而丢数据（把静默丢失换成另一种丢失）。
+
+### 11.5 未改动的部分（刻意保留）
+
+| 项 | 现状 | 说明 |
+|---|---|---|
+| 补发 sweep 的 `used == 0` 门槛 | **未改** | 它使 live 记录阻塞补发（延迟，非丢失）。云端正常工作时队列会周期性排空 ⇒ 补发总能推进；云端不 ACK 时补发出来的记录同样送不出去，改门槛无收益。属**延迟**问题，不属 at-least-once 破坏 |
+| 空洞表（`LOG_HOLE_MAX = 8`） | **未改** | give-up / 队列淘汰的语义不变；段回收仍要求"与任何空洞不相交" |
+| 队列淘汰登记空洞的 `evict_boot == s_boot_seq` 条件 | **未改** | 见 §11.6 残余项 BT-10 |
+| `log_ack_*` 各纯函数签名 | **未改** | 只改变了"传进去的水位是哪个"，未改变任何判定规则本身 |
+| `LogRecord` / Flash 段格式 / CBOR 批次格式 | **未改** | 纯 RAM 态变更，无持久化格式迁移 |
+
+### 11.6 残余项（已记录，不在本次修复范围）
+
+**BT-10（低概率）**：云队列**溢出**淘汰时，只有当被淘汰记录属于本 Boot 才登记空洞
+（`cloud_queue_push()` 的 `evict_boot == s_boot_seq` 条件）。若淘汰的是刚补发进来的
+**上一 Boot** 记录，则不登记空洞 ⇒ 该记录在钳制解除后有被回收的风险。
+触发条件是复合的：① 队列满（128）且队首补发记录还没发出去 ② 之后有更高的 ACK 把水位推过它
+③ 恰好触发段回收。
+**建议修法**：把该条件去掉（补发记录同样需要空洞保护），代价是空洞表压力上升
+（补发记录 seq 稀疏、难以合并，`LOG_HOLE_MAX=8` 可能溢出 ⇒ 退化为"本 Boot 停止回收"）。
+因 `test/log_fix_tests.txt` F1 的 `holes=0` 断言正是钉住当前行为，改动需单独评审。
+
+### 11.7 观测（串口）
+
+```
+[LogT] cloud4 acked=%u gc=%u gcfloor=%u
+[Log Cloud] ack ok boot=%u to=%u covered=%u/%u acked=%u gc=%u floor=%u r=%d
+[Log Cloud] replay sweep done (acked=%u gc=%u floor=%u giveup=%u)
+```
+
+判别：**`gc < acked` ⟺ 存在"已被更晚的 ACK 越过、但仍未确认"的旧记录（钳制生效中）**。
+`LogCloudInfo` 新增 `gc_seq` / `gc_floor` 两个字段（只增不改，既有字段含义不变）。
+
+### 11.8 上板验证（F2-B，BT-9 验收场景）
+
+场景构造（用注入 ACK 把偶发变成确定性）：
+
+```
+复位 → rarmed=1
+logt atimeout 60000              # 防 live 批次中途 give-up
+logt stats ||| boot=             # 刷新 <BOOT>
+logt ack <BOOT> 1 4294967295     # ★ 注入 live 批次 ACK ⇒ 水位跳到旧记录之上
+logt cloud ||| gc=               # 观测：gc < acked（钳制生效）
+logt stats ||| replay=8          # ★ 验收 1：旧记录仍被补发（修复前恒 0）
+logt stats ||| segdel=0          # ★ 验收 2：旧段未被提前回收
+logt cloud   ||| qused=8         # ★ 验收 3：旧记录已回到云队列
+logt ackauto 0                   # 旧批次 ACK 不得被判 DUPLICATE 吞掉
+logt stats ||| qused=0           # 队列排空
+logt cloud ||| rarmed=0
+```
+
+离线侧的等价证据在 `test/log_contract/probe_ack.cpp` 第 ⑧ 组：
+**23 条断言全部通过，含 3 条负向探针**（用修复前的单点水位时结论必须相反），
+证明这组断言具备可证伪性、且修复确实改变了行为。

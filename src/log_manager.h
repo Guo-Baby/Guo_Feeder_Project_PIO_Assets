@@ -385,6 +385,17 @@ struct LogCloudInfo
     uint8_t  replay_seg;        // 补发游标：段索引（0xFF = 未开始）（DIR-1）
     uint8_t  replay_idx;        // 补发游标：段内 slot 下标（DIR-1）
     uint8_t  replay_armed;      // 补发游标是否处于"待扫描"状态（DIR-1）
+
+    // ---- FIX-BT9：水位语义分离（观测；只增字段，不改既有字段含义）----
+    //
+    //   gc_seq    连续可回收水位 —— **所有放行判定用的就是它**
+    //             （补发跳过 / 段回收 / ACK 重复检测 / 淘汰记账）
+    //   gc_floor  钳制下界（尚未确认的 Flash backlog 最低 seq 下界；0 = 无钳制）
+    //
+    // 关系：gc_seq = (gc_floor == 0) ? acked_seq : min(acked_seq, gc_floor - 1)
+    // 判别：gc_seq < acked_seq ⟺ 存在"已被更新 ACK 越过、但仍未确认"的旧记录
+    uint32_t gc_seq;
+    uint32_t gc_floor;
 };
 
 void log_cloud_get_info(LogCloudInfo &out);

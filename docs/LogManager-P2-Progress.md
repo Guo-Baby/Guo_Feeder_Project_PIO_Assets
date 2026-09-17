@@ -21,6 +21,8 @@
 | **收尾 · BT-1** | 云端 `log_ack`：**Worker 不在本仓库** ⇒ 仅记录接口要求，未改设备协议 | — | 📝 已记录 |
 | **收尾 · holes=2** | 代码审查结论：**设计行为**（两个独立来源、相邻才合并）⇒ 更新用例而不改实现 | 见上方提交 | ✅ |
 | **阶段 2-B** | **P2-B ConfigManager 接入**：`config_log_bridge` 桥接（关键词分类 + 10 s 去重 + SKIP 防重复）+ 2 个显式语义埋点（`CHANGE_APPLIED` / `SAVE_OK`）+ `cfg_hash32()` | `feat(log): integrate config manager logging` | ✅ 已提交 |
+| **BT-9 修复** | **ACK 水位越过未确认补发记录**（at-least-once 破坏）：拆成 `s_cloud_acked_seq`（真实最大，仅观测）+ `s_cloud_gc_seq`（连续可回收，全部判定）+ `s_cloud_gc_floor`（backlog 下界钳制）；新增 `log_ack_gc_watermark()` 纯函数；补发/段回收/淘汰记账/**ACK 重复检测**全部改用连续水位 | `fix(log): prevent ack watermark bypass replay records` | ✅ 已提交 |
+| **BT-9 回归** | 全量重跑 **195/195 = 100%，0 MISS**（首轮 167/187 → R1 187/189 → 本轮 195/195）；F2-B 两条原 KNOWN-FAIL 断言（`replay=8` / `qused=8`）**由 FAIL 转真实 PASS** | 同上 | ✅ |
 
 ---
 
@@ -30,6 +32,9 @@
 HEAD:           见 `git log --oneline -1`（每次提交后更新本行）
 分支:           wb
 P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
+回归基线:       ✅ 195/195 = 100%，0 MISS（test/log_fix_tests.txt，BT-9 修复后全量重跑）
+                   首轮 167/187 → R1 187/189（2 MISS=BT-9）→ 本轮 195/195
+合约测试:       ✅ 4/4 ALL PASS（含新增第 ⑧ 组 23 条 BT-9 断言，其中 3 条负向探针）
 ```
 
 ### 已接入 LogManager 的模块
@@ -49,6 +54,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 ## Next
 
 ### 下一步：**WiFi 接入**（P2-C）
+
+> BT-9 已修复并回归全绿（195/195），**可以进入 P2-C**。
+> 本轮未改 Config / Storage / 任何业务逻辑；未修改冻结的 `log_ack_*` 判定规则本身
+> （只换了"传进去的水位是哪个"）。
 
 Config 已接入完成（见上）。下一个按约定顺序是 **WiFi**（`src/wifi_module.cpp`，347 行）：
 
@@ -80,7 +89,8 @@ Config 已接入完成（见上）。下一个按约定顺序是 **WiFi**（`src
 | ID | 事项 | 阻塞什么 | 状态 |
 |---|---|---|---|
 | **BT-1** | **云端从未回送 `log_ack`**（`guo_feeder/down`）⇒ `acked_seq` 不前进 ⇒ Flash 段永不回收 | 线上回收闭环；P2 接入后日志量上升会加速暴露（496 条写满后开始淘汰未确认记录） | 🔴 **未解决**（外部依赖）。**Cloud Worker 代码不在本仓库**（本仓库只有 `cloud_protocol.md`）⇒ 按约定**只记录接口要求，不改设备侧协议**。接口要求见 §"BT-1 接口要求" |
-| **BT-9** | **live 日志抢跑导致旧未确认记录被永久越过**：`cloud_poll()` 的补发 sweep 只在 `used == 0` 时推进；Boot 期 live 日志（P2-A 后必现）先占队列并被 ACK ⇒ `acked_seq` 越过尚未补发的旧记录 ⇒ `log_ack_should_replay()` 判为"已覆盖" ⇒ **永久不再补发**（违反 at-least-once） | P1.5 的核心承诺（重启后可补发）；P2 接入后**必现** | 🔴 **未解决（本次故意不改）**。属 replay/ACK 水位语义 = P1.5 **冻结契约**，需**单独评审**。用例 F2-B 的 `qused=8` / `replay=8` **保留为失败**，作为修复后的验收标准。修复候选见 `docs/LogManager-P1.5-Board-Test-Report0918.md` 附录 R1.2.1 |
+| ~~**BT-9**~~ | ~~live ACK 越过旧未确认补发记录 ⇒ 永久跳过~~ | — | ✅ **已修复**（`fix(log): prevent ack watermark bypass replay records`）。方案＝**状态语义分离**：`acked_seq`（真实最大，仅观测）/ `gc_seq`（连续可回收，全部判定）/ `gc_floor`（钳制下界）。详见 Guide §11 与 Board-Test-Report 附录 R2 |
+| **BT-10**（新） | 云队列溢出淘汰时**只给本 Boot 记录**登记空洞（`evict_boot == s_boot_seq`）⇒ 补发进来的上一 Boot 记录被淘汰后无空洞保护 | 复合低概率残余项（需同时：队列满且队首补发记录未发出 + 之后有更高 ACK + 触发段回收） | ⏳ **未修**（超出本次范围）。修法＝去掉该条件；代价＝空洞表压力上升（补发记录 seq 稀疏难合并，`LOG_HOLE_MAX=8` 可能溢出⇒退化为本 Boot 停止回收）。**F1 的 `holes=0` 断言正钉住当前行为** ⇒ 需单独评审 |
 | BT-4~BT-8 | ~~`test/log_fix_tests.txt` 中 20 条 MISS 的预期值修正~~ | P1.5 回归"全绿"基线 | ✅ **已修正 14 处**；断言 187 → **189**，通过 **187/189**；剩余 2 条已归因 BT-9（设计级） |
 | P2-A 未验证项 | Storage bridge 的 **ERROR / CRITICAL 分支**与 **10 s 抑制窗口**无法用现有钩子触发 | 桥接层完整性 | ⏳ 待"结构化回调 + 故障注入"一并解决 |
 | F2 决策 | 字符串参数是否改结构化回调（现为哈希/枚举化） | Storage 路径、Config key、Workflow id/action id 等 7 个 ParamId 的可用性 | ⏳ 已按"暂不扩 API"执行，未来可评审 |
@@ -114,17 +124,19 @@ Config 已接入完成（见上）。下一个按约定顺序是 **WiFi**（`src
 | 文档 | 内容 |
 |---|---|
 | `docs/LogManager-Integration-Guide.md` §9 | **新增**：Storage 回调桥接（注册方式 / 语义还原 / 参数映射 / 高频抑制 / 生命周期 / 上板结果） |
-| `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题） |
-| `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查（**尚未入库**，见下） |
+| `docs/LogManager-Integration-Guide.md` §10 | **新增**：ConfigManager 接入（与 Storage 的 3 点差异 / 关键词映射 / 2 个显式埋点 / 哈希 / 上板结果） |
+| `docs/LogManager-Integration-Guide.md` **§11** | **新增**：**watermark 语义分离（FIX-BT9）** —— 根因 / 两个标量 / 为何 classify 也要改 / `gc_floor` 生命周期 / 刻意未改的部分 / 残余 BT-10 / 观测 / 验收 |
+| `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题）；**附录 R1**（用例修正与基线重录）；**附录 R2**（BT-9 分析·修复·验证 + 新基线 195/195） |
+| `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查 —— 已随 `85c88b5` 入库 |
 
-### 尚未入库的文件（待决定）
+### 入库状态（已核实 `git ls-files`）
 
 | 文件 | 说明 |
 |---|---|
-| `docs/P2_Log_Integration_Matrix.md` | P2 前置产物，未提交 |
-| `log模块历史/LogManager-P2接入准备审查0918.md` | P2 前置产物，未提交 |
+| `docs/P2_Log_Integration_Matrix.md` | ✅ 已入库（`85c88b5`） |
+| `log模块历史/LogManager-P2接入准备审查0918.md` | ✅ 已入库（`85c88b5`） |
 | `AI_RULES.md` | 已加「§9 Build/Test/Cleanup Rules」，但该文件**已被 `.gitignore` 忽略**（见 commit `1d0b47c`）⇒ 改动不会入库 |
 
 ---
 
-*最后更新：2026-09-17（阶段 3）*
+*最后更新：2026-09-17（BT-9 修复 + 回归 195/195；下一步 P2-C WiFi）*

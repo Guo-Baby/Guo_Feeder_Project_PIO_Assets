@@ -545,3 +545,149 @@ Boot 后：
 | 设备侧 BLOCKED | ✅ 已解除（A–E 全部可跑段落完成） |
 | `src/` 生产代码 | ✅ 本轮未改动（仅 P2-A 的 Storage 桥接为上一轮成果） |
 
+
+---
+
+# 附录 R2 —— BT-9：ACK 水位越过未确认补发记录（分析 · 修复 · 验证）
+
+> 本节记录 **BT-9** 的完整处置：根因分析 → 修复设计 → 验收。
+> 本轮**未**通过修改测试绕过问题；测试文件的改动是"新增判别场景 + 修正我自己的
+> 用例书写错误"，两条原 KNOWN-FAIL 断言（`replay=8` / `qused=8`）现已真实通过。
+
+## R2.1 三者关系：`acked_seq` × replay sweep × Flash GC
+
+修复前只有一个标量 `s_cloud_acked_seq`，同时被四处使用：
+
+| 使用点 | 语义需求 |
+|---|---|
+| `log_ack_classify()` 规则④（重复/回退） | 云端确认过的**最大** seq |
+| `log_ack_should_replay()`（跳过补发） | **连续**已确认水位 |
+| `log_ack_segment_reclaimable()`（段回收 / 环压力受害者） | **连续**已确认水位 |
+| `flash_count_unacked()`（淘汰记账） | **连续**已确认水位 |
+
+而 **ACK 的语义只是"我刚发出的这一批被云端持久化了"**（冻结契约 §13），
+**并不**意味着"比它小的 seq 都已持久化"。二者的缝隙就是 BT-9：
+
+```
+Boot（P2-A 之后必然有 live 日志）
+  [JStg][W] read: open failed: /config/.commit     ← live WARN，seq 较大
+    ↓ 进 RAM 云队列 → 组批 → 发出 → 被 ACK
+  s_cloud_acked_seq = <live seq>                   ← 单点水位跳到旧记录之上
+    ↓ 队列排空 ⇒ cloud_poll() 第 (6) 步开始补发 sweep
+  log_ack_should_replay(seq_old, acked=live, 0)    ← seq_old <= acked ⇒ false
+    ⇒ 旧记录**永久不再补发**（违反 at-least-once）
+  log_ack_segment_reclaimable(last<=acked, ...)    ← true ⇒ **段被删**
+    ⇒ 物理副本也没了，重启同样补不回
+```
+
+**放大因素（非根因）**：补发 sweep 只在 `used == 0` 时推进 ⇒ live 记录会把补发挡住。
+P2-A 之后每个 Boot 必有 live 日志 ⇒ BT-9 由"偶发"变成"必现"。
+
+## R2.2 修复：状态语义分离（采用用户指定的方案）
+
+```c
+s_cloud_acked_seq   云端确认过的**最大** seq（真实值）→ 仅观测，不参与判定
+s_cloud_gc_seq      **连续**可回收水位            → 所有放行判定
+s_cloud_gc_floor    未确认 backlog 的最低 seq 下界（0 = 无钳制）
+
+gc_seq = (gc_floor == 0) ? acked_seq : min(acked_seq, gc_floor - 1)
+不变量：gc_seq <= acked_seq（钳制只会更保守）
+```
+
+`gc_seq` 现已替换掉全部三处放行判定（补发跳过 / 段回收 / 淘汰记账）
+**以及 `log_ack_classify` 的重复检测** —— 最后一处是必需的，见 R2.3。
+
+`gc_floor` 的生命周期：
+
+- **设置**：`cloud_replay_arm()`（log_init / `creset` / 游标段被删）取
+  `flash_lowest_first_seq()`。关键在时序：**arm 一定发生在任何 ACK 之前**。
+- **清除**：`cloud_poll()` 中 `!s_replay_armed && gc_floor != 0 &&
+  cloud_queue_head_is_current_boot()` ⇒ 清零并让 `gc_seq` 追平 `acked_seq`，
+  随后补做一次段回收。
+  - `!s_replay_armed`：还有旧记录没投递 ⇒ 不放行。
+  - 队首已是本 Boot：补发只在 `used == 0` 时推进 ⇒ 补发记录构成**队列前缀**
+    ⇒ 队首回到本 Boot 等价于旧记录已全部离开队列（ACK / 放弃(空洞) / 淘汰(空洞)）。
+  - ⚠️ 不能用"队列已空"当条件：持续有 live 记录时队列可能长期非空 ⇒ 钳制永不
+    解除 ⇒ 段永不回收 ⇒ 把静默丢失换成环压力丢失。
+
+## R2.3 为什么不会破坏其它机制（逐条论证）
+
+| 机制 | 论证 |
+|---|---|
+| **partial ACK** | `log_ack_classify` / `log_ack_covered_count` 的**判定规则一字未改**，只是"与之比较的水位"换成较保守的 `gc_seq`。由于 `gc_seq <= acked_seq`，原本判 DUPLICATE 的区间**只会更少不会更多**；而少掉的那部分正是"属于更旧批次、本应被接受的合法 ACK"（见下条）。前缀推进（`rd = rd_base + max(evicted, covered)`）逻辑完全未动 ⇒ 部分覆盖仍只推进被覆盖前缀。 |
+| **replay** | `should_replay` 改用 `gc_seq` ⇒ 水位更保守 ⇒ **只会补发更多、不会更少**。这正是修复目标。补发的游标 / 单段界限 / 每轮 push 上限 / `give_up_seq` 语义全部未动。副作用：Boot 期已确认的 live 记录也可能被重发一次（其 seq > gc），由云端按 `(device_id, boot_seq, seq)` 幂等去重消化 —— 属 at-least-once 的可接受代价。 |
+| **hole protection** | 空洞**只增不减**：`gc_seq` 更低意味着"靠水位放行"更严格，而空洞是**叠加**在它之上的额外约束（`reclaimable` 要求"整段 ≤ 水位 ∧ 不与空洞相交 ∧ 表未溢出"）。give-up / 队列淘汰的登记条件完全未改 ⇒ 空洞语义不变。 |
+| **segment GC** | 唯一判定入口仍是 `log_ack_segment_reclaimable()`，只是传入的水位更保守 ⇒ **回收变少、不会误收**。追平机制保证 backlog 投递完毕后水位能追到 `acked_seq`，不会永久停滞（上板证据：`cloud4 ... gcfloor=0 gc=7937`）。 |
+| **GIVE_UP_NOT_ADVANCE** | 未动：放弃路径既不推进 `acked_seq` 也不推进 `gc_seq`（只登记空洞）。 |
+| **持久化格式** | 纯 RAM 态变更：`LogRecord` v2/128B、Flash 段 3984B/31/16、CBOR fmt=2 全部未动 ⇒ 无格式迁移、无 LittleFS 兼容问题。 |
+
+### 额外修复的一处连带缺陷（不改则比 BT-9 更糟）
+
+旧批次（boot_seq 更小）晚到的 ACK 若与 `acked_seq`（已被 live ACK 抬高）比较，
+会被规则④判成 `DUPLICATE` 丢弃 ⇒ `rd` 不推进 ⇒ 那批记录**永远留在云队列里**
+⇒ `used != 0` 恒成立 ⇒ 补发被自身永久阻塞。
+改用 `gc_seq` 后，旧批次 ACK 的 `ack_to` 恒 > gc ⇒ 正常 `ACCEPT`；
+而真正的重复 ACK 仍满足 `ack_to <= gc` ⇒ 幂等性未被放掉
+（合约测试第 ⑧ 组用正负向断言双向钉住）。
+
+## R2.4 新增测试场景（旧 Flash 未确认日志 + live 先被 ACK + 重启补发）
+
+场景放在 **F2-B**（原本就是"复位后补发"段），用**注入 ACK**把偶发变成确定性：
+
+```
+复位 → rarmed=1
+logt sonline 1 / atimeout 60000        # 防 live 批次中途 give-up
+logt stats ||| boot=                   # 刷新 <BOOT>
+logt ack <BOOT> 1 4294967295           # ★ 注入 live 批次 ACK ⇒ 水位跳到旧记录之上
+logt cloud ||| gc= / gcfloor=          # 观测钳制
+logt stats ||| replay=8                # ★ 验收 1（修复前恒 0）
+logt stats ||| segdel=0 / seg_del=0    # ★ 验收 2：旧段未被提前回收
+logt cloud ||| qused=8                 # ★ 验收 3：旧记录回到云队列
+logt ackauto 0                         # 旧批次 ACK 不得被判 DUPLICATE 吞掉
+logt stats ||| qused=0 / rarmed=0      # 队列排空、补发完成
+```
+
+**上板实测（2026-09-17，COM8）**：
+
+```
+[LogT] cloud4 acked=0 gc=0 gcfloor=7877                       ← Boot：钳制已挂上
+[Log Cloud] ack ok boot=1 to=4294967295 covered=1/1 acked=7937 gc=7876 floor=7877 r=2
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                            ★ live ACK 把 acked 推到 5889，
+                                              而 gc 被 floor(5829) 钳在 5828
+>>> EXPECT 'replay=8' : OK                                    ★ 旧记录仍被补发
+>>> EXPECT 'segdel=0' : OK    >>> EXPECT 'seg_del=0' : OK      ★ 旧段未被回收
+>>> EXPECT 'qused=8' : OK                                     ★ 旧记录回到队列
+[Log Cloud] ack ok boot=2 to=7884 covered=8/8 acked=7937 gc=7876 floor=7877 r=2
+                                            ★ 旧批次晚到 ACK 被 ACCEPT（未吞）
+[Log Cloud] replay sweep done (acked=7937 gc=7876 floor=7877 giveup=0)
+[LogT] cloud4 acked=7937 gc=7937 gcfloor=0                    ★ backlog 走完 ⇒ 追平
+>>> EXPECT 'rarmed=0' : OK
+```
+
+**离线等价证据**：`test/log_contract/probe_ack.cpp` 新增第 ⑧ 组 **23 条断言**，
+含 **3 条负向探针**（换成修复前的单点水位时结论必须相反）⇒ 具备可证伪性。
+`run_contract_test.py` 结果 **4/4 ALL PASS，合计失败 0**。
+
+## R2.5 新基线（BT-9 修复后全量重跑）
+
+| 段 | 覆盖 | 断言 | OK | MISS |
+|---|---|---|---|---|
+| A | F0、F1、F2-A | 56 | 56 | 0 |
+| B | F2-B（★BT-9）、F3-A、F3-B | 65 | 65 | 0 |
+| C | F4 | 21 | 21 | 0 |
+| D | F7 | 30 | 30 | 0 |
+| E | F8 | 23 | 23 | 0 |
+| **合计** | | **195** | **195 (100%)** | **0** |
+
+> 首轮 167/187（89.3%，20 MISS）→ R1 修正后 187/189（98.9%，2 MISS，记为 BT-9）
+> → **本轮 195/195（100%，0 MISS）**，且两条 BT-9 判别断言由 FAIL 转为真实 PASS。
+> 断言数 189 → 195：F2-B 由"被动等云端 ACK"改为"主动注入 live ACK"，
+> 新增 6 条（atimeout / boot / 注入 ACK / gc / gcfloor / qused）。
+
+## R2.6 遗留
+
+| 编号 | 事项 | 说明 |
+|---|---|---|
+| **BT-1** | 云端始终不回 `log_ack` | 未变，仍是外部阻塞项。本轮用注入 ACK 绕开它对**设备侧**验证的阻碍，但线上闭环仍缺失 |
+| **BT-10** | 云队列溢出淘汰时，仅本 Boot 记录登记空洞（`evict_boot == s_boot_seq`） | 复合低概率残余项；修法与代价见 Integration-Guide §11.6，需单独评审（F1 的 `holes=0` 断言正钉住当前行为） |
