@@ -27,6 +27,7 @@
 #                boot=%u from=%u to=%u n=%u retry=%u giveup=%u conn=%u lastlen=%u
 #   [LogT] cloud2 giveup_seq=%u replay_seq=%u replay_done=%u next_tx_in=%u ..
 #   [LogT] cloud3 tx_valid=%u rd_base=%u holes=%u hovf=%u rseg=%u ridx=%u rarmed=%u
+#   [LogT] cloud4 acked=%u gc=%u gcfloor=%u          ← FIX-BT9 水位语义分离观测
 #   [LogT] cstats batch=%u rec=%u retx=%u ack_ok=%u ack_to=%u ack_lost=%u
 #                 qdrop=%u fdrop=%u deg=%u qused=%u
 #   [LogT] cstats2 evict_inf=%u seg_evict_unacked=%u hole_evict=%u
@@ -180,35 +181,52 @@ logt fseg 0 ||| recs=8
 # 重启 ⇒ acked_seq 归 0、空洞表清空（纯 RAM 态，无需任何 Flash 格式迁移）
 # ⇒ 那 8 条 WARN 重新可补发 ⇒ ACK 后段被正常回收
 #
-# 预期：rarmed=1 → replay=8 → ACK 落账(ack_ok=1) → 队列排空(qused=0) → rarmed=0
+# 预期：rarmed=1 → 注入 live ACK → replay=8（★BT-9 判别）→ 旧批次 ACK 未被吞
+#       → ACK 落账 → 队列排空(qused=0) → rarmed=0
 #
 # ⚠️ 本段**不**期望 segdel/seg_del 增长：此时 Flash 里只有 1 个段，而它同时是
 #    `s_append_segment`（追加目标）。`cloud_delete_acked_segments()` 明确跳过
 #    追加目标（`if (seg == s_append_segment) continue;`）⇒ 该段**按设计永不可回收**。
 #    "ACK 后段被回收"需要 ≥2 个段才有意义，由 F3-B / F7 覆盖。
 # =====================================================
+# ★★ 本段同时是 **BT-9 的验收场景**（旧 Flash 未确认日志 + live log 先被 ACK + 重启补发）
+#
+#   P2-A 之后每个 Boot 必然产生 ≥1 条 live WARN（实测
+#   `[JStg][W] read: open failed: /config/.commit`），而补发 sweep 只在
+#   `used == 0` 时推进 ⇒ 这条 live WARN 会先把补发挡住。
+#
+#   BT-9 的危害：它自己被 ACK 之后，单点水位 `acked_seq` 跳到**比旧记录更大的 seq**
+#   ⇒ 旧记录被 `log_ack_should_replay(seq <= acked)` 判为"已覆盖" ⇒ 永久不再补发
+#   （实测 `replay=0`、`qused=1`），且旧段会被 `segment_reclaimable` 误删。
+#
+#   因此本段**主动注入**这条 live ACK（而不是等云端：云端至今不回 log_ack，见
+#   BT-1），把 BT-9 从"偶发"变成**确定性场景**。
 logt cloud ||| rarmed=1
-# 串口会话建立于 boot 之后 ⇒ "replay 尚未开始"这个中间态不可观测。
-# 改为断言"未 ACK 的那 8 条已重新回到云队列"（等价且可观测）。
-# ⚠️⚠️ 以下两条断言自 **P2-A（Storage 桥接）接入后变为 KNOWN-FAIL**，原因与用例无关：
-#
-#   P2-A 让 `json_storage` / `file_storage` 的错误进入 LogManager，于是**每个 Boot
-#   必然产生 ≥1 条 live WARN**（实测：`[JStg][W] read: open failed: /config/.commit`）。
-#   而 `cloud_poll()` 的补发 sweep **只在 `used == 0` 时推进** ⇒ 这条 live WARN 一进队列
-#   就把 replay 挡住了；随后它自己被 ACK，`acked_seq` 直接跳到**比旧记录更大的 seq**
-#   ⇒ 那 8 条未确认的旧 Flash 记录被 `log_ack_should_replay()`（`seq <= acked`）判为
-#   "已覆盖" ⇒ **永久不再补发**（实测 `replay=0`、`qused=1`）。
-#
-#   ⇒ 这是**设计级缺陷**（违反 at-least-once），记为 **BT-9**，需要单独评审后才能改
-#      replay / ACK 语义（属 P1.5 冻结契约范围，本次不动实现）。
-#   ⇒ 这两条断言**保留不动**，它们正是 BT-9 修复后的验收标准。
-logt cloud ||| qused=8
 logt sonline 1 ||| sonline=1
+# 拉长超时，避免 live 批次在本段中途 give-up；stats 顺带刷新 <BOOT>（取当前 boot_seq）
 logt atimeout 60000 ||| atimeout=60000
+logt stats ||| boot=
+logt ack <BOOT> 1 4294967295 ||| ack ok boot=
+#
+# 此刻状态：acked = live 记录的 seq（**大于**旧记录），而旧记录一次都还没补发过。
+#   修复前：单一水位 ⇒ 旧记录被跳过（replay 恒 0）＋ 旧段被判可回收。
+#   修复后：`s_cloud_gc_floor` = Flash 现存记录的最低 seq ⇒ 连续水位被钳在其下。
+logt cloud ||| gc=
+logt cloud ||| gcfloor=
+# ★ 验收 1：旧记录**仍然**被补发（修复前 replay=0 —— 这是本修复的核心判别）
 logt stats ||| replay=8
+# ★ 验收 2：旧段未被提前回收（等旧记录真正确认后才允许）
+logt stats ||| segdel=0
+logt stats ||| seg_del=0
+# ★ 验收 3：旧记录已重新回到云队列
+logt cloud ||| qused=8
+# 旧批次（boot_seq = 上一 Boot）的 ACK 必须**不被**当成 DUPLICATE 吞掉，
+# 否则这 8 条会永远卡在队列里 ⇒ `used != 0` 恒成立 ⇒ 补发被自身永久阻塞。
 logt ackauto 0 ||| acked=
 # ★ 正面证据：ACK 落账 + 队列排空（替换原来依赖"段被回收"的弱断言）
-logt stats ||| ack_ok=1
+#   注：ack_ok 现在含"注入的 live ACK"这一条，故只断言它被记录、不钉死数值；
+#       真正的判据是 `qused=0`（旧记录已离开队列）。
+logt stats ||| ack_ok=
 logt stats ||| qused=0
 # ★ 追加目标段（唯一一段）按设计不可回收 ⇒ 恒为 0
 logt stats ||| segdel=0

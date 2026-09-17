@@ -335,6 +335,38 @@ static inline uint8_t log_hole_protect_gap(
 }
 
 // -----------------------------------------------------
+// FIX-BT9：把"云端确认最大值"折算成"**连续**可回收水位"
+//
+//   acked_max  云端确认过的**最大** seq（单调，但不保证连续性）
+//   gc_floor   尚未确认的 Flash backlog 的**最低** seq（0 = 无钳制）
+//   返回       可安全用于"跳过补发 / 回收段 / 匹配 ACK"的水位
+//
+// ★ 为什么必须与 acked_max 分开（BT-9）：
+//   ACK 只证明"我刚发出去的这一批被云端持久化了"，**不证明**"比它小的 seq
+//   都已持久化"。Boot 期一条 live 记录（seq 更大）被先 ACK 时，单点高水位会
+//   **跨过**仍躺在 Flash 里、本 Boot 还没补发过的旧记录：
+//     · `log_ack_should_replay(seq <= acked_max)` → false ⇒ 永久不再补发
+//     · `log_ack_segment_reclaimable(last_seq <= acked_max)` → 段被删
+//   ⇒ 破坏 at-least-once（旧 WARN+ 静默丢失），且**重启也补不回**（段已删）。
+//
+//   本函数的语义：水位只能推进到"backlog 下界之前"。backlog 被补发并确认后
+//   （调用方把 gc_floor 清 0），水位才允许回到 acked_max。
+//
+// 不变量（调用方保证）：返回的 gc 恒 <= acked_max。
+// 纯函数、无 I/O ⇒ 可在主机上穷举断言（见 test/log_contract/probe_ack.cpp）。
+// -----------------------------------------------------
+static inline uint32_t log_ack_gc_watermark(uint32_t acked_max, uint32_t gc_floor)
+{
+    if (gc_floor == 0u)
+    {
+        return acked_max;   // 无 backlog ⇒ 水位可自由推进
+    }
+
+    // gc_floor == 1 ⇒ 存在 seq=1 的未确认记录 ⇒ 水位只能是 0（全部不可回收）
+    return (acked_max < gc_floor) ? acked_max : (gc_floor - 1u);
+}
+
+// -----------------------------------------------------
 // 段是否可回收 —— **生产路径的唯一判定点**（FIX-2 + FIX-3b）
 //
 //   first_seq / last_seq  段的**真实** seq 范围（last_seq 来自
@@ -434,8 +466,13 @@ static inline bool log_ack_should_give_up(uint32_t retry)
 // -----------------------------------------------------
 // 补发（replay）时是否应把这条从 Flash 取出重发
 //
-//   acked_seq     已确认高水位（重启后为 0 ⇒ 全部重放，属正常行为）
+//   acked_seq     **连续**已确认水位 —— 必须传 `log_ack_gc_watermark()` 的结果，
+//                 **不得**直接传"云端确认最大值"（BT-9：后者会跨过未补发的旧
+//                 记录 ⇒ 补发被永久跳过）。重启后为 0 ⇒ 全部重放，属正常行为。
 //   give_up_seq   本次开机已放弃重发的水位（避免与云端无 ACK 时死循环）
+//
+// 判定覆盖关系（调用方须保证）：give_up_seq 区间在放弃时已登记空洞 ⇒
+// 段回收对它设防；而 acked_seq（gc 水位）以下则**无需**空洞（已确认）。
 // -----------------------------------------------------
 static inline bool log_ack_should_replay(
     uint32_t seq, uint32_t acked_seq, uint32_t give_up_seq)

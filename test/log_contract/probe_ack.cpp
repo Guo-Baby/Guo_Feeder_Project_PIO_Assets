@@ -468,6 +468,94 @@ extern "C" int probe_run()
     check(log_ack_should_replay(6u, 0u, 5u), "seq > give_up_seq -> replay");
     check(log_ack_should_replay(1u, 0u, 0u), "acked=0 & giveup=0 -> replay (reboot)");
 
+    // ---------- ⑧ FIX-BT9：水位语义分离（连续可回收水位）----------
+    //
+    // 场景（与上板 BT-9 用例同构）：
+    //   · Flash 里有上一 Boot 的 8 条未确认记录，seq = 2500..2507（段首 2500）
+    //   · 本次 Boot 一条 live 记录 seq = 2817 先被云端 ACK
+    //   · 于是"确认最大值" acked_max = 2817，**跨过**了尚未补发的 2500..2507
+    //
+    // 修复前（用 acked_max 判定）：补发被永久跳过 + 段被误回收（静默丢失）。
+    // 修复后（用 gc 水位判定）：补发照常、段不回收。
+    pstr("  FIX-BT9 gc watermark:\n");
+
+    // ⑧-1 基本折算
+    checkv(log_ack_gc_watermark(2817u, 0u) == 2817u,
+           "floor=0 -> gc == acked_max (no clamp)",
+           log_ack_gc_watermark(2817u, 0u));
+    checkv(log_ack_gc_watermark(2817u, 2500u) == 2499u,
+           "floor=2500 -> gc == 2499 (clamped below backlog)",
+           log_ack_gc_watermark(2817u, 2500u));
+    checkv(log_ack_gc_watermark(2499u, 2500u) == 2499u,
+           "acked < floor -> gc == acked (no clamp needed)",
+           log_ack_gc_watermark(2499u, 2500u));
+    checkv(log_ack_gc_watermark(2817u, 1u) == 0u,
+           "floor=1 -> gc == 0 (nothing reclaimable)",
+           log_ack_gc_watermark(2817u, 1u));
+    checkv(log_ack_gc_watermark(0u, 0u) == 0u,
+           "acked=0,floor=0 -> gc == 0",
+           log_ack_gc_watermark(0u, 0u));
+
+    // ⑧-2 不变量：gc 恒 <= acked_max（不得因钳制反而抬高）
+    check(log_ack_gc_watermark(2817u, 2500u) <= 2817u,
+          "gc must never exceed acked_max");
+
+    {
+        // ---- 修复后的正确行为（正面）----
+        const uint32_t gc = log_ack_gc_watermark(2817u, 2500u);   // = 2499
+
+        // 旧记录仍必须补发（at-least-once 的核心承诺）
+        check(log_ack_should_replay(2500u, gc, 0u), "BT9: backlog first rec must replay");
+        check(log_ack_should_replay(2507u, gc, 0u), "BT9: backlog last rec must replay");
+
+        // 旧段不得被回收（整段 2500..2507 都在水位之上）
+        check(!log_ack_segment_reclaimable(2500u, 2507u, gc, nullptr, 0u, false),
+              "BT9: backlog segment must NOT be reclaimed");
+
+        // live 记录自身（seq 2817）不会被重复补发以外的逻辑误伤：它 > gc ⇒ 会补发，
+        // 由云端按 (boot_seq, seq) 幂等去重 —— 属 at-least-once 可接受的重放。
+        check(log_ack_should_replay(2817u, gc, 0u), "BT9: live rec above gc also replayable");
+
+        // ---- ★ 负向探针：证明上面的断言不是"恒真" ----
+        // 用修复前的单点高水位（acked_max = 2817）时，结论必须**相反**，
+        // 否则说明本组断言没有判别力。
+        check(!log_ack_should_replay(2500u, 2817u, 0u),
+              "NEG: with raw acked_max the backlog would be SKIPPED (the bug)");
+        check(log_ack_segment_reclaimable(2500u, 2507u, 2817u, nullptr, 0u, false),
+              "NEG: with raw acked_max the segment would be RECLAIMED (the bug)");
+    }
+
+    // ⑧-3 旧批次晚到的 ACK 不得被判为 DUPLICATE
+    //
+    // 修复前：ack_to(2507) <= acked_max(2817) ⇒ DUPLICATE ⇒ 记录永远留在云队列里
+    //         ⇒ `used != 0` 恒成立 ⇒ 补发被自身永久阻塞（比 BT-9 更糟）。
+    // 修复后：与 gc 水位比较 ⇒ 正常 ACCEPT。
+    {
+        const uint32_t gc = log_ack_gc_watermark(2817u, 2500u);   // = 2499
+
+        check(log_ack_classify(5u, 1u, 2507u, 5u, 2500u, 2507u, gc)
+                  == LOG_ACK_ACCEPT,
+              "BT9: late ack of older batch must be ACCEPT (not swallowed)");
+
+        check(log_ack_classify(5u, 1u, 2507u, 5u, 2500u, 2507u, 2817u)
+                  == LOG_ACK_DUPLICATE,
+              "NEG: with raw acked_max the same ack is DUPLICATE (the bug)");
+
+        // 真实重复仍然必须是 DUPLICATE（不得把 idempotency 也一起放掉）
+        check(log_ack_classify(5u, 1u, 2507u, 5u, 2500u, 2507u, 2507u)
+                  == LOG_ACK_DUPLICATE,
+              "BT9: genuine duplicate must still be DUPLICATE");
+    }
+
+    // ⑧-4 backlog 确认后（floor 归 0）水位必须能追平 acked_max
+    checkv(log_ack_gc_watermark(2817u, 0u) == 2817u,
+           "after backlog drained (floor=0) gc catches up to acked_max",
+           log_ack_gc_watermark(2817u, 0u));
+    check(log_ack_segment_reclaimable(2500u, 2507u,
+                                      log_ack_gc_watermark(2817u, 0u),
+                                      nullptr, 0u, false),
+          "BT9: segment reclaimable once backlog confirmed");
+
     pstr("  合计失败: ");
     pdec((uint32_t)g_fail);
     pch('\n');
