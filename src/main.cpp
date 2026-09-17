@@ -234,6 +234,181 @@ static void file_storage_log_bridge(const char *level, const char *message)
 }
 
 // =====================================================
+// P2-B：ConfigManager 日志回调 → LogManager 桥接
+//
+// 与 Storage bridge（P2-A）同构，但有两点关键差别：
+//
+//   ① **ConfigManager 的 cfg_log() 在未注册回调时会兜底打串口**
+//      （config_manager.cpp:220）。一旦注册了回调，兜底分支被跳过 ⇒ 桥接**必须
+//      自己补串口输出**，否则原有日志会突然"消失"（行为回退）。
+//      本桥接因此是"串口 + LogManager"双路。
+//
+//   ② 与 Storage 不同，这里**允许 INFO**：Config 的 INFO 承载真实诊断信息
+//      （`init done, loaded 8/8 modules`、`boot validated`），且频率极低。
+//
+// 只调用 log_emit()；不触碰 log_flash_* / log_meta_* / log_seg_* / log_cloud_test_*。
+//
+// ★ 与"显式语义埋点"的分工（**必须遵守，否则重复上报**）：
+//   config_manager.cpp 内已显式补了 2 个 cfg_log 里**没有对应文本**的事件：
+//     · `exec_set_module()` 成功 → LOG_CFG_CHANGE_APPLIED（带 module/key 哈希）
+//     · `config_save()` 成功     → LOG_CFG_SAVE_OK
+//   因此本桥接**不**映射这两类文本：
+//     · `enqueue accepted, pending=%d` → SKIP（入队 ≠ 生效；生效点由上面负责）
+//     · `restart requested by caller, delegating to SystemCommand` → SKIP
+//       （重启请求归 System 段 `LOG_SYS_RESTART_REQUESTED`，避免跨段重复）
+//
+// 语义还原的固有限制：cfg_log 只给自由文本 ⇒ EventId 靠**关键词**分类，
+// op 明细写入 LOG_P_ERR_CODE；无法匹配的落"等级兜底桶"。真实语义看串口原文。
+// 要彻底解决需把回调改成结构化（level + event_hint + module_hash + err_code），
+// 属 API 变更，需单独评审（对应 Integration-Guide §7.2 F-2）。
+// =====================================================
+
+// op 分类（写入 LOG_P_ERR_CODE；本桥接私有枚举，不是冻结 ParamId）
+enum CfgBridgeOp : uint8_t
+{
+    CFG_OP_UNKNOWN = 0,
+    CFG_OP_LOAD_DONE,             // init done / boot validated
+    CFG_OP_LOAD_FAILED,           // 模块加载/解析/序列化失败等地带
+    CFG_OP_RECOVERED_BACKUP,      // loaded from backup / recovered from backup
+    CFG_OP_COMMIT_FAILED_ROLLBACK,// 提交/回滚/原子写轮转失败（含 save 失败）
+    CFG_OP_VERSION_REBUILT,       // version 文件缺失/损坏/重建
+    CFG_OP_WRITE_REJECTED,        // 写请求被拒
+    CFG_OP_RESTART_TIMEOUT,       // 重启倒计时超时（保存后重启）
+    CFG_OP_SKIP,                  // 明确不由本桥接上报（见文件头说明）
+    CFG_OP_COUNT
+};
+
+#define CFG_BRIDGE_DEDUP_MS 10000u
+
+static unsigned long s_cfg_last_ms[CFG_OP_COUNT];
+static uint16_t      s_cfg_suppressed[CFG_OP_COUNT];
+
+// message → op（关键词匹配；顺序即优先级，先具体后笼统）
+static CfgBridgeOp cfg_bridge_classify(const char *msg)
+{
+    if (msg == nullptr)
+        return CFG_OP_UNKNOWN;
+
+    // ---- 明确 skip：由其它机制/其它段负责 ----
+    if (strstr(msg, "delegating to SystemCommand"))  return CFG_OP_SKIP;
+    if (strstr(msg, "enqueue accepted"))             return CFG_OP_SKIP;
+
+    // ---- 具体事件 ----
+    if (strstr(msg, "from backup"))                  return CFG_OP_RECOVERED_BACKUP;
+    if (strstr(msg, "restart timeout"))              return CFG_OP_RESTART_TIMEOUT;
+    if (strstr(msg, "init done"))                    return CFG_OP_LOAD_DONE;
+    if (strstr(msg, "boot validated"))                return CFG_OP_LOAD_DONE;
+    if (strstr(msg, "version"))                      return CFG_OP_VERSION_REBUILT;
+
+    // ---- 被拒 ----
+    if (strstr(msg, "rejected"))                     return CFG_OP_WRITE_REJECTED;
+    if (strstr(msg, "set failed"))                   return CFG_OP_WRITE_REJECTED;
+
+    // ---- 提交 / 回滚 / 原子写 ----
+    if (strstr(msg, "rotate to backup"))             return CFG_OP_COMMIT_FAILED_ROLLBACK;
+    if (strstr(msg, "write active"))                 return CFG_OP_COMMIT_FAILED_ROLLBACK;
+    if (strstr(msg, "commit"))                       return CFG_OP_COMMIT_FAILED_ROLLBACK;
+    if (strstr(msg, "rollback"))                     return CFG_OP_COMMIT_FAILED_ROLLBACK;
+    if (strstr(msg, "save failed"))                  return CFG_OP_COMMIT_FAILED_ROLLBACK;
+    if (strstr(msg, "save:"))                        return CFG_OP_COMMIT_FAILED_ROLLBACK;
+
+    return CFG_OP_UNKNOWN;
+}
+
+// op → 冻结 EventId（全部取自 Config 段 0x02，未新增任何 ID）
+static LogEventId cfg_bridge_event(CfgBridgeOp op, bool is_error)
+{
+    switch (op)
+    {
+        case CFG_OP_LOAD_DONE:               return LOG_CFG_LOAD_DONE;
+        case CFG_OP_LOAD_FAILED:             return LOG_CFG_MODULE_LOAD_FAILED;
+        case CFG_OP_RECOVERED_BACKUP:        return LOG_CFG_RECOVERED_FROM_BACKUP;
+        case CFG_OP_COMMIT_FAILED_ROLLBACK:  return LOG_CFG_COMMIT_FAILED_ROLLBACK;
+        case CFG_OP_VERSION_REBUILT:         return LOG_CFG_VERSION_REBUILT;
+        case CFG_OP_WRITE_REJECTED:          return LOG_CFG_WRITE_REJECTED;
+        case CFG_OP_RESTART_TIMEOUT:         return LOG_CFG_RESTART_TIMEOUT;
+
+        case CFG_OP_UNKNOWN:
+        default:
+            // 兜底：无法分类时按严重度落到该等级下最保守的 Config 事件。
+            // 真实语义必须看串口原文与 LOG_P_ERR_CODE，**不要**依赖此处的事件名。
+            if (is_error)
+            {
+                return LOG_CFG_MODULE_LOAD_FAILED;
+            }
+            // ⚠️ INFO 的兜底分类不可靠（`critical op acquired` / `restart timer
+            //    refreshed` 这类文本没有对应的冻结事件）⇒ **不上报**，只在串口保留。
+            //    用 cfg_bridge_emit 里的 CFG_OP_SKIP 分支拦截。
+            return LOG_CFG_WRITE_REJECTED;
+    }
+}
+
+// 统一入口：'E' / 'W' / 'I' 都上报；CFG_OP_SKIP 不发射
+static void cfg_bridge_emit(const char *level, const char *message)
+{
+    if (level == nullptr)
+        return;
+
+    const bool is_error = (level[0] == 'E');
+    const bool is_warn  = (level[0] == 'W');
+    const bool is_info  = (level[0] == 'I');
+
+    if (!is_error && !is_warn && !is_info)
+        return;
+
+    const CfgBridgeOp op = cfg_bridge_classify(message);
+
+    if (op == CFG_OP_SKIP)
+        return;
+
+    // 未分类的 INFO 不上报：兜底桶在 INFO 上没有语义正确的落点
+    //（`critical op acquired` / `restart timer refreshed` 等），错标比不报更糟。
+    // 串口仍保留原文。E/W 则必须上报（宁可标签粗，也不能静默）。
+    if (op == CFG_OP_UNKNOWN && is_info)
+        return;
+
+    // ---- 抑制：同一 op 每 CFG_BRIDGE_DEDUP_MS 只发 1 条 ----
+    const unsigned long now  = millis();
+    const unsigned long last = s_cfg_last_ms[op];
+
+    if (last != 0 && (now - last) < CFG_BRIDGE_DEDUP_MS)
+    {
+        if (s_cfg_suppressed[op] < 0xFFFFu)
+        {
+            s_cfg_suppressed[op]++;
+        }
+        return;
+    }
+    s_cfg_last_ms[op] = now;
+
+    const uint32_t suppressed = (uint32_t)s_cfg_suppressed[op];
+    s_cfg_suppressed[op] = 0;
+
+    // 等级跟随回调字符（ConfigManager 已按语义区分 E/W/I）
+    const LogLevel lv = is_error ? LOG_LVL_ERROR
+                      : (is_warn ? LOG_LVL_WARN : LOG_LVL_INFO);
+
+    LogParamIn a[2];
+    uint8_t n = 0;
+    a[n++] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)op);
+    if (suppressed > 0)
+    {
+        a[n++] = log_arg_u32(LOG_P_COUNT, suppressed);
+    }
+
+    log_emit(cfg_bridge_event(op, is_error), lv, a, n);
+}
+
+// 桥接回调：双路（串口 + LogManager）。串口这一路是**必须**的 —— 见文件头 ①。
+static void config_log_bridge(const char *level, const char *message)
+{
+    Serial.printf("[CFG][%s] %s\n",
+                  level   ? level   : "?",
+                  message ? message : "");
+    cfg_bridge_emit(level, message);
+}
+
+// =====================================================
 // setup
 // =====================================================
 void setup()
@@ -276,6 +451,12 @@ void setup()
     // 回调 setter 只做指针赋值，不依赖模块已 init，故可安全前置调用。
     json_storage_set_log_callback(json_storage_log_bridge);
     file_storage_set_log_callback(file_storage_log_bridge);
+    // P2-B：ConfigManager 桥接。
+    //
+    // ConfigManager 的 cfg_log() 在**未注册**时会兜底打串口；注册后兜底分支被跳过
+    // ⇒ 桥接自己补串口输出（见 config_log_bridge）。
+    // 注册点同样放在 config_init() 之前，才能捕获初始化期的配置错误。
+    config_set_log_callback(config_log_bridge);
     // ===== 初始化 JSON Storage（底层文件存储，ConfigManager 依赖它）=====
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
