@@ -1503,3 +1503,320 @@ MQTT 侧解码（同一批，boot_seq=3）：
 
 复测方法：把"踢会话"与"立即发命令/制造命令结果"压缩到同一瞬间（竞态窗口内），
 或在 outbox 打满时发布；都属于时序敏感场景，**不适合做稳定回归**，故本次仅记录。
+
+---
+
+## 14. TimeManager 接入（**P2-E 已落地**）
+
+> 状态：已实现并上板验证。提交：`feat(log): integrate time manager logging`
+> 前置阅读：§9（Storage bridge）与 §12（WiFi 显式埋点）—— Time 与 **WiFi 同类**：
+> **无日志回调接口** ⇒ 只能加显式埋点。
+
+### 14.1 冻结 EventId 的最终处置（10 个）
+
+| EventId | 名称 | Level | 宿主 | 状态 |
+|---|---|---|---|---|
+| `0x0801` | `TIME_NTP_OK` | INFO | `time_task()` 的 **settled 分支** | ✅ 已埋 / 上板验证 |
+| `0x0802` | `TIME_NTP_FAIL` | WARN | —— | ⛔ **无宿主，未实现**（见 §14.3） |
+| `0x0803` | `TIME_VALID_ENTER` | INFO | `time_update_valid_event()` 的有效边沿 | ✅ 已埋 / 上板验证 |
+| `0x0804` | `TIME_INVALID_ENTER` | WARN | 同上（无效边沿） | ✅ 已埋 / 代码审查（不可运行时触发，见 §14.8） |
+| `0x0805` | `TIME_RTC_PROBE` | INFO / WARN | `rtc_init()` 失败·成功 + `time_init()` 禁用分支 | ✅ 已埋 / **三个分支均上板验证** |
+| `0x0806` | `TIME_RTC_BOOT_RESTORE` | INFO | `time_init()` 的 RTC 硬同步成功 | ✅ 已埋 / 需 RTC 芯片 |
+| `0x0807` | `TIME_RTC_CALIBRATED` | INFO | `time_rtc_calibrate()` 写成功 | ✅ 已埋 / 需 RTC 芯片 |
+| `0x0808` | `TIME_RTC_WRITE_FAILED` | WARN | `time_rtc_calibrate()` 写失败 | ✅ 已埋 / 需 RTC 芯片 |
+| `0x0809` | `TIME_RTC_VL_FLAG` | WARN | `rtc_read_time()` VL 置位 | ✅ 已埋 / 需 RTC 芯片 + 电池耗尽 |
+| `0x080A` | `TIME_RTC_BCD_INVALID` | WARN | `rtc_read_time()` BCD 越界 | ✅ 已埋 / 需 RTC 芯片 |
+
+代码改动性质：**纯增量 `+210 / −0`**（`git diff` 无任何既有行被修改/删除），
+唯一例外是把 `|System − RTC|` 多存了一份到函数作用域（`rtc_drift_s`），
+供写成功/失败埋点读取 —— **不改变任何既有判定与分支走向**。
+
+### 14.2 埋点表（位置 / 参数）
+
+| # | 位置（既有分支） | 事件 | Level | 参数 |
+|---|---|---|---|---|
+| 1 | `time_task()` **settled 分支** | `NTP_OK` | INFO | `UNIX`(服务器时间) · `DURATION_MS`(callback→确认耗时) · `ATTEMPT_N`(本 Boot 第几次同步) |
+| 2 | `time_update_valid_event()` → valid | `VALID_ENTER` | INFO | `UNIX` · `SOURCE` |
+| 3 | `time_update_valid_event()` → invalid | `INVALID_ENTER` | WARN | `UNIX`(被判无效的那个值) · `CAUSE`(=1，低于有效阈值) |
+| 4 | `rtc_init()` 探测失败 | `RTC_PROBE` | WARN | `ADDR` · `STATE`=1 · `ERR_CODE`(Wire err) |
+| 5 | `rtc_init()` 探测成功 | `RTC_PROBE` | INFO | `ADDR` · `STATE`=2 |
+| 6 | `time_init()` **配置禁用** | `RTC_PROBE` | INFO | `STATE`=0（无 `ADDR`：未探测，地址无意义） |
+| 7 | `time_init()` RTC 硬同步成功 | `RTC_BOOT_RESTORE` | INFO | `UNIX` |
+| 8 | `time_rtc_calibrate()` 写成功 | `RTC_CALIBRATED` | INFO | `UNIX` · `DRIFT_MS` |
+| 9 | `time_rtc_calibrate()` 写失败 | `RTC_WRITE_FAILED` | WARN | `UNIX` · `DRIFT_MS` |
+| 10 | `rtc_read_time()` VL 置位 | `RTC_VL_FLAG` | WARN | （无参数） |
+| 11 | `rtc_read_time()` BCD 越界 | `RTC_BCD_INVALID` | WARN | `RAW`(寄存器打包) · `ERR_CODE`(越界位掩码) |
+
+**参数零新增**，全部复用已冻结 ParamId：`UNIX`(0x35) · `DRIFT_MS`(0x36) · `ADDR`(0x37) ·
+`RAW`(0x18) · `ERR_CODE`(0x0C) · `SOURCE`(0x12) · `CAUSE`(0x16) · `STATE`(0x44) ·
+`DURATION_MS`(0x06) · `ATTEMPT_N`(0x30)。单条最多 **3** 个参数（≤ `LOG_MAX_PARAMS`=8）。
+
+**`SOURCE` 编码**（`time_source_code()`；`time_source` 是 `const char*`，
+而 `LogParamIn` 无 blob 字段且 `LOG_PTYPE_STR` 不可构造 ⇒ 按 P2 定版走**枚举化**）：
+
+| 值 | 含义 |
+|---|---|
+| 0 | `INVALID`（含"有效边沿早于来源确认"，见 §14.6） |
+| 1 | `RTC` |
+| 2 | `SNTP` |
+| 3 | `MANUAL` |
+
+**`RTC_PROBE.STATE` 编码**：`0`=未探测（配置禁用）· `1`=探测失败 · `2`=探测成功。
+
+**`RTC_BCD_INVALID` 的两个参数**（取证用）：
+
+```
+RAW      = (raw[0]<<24)|(raw[1]<<16)|(raw[2]<<8)|raw[3]
+           = seconds/minutes/hours/days 的**原始寄存器字节**（BCD，含标志位）
+ERR_CODE = 越界位掩码  bit0=sec bit1=min bit2=hour bit3=day bit4=month
+```
+
+**`DRIFT_MS` 语义**：`time_rtc_calibrate()` 里**写入之前**的 `|System − RTC|` 毫秒值
+（即晶振累计误差）。`-1` = **RTC 读失败**（属"给芯片写初值"场景，无漂移可比）。
+秒→毫秒换算带钳制（上限 `INT32_MAX`，约 24.8 天）。
+
+**`RTC_WRITE_FAILED` 不带 `LOG_P_ERR_CODE`**：`rtc_write_time()` 只返回 `bool`，
+不暴露子原因（年份越界 / Wire NACK）—— **不为此改函数签名**。
+
+**`RTC_BOOT_RESTORE` 不带 `LOG_P_DRIFT_MS`**（矩阵 §6.2 原列了该参数，**有意偏离**）：
+此处的语义是"用 RTC 设 System Time"，而此前 System Time 未设置（≈0），
+差值无意义。
+
+> **未埋点的既有错误分支**：`time_set_manual()` 的 RTC 写失败路径（原 `:756`）。
+> 该函数**全仓库无调用者**（`time_set_manual_string()` 亦无调用者）
+> ⇒ 埋点不可达，与 P2-D 的 `LOG_CLOUD_FRAG_FAIL` 同处理：**不记，也不删函数**。
+
+### 14.3 SNTP 特殊处理（本节是 Time 接入的核心）
+
+**① 成功点必须挂在"确认"处，不能挂在 SNTP callback 里。**
+
+`time_init()` 结束前会 `esp_sntp_set_time_sync_notification_cb(time_on_sntp_sync)`，
+该 callback 运行在 **lwip 上下文**，只允许置标记（`sntp_sync_seq++` /
+`sntp_sync_notify_ms`），严禁 I2C / Serial / 长耗时操作。
+真正的"确认"发生在 `time_task()` 的 **settled 分支**：
+
+```
+callback 通知（seq 变化） → loop 侧：
+    st == IN_PROGRESS  ⇒ 等 adjtime 收敛，超时 SNTP_SMOOTH_TIMEOUT_MS(30s) 兜底
+    st == COMPLETED    ⇒ 瞬时窗口内采到，明确完成
+    st == RESET        ⇒ 再等 SNTP_SMOOTH_SETTLE_MS(3s) 稳定窗口
+  ↓ settled
+  rtc_last_calibrate_seq = seq; last_ntp_sync_time = sntp_sync_tv_sec;
+  synced_once = true; time_source = "SNTP"      ← 埋 NTP_OK 就在这里
+```
+
+⇒ **`NTP_OK` 是"callback 通知 + loop 延迟确认"的产物**，与项目铁律一致。
+
+**② `LOG_TIME_NTP_FAIL`（0x0802）＝ 冻结 EventId / 当前无宿主 / 未实现。**
+
+本 SDK 只提供成功通知，**没有失败回调，状态枚举也没有失败态**：
+
+| 证据 | 事实 |
+|---|---|
+| `esp_sntp.h:83` | `typedef void (*sntp_sync_time_cb_t)(struct timeval *tv);` —— **只此一个**回调，且是成功通知 |
+| `esp_sntp.h:67-70` | `sntp_sync_status_t` = `RESET / COMPLETED / IN_PROGRESS`，**无失败态** |
+| `ESP-IDF 头注释 :118-121` | `COMPLETED` 后**自动回落 `RESET`**；"尚未更新"**也是** `RESET` |
+| 全仓库 | 除 `esp_sntp_set_time_sync_notification_cb` 外没有任何失败判定 |
+
+⇒ 设备**现在无法知道 NTP 是否失败**（这是 Time 模块最大的诊断盲区）。
+要产出该事件必须**新增**"已启动 N 秒仍无 `sntp_sync_seq` ⇒ 告警"的看门狗，
+即**扩展 TimeManager 状态机**，超出 P2「只加观测」的范围
+⇒ 编号保留、**不埋点**（与 `LOG_CLOUD_FRAG_FAIL` 同处理）。
+
+**③ `SNTP_SMOOTH_TIMEOUT_MS` 分支绝不能当作 NTP 失败。**
+
+```c
+if (st == SNTP_SYNC_STATUS_IN_PROGRESS) {
+    settled = (waited_ms >= SNTP_SMOOTH_TIMEOUT_MS);   // 30s 兜底
+}
+```
+走到这里说明**本次同步已经成功**（callback 已通知），只是 adjtime 未收敛、
+不再等它。把它标成 `NTP_FAIL` 会**污染云端「NTP 是否可用」的判断**。
+⇒ 改为在 `NTP_OK` 的 `DURATION_MS` 上暴露该征兆：
+`DURATION_MS ≈ 30000` 即表示走了超时兜底。
+
+**④ 不用 `status != IN_PROGRESS` 判成功**（项目铁律）：
+`RESET` 同时表示"从未同步"与"已同步后回落"，用它会**把没同步过当成同步成功**。
+`NTP_OK` 的前置条件是 `sntp_sync_seq` 已变化（callback 确实通知过），
+不存在这个误判。
+
+### 14.4 ★ RTC 探测三分支与**一处不可达陷阱**（实测发现）
+
+```
+time_init():
+    rtc_enabled = config_get_rtc_enable();
+    if (rtc_enabled && rtc_init()) { ... }      ← 短路求值！
+    else {
+        if (rtc_enabled) { /* init 失败：rtc_init() 内已埋 WARN 版 */ }
+        else            { /* 配置禁用：在此埋 INFO 版 STATE=0 */ }
+    }
+```
+
+⚠️ **`rtc_init()` 内部的 `if (!rtc_enabled)` 分支是死代码**：`time_init()` 是它**唯一**的
+调用者（全仓库确认），而调用条件是 `rtc_enabled && rtc_init()` —— 短路求值使得
+`!rtc_enabled` 时 `rtc_init()` 根本不会被调用。
+⇒ 最初把"配置禁用"的埋点写在那里，**上板实测该记录根本不出现**（`rtc.enable=false`
+启动时队列里没有 `RTC_PROBE`）。
+⇒ 已把它移到 `time_init()` 中**可达**的 `else { if (!rtc_enabled) }` 分支，并在
+`rtc_init()` 内留下注释说明为何不在此埋点。
+
+**这是"埋点必须验证可达性"的一个实例**：分支存在 ≠ 分支可达。
+
+三分支的区分方式（`rtc_present=false` 时尤其有用）：
+
+| 场景 | 记录 | 额外字段 |
+|---|---|---|
+| 配置禁用 | `RTC_PROBE` **INFO** `STATE=0` | 无（未探测） |
+| 芯片不在 | `RTC_PROBE` **WARN** `STATE=1` | `ADDR=81` `ERR_CODE=2`(Wire NACK) |
+| 探测成功 | `RTC_PROBE` **INFO** `STATE=2` | `ADDR=81` |
+
+### 14.5 边沿去重（`VL_FLAG` / `BCD_INVALID`）—— 必须
+
+`rtc_read_time()` 有**三条**调用路径：
+
+| 调用者 | 频率 |
+|---|---|
+| `time_init()` | 每 Boot 1 次 |
+| `time_rtc_calibrate()` | 每 SNTP 同步 1 次（默认 24h） |
+| **`time_query()`**（`system.get_time` 命令，`command_manager.cpp`） | **每次状态查询** |
+
+VL 置位与 BCD 越界都是**会持续存在的条件**（VL 只有写秒寄存器才清）
+⇒ 若按调用上报，一次 `system.get_time` 轮询就重复写一条。
+
+处置：各自一把 `static bool` 边沿锁，
+**解锁点选在"条件确实消失"处**：
+
+| 锁 | 置位 | 解锁 |
+|---|---|---|
+| `rtc_vl_reported` | `rtc_read_time()` 见 VL | `rtc_write_time()` **成功**（写秒寄存器清 VL） |
+| `rtc_bcd_reported` | `rtc_read_time()` BCD 越界 | `rtc_read_time()` **成功**（数据合法） |
+
+这样"异常再次出现"（电池再次耗尽 / 再次读到坏数据）能重新上报。
+
+### 14.6 `VALID_ENTER.SOURCE` 的语义边界（**实测竞态**）
+
+`SOURCE` 取的是**边沿发生瞬间**的 `time_source`。SMOOTH 同步下，系统时间会在
+SNTP **确认（settled）之前**就越过有效阈值（`TIME_VALID_START_TIMESTAMP`），
+而 `time_task()` 第 3 步（valid 维护）与第 2 步（SNTP 确认）是**同一轮内的先后判断**。
+
+两次上板实测拿到**两种顺序**：
+
+```
+（首次验证）  NTP_OK(DURATION_MS=454)  →  VALID_ENTER(SOURCE=2 SNTP)
+（配置恢复后）VALID_ENTER(SOURCE=0)    →  NTP_OK(DURATION_MS=484)
+```
+
+⇒ **`VALID_ENTER.SOURCE=0` 不是错值**：此刻模块确实还没归属来源。
+但它**不能**单独用来判断"时间从哪来"。云端应把
+`NTP_OK` / `RTC_BOOT_RESTORE` 作为**来源的权威记录**，`VALID_ENTER` 只负责
+"何时开始有效 / 有效时刻的值是多少"。
+
+（要让 `SOURCE` 永远准确，需要把有效边沿推迟到来源确认之后 —— 那属于**改状态机**，不做。）
+
+### 14.7 上板验证（2026-09-18，COM8，broker `guo_feeder/log`）
+
+方法：先用 `test/mqtt_log_probe.py` 类探针订阅（本阶段用 `.pio/p15run/p2e_probe.py`），
+**再烧录/复位板子** ⇒ 才能抓到 Boot 头几秒产生的记录（RTC 探测在 WiFi 之前）；
+随后用 `.pio/p15run/log_decode.py` **解到记录级**（`event_id` + 每个 ParamId 的真值）。
+
+**① 正常启动（`rtc.enable=true`，板上无 RTC 芯片）**
+
+```
+[batch] fmt=2 boot=2 seq=1537..1543 count=7 flags=1
+  seq=1537 INFO LOG_CFG_LOAD_DONE        ERR_CODE(u32)=1
+  seq=1538 INFO LOG_WIFI_CONNECT_START   SSID_HASH=2088390601 ATTEMPT_N=1 WAS=0 STATE=1
+  seq=1539 WARN LOG_TIME_RTC_PROBE       ADDR(u32)=81 STATE(u32)=1 ERR_CODE(u32)=2   ← ★
+  seq=1540 INFO LOG_WIFI_CONNECTED       CONNECT_MS=1966 RSSI=-60 SSID_HASH=… WAS=1 STATE=2
+  seq=1541 INFO LOG_TIME_NTP_OK          UNIX=1789666817 DURATION_MS=454 ATTEMPT_N=1  ← ★
+  seq=1542 INFO LOG_TIME_VALID_ENTER     UNIX=1789666817 SOURCE(u32)=2               ← ★
+  seq=1543 INFO LOG_MQTT_CONNECTED       OUTBOX=22 WAS=0 STATE=1
+```
+
+- **`LOG_TIME_RTC_PROBE` 终于解释了 `rtc_present=false`**：
+  `ADDR=0x51`、`STATE=1`（探测失败）、`ERR_CODE=2`（Wire `endTransmission` 收到地址 NACK
+  ⇒ 从机无应答 ⇒ 芯片不存在）。**这条记录正是本模块此前最大的观测空白。**
+- `NTP_OK` 的 `DURATION_MS=454` ⇒ adjtime 很快收敛（**没有**走 30s 兜底）。
+- `VALID_ENTER.SOURCE=2` ⇒ 来源正确记为 SNTP。
+- 记录顺序 `NTP_OK → VALID_ENTER` 与设计一致。
+- `NTP_FAIL` **未出现** ✅（预期：未实现）。
+- RTC 相关 INFO（`BOOT_RESTORE`/`CALIBRATED`）与 WARN（`WRITE_FAILED`/`VL_FLAG`/
+  `BCD_INVALID`）**均未出现** ✅（板上无 RTC ⇒ 这些分支不可达）。
+
+**② 配置禁用（`rtc.enable=false`）—— 验证 §14.4 的修复**
+
+```
+[batch] fmt=2 boot=4 seq=1281..1287 count=7 flags=1
+  seq=1283 INFO LOG_TIME_RTC_PROBE       STATE(u32)=0            ← ★ 修复后才出现
+  seq=1286 INFO LOG_TIME_NTP_OK          UNIX=1789671663 DURATION_MS=84 ATTEMPT_N=1
+  seq=1287 INFO LOG_TIME_VALID_ENTER     UNIX=1789671663 SOURCE(u32)=0   ← 见 §14.6
+```
+
+⇒ `STATE=0` INFO、**无** `ADDR`/`ERR_CODE`、**无** WARN ⇒ 与"芯片不在"可清晰区分。
+（修复前这一整个 Boot **没有任何** `RTC_PROBE` 记录。）
+
+**③ 配置恢复（`rtc.enable=true`）**
+
+```
+boot=5: seq=1539 INFO LOG_TIME_RTC_PROBE  STATE=0            ← 恢复前的最后一次启动
+boot=6: seq=1795 WARN LOG_TIME_RTC_PROBE  ADDR=81 STATE=1 ERR_CODE=2   ← ★ WARN 版回归
+```
+
+现场已恢复 `rtc.enable=true`（`config_query` 确认）。
+
+**④ 回归**：全量 **196/196 = 100%，0 MISS**（A 56 / B 66 / C 21 / D 30 / E 23）。
+
+### 14.8 未验证项（如实记录）
+
+| 项 | 原因 | 复测方法 |
+|---|---|---|
+| `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | **板上 `rtc_present=false`**（无 PCF8563T 芯片）⇒ 这些分支全部不可达 | 焊上 RTC 芯片（或接模块）后正常启动即可；`VL_FLAG` 还需**电池耗尽**（或先 `rtc_write_time` 清 VL 再断电） |
+| `INVALID_ENTER` | 需要**有效→无效**的迁移，即系统时钟被设到 `2026-07-01` 之前；而设备**没有**任何 `set_time` 通道（`time_set_manual*` 无调用者，`time_manager_set_time()` 是预留空实现） | 需先给设备加"设时间"入口，或在 RTC 芯片存在时用**倒退的 RTC 值**触发。当前判据 = 代码路径审查 + 同函数的**有效边沿已上板验证**（互为镜像分支，共用同一 `last_reported` 门控） |
+| `NTP_FAIL` | ⛔ 设计上无宿主（§14.3） | 不适用（除非评审后新增看门狗） |
+| `time_set_manual()` 的写失败埋点 | 该函数**无调用者**（不可达）⇒ 本次**未埋点** | 不适用（同上，属死代码） |
+
+### 14.9 ★★ 回归夹具加固（本节对后续所有模块都适用）
+
+P2-E 首次全量回归出现 **A 48/56 + B 62/66**，两个**不同**的原因，必须分开处理：
+
+**① A 段 8 条 = MQTT 抖动假 MISS（网络问题，不是缺陷）**
+
+判据：`grep -ac "Writing didn't complete"` = 1、`MQTT error event` = 1。
+TLS 写入超时会让 loop 阻塞约 8s ⇒ 串口静默 ⇒ 命令未被及时处理。
+**复跑即 56/56 全绿**（实测）。
+
+**② B 段 4 条 = 真问题，但根因在**夹具**而不是实现**
+
+失败断言：`replay=8`（实测 9）、`qused=8`（实测 9）、`qused=0`（实测 1）、`rarmed=0`（实测 1）。
+
+**根因（比 P2-D 那次更根本）**：`cloud_collect_batch()` 里有
+
+```c
+if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq) break;
+```
+
+⇒ **批次在 `boot_seq` 变化处截断**。于是"一批装下全部补发记录 ⇒ `used` 归 0
+⇒ 补发 sweep 走完 ⇒ `rarmed=0`"这个前提，**只在积压恰好同属一个 Boot 且不超批次上限时成立**。
+
+而 P2-E 让每个 Boot **多了一条 Flash 记录**：`LOG_TIME_RTC_PROBE` 是 **WARN**
+（探测失败也照样落 Flash），在无 RTC 的板上**必现**。
+⇒ 积压 = 上一 Boot 的 **8** 条 + 本 Boot 的 **1** 条（**两个 boot_seq**）
+⇒ 单批永远排不空 ⇒ 那 4 条断言**必然失败**。
+
+（**这不是实现缺陷**：`cloud_poll()` 会把余下记录作为**下一批**继续发，只是夹具没有
+足够多的 ACK 轮次；所需轮次数 = 积压里不同 `boot_seq` 的个数，同样与历史相关。）
+
+**夹具修法**（按 P2-D 的路线：不迁就实现，只消除对"日志批次偶然性"的依赖）：
+
+1. **`test/serial_batch.py` 新增内联正则期望**：期望串里成对的 `/正则/` 片段按正则处理，
+   其余部分按字面量。**向后完全兼容**（无 `/` ⇒ 仍是子串匹配）。
+   自检脚本：`.pio/p15run/expect_hit_selftest.py`（13 例，含 4 条**负向探针**）。
+2. **F2-B 的判据改为"非零"**：`replay` 修复前在该场景**恒为 0**，
+   修复后 > 0 ⇒ `replay=/[1-9][0-9]*/` 精确且与积压历史无关。
+   同时把 `qused=8/qused=0/rarmed=0` 换成结构性判据：
+   `gcfloor=/[1-9][0-9]*/`（钳制生效）、`replay_seq=/[1-9][0-9]*/`（游标已推进）、
+   `ack ok boot=`（旧批次 ACK **被接受**而非被判 DUPLICATE）、`giveup=0`。
+   断言总数 **196 条不变**。
+
+> ⚠️⚠️ **写内联正则时必须把字段名写进字面量**：`replay=/[1-9][0-9]*/`
+> 而**不是** `/[1-9][0-9]*/`。纯正则会 `search` **整行**，`offskip=1`、`ack_ok=2`
+> 之类的其它数字会造成**假命中** —— 实测 `replay=0` 也被判 OK。

@@ -10,6 +10,7 @@
 #include "system_state.h"
 #include "event_manager.h"
 #include "system_command.h"
+#include "log_manager.h"   // P2-E：观测埋点（EventId / ParamId + log_emit）
 
 // =====================================================
 // TimeManager V2
@@ -95,6 +96,91 @@ static bool rtc_enabled = false;   // config rtc.enable
 
 // 校准去重：每完成一次 SNTP 同步，最多校准一次 RTC
 static uint32_t rtc_last_calibrate_seq = 0;
+
+// =====================================================
+// P2-E：LogManager 埋点（**纯观测**，不参与任何判定）
+//
+// 所有 log_emit() 都插在既有状态迁移点 / 既有错误分支内：
+// 不改变状态机、不新增等待、不新增 SNTP 失败判定。
+//
+//   0x0801 TIME_NTP_OK          —— settled 分支（「callback 通知 + loop 延迟确认」的确认点）
+//   0x0802 TIME_NTP_FAIL        —— ❌ **无宿主，本阶段未实现**（说明见下）
+//   0x0803 TIME_VALID_ENTER     —— time_update_valid_event() 的有效边沿
+//   0x0804 TIME_INVALID_ENTER   —— 同上（无效边沿）
+//   0x0805 TIME_RTC_PROBE       —— rtc_init()：禁用 / 探测失败 / 探测成功
+//   0x0806 TIME_RTC_BOOT_RESTORE—— time_init() 从 RTC 硬同步成功
+//   0x0807 TIME_RTC_CALIBRATED  —— time_rtc_calibrate() 写成功
+//   0x0808 TIME_RTC_WRITE_FAILED—— time_rtc_calibrate() 写失败
+//   0x0809 TIME_RTC_VL_FLAG     —— rtc_read_time() VL 置位
+//   0x080A TIME_RTC_BCD_INVALID —— rtc_read_time() BCD 解码越界
+//
+// ⚠️ `LOG_TIME_NTP_FAIL` **冻结 EventId / 当前无宿主 / 未实现**：
+//    本 SDK 只提供 `esp_sntp_set_time_sync_notification_cb`（**成功**通知），
+//    `sntp_sync_status_t` 也只有 RESET / COMPLETED / IN_PROGRESS，
+//    **既没有失败回调、也没有失败态**（esp_sntp.h:61-70 / :83）。
+//    要产出该事件必须新增「已启动 N 秒仍无同步 ⇒ 告警」的看门狗，
+//    即扩展 TimeManager 状态机 —— 超出 P2-E「只加观测」的范围。
+//    ⇒ 编号保留、不埋点（与 P2-D `LOG_CLOUD_FRAG_FAIL` 同处理）。
+//    ⇒ `SNTP_SMOOTH_TIMEOUT_MS` 分支**不得**当作 NTP 失败：
+//      走到那里说明本次同步**已经成功**，只是 adjtime 未收敛；
+//      错标会污染云端「NTP 是否可用」的判断。
+// =====================================================
+
+// RTC 异常上报去重（边沿锁）
+//
+// `rtc_read_time()` 有三条调用路径：`time_init()`（每 Boot 1 次）、
+// `time_rtc_calibrate()`（每 SNTP 同步 1 次）、`time_query()`（**每次状态查询**）。
+// VL 置位与 BCD 越界都是**会持续存在的条件** ⇒ 若按调用上报，
+// 一次 `system.get_time` 轮询就会重复写一条 ⇒ 必须做边沿去重。
+// 解锁点选在「条件确实消失」处：读成功清 BCD 锁，写成功清 VL 锁
+//（写秒寄存器会清 VL），使异常**再次出现**时能重新上报。
+static bool rtc_vl_reported = false;
+static bool rtc_bcd_reported = false;
+
+// RTC 探测结果（写入 LOG_TIME_RTC_PROBE 的 LOG_P_STATE）
+#define TIME_RTC_PROBE_DISABLED 0u   // config 关闭，未探测
+#define TIME_RTC_PROBE_FAILED   1u   // 探测失败（从机无应答）
+#define TIME_RTC_PROBE_OK       2u   // 探测成功
+
+// 时间来源编码（写入 LOG_P_SOURCE）
+#define TIME_SRC_INVALID 0u
+#define TIME_SRC_RTC     1u
+#define TIME_SRC_SNTP    2u
+#define TIME_SRC_MANUAL  3u
+
+// 漂移毫秒换算上限（INT32_MAX / 1000 ≈ 24.8 天）
+#define TIME_DRIFT_MS_MAX 2147483LL
+
+// 秒 → 毫秒（i32）。drift_s < 0 表示「无漂移可比」（RTC 读失败）⇒ 透传 -1。
+static int32_t time_drift_ms(long long drift_s)
+{
+    if (drift_s < 0) {
+        return -1;
+    }
+    if (drift_s > TIME_DRIFT_MS_MAX) {
+        return INT32_MAX;
+    }
+    return (int32_t)(drift_s * 1000LL);
+}
+
+// `time_source` 是 const char*（仅日志/调试用）⇒ 编码为数值再入日志：
+// LogParamIn 无 blob 字段，`LOG_PTYPE_STR` 当前不可构造（P2 定版走枚举化）。
+static uint32_t time_source_code()
+{
+    if (time_source == nullptr) {
+        return TIME_SRC_INVALID;
+    }
+    if (strcmp(time_source, "RTC") == 0) {
+        return TIME_SRC_RTC;
+    }
+    if (strcmp(time_source, "SNTP") == 0) {
+        return TIME_SRC_SNTP;
+    }
+    if (strcmp(time_source, "MANUAL") == 0) {
+        return TIME_SRC_MANUAL;
+    }
+    return TIME_SRC_INVALID;
+}
 
 // =====================================================
 // 内部工具：BCD 转换（PCF8563T 时间寄存器为 BCD 码）
@@ -234,6 +320,11 @@ bool rtc_init()
         Serial.println("[Time] RTC disabled by config, skip");
         rtc_addr = -1;
         rtc_present = false;
+
+        // ⚠️ 此处**不埋点**（曾埋过，实测不可达）：`time_init()` 是 `rtc_init()`
+        //    的唯一调用者，而它的调用条件是 `rtc_enabled && rtc_init()`
+        //    —— 短路求值 ⇒ `!rtc_enabled` 时 `rtc_init()` 根本不会被调用。
+        //    "被配置禁用"的埋点已移到 `time_init()` 中**可达**的对应分支。
         return false;
     }
 
@@ -251,6 +342,13 @@ bool rtc_init()
                       "chip not present?\n", addr, (unsigned)err);
         rtc_addr = -1;
         rtc_present = false;
+
+        // ---- P2-E 埋点：LOG_TIME_RTC_PROBE（WARN）----
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_ADDR, (uint32_t)addr);
+        p[1] = log_arg_u32(LOG_P_STATE, TIME_RTC_PROBE_FAILED);
+        p[2] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)err);  // Wire err
+        log_emit(LOG_TIME_RTC_PROBE, LOG_LVL_WARN, p, 3);
         return false;
     }
 
@@ -268,6 +366,12 @@ bool rtc_init()
     rtc_present = true;
     Serial.printf("[Time] PCF8563T detected at 0x%02X (shared OLED I2C)\n",
                   addr);
+
+    // ---- P2-E 埋点：LOG_TIME_RTC_PROBE（INFO）----
+    LogParamIn p[2];
+    p[0] = log_arg_u32(LOG_P_ADDR, (uint32_t)addr);
+    p[1] = log_arg_u32(LOG_P_STATE, TIME_RTC_PROBE_OK);
+    log_emit(LOG_TIME_RTC_PROBE, LOG_LVL_INFO, p, 2);
     return true;
 }
 
@@ -300,6 +404,15 @@ bool rtc_read_time(time_t &timestamp)
     if (raw[0] & 0x80) {
         Serial.println("[Time] RTC VL flag set (battery/low power), "
                        "time unreliable");
+
+        // ---- P2-E 埋点：LOG_TIME_RTC_VL_FLAG（WARN，边沿）----
+        // VL 是**粘滞**条件（只有写秒寄存器才清）⇒ 每 Boot 最多报 1 条，
+        // 避免 time_query() 轮询把同一条异常反复写进日志流。
+        if (!rtc_vl_reported) {
+            rtc_vl_reported = true;
+            log_emit(LOG_TIME_RTC_VL_FLAG, LOG_LVL_WARN,
+                     nullptr, 0);
+        }
         return false;
     }
 
@@ -319,11 +432,38 @@ bool rtc_read_time(time_t &timestamp)
         day < 1 || day > 31 ||
         hour > 23 || min > 59 || sec > 59) {
         Serial.println("[Time] RTC BCD decode out of range");
+
+        // ---- P2-E 埋点：LOG_TIME_RTC_BCD_INVALID（WARN，边沿）----
+        // RAW      = 原始寄存器字节打包：(sec<<24)|(min<<16)|(hour<<8)|day
+        //            （BCD，含标志位）——用于人工判读是哪几个寄存器被污染
+        // ERR_CODE = 越界位掩码 bit0=sec bit1=min bit2=hour bit3=day bit4=month
+        if (!rtc_bcd_reported) {
+            rtc_bcd_reported = true;
+            uint32_t packed = ((uint32_t)raw[0] << 24) |
+                              ((uint32_t)raw[1] << 16) |
+                              ((uint32_t)raw[2] << 8) |
+                              ((uint32_t)raw[3]);
+            uint32_t mask = 0;
+            if (sec > 59)   mask |= 1u << 0;
+            if (min > 59)   mask |= 1u << 1;
+            if (hour > 23)  mask |= 1u << 2;
+            if (day < 1 || day > 31)     mask |= 1u << 3;
+            if (month < 1 || month > 12) mask |= 1u << 4;
+
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_RAW, packed);
+            p[1] = log_arg_u32(LOG_P_ERR_CODE, mask);
+            log_emit(LOG_TIME_RTC_BCD_INVALID, LOG_LVL_WARN, p, 2);
+        }
         return false;
     }
 
     timestamp = rtc_make_utc_timestamp(2000 + year, month, day,
                                        hour, min, sec);
+
+    // P2-E：本次读**成功**（数据合法）⇒ 解除 BCD 边沿锁，
+    // 使「再次出现越界」能重新上报。
+    rtc_bcd_reported = false;
     return true;
 }
 
@@ -366,6 +506,10 @@ bool rtc_write_time(time_t timestamp)
         Serial.println("[Time] RTC write NACK");
         return false;
     }
+
+    // P2-E：写秒寄存器会清 VL ⇒ 解除 VL 边沿锁，
+    // 使「电池再次耗尽」能重新上报。
+    rtc_vl_reported = false;
     return true;
 }
 
@@ -402,10 +546,36 @@ static void time_update_valid_event(bool now_valid)
         event_push(EVENT_TIME_VALID, "", "time_manager",
                    EVENT_PRIORITY_NORMAL, EVENT_POLICY_NORMAL, 0);
         Serial.println("[Time] Event: TIME_VALID");
+
+        // ---- P2-E 埋点：LOG_TIME_VALID_ENTER（INFO）----
+        // 复用调度：本函数已被 last_reported 边沿门控 ⇒ 迁移即上报，
+        // 不需要额外的去重状态。
+        //（Level Policy：INFO ⇒ 只上云，不落 Flash）
+        //
+        // ⚠️ SOURCE 的语义边界（**实测**）：它取的是**边沿发生瞬间**的
+        //    `time_source`。SMOOTH 同步下系统时间会在 SNTP 确认（settled）
+        //    **之前**就越过有效阈值 ⇒ 可能出现 `SOURCE=0(INVALID)` 的
+        //    VALID_ENTER，其后才跟一条 NTP_OK（实测顺序：
+        //    VALID_ENTER SOURCE=0 → NTP_OK；另一次实测是 NTP_OK → VALID_ENTER
+        //    SOURCE=2）。这不是错值 —— 此刻模块确实尚未归属来源；
+        //    正式来源以 `LOG_TIME_NTP_OK` / `LOG_TIME_RTC_BOOT_RESTORE` 为准。
+        LogParamIn p[2];
+        p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)time(nullptr));
+        p[1] = log_arg_u32(LOG_P_SOURCE, time_source_code());
+        log_emit(LOG_TIME_VALID_ENTER, LOG_LVL_INFO, p, 2);
     } else {
         event_push(EVENT_TIME_INVALID, "", "time_manager",
                    EVENT_PRIORITY_NORMAL, EVENT_POLICY_NORMAL, 0);
         Serial.println("[Time] Event: TIME_INVALID");
+
+        // ---- P2-E 埋点：LOG_TIME_INVALID_ENTER（WARN）----
+        // CAUSE = 1：System Time 落在 TIME_VALID_START_TIMESTAMP 之前
+        //         （当前唯一成因）。UNIX 携带被判定无效的那个值，
+        //         用于看「错到什么程度」（例如 SNTP 返回了垃圾/回退）。
+        LogParamIn p[2];
+        p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)time(nullptr));
+        p[1] = log_arg_u32(LOG_P_CAUSE, 1u);
+        log_emit(LOG_TIME_INVALID_ENTER, LOG_LVL_WARN, p, 2);
     }
 }
 
@@ -444,9 +614,15 @@ static void time_rtc_calibrate()
     time_t rtc = 0;
     bool rtc_ok = rtc_read_time(rtc);
 
+    // P2-E：把 |System - RTC| 提升到函数作用域，供写成功/失败埋点读取。
+    //   -1 = RTC 读失败（无漂移可比较，属"给芯片写初值"的场景）。
+    // （纯记账：不改变任何既有判定与分支走向）
+    long long rtc_drift_s = -1;
+
     if (rtc_ok) {
         long long diff = (long long)sys - (long long)rtc;
         if (diff < 0) diff = -diff;
+        rtc_drift_s = diff;
         if (diff <= (long long)rtc_calibrate_threshold_sec) {
             Serial.printf("[Time] RTC drift %llds <= %ds, skip write\n",
                           diff, rtc_calibrate_threshold_sec);
@@ -466,9 +642,25 @@ static void time_rtc_calibrate()
     bool ok = rtc_write_time(sys);
     if (ok) {
         Serial.println("[Time] RTC calibrated to System Time");
+
+        // ---- P2-E 埋点：LOG_TIME_RTC_CALIBRATED（INFO）----
+        // DRIFT_MS = 写入前 |System - RTC| 的毫秒值（= 晶振累计误差），
+        //            -1 表示 RTC 读失败（首次写初值，无漂移可比）。
+        LogParamIn p[2];
+        p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)sys);
+        p[1] = log_arg_i32(LOG_P_DRIFT_MS, time_drift_ms(rtc_drift_s));
+        log_emit(LOG_TIME_RTC_CALIBRATED, LOG_LVL_INFO, p, 2);
     } else {
         Serial.println("[Time] RTC write failed (keep System Time, "
                        "retry next SNTP)");
+
+        // ---- P2-E 埋点：LOG_TIME_RTC_WRITE_FAILED（WARN）----
+        // ⚠️ 不带 LOG_P_ERR_CODE：`rtc_write_time()` 只返回 bool，
+        //    不暴露子原因（年份越界 / Wire NACK）。不为此改函数签名。
+        LogParamIn p[2];
+        p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)sys);
+        p[1] = log_arg_i32(LOG_P_DRIFT_MS, time_drift_ms(rtc_drift_s));
+        log_emit(LOG_TIME_RTC_WRITE_FAILED, LOG_LVL_WARN, p, 2);
     }
     system_command_critical_operation_release();
 }
@@ -522,6 +714,14 @@ void time_init()
             time_source = "RTC";
             Serial.printf("[Time] RTC boot restore OK: %s\n",
                           time_get_string(rtc_now).c_str());
+
+            // ---- P2-E 埋点：LOG_TIME_RTC_BOOT_RESTORE（INFO）----
+            // ⚠️ 不带 LOG_P_DRIFT_MS：此处是「用 RTC 设 System Time」，
+            //    此前 System Time 未设置（≈0），差值无意义。
+            //    矩阵 §6.2 原列该参数，实测语义不成立 ⇒ 有意偏离。
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)rtc_now);
+            log_emit(LOG_TIME_RTC_BOOT_RESTORE, LOG_LVL_INFO, p, 1);
         } else {
             state_set_bool(STATE_TIME_VALID, false);
             time_source = "INVALID";
@@ -532,7 +732,22 @@ void time_init()
         state_set_bool(STATE_TIME_VALID, false);
         time_source = "INVALID";
         if (rtc_enabled) {
+            // rtc_init() 已就其失败原因埋了 WARN 版 LOG_TIME_RTC_PROBE
             Serial.println("[Time] RTC init failed (wait SNTP)");
+        } else {
+            // ---- P2-E 埋点：LOG_TIME_RTC_PROBE（INFO，STATE=DISABLED）----
+            //
+            // 第三种结果 = "未探测（配置禁用）"。
+            // ⚠️ 埋在这里而不是 `rtc_init()` 内部：见该函数内注释 ——
+            //    `rtc_enabled && rtc_init()` 短路求值使那条路径**永远走不到**。
+            //
+            // 价值：上板 `rtc_present=false` 时，本记录用于区分
+            //   「配置关了」（本条 INFO，无 WARN）与
+            //   「芯片不在」（`rtc_init()` 里的 WARN 版，带 ADDR/ERR_CODE）。
+            // 不带 LOG_P_ADDR：未探测 ⇒ 地址无意义。
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_STATE, TIME_RTC_PROBE_DISABLED);
+            log_emit(LOG_TIME_RTC_PROBE, LOG_LVL_INFO, p, 1);
         }
     }
 
@@ -641,6 +856,23 @@ void time_task()
                           time_get_string(sntp_sync_tv_sec).c_str());
             event_push(EVENT_NTP_SYNC_OK, "", "time_manager",
                        EVENT_PRIORITY_NORMAL, EVENT_POLICY_NORMAL, 0);
+
+            // ---- P2-E 埋点：LOG_TIME_NTP_OK（INFO）----
+            // 挂在此处（而不是 SNTP callback）是刻意的：
+            //   ① callback 运行在 lwip 上下文，只允许置标记；
+            //   ② COMPLETED 是瞬时态、随后回落 RESET，"从未同步"也是 RESET，
+            //      故成功条件只能是「callback 已通知(seq 变化) + loop 确认收敛」
+            //      —— 即当前这个 settled 分支。
+            // UNIX        = SNTP 服务器给出的时间（sntp_sync_tv_sec）
+            // DURATION_MS = callback → 本次确认的等待时长；
+            //               ≈ SNTP_SMOOTH_TIMEOUT_MS(30000) 表示走了超时兜底
+            //               （adjtime 未收敛，属可观测的异常征兆）
+            // ATTEMPT_N   = 本 Boot 第几次同步通知（1 = 首次）
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_UNIX, (uint32_t)sntp_sync_tv_sec);
+            p[1] = log_arg_u32(LOG_P_DURATION_MS, (uint32_t)waited_ms);
+            p[2] = log_arg_u32(LOG_P_ATTEMPT_N, (uint32_t)sntp_sync_seq);
+            log_emit(LOG_TIME_NTP_OK, LOG_LVL_INFO, p, 3);
 
             // SNTP 成功后：校准 RTC
             //   顺序固定为 callback → 标记 → loop 确认 → 读 time(nullptr)
