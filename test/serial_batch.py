@@ -5,7 +5,9 @@
     python serial_batch.py <port> <logfile> <cmds_file> [quiet_sec]
 
 cmds_file：每行一条命令；空行与 # 开头行忽略。
-每行可写成 "命令 ||| 期望子串"（可选），命中则记 [EXPECT-OK]。
+每行可写成 "命令 ||| 期望"（可选），命中则记 [EXPECT-OK]。
+期望串匹配规则：默认**子串**匹配；写成 /正则/ 则按 re.search 匹配
+（用于"某计数非零"这类与加载历史无关的判据，见下方 RE_EXPECT 注释）。
 quiet_sec：**未命中**时期望静默的秒数（默认 2.5）。
            用于等待同步阻塞型命令（如 logt flush 落盘 62 条约需 2.4s）。
 命中期望串后只再等 HIT_GRACE 秒即返回 —— 大量即时
@@ -52,6 +54,40 @@ def emit(s):
 
 def ts():
     return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+
+# 期望串匹配
+#
+#   默认：**子串**匹配（历史行为，完全向后兼容）。
+#   若含成对的 `/正则/` 片段 ⇒ 该片段按正则处理，其余部分按字面量处理。
+#   例：`replay=/[1-9][0-9]*/`  ⇔  正则 `replay=[1-9][0-9]*`
+#                              （字面 `replay=` + 正则 `[1-9][0-9]*`）
+#
+# 为什么需要：日志流里有一类计数**与加载历史相关**（补发积压条数、跨 boot 的
+# 队列表项数…），把它们写成精确数值会让用例随"上一次运行遗留了什么"而时通时不通。
+# 而真正要判别的往往只是"**该字段非零**"（例如补发确实发生过）⇒ 用
+# `replay=/[1-9][0-9]*/` 表达，精确且与积压历史无关。
+#
+# ⚠️⚠️ 必须把**字段名写进字面量**（`replay=/…/` 而不是 `/[1-9][0-9]*/`）：
+#    纯正则 `/[1-9][0-9]*/` 会在**整行**里 search，`offskip=1`、`ack_ok=2`
+#    之类的其它数字会造成**假命中**（实测 `replay=0` 也被判 OK）。
+def expect_hit(expect, line):
+    if "/" not in expect:
+        return expect in line
+
+    parts = expect.split("/")
+    if len(parts) % 2 == 0:
+        # 斜杠不成对 ⇒ 不当作正则，退回子串（避免误伤含 "/" 的普通期望）
+        return expect in line
+
+    pat = "".join(
+        re.escape(parts[i]) if i % 2 == 0 else parts[i]
+        for i in range(len(parts))
+    )
+    try:
+        return re.search(pat, line) is not None
+    except re.error:
+        return False
 
 
 cmds = []
@@ -116,7 +152,7 @@ for cmd, expect in cmds:
                 s = line.decode("utf-8", "replace")
                 note_boot(s)
                 emit("[%s] %s" % (ts(), s))
-                if expect and expect in s:
+                if expect and expect_hit(expect, s):
                     hit = True
             last = time.time()
         else:
