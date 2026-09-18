@@ -119,7 +119,8 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
                    根因＝实测 **A 段发生 69 次 `valve_force_close()`**（P2-G 那轮只有 2 次）⇒ 门控后
                    仍多出约 34 条 CRITICAL 记录 ⇒ 落 Flash + 进云队列 ⇒ 精确记账全部失准。
                    ⇒ **这类夹具与"跨模块 WARN+/CRITICAL 埋点"根本冲突**，需要"测试隔离"而不是"继续打补丁"
-                   （三条候选路径见 Guide §17.9/§17.10 的 E1，待拍板）。
+                   ⇒ **★★ 已定路线：下一阶段 = `R-7` 测试隔离方案评审**（见下方 `## Next`）；
+                   **`E1`（weight enable）已否决**。
                    ⚠️ 干扰源是**突发式**的（静置实测 0.08 ~ 0.51 次/s，单秒峰值 2~7）⇒ 期望值不可确定，
                    无法通过"夹具自身 fwipe/mwipe 清零"解决（只能清"之前"的记录）。
                    ⚠️ **不要在跑回归时注入 ACK**：实测开"虚拟云端"自动回 ACK ⇒ 队列不再溢出 ⇒
@@ -152,6 +153,8 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | 其余 3 个模块 | **未接入** | — | — |
 
 未接入清单（按约定顺序）：**Dispense → BLE → Command/Event/OLED/Registry**
+
+⚠️ 顺序不变，但 **Dispense 需等 regression baseline 稳定后才启动**（见 `## Next`）
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
 
@@ -474,29 +477,42 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 下一步：**先解 E1，再进 Dispense**（P2-I）
+### P2-H 已冻结 —— 下一阶段：**R-7 测试隔离方案评审**
 
-**P2-H（Valve）已实现并逐项上板验证完成**，但**回归被阻塞**（168/195，根因见上"阶段 2-H · 冲突"）。
-**开工下一模块前必须先拍板 Guide §17.10 的 E1**（回归夹具与跨模块埋点的冲突）：
+**P2-H（Valve）已实现、逐项上板验证完成，并已冻结**（生产代码 `d92d397`；**生产代码不再修改**）。
+当前唯一阻塞项是回归 **168/195**，其性质已判定为 **Regression Environment Interference**
+（**不是** P2-H implementation failure）。
 
-1. ⚠️⚠️ **E1**：三条路径 —— ① **给 weight 模块加 `enable` 配置**（生产代码，最小改动；
-   `valve`/`rtc` 已有同类项）⇒ 回归期间关掉重量采样 ⇒ 干扰归零 ⇒ **195 条断言原样全绿**；
-   ② 修硬件/接线（`R-8`：HX711 间歇在 0 与有效值之间摆动）；③ 重设计夹具（需接受判别力下降）。
-   **推荐 ①**。
-2. ⚠️ **E2**：`VALVE-6` —— `FORCE_CLOSE_FAILED` 未门控（实测 54 次调用 → 52 条 CRITICAL）。
-   建议按 §17.3 同款 5 s 门控。
-3. ⚠️ **E3**：`VALVE-1`（`initialized` 未检查 ⇒ 假成功）单独开一轮修。
-4. ⚠️ **E4**：`R-8`（FS 阻塞诱发重量跳变）单独评审。
-5. 下一模块按顺序是 **Dispense**（`dispense_guard` 已在 P2-H 明确**策略层不加 LOG**；
-   若将来引入独立 Dispense 模块再议）。
-6. 提交主题建议：`feat(log): integrate dispense logging`
+**下一阶段目标：恢复可靠 regression baseline。**
 
+1. ⚠️⚠️ **`R-7` 测试隔离方案评审**（唯一前置）—— 评审并选定"让被测系统在回归期间安静"的方案。
+   - ⚠️ **明确不采用**：给 weight 模块加 `enable` 配置（会改变 Weight 能力边界、影响 System Config，超出 P2-H 范围）。
+   - 评审依据：`log模块历史/LogManager-P2H-回归干扰分析报告0919.md`
+     （判定实验：**P2-G 固件（无 Valve 日志）在同 workload 下仍产生 MISS**；
+     且 Weight 侧单独就能产生 **+13 条**额外记录 ⇒ **只去掉 Valve 日志不能归零**）。
+2. **Regression baseline 恢复** —— `R-7` 有解后重跑全量，确认基线稳定。**断言不做任何删改**。
+3. **`VALVE-1` 独立安全评审** —— `initialized` 未检查 ⇒ 模块禁用时返回 `true`（假成功）。
+4. **`R-8` 独立安全评审** —— FS 阻塞诱发重量跳变 ⇒ 写入卡顿被误判成重量异常（同时是安全语义问题）。
+5. ⚠️ **在 regression baseline 稳定前，不进入 Dispense。**
+6. 另登记（列入后续独立评审，本轮不修）：`VALVE-6` —— `FORCE_CLOSE_FAILED` 无门控。
 
-### 之后（严格一次一个模块）
+### 后续顺序
 
-`Dispense → BLE → Command/Event/OLED/Registry`
+```
+P2-H Freeze
+   ↓
+R-7 测试隔离方案评审
+   ↓
+Regression baseline 恢复
+   ↓
+VALVE-1 / R-8 独立评审
+   ↓
+Dispense
+```
 
-⚠️ **Valve 在 Dispense 之前**：`dispense_guard` 的判定依赖阀门开度反馈；而 **Weight 已先行接入**（其异常事件是 guard 的触发源）。
+> 说明：原先 `E1`~`E4` 的编号已被本路线取代 ——
+> **`E1`（weight enable）已否决**；`E2`（`VALVE-6`）、`E3`（`VALVE-1`）、`E4`（`R-8`）
+> 统一归入"后续独立评审"，其中 **`VALVE-1` 与 `R-8` 提升为独立安全评审**。
 
 ---
 
