@@ -40,6 +40,8 @@
 | **阶段 2-H · 拍板** | 用户七项决策**全部选 A**：D1 去重门控（cause 变化 / 5 s 冷却，只限日志不改 GPIO）· D2 VALVE-1 本轮不修只登记 · D3 矩阵按真实模型重写 · D4 SAFETY_TIMEOUT 加一次性报告锁 · D5 埋 `FORCE_CLOSE_FAILED` · D6 无宿主项一律不埋且不新增/不借 EventId · D7 R-6 本轮不定位 | — | ✅ |
 | **阶段 2-H** | **P2-H Valve/DispenseGuard 接入**（`src/valve.cpp`，唯一生产代码改动文件，**净增量 `+125 / −1`**，唯一 −1 是把 `if(valve_pin<0){return false;}` 单行守卫展开为块）：**6 个埋点 / 6 个冻结 EventId**（`OPEN`/`CLOSE` 挂 `valve_set_gpio()` 天然边沿 + `RATE_LIMITED` + `FORCE_CLOSE`（5 s 门控）+ `FORCE_CLOSE_FAILED` + `SAFETY_TIMEOUT`（一次性锁））；`log_events.h` / `event_manager.cpp` / `dispense_guard.cpp` **零改动** | `feat(log): integrate valve logging` | ✅ 已提交 |
 | **阶段 2-H · 冲突** | ⚠️ **回归 168/195（26 MISS）** —— 根因＝A 段发生 **69 次** `valve_force_close()` （P2-G 那轮仅 2 次）⇒ 门控后仍多出约 **34 条 CRITICAL** ⇒ F0/F1/F2 的**精确记账断言**（`total=40`/`replay=31`/`evict_inf=9`/`qdrop=12`…）全部失准。**"按 P2-G 方式修夹具"在此不适用**：这 26 条断言就是 FIX-1/2/3 的记账本体，改结构性判据 = 降断言 ⇒ **已停止并上报**，待拍板（Guide §17.9/§17.10） | — | ⛔ **阻塞待决策** |
+| **阶段 2-H · 判定** | **回归干扰隔离实验（纯运行时观测，未改任何代码/夹具）**：同一 workload 跑 **P2-G 固件**（无 Valve 日志）与 **P2-H 固件** ⇒ 额外记录配比 **Valve `crit`=9 : Weight≈6**；`qdrop`/`fdrop`/`seg_evict_unacked`/`seg_new`/`seg_del` **几乎或完全相同**（结构行为未被改变）；**决定性判定**：P2-G 固件跑同一 A 段夹具三次 ⇒ `16调用/2边沿 → 0 MISS`、`68/11 → 9 MISS`、`48/12 → 2 MISS` ⇒ **失败与"是否有 Valve 日志"不相关，只与环境重量异常强度相关**；另实测 **Weight 侧单独就能 +13 条额外记录** （P2-G #3 `emit` 509 vs 基数 496、`crit` 恒 0）⇒ **去掉 Valve 日志不能归零** | `log模块历史/LogManager-P2H-回归干扰分析报告0919.md` | ✅ 已提交 |
+| **阶段 2-H · 结论** | **本轮决定：`R-7` / `R-8` / `VALVE-6` 全部登记 OPEN、不修、不改代码**；**明确不采用"给 weight 加 `enable`"**（改变 Weight 能力边界、影响 System Config，超出 P2-H 范围）；另修正 `R-6` 表述（`force_close` 调用数 == `guard_rx` 恒等 ⇒ **不是"调用被复制"**，而是**同毫秒两个独立 `EVENT_WEIGHT_ERROR`**） | — | ✅ |
 
 ---
 
@@ -63,6 +65,13 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
                    历史：首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195
                    → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）196/196 → P2-G **195/195**
                    → **P2-H 168/195（阻塞；断言总数仍为 195，未做任何删改）**
+                   ★★ **判定（2026-09-19 隔离实验）：这不是 P2-H 代码缺陷，也不是"Valve 日志"问题** ——
+                   **P2-G 固件（完全没有 Valve 日志）在同一 A 段夹具上，异常强度高时同样 MISS（9 条 / 2 条）**；
+                   MISS 数只随"环境重量异常强度"单调上升（2 边沿→0、11→9、12→2、18→13）。
+                   另实测 **Weight 侧单独就能产生 +13 条额外记录**（P2-G #3：`emit` 509 vs 基数 496，`crit` 恒 0）⇒
+                   **只去掉 Valve 日志最多把污染减半（Valve : Weight ≈ 9 : 6），不能归零。**
+                   ⇒ 需要的是"**测试隔离**"（让被测系统安静），不是消除某一个模块的日志。
+                   ⇒ **本轮：R-7 / R-8 / VALVE-6 登记 OPEN、不修、不改代码**（详见干扰分析报告）。
 合约测试:       ✅ 4/4 ALL PASS（含新增第 ⑧ 组 23 条 BT-9 断言，其中 3 条负向探针）
 ```
 
@@ -471,14 +480,14 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 | **测试环境耦合** | **T-1**（P2-G 发现） | **196 回归夹具隐含依赖 BT-1**：一旦有人在回归期间回 ACK（如开"虚拟云端"），队列不再溢出 ⇒ A/B/E 的 `qdrop`/`evict_inf`/`replay` 类断言**全部失效**（实测 A 52/56 · B 56/66 · E 13/23） | ⚠️ 已知并记录；**跑回归时禁止注入 ACK** |
 | **设备状态** | **D-1**（P2-G 副作用） | 校准把 `weight.zero_offset` 从 **-800750 覆写为 -1**（该板 HX711 读数恒 0/-1）⇒ `current_weight` 由 ≈1080 g 变为 ≈0 g。**未回写** | ⚠️ 如需恢复：`config_set weight/zero_offset = -800750` + `config_save` |
 | **Valve（VALVE）** | **VALVE-1** | 四个 valve API **均不检查 `initialized`** ⇒ 模块禁用但引脚已配置时**返回 true 假成功**且 GPIO 未配置 | 🔴 |
-| | **VALVE-6** | **`FORCE_CLOSE_FAILED` 未门控**：实测 54 次调用 → 52 条 CRITICAL（引脚误配时可达 20 条/s） | 🔴 |
+| | **VALVE-6**（**OPEN**） | **`FORCE_CLOSE_FAILED` 未门控**：实测 54 次调用 → 52 条 CRITICAL。**本轮决定不修**：该失败只来自人为制造 `gpio_pin=-1`，正常运行路径不会产生 | 🔴 |
 | | VALVE-2 | 安全超时重复 push —— ✅ **P2-H 已修**（一次性报告锁） | ✅ |
 | | VALVE-3 | force_close 失败分支不可观测 —— ✅ **P2-H 已修**（已埋 `FORCE_CLOSE_FAILED`） | ✅ |
 | | VALVE-4 | `valve_close()` 返回值语义不精确（本来就关着也返回 true）⇒ 用 `LOG_P_WAS` 表达，不改返回值 | 🟡 |
 | | VALVE-5 | `dispense_guard` 无节流（策略层；已由 Valve 侧 5 s 门控兜住） | 🟠 |
-| **风险（R）** | **R-6** | `valve_force_close()` **成对 ×2** 调用，成因未定位 | 🟠 |
-| | **R-7** | **195 回归夹具与"跨模块 WARN+/CRITICAL 埋点"根本冲突** ⇒ 回归阻塞待决策（E1） | 🔴 |
-| | **R-8** | **FS 阻塞诱发重量跳变**：LittleFS 操作阻塞 loop ⇒ HX711 窗口被跨阻塞拼接 ⇒ 跳变误报 | 🟠 |
+| **风险（R）** | **R-6** ⚠️**表述已修正** | `force_close` 调用数 == `guard_rx` 在全部 9 次运行中**恒等** ⇒ **不是"调用被复制"**，而是**同毫秒两个独立 `EVENT_WEIGHT_ERROR`** ⇒ **无需修复** | 🟡 |
+| | **R-7**（**OPEN**） | **195 回归夹具与"跨模块 WARN+/CRITICAL 埋点"冲突** —— ★ 判定实验：**P2-G 固件（无 Valve 日志）异常强度高时同样 MISS（9/2 条）** ⇒ 与 Valve 日志不相关；Weight 侧单独可 +13 条额外记录 ⇒ 去掉 Valve 日志不能归零 | 🔴 |
+| | **R-8**（**OPEN**） | **FS 阻塞诱发重量跳变**：LittleFS 操作阻塞 loop ⇒ HX711 窗口被跨阻塞拼接 ⇒ 跳变误报。定量：额外记录 P2-G #1=+2 / #2=+6 / #3=+13（`crit` 恒 0 ⇒ 纯 Weight 贡献） | 🟠 |
 
 **统计**：🔴 高 6 项 · 🟠 中 11 项 · 🟡 低 9 项 · ⚪ 未验证 8 组。
 
@@ -565,7 +574,9 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 | `.pio/p15run/storm_probe.py` | **长静默观测探针**：单会话保持串口打开（重开串口会复位、清掉 RAM Dirty）⇒ 用来实测 WF-1 的 5 分钟延迟窗口与风暴。⚠️ `serial_batch.py` **串口静默 1.5 s 即提前返回**，做不了这种实验 |
 | `.pio/p15run/p2h_patch.py` | P2-H 的 8 处精确插入式补丁（每处断言恰好命中 1 次；**含 CRLF 行尾保留**与白名单化的"允许格式化改动"自检） |
 | `.pio/p15run/valve_watch.py` | **只读**串口观测器：统计 `FORCE CLOSE` / `DispenseGuard` / `STATE_WEIGHT_ERROR` 边沿 / `Operation too frequent` 的**每秒分布**，用于量化高频调用 |
+| `.pio/p15run/gen_iso.py` + `iso_report.py` | 隔离实验：生成"同一 workload"（`P2H_ISO.txt`，85 命令）并提取 T0/T1 增量 + 串口侧异常量。**用于"换固件跑同一 workload"的 A/B 归因** |
+| `.pio/p15run/miss_table2.py` | 26 条 MISS 明细提取器（case/行号/命令/期望/实际/偏差/分类），输出可直接内联进报告 |
 
 ---
 
-*最后更新：2026-09-19（**P2-H Valve/DispenseGuard 接入完成并逐项上板验证通过**；⚠️ 回归 **168/195 阻塞** —— 根因＝A 段 69 次 `valve_force_close()` 使 F0/F1/F2 的精确记账断言失准，**不是代码缺陷**；待拍板 E1~E4，下次：**先解 E1 再进 Dispense**）*
+*最后更新：2026-09-19（**P2-H 回归干扰分析完成（纯观测、未改代码）**：26 MISS 全明细 A=5/D=21；判定实验证明 **P2-G 固件（无 Valve 日志）在异常强度高时同样 MISS 9/2 条**、Weight 侧单独可 +13 条额外记录 ⇒ **失败与环境重量异常强度相关，与 Valve 日志不相关**；`R-6` 表述已修正。**R-7 / R-8 / VALVE-6 全部登记 OPEN、不修、不改代码** —— 等待进一步决策）*

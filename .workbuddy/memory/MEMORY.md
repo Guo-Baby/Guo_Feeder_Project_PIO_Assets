@@ -31,7 +31,18 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## LogManager（**摘要；细节在 `MEMORY-logmanager.md`**）
 > **P2 已完成 8 个模块**（Storage→Config→WiFi→Cloud→Time→Workflow→Weight→**Valve**），
 > ⛔ **但回归阻塞在 168/195**（断言总数仍 195、未删改）。
-> 下一步：**先拍板 E1（回归夹具隔离）再进 Dispense**。
+> **★★ 已判定（2026-09-19 隔离实验）：不是 P2-H 代码问题、也不是 Valve 日志本身的问题。**
+> 决定性证据：**P2-G 固件（完全没有 Valve 日志）在环境异常强度高时跑同一 A 段夹具同样 MISS（9 条 / 2 条）**；
+> MISS 只随"环境重量异常强度（`STATE_WEIGHT_ERROR` 边沿数）"单调上升 ⇒ 与固件版本不相关。
+> Weight 侧单独就能产生 **+13 条**额外记录（P2-G #3：`emit` 509 vs 夹具基数 496，`crit` 恒 0）；
+> 同强度下记录级配比 **Valve(crit)=9 : Weight≈6** ⇒ **只去掉 Valve 日志最多把污染减半，不能归零**。
+> ⇒ **需要的是"测试隔离"（让被测系统安静），不是消除某一个模块的日志。**
+> 另：`qdrop`/`fdrop`/`seg_evict_unacked`/`seg_new`/`seg_del` 在两固件间**几乎或完全相同** ⇒
+> 结构性行为未被改变，故夹具的**结构性断言大多仍通过**，只有**精确计数类**失败。
+> **`R-7`/`R-8`/`VALVE-6` 已登记 OPEN、本轮不修**；**`R-6` 表述已修正**：
+> `force_close` 调用数 == `guard_rx` 在全部 9 次运行中**恒等** ⇒ 不是"调用被复制"，
+> 而是**同毫秒两个独立的 `EVENT_WEIGHT_ERROR`**（风暴抑制允许 5 条/500 ms）⇒ **不是缺陷，无需修复**。
+> 下一步：**等决策**（`R-7` 的解法未定，故暂不进 Dispense）。
 > ⚠️ P2-H 铁律：① `valve_force_close()` 是**纯事件非状态迁移** ⇒ 门控位置必须在"GPIO→状态→SystemState→`open_start_time`→event→Serial"**全部之后**，**绝不 `if(!need_log)return;`**、**绝不改成 `current_state` 边沿**；② **`OPEN_MS` 必须在 `open_start_time=0` 之前取**（本模块踩过 3 次）；③ 一次性报告锁的**解除点 = 真实状态迁移完成处**；④ `STATE`/`WAS` 用 `log_arg_bool`；⑤ **不给无数据源的参数填伪造 0**。
 > ⚠️ 矩阵 6 状态**有 4 个不存在**（实际只有 `bool current_state`）；矩阵 3 处与代码不符（`FORCE_CLOSE_FAILED` **有**失败分支 / IMM 只是置一次 flush 标志 / RATE_LIMITED 实测 0 次无需去重）—— 矩阵 §9 **已按真实模型重写**。
 > 🔴 未修：**VALVE-1**（四个 valve API 均不检查 `initialized` ⇒ 假成功）· **VALVE-6**（`FORCE_CLOSE_FAILED` **未门控**，54 次调用→52 条 CRITICAL）· **R-7**（回归夹具与跨模块埋点根本冲突）· **R-8**（FS 阻塞诱发重量跳变）。`VALVE-2`/`VALVE-3` ✅ 已解决。
