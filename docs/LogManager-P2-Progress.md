@@ -32,7 +32,10 @@
 | **阶段 2-F · 发现 WF-1** | **保存失败后重试风暴**：保存失败的**两条路径都不重置** `workflow_save_since_ms` ⇒ `workflow_delayed_save_poll()` 的 5 分钟窗口**一旦过期就永远过期** ⇒ Dirty 未清期间**每个 loop** 跑一次完整保存事务（8.6 KB `def_buf` + LittleFS 落盘尝试 + 串口 2 行）。**已实测**：151 s 内 **5828 次**事务（≈**38.6 次/秒**）、串口 ≈77 行/秒。**与 Critical Op 无关**，按规则**只报告不修复**；P2-F 埋点对它免疫（三个边沿锁）。详见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md` §3 | — | ⏳ **未修**（待单独评审） |
 | **阶段 2-F** | **P2-F Workflow 接入**（`src/workflow.cpp`，唯一生产代码改动文件，**纯增量 +261/−0，0 删除行**）：12 个冻结 EventId / **17 个发射点**全落地（**Workflow 段无"无宿主 EventId"**）；保存类事件用**三个边沿锁**（`wf_save_fail_reported[]` 逐 slot / `wf_save_partial_reported` 整事务 / `wf_alloc_fail_reported`）+ `wf_save_partial_retries` 计数；主键 `LOG_P_SLOT`（非哈希）；`OP`/`CAUSE` 枚举化 | `feat(log): integrate workflow manager logging` | ✅ 已提交 |
 | **阶段 2-F · 发现 WF-2** | **保存成功路径不记账是"正确设计"的确认**：Workflow 段**没有** `SAVE_OK` ID，且不加成功记录 ⇒ 自动后台保存（每 loop 可能）**零噪声**；唯一的成功侧记录是 `0x040C`，语义是"**从 partial 恢复**"这一**迁移**而非"成功" | 同上 | ✅ 已记录 |
-| **阶段 2-G · 审查** | **Weight/HX711 接入前审查**（只审查、未改生产代码）：HX711 链路与频率分析（进入率=每 loop / `current_weight` 2 Hz / 跳变 ≤2 Hz / not-ready 每 5 s）；**用户列的 9 个状态中只有 4 个在代码里真实存在**（`ready`/`overload` 根本不存在，`timeout`/`sensor error`/`unstable` 都被 `error_state` 的 `CAUSE` 覆盖）；5 个埋点全用冻结 ID；**★ 发现 3 处矩阵与代码能力不一致**（① `weight_trigger_start()` 两个失败路径复用 `ERROR_ENTER` 会重复/失真 ② "校准开始"需新增 `0x0512`（未定义）③ `weight_init()` 无宿主）；**板上实测**：B 段 2 组 `STATE_WEIGHT_ERROR` 迁移（同毫秒抖动）、C 段 4 次跳变事件 + 同秒 2 次强制关阀 | `docs(log): review weight log integration plan` | ✅ 已提交（实现待拍板 4 项） |
+| **阶段 2-G · 审查** | **Weight/HX711 接入前审查**（只审查、未改生产代码）：HX711 链路与频率分析（进入率=每 loop / `current_weight` 2 Hz / 跳变 ≤2 Hz / not-ready 每 5 s）；**用户列的 9 个状态中只有 4 个在代码里真实存在**（`ready`/`overload` 不存在，`timeout`/`sensor error`/`unstable` 都被 `error_state` 的 `CAUSE` 覆盖）；**★ 发现 3 处矩阵与代码能力不一致**（① `weight_trigger_start()` 两失败路径复用 `ERROR_ENTER` 会重复/虚假 ② "校准开始"需新增 `0x0512`（未定义）③ `weight_init()` 无宿主） | `docs(log): review weight log integration plan` | ✅ 已提交 |
+| **阶段 2-G** | **P2-G Weight/HX711 接入**（`src/weight.cpp`，唯一生产代码改动文件，**纯增量 `+66/−0`**）：5 个埋点全用冻结 ID（`ERROR_ENTER`/`ERROR_EXIT` 挂 `error_state` **天然边沿** + `ZERO_DONE`/`CALIB_FAILED` + `TRIGGER_FIRED`）；`CAUSE` 用**位掩码**(1=no_data/2=raw_zero/4=jump)；`ERROR_EXIT` 带 `CAUSE`+`DURATION_MS`（仅 2 个**只读**观测变量）；**零聚合、零节流**（高频源全部排除） | `feat(log): integrate weight manager logging` | ✅ 已提交 |
+| **阶段 2-G · 拍板** | 用户四项决策**全部选 A**：① `weight_trigger_start()` 两个失败路径**不埋**（复用 `ERROR_ENTER` 会重复/虚假）② "校准开始"不埋（守"暂不新增 ID"，`0x0512` 保持未定义）③ `CAUSE` 用**位掩码** ④ `ERROR_EXIT` **带** `CAUSE`+`DURATION_MS`（仅加只读观测变量，不改状态机）。另明确：**不把 `jump_error` 转成 ERROR_ENTER**（它属"重量异常**事件**"，不是"重量错误**状态**"） | — | ✅ 已按此实现 |
+| **阶段 2-G · 夹具** | ⚠️ **F3-A 的"恰好填满"断言被打破**（P2-G 首次回归 B 62/66）：Weight 边沿恰好落在填充窗口内（实测 `23:47:00`）⇒ `LOG_WEIGHT_ERROR_ENTER`(WARN 落 Flash) 多写 1~2 条 ⇒ 环提前回绕 ⇒ `total=496`/`append=15@31`/`seg_evict_unacked=0`/`total=466` 4 条断言失效。**按"修夹具不降断言"处置**：移除这 4 条"无干扰"假设、改为 `segs=16` 结构性判据 + **多写 1 条保证必然越界**；**HIGH-1 的精确记账断言（`seg_evict_unacked=31`/`fdrop=31`/`seg_del=1`）原样保留** | `test(log): harden F3-A ring-fill fixture against inter-module WARN interference` | ✅ 已提交（**195/195 = 100%**） |
 
 ---
 
@@ -42,11 +45,15 @@
 HEAD:           见 `git log --oneline -1`（每次提交后更新本行）
 分支:           wb
 P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
-回归基线:       ✅ 196/196 = 100%，0 MISS（test/log_fix_tests.txt，P2-E 最终固件 + 恢复配置后全量重跑）
-                   首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195
-                   → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）后仍 **196/196**
-                   （断言总数保持不变：F2-B 去掉 3 条与积压历史相关的绝对计数，
-                     换成 3 条结构性判据 + 补 1 条 `giveup=0`）
+回归基线:       ✅ **195/195 = 100%，0 MISS**（A 56 / B 65 / C 21 / D 30 / E 23）
+                   ⚠️ 断言总数 **196 → 195**：P2-G 首次回归 B 段 4 条 MISS（`total=496`/`append=15@31`/
+                   `seg_evict_unacked=0`/`total=466`）根因＝ **Weight 边沿的 WARN 落在 F3-A 填充窗口内**
+                   ⇒ "恰好 496 条填满"这类**隐含"无干扰"的绝对断言失效** ⇒ 按"修夹具不降断言"处置
+                   （HIGH-1 的 `=31`/`=31`/`=1` 精确记账断言全部保留）。详见 Guide §16.10
+                   ⚠️ **不要在跑回归时注入 ACK**：实测开"虚拟云端"自动回 ACK ⇒ 队列不再溢出 ⇒ A/B/E 的
+                   `qdrop`/`evict_inf`/`replay` 类断言全部失效（A 52/56 · B 56/66 · E 13/23）—— **夹具隐含依赖 BT-1**
+                   历史：首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195
+                   → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）196/196 → **P2-G 195/195**
 合约测试:       ✅ 4/4 ALL PASS（含新增第 ⑧ 组 23 条 BT-9 断言，其中 3 条负向探针）
 ```
 
@@ -60,9 +67,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Cloud（`cloud_manager.cpp`）** | 复用既有"回调置标志 → `cloud_task()` 消费"机制 ⇒ 埋点挂在**标志被消费处**（loop 上下文，边沿由单槽标志保证） | `LOG_MQTT_CONNECTED` / `DISCONNECTED` / `SLEEP_ENTER` / `PUBLISH_FAIL`（聚合）/ `CMD_EXEC_FAILED` | P2-D |
 | **Time（`time_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（9 个事件 / 11 个埋点，全在既有分支内）；RTC 异常用**边沿锁**；`SOURCE` 走**枚举化**（0=INVALID 1=RTC 2=SNTP 3=MANUAL） | `LOG_TIME_NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`(**INFO·WARN 三分支**) / `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | P2-E |
 | **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
-| 其余 5 个模块 | **未接入** | — | — |
+| **Weight（`weight.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处 / 5 个事件）；`ERROR_*` 挂 `error_state` **天然边沿**（无需任何去重逻辑）；**纯增量 `+66/−0`**；`CAUSE` 位掩码；2 个**只读**观测变量（供 EXIT 报 `CAUSE`+`DURATION_MS`） | `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` / `ZERO_DONE` / `CALIB_FAILED` / `TRIGGER_FIRED` | P2-G |
+| 其余 4 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**Valve → Dispense → BLE → Command/Event/OLED/Registry**
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
 
@@ -203,6 +211,36 @@ T2（再跑 48s）    : emit=12 flash=3   ← 84s 内 3399 次失败事务，新
 | `/littlefs/log/*` 被清 | 正常 ✅ | `[Log] meta missing/corrupt -> rebuild` + `boot_seq 归 1`：回归套件里的 **`logt fwipe`（7 次）/ `logt mwipe`（7 次）是套件自带的清理动作**（`log_manager.cpp` 会 `LittleFS.remove()` 段文件与 meta）⇒ **不是异常** |
 | ⚠️ 遗留 | `wfc create`（控制台新建的**不完整定义**）会产生**永久 `INVALID_ARGUMENT`** ⇒ 用它做失败注入很方便，但**测完必须删掉**，否则 5 分钟延迟窗口一到就持续触发 WF-1 风暴（P2-F 期间已遇到一次） |
 
+### P2-G 验证记录（2026-09-18 深夜，COM8；固件 `.pio/build/p2g`，Flash 65.3%）
+
+**① `LOG_WEIGHT_ZERO_DONE` —— 记录级通过 ✅**
+
+```
+串口： [Weight] Zero calibration started
+       [Weight] Zero calibrated, offset=-1, save=1            ← 20 次采样完成 + config_save 成功
+       [Log Cloud] ack ok boot=1 to=4294967295 covered=2/2    ← 校准产生的 2 条被 ACK 覆盖
+MQTT： seq=521 boot=1 INFO LOG_WEIGHT_ZERO_DONE
+              LOG_P_OFFSET(i32)=-1  LOG_P_SAMPLES(u32)=20  LOG_P_SAVED(u32)=1
+```
+触发方式：`cm {"cmd":"system","ob":"weight_zero","id":"...","p":{}}`（CommandManager `system/weight_zero`）。
+⚠️ **必须在同一 Boot 内 ACK**，否则 `ZERO_DONE`（INFO 只上云）会随 config-save 触发的重启一起丢失（第一次尝试就是这样丢的）。
+
+**② `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` —— 边沿在板上实测执行，但记录级未捕获**
+
+| 事实 | 证据 |
+|---|---|
+| 边沿确实发生 | B 段每次运行均有 `[Weight] STATE_WEIGHT_ERROR -> 1` / `-> 0`：本次 **2 组**，另一会话 **5 组**（含一次持续 8 s 的真异常） |
+| 埋点与它同块 | `Serial.printf` 与两条 `log_emit` 同在 `if(err != error_state)` 内，**中间无任何条件** |
+| 为何拿不到记录 | 这些边沿恰好落在 F3-A 的 **496 条填充窗口**内，填充必然**冲垮云队列（128 槽）** ⇒ 记录被 `qdrop` 淘汰（**这正是回归在测的溢出行为，不是埋点失效**） |
+| 复测方法 | 在填充窗口内**持续 ACK**；或把填充降到 <128 条 —— 实测 **2×62 条不足以触发边沿**（边沿由"累积 FS 阻塞"诱发，8×62 才会出现） |
+
+**③ 未触发项**：`LOG_WEIGHT_CALIB_FAILED`（需 `config_set_weight_zero_offset()`/`config_save()` 失败）、`LOG_WEIGHT_TRIGGER_FIRED`（需真实减重场景）—— 代码路径审查通过。
+
+**④ 设备状态副作用（如实记录）**：校准把 `weight.zero_offset` 从 **-800750 覆写为 -1**（该板 HX711 读数恒为 0/-1，`Zero calibrated, offset=-1, save=1`）。影响：`current_weight ≈ 0 g`（此前恒 ≈1080 g）。**未回写**（避免再触发重启）；如需恢复旧值：`config_set weight/zero_offset = -800750` + `config_save`。
+
+**⑤ 新增可复用工具**：`.pio/p15run/log_mirror.py`（虚拟云端：订阅 + 自动 ACK + 落盘）。
+⚠️ **两条使用限制**（实测得出）：① **绝不能与 196 回归同时运行**（ACK 破坏队列溢出断言）；② 其自动 ACK 的 `b` 字段取自批次头（`first.boot_seq`），实测被设备 **IGNORE** ⇒ 同批次连发 11 次 ⇒ **只能当记录采集器**，可靠 ACK 仍须走串口 `logt ack <BOOT> …`。
+
 ### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
 **现象**：P2-D 埋点后 B 段稳定 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`）。
@@ -265,37 +303,51 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 都会改变补发积压的 boot_seq 构成。**凡是与"补发条数 / 队列排空"相关的断言，
 一律不要写绝对值**，改用"非零"或结构性判据。
 
+### P2-G 加深的第三层：**"恰好填满"型边界断言也会被打破**（F3-A，断言 196 → 195）
+
+**现象**：P2-G 首次全量回归 B 段 4 条 MISS —— `total=496` / `append=15@31` / `seg_evict_unacked=0` / `total=466`。
+
+**时间线确证（决定性证据）**：
+
+```
+23:46:55  CMD: logt fill warn 62        （F3-A 第 2 次填充）
+23:47:00  [Weight] STATE_WEIGHT_ERROR -> 1     ← ★ Weight 边沿落在填充窗口内
+23:47:00  [Weight] STATE_WEIGHT_ERROR -> 0
+23:47:02  CMD: logt fill warn 62        （第 3 次填充）
+⇒ 实际写入 497~498 条 ⇒ 环提前回绕 + 淘汰 1 段 ⇒ total=467（≠496）
+```
+
+**这条规则的普适形式**：任何断言如果隐含 **"执行期间只有本用例在写日志"**，
+在 P2 逐模块接入后都会陆续失效。它有三种典型形态：
+1. **绝对计数**（`qdrop=12`）— P2-D 已处置；
+2. **与历史相关的计数**（`replay=8`）— P2-E 已处置（改内联正则）；
+3. **"恰好填满/恰好为 0"的边界**（`total=496`、`seg_evict_unacked=0`）— **P2-G 本轮处置**。
+
+**处置原则（"修夹具、不降断言"）**：
+- 删掉**隐含"无干扰"**的断言（它们不是设计不变量）；
+- 换成**结构性判据**（`segs=16`）或**必然发生的事实**（多写 1 条 ⇒ 必然越界一次）；
+- **该用例真正要判别的记账不变量必须原样保留**（F3-A 里 `seg_evict_unacked=31` / `fdrop=31` / `seg_del=1` 一条不删，实测稳定通过）。
+
 
 
 ---
 
 ## Next
 
-### 下一步：**Weight / HX711 接入**（P2-G）
+### 下一步：**Valve 接入**（P2-H）
 
-Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按约定顺序是 **Weight**
-（`src/weight.cpp`，`dispense_guard.cpp` 的触发源）：
+Weight 已接入完成（见上），回归 **195/195 全绿**。下一个按约定顺序是 **Valve**（`src/valve.cpp` + `dispense_guard.cpp`）：
 
-1. ⚠️⚠️ **10 Hz 采样 ⇒ 原始值绝对不能进日志**。已有现成骨架：`weight_refresh_error_state()`
-   里 `err != error_state` 的**状态边沿**（`weight.cpp:204`）—— 异常进入/退出各一条。
-2. ⚠️ **5 类异常建议复用 `LOG_WEIGHT_ERROR_ENTER` + `LOG_P_CAUSE`**，暂不新增 EventId
-   （P2 定版：先用已有 EventId + `CAUSE`/`ERR_CODE` 区分）。若发现确实无法区分，**先停下报告**。
-3. ⚠️ **`weight_trigger_*` 类事件只记"触发成功/失败"**，不要记每次采样；如需"重量稳定/超重"，
-   必须用**阈值 + 持续时间**的边沿（不是每帧比较）。
-4. ⚠️ 标定类事件（`WEIGHT_CALIB_*`）当前**是否有宿主**要先 grep 确认（P2-E 的
-   `NTP_FAIL` / P2-D 的 `FRAG_FAIL` 都是"冻结 ID 无宿主"的先例 ⇒ **无宿主就不埋、只记录**）。
-5. ⚠️ `dispense_guard` 触发**强制关阀**：这条路径涉及执行机构安全 ⇒ 埋点只加观测、
-   **不得改变任何时序**（P2-F 的"纯增量 0 删除行"做法可复用）。
-6. 提交主题建议：`feat(log): integrate weight manager logging`
+1. ⚠️⚠️ **P2-H 开工前必须先决定"强制关阀"的去重/边沿策略**。实测：跳变源（`weight_record_jump()` 每跳变 push 一次 `EVENT_WEIGHT_ERROR`）会让 `dispense_guard` **反复**调 `valve_force_close()`（C 段实测 4 次事件、**同一秒内 2 次**）。而 `LOG_VALVE_FORCE_CLOSE`(0x0505) 是 **CRITICAL + IMMEDIATE** ⇒ **直接埋点会得到 ≈2 条/s CRITICAL**。根因在既有设计（不是日志问题）⇒ 需单独评审。
+2. `LOG_VALVE_OVERFLOW_RISK`(0x0507) 的注释写着"**需新增检测**"，正对应已知 P0：`valve_force_close()` 后**无残余增重检测** ⇒ 属 Valve/Dispense 阶段，需单独评审（涉及安全逻辑）。
+3. 规则同前：**纯增量**（不改任何时序/return）、高频路径禁埋点、`CAUSE` 枚举化（P2-G 的 `LOG_P_CAUSE` 位掩码若复用需先对齐语义）。
+4. 提交主题建议：`feat(log): integrate valve manager logging`
 
 ### 之后（严格一次一个模块）
 
-`Valve → Dispense → BLE → Command/Event/OLED/Registry`
+`Dispense → BLE → Command/Event/OLED/Registry`
 
-⚠️ **Valve 在 Dispense 之前**：`dispense_guard` 的判定依赖阀门开度反馈；
-而 **Weight 已先行接入**（其异常事件是 guard 的触发源）。
-⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
-先有 Weight 日志才能解释强制关阀。
+⚠️ **Valve 在 Dispense 之前**：`dispense_guard` 的判定依赖阀门开度反馈；而 **Weight 已先行接入**（其异常事件是 guard 的触发源）。
 
 ---
 
@@ -336,6 +388,10 @@ Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按�
 | | **DD-4** | `retry_interval` 死配置 | 🟡 |
 | | **DD-5** | `platformio.ini` 版本未固定（构建不可复现） | 🟡 |
 | **未验证（NC）** | **NC-1..NC-8** | Storage E/W 分支与抑制窗口 / `LOG_WIFI_LOST` / `MQTT_SLEEP_ENTER` / `PUBLISH_FAIL` / 5 个 RTC 事件 / `INVALID_ENTER` / `WF_FINISHED`+`TIMEOUT` / `WF_FAILED`+`TEMP_ACTION_TIMEOUT`+`ALLOC_FAILED` | ⚪ |
+| | **NC-9**（P2-G） | `LOG_WEIGHT_ERROR_ENTER`/`ERROR_EXIT` 的**记录级**捕获（边沿在板上实测执行，但恰好落在 496 条填充窗口内 ⇒ 被云队列溢出淘汰） | ⚪ |
+| | **NC-10**（P2-G） | `LOG_WEIGHT_CALIB_FAILED` / `LOG_WEIGHT_TRIGGER_FIRED`（需保存失败注入 / 真实减重场景） | ⚪ |
+| **测试环境耦合** | **T-1**（P2-G 发现） | **196 回归夹具隐含依赖 BT-1**：一旦有人在回归期间回 ACK（如开"虚拟云端"），队列不再溢出 ⇒ A/B/E 的 `qdrop`/`evict_inf`/`replay` 类断言**全部失效**（实测 A 52/56 · B 56/66 · E 13/23） | ⚠️ 已知并记录；**跑回归时禁止注入 ACK** |
+| **设备状态** | **D-1**（P2-G 副作用） | 校准把 `weight.zero_offset` 从 **-800750 覆写为 -1**（该板 HX711 读数恒 0/-1）⇒ `current_weight` 由 ≈1080 g 变为 ≈0 g。**未回写** | ⚠️ 如需恢复：`config_set weight/zero_offset = -800750` + `config_save` |
 
 **统计**：🔴 高 6 项 · 🟠 中 11 项 · 🟡 低 9 项 · ⚪ 未验证 8 组。
 
@@ -394,6 +450,8 @@ Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按�
 | `docs/LogManager-Integration-Guide.md` **§14** | **新增**：**TimeManager 接入** —— 10 个冻结 EventId 的最终处置（含 `NTP_FAIL` **无宿主**的 SDK 证据）/ 11 个埋点表 / **SNTP 特殊处理**（为何挂在 settled 确认点、为何禁用 `status != IN_PROGRESS`、为何不拿平滑超时当失败）/ RTC 探测三分支 + **一处不可达陷阱**（`rtc_enabled && rtc_init()` 短路）/ 边沿锁去重 / `VALID_ENTER.SOURCE` 竞态 / 上板验证 / 未验证项 / **回归夹具加固（boot_seq 截断 + 内联正则期望）** |
 | `docs/LogManager-Integration-Guide.md` **§15** | **新增**：**Workflow 接入** —— 与前面模块的 4 处差异 / 12 事件·17 发射点全表 / **三个边沿锁**（为何不用"降频"）/ 为何不记保存成功 / **WF-1 重试风暴实测**（39–40 次/秒、边沿锁 3400× 削减）/ Critical Op 审查结论表 / 上板验证 / 未验证项与 P2-G 注意事项 |
 | `log模块历史/LogManager-P2F-Workflow接入审查0918.md` | **新增**：Workflow 接入前审查（Critical Op 生命周期审计 / 6 个 terminate 退出路径 / 矩阵与代码 4 项不一致 / 14 个推荐埋点位置 / WF-1 设计问题） |
+| `docs/LogManager-Integration-Guide.md` **§16** | **新增**：**Weight/HX711 接入** —— 频率压力（进入率=每 loop / 10 Hz / 2 Hz）为何决定方案 / 5 埋点表 / `CAUSE` **位掩码** / `ERROR_EXIT` 的 2 个只读变量 / 9 个状态 vs 代码实际 / 禁止清单 / **上板验证（含两次"看似失败"的尝试）** / **§16.10 回归夹具第三层加固（F3-A 恰好填满断言）** |
+| `log模块历史/LogManager-P2G-Weight接入审查0918.md` | **新增**：Weight 接入前审查（频率分析 / 状态对照 / EventId↔宿主 / **3 处矩阵不一致** / 风险 R-1..R-5 / 待拍板 4 项） |
 | `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题）；**附录 R1**（用例修正与基线重录）；**附录 R2**（BT-9 分析·修复·验证 + 新基线 195/195） |
 | `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查 —— 已随 `85c88b5` 入库 |
 
@@ -415,8 +473,10 @@ Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按�
 | `.pio/p15run/expect_hit_selftest.py` | `serial_batch.py` 的 **`expect_hit` 真值表自检**（13 例含 4 条负向探针）——改匹配逻辑后必须跑 |
 | `.pio/p15run/p2e_patch.py` | P2-E 的 14 处精确插入式补丁脚本（每处断言恰好命中 1 次） |
 | `.pio/p15run/p2f_patch.py` | P2-F 的 24 处精确插入式补丁脚本（同样每处断言恰好命中 1 次） |
+| `.pio/p15run/log_mirror.py` | **虚拟云端**（订阅 `guo_feeder/log` + 自动 ACK + 落盘）。⚠️ **两条限制**：① **绝不能与 196 回归同时跑**（ACK 会破坏队列溢出断言）；② 其自动 ACK 的 `b` 取自批次头，实测被设备 IGNORE（同批连发 11 次）⇒ **只能当记录采集器** |
+| `.pio/p15run/p2g_patch.py` | P2-G 的 5 处精确插入式补丁（每处断言恰好命中 1 次，纯增量 `+66/−0`） |
 | `.pio/p15run/storm_probe.py` | **长静默观测探针**：单会话保持串口打开（重开串口会复位、清掉 RAM Dirty）⇒ 用来实测 WF-1 的 5 分钟延迟窗口与风暴。⚠️ `serial_batch.py` **串口静默 1.5 s 即提前返回**，做不了这种实验 |
 
 ---
 
-*最后更新：2026-09-18（**P2-F Workflow 接入完成**，回归 196/196；下次：**P2-G Weight/HX711 接入**）*
+*最后更新：2026-09-18（**P2-G Weight/HX711 接入完成**，回归 **195/195** —— 断言总数因 F3-A 夹具加固由 196 降为 195；下次：**P2-H Valve 接入**，开工前须先定强制关阀的去重策略）*
