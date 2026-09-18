@@ -2138,3 +2138,209 @@ MQTT：  seq=521  boot=1  INFO  LOG_WEIGHT_ZERO_DONE
 **结果**：**195/195 = 100%，0 MISS**（A 56 / B 65 / C 21 / D 30 / E 23）。
 > 断言数 196 → 195：净变化 = 移除 4 条"无干扰"假设的绝对断言 + 新增 3 条（`segs=16`、`emit=`、多一条 `fill warn 1`）。
 > **HIGH-1 的判别力未削弱**（`=31`/`=31`/`=1` 三条精确记账断言全部保留）。
+
+---
+
+## 17. Valve / DispenseGuard 接入（**P2-H 已落地**）
+
+> 决策依据：`log模块历史/LogManager-P2H-Valve接入审查0919.md`（7 项拍板 D1~D7 **全部 A**）
+> 生产代码改动：**仅 `src/valve.cpp`，净增量 `+125 / −1`**（唯一的 −1 是把 `if(valve_pin<0){return false;}`
+> 单行守卫展开为块；**条件、返回值、控制流完全不变**）。
+> `src/dispense_guard.cpp` **未改**（决策：Guard 是策略层，不是 Valve Capability 状态拥有者，不加 LOG）。
+> `src/log_events.h` / `src/event_manager.cpp` **零改动**；**未新增任何 EventId / ParamId**。
+
+### 17.1 为什么 Valve 段不能照矩阵直接埋点
+
+`valve_force_close()` 是**纯事件**而不是状态迁移：
+
+| | `valve_set_gpio()`（**状态迁移型**） | `valve_force_close()`（**事件型**） |
+|---|---|---|
+| 状态判等 | ✅ `if (open == current_state) return;` ⇒ **天然边沿去重** | ❌ **无判等**：阀门已关闭也照样写 GPIO / push 事件 / 打印 |
+| 防风暴 | ✅ 50 ms 冷却 | ❌ 设计上故意绕过 |
+| 可重复次数 | 状态不变 ⇒ 0 条 | **调用几次就执行几次** |
+
+**唯一调用点** = `dispense_guard.cpp:37` ← 订阅 `EVENT_WEIGHT_ERROR`
+（4 个 push 点：`weight.cpp:269` 跳变 / `:385` not-ready / `:523` 与 `:544` trigger 失败）。
+
+**实测频率（决定"必须去重"）**
+
+| 口径 | 数值 |
+|---|---|
+| 静置（不跑任何 logt 命令） | 0.08 ~ 0.51 次/s（**突发式**，单秒峰值 2 ~ 7） |
+| B2 会话（含 Flash 填充） | **50 次 / 175 s** |
+| 理论上限 | **20 次/s**（`EVENT_STORM_MAX_PER_EVENT = 5` / 500 ms） |
+| 实测形态 | **严格成对 ×2**（同毫秒，成因未定位 = 问题清单 `R-6`） |
+
+**为什么必须去重**：`LOG_VALVE_FORCE_CLOSE` 是 CRITICAL ⇒ 落 Flash（496 条环）+ 进云队列（128 槽）
+⇒ 峰值下 **约 83 s 冲光全部历史日志**、**21 s 填满云队列**。
+
+> ⚠️ **不要指望 CRITICAL（IMM）自救**：实现是"**置一次 `s_flush_requested` 标志**"
+> （`log_manager.cpp:1683-1702`，原注释即写"不建独立通道、**不承诺秒级**"）
+> ⇒ 标 CRITICAL **不会**绕过 RAM 环 / 云队列。**去重必须由调用侧做**。
+
+### 17.2 实际埋点（6 处，全用冻结 EventId）
+
+| # | 埋点位置 | EventId | Level | Params | 去重方式 |
+|---|---|---|---|---|---|
+| 1 | `valve_set_gpio()` open 分支（**真实切换完成之后**） | `LOG_VALVE_OPEN` 0x0509 | INFO | `STATE(bool)=true`、`WAS(bool)` | **天然边沿**（判等 return 在其上方） |
+| 2 | `valve_set_gpio()` close 分支（同上） | `LOG_VALVE_CLOSE` 0x050A | INFO | `STATE=false`、`WAS`、`VALVE_OPEN_MS` | 同上 |
+| 3 | `valve_set_gpio()` 50 ms 防风暴 `return` 分支 | `LOG_VALVE_RATE_LIMITED` 0x050B | WARN | `LIMIT_MS` | **不需要**（该路径只由真实切换竞争产生；实测 11 个会话 0 次） |
+| 4 | `valve_force_close()` **全部执行完成之后** | `LOG_VALVE_FORCE_CLOSE` 0x0505 | CRITICAL | `CAUSE`、`VALVE_OPEN_MS` | **5 s / cause 门控**，见 §17.3 |
+| 5 | `valve_force_close()` 的 `valve_pin<0` 失败分支 | `LOG_VALVE_FORCE_CLOSE_FAILED` 0x0506 | CRITICAL | `CAUSE` | ⚠️ **无门控**（见 §17.8 `VALVE-6`） |
+| 6 | `valve_task()` 安全超时分支 | `LOG_VALVE_SAFETY_TIMEOUT` 0x0508 | WARN | `OPEN_MS`、`LIMIT_MS` | **一次性报告锁**，见 §17.4 |
+
+**`CAUSE` 冻结定义**：`1 = WEIGHT_ERROR`（本轮唯一来源）/ `2 = MANUAL_COMMAND`（预留）/ `3 = SAFETY_TIMEOUT`（预留）。
+
+**`STATE` / `WAS` 用 `log_arg_bool`**（其他模块惯用 `log_arg_enum`）—— 因为阀门状态**本身就是二值**，不是枚举。
+
+> **刻意省略的参数**：矩阵建议 `FORCE_CLOSE` 带 `LOG_P_GAIN_AFTER_CLOSE_G`，但本模块**没有**
+> "关阀后残余增重"检测（= 问题清单 `P0-4`）⇒ **不填伪造的 0**，直接省略该参数。
+
+### 17.3 ★ `FORCE_CLOSE` 去重门控（决策 D1=A）
+
+```
+static uint32_t last_force_close_log_ms = 0;
+static uint8_t  last_force_close_cause  = 0;
+static const uint32_t VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS = 5000UL;
+...
+// ★ 位置：GPIO 动作 → current_state → valve_update_state → open_start_time → event_push → Serial
+//            全部完成【之后】
+const uint8_t  cause  = VALVE_CAUSE_WEIGHT_ERROR;
+const uint32_t now_ms = (uint32_t)millis();
+if (cause != last_force_close_cause ||
+    (uint32_t)(now_ms - last_force_close_log_ms) >= VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS)
+{
+    last_force_close_cause  = cause;
+    last_force_close_log_ms = now_ms;
+    log_emit(LOG_VALVE_FORCE_CLOSE, LOG_LVL_CRITICAL, p, 2);
+}
+```
+
+**三条硬约束（全部遵守）**
+1. **绝不写 `if (!need_log) return;`** —— 门控只决定"是否写日志"，`valve_force_close()` 的
+   "无条件强制同步 GPIO"语义 **零改动**。
+2. **不把 FORCE_CLOSE 改成 `current_state` 边沿判断**（那会丢掉"对已关闭阀门的强制同步"语义）。
+3. 门控状态是**文件级 static 观测量**，不新增 SystemState、不改任何控制流。
+
+**★ `OPEN_MS` 取值时机（本模块踩过 3 次）**：必须在 `open_start_time = 0;` **之前**取值，否则恒为 0。
+`valve_set_gpio()` / `valve_task()` / `valve_force_close()` 三处都已前置取值。
+
+### 17.4 `SAFETY_TIMEOUT` 一次性报告锁（决策 D4=A，**修复 VALVE-2**）
+
+**缺陷**：`open_start_time` 只在 `valve_set_gpio(false)` **成功**时清零；若那次关闭被 50 ms 防风暴跳过，
+则 `open_start_time` 保持旧值 ⇒ **下一轮 loop 立即再次进入超时分支** ⇒ 同一超时产生几十条重复
+`Serial.printf` + `event_push`。
+
+**修法**：`static bool safety_timeout_reported = false;`
+- 超时分支内：`if (!safety_timeout_reported) { safety_timeout_reported = true; log_emit(...); }`
+  —— **原有 `event_push` 保留不动**，只有 `log_emit` 受锁保护；
+- **锁的解除点 = 真实状态迁移完成处**：`valve_set_gpio()` 的 open 分支、close 分支，以及 `valve_force_close()`。
+
+### 17.5 状态机真相（决策 D3=A：矩阵 §9 已按真实模型重写）
+
+实际**只有 1 个二值状态变量**：`static bool current_state`（+ `STATE_VALVE_STATUS` 镜像）。
+**OPENING / CLOSING / ERROR / FORCE_CLOSE 四个状态在代码中并不存在**（阀门切换是瞬时的，无过渡态）。
+`EVENT_VALVE_ERROR` 只是**事件**，没有状态变量。详见 `docs/P2_Log_Integration_Matrix.md` §9。
+
+### 17.6 未埋清单（无宿主 / 无 EventId ⇒ 不埋，登记缺口）
+
+| 项 | 理由 |
+|---|---|
+| `LOG_VALVE_OVERFLOW_RISK` 0x0507 | 已定义但**代码中无"关阀后残余增重"检测** ⇒ 无宿主（= `P0-4`） |
+| 阀门"不可用"（`valve_init()` 禁用 / 引脚未配置） | 矩阵建议新增 `LOG_VALVE_NOT_READY`，但**该 EventId 未定义**；**禁止新增 EventId** ⇒ 不埋（`NC-11`） |
+| `valve_init()` Action 注册失败（`:227`/`:231`） | 矩阵建议借 `LOG_WF_RUNTIME_ALLOC_FAILED`，**语义不符**（action 注册失败 ≠ runtime 分配失败）⇒ 不埋（`NC-12`） |
+| `dispense_guard.cpp` 全部 | **策略层不加 LOG**：Guard 不是 Valve Capability 状态拥有者 |
+
+### 17.7 上板验证（2026-09-19，COM8，固件 `.pio/build/p2h`）
+
+**记录级捕获路径**：MQTT 订阅 `guo_feeder/log`（`.pio/p15run/p2e_probe.py`）→ `.pio/p15run/log_decode.py`；
+**设备侧计量**：`logt stats` 的 **`crit=`（= `critical_seen` 累计）**。
+
+| # | 验证项 | 结果 |
+|---|---|---|
+| 1 | `LOG_VALVE_OPEN` / `LOG_VALVE_CLOSE` | ✅ **通过**。串口 `valve_open` / `valve_toggle` 触发；`OPEN(STATE=true, WAS=false)`、`CLOSE(STATE=false, WAS=true, OPEN_MS=2006)`。**重复调用 `valve_open()` 只产生一条**（判等 return 生效） |
+| 2 | `LOG_VALVE_FORCE_CLOSE` 门控 | ✅ **精确通过**（见下） |
+| 3 | `LOG_VALVE_FORCE_CLOSE_FAILED` | ✅ **通过**。`config_set valve/gpio_pin=-1` 后：**54 次调用 → 52 条 CRITICAL**（`CAUSE=1`），且串口 `FORCE CLOSE` 计数 = **0**（确认走失败分支） |
+| 4 | `LOG_VALVE_SAFETY_TIMEOUT` 一次性锁 | ✅ **通过**。`safety_timeout_sec=2` ⇒ **6 轮超时 → 每轮恰好 1 条**（`OPEN_MS=2000`、`LIMIT_MS=2000`），且每轮各 1 条 `LOG_VALVE_OPEN` + 1 条 `LOG_VALVE_CLOSE(OPEN_MS=2000)` |
+| 5 | `LOG_VALVE_RATE_LIMITED` | ⚪ **未触发**（`NC-13`）：需要 50 ms 内二次**真实**切换，串口命令做不到；实测 11 个会话均为 0 |
+
+**★ 门控的精确验证（`.pio/p15run/P2H5`，**清零后**重测）**
+
+先 `logt fwipe` + `mwipe` + `creset` + `reset`，再纯 `logt stats` 观测 150 s：
+
+```
+窗口                                        = 149.7 s
+窗口内 valve_force_close() 调用次数          = 10     ← 无门控时应产生 10 条 CRITICAL
+实测 Δcrit                                  = 4
+按 5 s 规则离线模拟的 emit 次数              = 4      ← ★ 与实测【完全一致】
+5 s 规则的理论上限                           = 30
+crit 增量点与前置 FORCE_CLOSE 的时间差        = 1.03 / 0.66 / 0.66 / 0.66 s  ← 零"孤儿"增量
+```
+
+**★ 两条重要调试手法（后续模块复用）**
+
+1. **用 `logt stats` 的 `crit=` / `emit=` 增量做"设备侧"计量** —— 不依赖云端捕获
+   （云队列溢出时捕获会丢记录）。已单独验证该计数**不重复计数**：
+   `logt fill crit 62` ⇒ **`Δcrit` 恰好 = 62**（同时 `emit`/`flash`/`cloud` 各 +62）。
+2. ⚠️ **不清零 Flash 时 `crit` 会被"回放/前序 Boot 记录"污染**：未 `fwipe` 时观测到
+   `crit` 增量点与任何 `FORCE CLOSE` 相差 **18 ~ 37 s**（"孤儿"增量）。
+   执行 `fwipe` + `mwipe` + `creset` 后孤儿**全部消失**。
+   ⇒ **做精确计数实验前必须先清零**，否则会误判成"门控失效"。
+
+### 17.8 ⚠️ 已知残余风险（编号详见 `未修复的问题.md`）
+
+| 编号 | 内容 |
+|---|---|
+| **`VALVE-6`**（本轮新增） | **`FORCE_CLOSE_FAILED` 未门控**：`valve_pin<0` 时实测 **54 次调用 → 52 条 CRITICAL**（约 0.6 条/s；理论上限 20 条/s）。本轮**按 spec 未加**门控 ⇒ **建议后续按 §17.3 同款门控** |
+| **`VALVE-2`** | 安全超时重复 push —— **本轮已修**（§17.4） |
+| **`VALVE-3`** | force_close 失败分支完全不可观测 —— **本轮已修**（埋点 5） |
+| **`VALVE-1`** | `valve_force_close()` / `valve_open()` / `valve_close()` / `valve_toggle()` **均不检查 `initialized`** ⇒ 模块禁用但引脚已配置时写未 `gpio_config()` 的引脚并**返回 `true`（假成功）**。决策 D2=A 本轮**只登记不修** |
+| **`VALVE-4`** | `valve_close()` 返回值语义不精确（本来就关着也返回 `true`）—— **不改返回值**，用 `LOG_P_WAS` 表达 |
+| **`VALVE-5`** | `dispense_guard` 无节流 —— 未修（策略层），已由 §17.3 在 Valve 侧兜住 |
+| **`R-6`** | force_close **成对 ×2** 成因未定位（决策 D7=A：本轮不定位于） |
+| **`R-7`**（本轮新增） | **195 回归夹具与"跨模块 WARN+/CRITICAL 埋点"根本冲突** —— 见 §17.9 |
+| **`R-8`**（本轮新增） | **FS 阻塞会诱发重量跳变**：`logt flush` 等 LittleFS 操作阻塞 loop ⇒ HX711 滤波窗口被跨阻塞拼接 ⇒ `weight_record_jump()` 误报（A 段 69 次 vs 静置 0.08 次/s） |
+
+### 17.9 ★★ 第四层教训：回归夹具与"跨模块埋点"的**根本冲突**
+
+**现象**：P2-H 全量回归 **168/195（26 MISS）** —— A 42/56、B 64/65、C 20/21、D 23/30、E 19/23。
+
+**根因（已定位）**：A 段发生 **69 次** `valve_force_close()`（P2-G 那一轮只有 **2** 次）。
+经门控后仍产生约 **34 条 CRITICAL** 记录 ⇒ 落 Flash + 进云队列 ⇒ F0/F1/F2 的**精确记账断言全部失准**：
+
+| 断言 | 夹具期望 | 为何失准 |
+|---|---|---|
+| `total=40` / `recs=9`（F0） | 夹具自己写了**恰好** 40 条 | 多出 ~34 条 CRITICAL |
+| `replay=31` / `replay=40` / `rarmed=0` / `replay_done=1`（F0 补发节奏） | 按 16 / 15 / 9 三批推导 | 多出的记录混进补发序列 |
+| `evict_inf=9` / `qdrop=12`（F1 恒等式） | `evict_inf + qdrop = 149 − 128` | 队列起点被污染 |
+| `total=8` / `giveup=1` / `fdrop=8`（F2） | 夹具自己写了**恰好** 8 条 | 同上 |
+| `holes=2` / `hole_evict=4` / `seg_del=0`（D 段） | 空洞记账 | 同上 |
+| `tx_valid=0`（C 段） | 无在途批次 | 干扰记录组出了新批次 |
+
+**为什么"按 P2-G 方式修夹具"在这里不适用**：P2-G 处理的是**个别**绝对断言（4 条），换成结构性判据即可。
+而这里的 26 条断言正是 **FIX-1/2/3 的精确记账本体**（`evict_inf + qdrop == 淘汰总数` 这类恒等式）——
+把它们改成结构性判据 = **删除这套夹具的核心判别力**，即"降低断言"，与「不要降低断言」相冲突。
+
+**为什么"夹具自己清零"也救不了**：每段开头的 `fwipe` + `mwipe` + `reset` 只能清掉**之前**的记录，
+**清不掉段内持续产生的**干扰；而干扰是**突发式**的（0.08 ~ 0.51 次/s）⇒ 期望值不可确定。
+
+**三条可行路径（待拍板，见 §17.10）**
+
+1. **给 weight 模块加 `enable` 配置**（生产代码，最小改动；`valve` / `rtc` 已有同类项）
+   ⇒ 回归期间关掉重量采样 ⇒ 干扰归零 ⇒ **195 条断言原样全绿**；
+2. **修硬件/接线**：让 HX711 不再间歇性在 0 与有效值之间摆动（`R-8`）⇒ 干扰自然归零 ⇒ 同样全绿；
+3. **重设计这套夹具**（改为结构性不变量）⇒ 需明确接受判别力下降。
+
+> **规律（四层）**：任何隐含"执行期间只有本用例在写日志"的断言都会随逐模块接入而失效 ——
+> ① 绝对计数（P2-D）→ ② 与历史相关（P2-E）→ ③ "恰好填满 / 恰好为 0"的边界（P2-G）→
+> ④ **"只有本用例在写日志"这个前提本身**（P2-H，整段夹具）。
+> ⇒ **结论：这类夹具需要"测试隔离"，而不是"继续打补丁"。**
+
+### 17.10 待拍板事项（P2-H 实现后新增）
+
+| # | 事项 | 建议 |
+|---|---|---|
+| **E1** | 回归夹具与跨模块埋点的冲突（§17.9）如何解决 | **建议路径 1**（给 weight 加 `enable` 配置）：改动最小、可复用、**保留全部 195 条断言** |
+| **E2** | `FORCE_CLOSE_FAILED` 是否加同款 5 s 门控（`VALVE-6`） | 建议加（否则引脚误配时可达 20 条 CRITICAL/s） |
+| **E3** | `VALVE-1`（`initialized` 未检查）是否单独开一轮修 | 建议单独评审（涉及安全语义） |
+| **E4** | `R-8`（FS 阻塞诱发重量跳变）是否单独评审 | 建议单独评审（属 Weight 模块鲁棒性，非日志） |

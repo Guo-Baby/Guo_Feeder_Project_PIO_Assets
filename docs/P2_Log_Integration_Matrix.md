@@ -298,34 +298,77 @@
 
 ## 9. Valve
 
+> **⚠️ 本节已由 P2-H（2026-09-19）按真实代码模型重写**（依据 P2-H 决策 **D3=A**）。
+> 原矩阵假定阀门有 6 个状态（OPEN / CLOSE / OPENING / CLOSING / ERROR / FORCE_CLOSE），
+> **实测代码中 OPENING / CLOSING / ERROR / FORCE_CLOSE 四个状态并不存在**。
+> 审查报告：`log模块历史/LogManager-P2H-Valve接入审查0919.md`。
+
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/valve.cpp`（350）、`src/valve.h`（42） |
+| 源码文件 | `src/valve.cpp`（475）、`src/valve.h`（42）、`src/dispense_guard.cpp`（73） |
+| 本质 | 阀门是**二值设备**，且切换是**瞬时**的（`gpio_set_level()` 后即完成）⇒ **不存在 OPENING / CLOSING 过渡态** |
 
-### 9.1 当前状态
+### 9.1 真实模型（取代原"6 状态"假设）
 
-| 检查项 | 现状 |
+**状态（只有 1 个变量，二值）**
+
+| 状态 | 载体 | 说明 |
+|---|---|---|
+| `OPEN` | `static bool current_state == true`（`valve.cpp:31`） | `STATE_VALVE_STATUS`（`system_state.h:31`）是其 SystemState 镜像 |
+| `CLOSE` | `static bool current_state == false` | 初始值即 CLOSE |
+
+辅助量（**不是状态**）：`open_start_time`（0 = 未开启）、`last_operation_time`（防风暴）、`initialized`。
+
+**明确不存在**：`OPENING` / `CLOSING`（无过渡态）、`ERROR`（只有 `EVENT_VALVE_ERROR` **事件**，无状态变量）、
+`FORCE_CLOSE`（`valve_force_close()` 把 `current_state` 置 false，**与普通关闭在状态上不可区分**）。
+
+**事件（实际埋点，共 6 类）**
+
+| 事件 | 宿主（行号） | EventId | Level | 真实触发条件 |
+|---|---|---|---|---|
+| 阀门开启 | `valve_set_gpio()` open 分支 | `LOG_VALVE_OPEN` 0x0509 | INFO | 真实切换（`open != current_state` 判等已通过）⇒ **天然边沿去重** |
+| 阀门关闭 | `valve_set_gpio()` close 分支 | `LOG_VALVE_CLOSE` 0x050A | INFO | 同上；带 `VALVE_OPEN_MS` |
+| 强制关阀 | `valve_force_close()` | `LOG_VALVE_FORCE_CLOSE` 0x0505 | CRITICAL | **纯事件**：每次调用都执行（无状态判等）⇒ **必须去重门控**，见 9.3 |
+| 强制关阀失败 | `valve_force_close()` `valve_pin<0` | `LOG_VALVE_FORCE_CLOSE_FAILED` 0x0506 | CRITICAL | 引脚未配置。⚠️ **无门控**（见 9.4 风险） |
+| 安全超时 | `valve_task()` 超时分支 | `LOG_VALVE_SAFETY_TIMEOUT` 0x0508 | WARN | 开启时长 ≥ `safety_timeout_sec`；**一次性报告锁** |
+| 防风暴跳过 | `valve_set_gpio()` 50 ms 限流分支 | `LOG_VALVE_RATE_LIMITED` 0x050B | WARN | 50 ms 内发生二次**真实**切换 |
+
+**无宿主（不埋，登记缺口）**：`LOG_VALVE_OVERFLOW_RISK` 0x0507（无检测实现，= 问题清单 `P0-4`）、
+`LOG_VALVE_NOT_READY`（**`log_events.h` 中未定义**，禁止新增 EventId）。
+
+### 9.2 原矩阵的 3 处错误（P2-H 已核实推翻）
+
+| 原矩阵说法 | 实际 |
 |---|---|
-| 已有日志 | ❌ 无，仅 `Serial.printf` |
-| 错误处理 | ⚠️ 中等：GPIO 未配置/模块禁用只打串口；防风暴跳过只打串口；`valve_force_close()` **永远返回 true**（无失败分支）⇒ `LOG_VALVE_FORCE_CLOSE_FAILED` 无处可埋 |
-| 状态机 | 无显式状态机；`current_state` bool + 安全超时计时 |
-| 关键状态迁移点 | `valve_set_gpio()` :92（开/关切换 + 50ms 防风暴）、安全超时 :305、`valve_force_close()` :321（绕过防风暴） |
+| `valve_force_close()` "永远返回 true（无失败分支）"⇒ `FORCE_CLOSE_FAILED` **无处可埋** | ❌ `valve.cpp:323` 确有 `valve_pin < 0` 分支 ⇒ **可埋，且 P2-H 已埋** |
+| CRITICAL（IMM）"**必须立即 flush**" | ❌ 实现是"**置一次 `s_flush_requested` 标志**，由本轮 `log_task()` 阶段 2 落盘"（`log_manager.cpp:1683-1702`）；**不建独立通道、不绕过 RAM 环（64 槽）/云队列（128 槽）、不承诺秒级** ⇒ **标 CRITICAL 并不能防队列冲爆** |
+| `LOG_VALVE_RATE_LIMITED` "高频调用源会重复触发，**需边沿/计数去重**" | ❌ 防风暴检查在 `open == current_state` 判等 return **之后** ⇒ 只在"真要切换"时才可能进入；实测 **11 个既有会话 `Operation too frequent` 全部为 0** ⇒ 无需去重 |
 
-### 9.2 建议接入
+### 9.3 `valve_force_close()` 去重门控（P2-H 决策 **D1=A**）
 
-| 位置 | 事件 | EventId | Level | Params | 原因 |
-|---|---|---|---|---|---|
-| `valve_set_gpio()` :118 open 分支 | 阀门开启 | `LOG_VALVE_OPEN` | INFO | `LOG_P_STATE`, `LOG_P_WAS` | 与 `EVENT_VALVE_OPEN` 同点 |
-| `valve_set_gpio()` :121 close 分支 | 阀门关闭 | `LOG_VALVE_CLOSE` | INFO | `LOG_P_OPEN_MS`, `LOG_P_STATE`, `LOG_P_WAS` | `open_ms` = 本次开启时长 |
-| `valve_set_gpio()` :103 防风暴跳过 | 操作被限流 | `LOG_VALVE_RATE_LIMITED` | WARN | `LOG_P_LIMIT_MS` | ⚠️ 高频调用源会重复触发，**需边沿/计数去重** |
-| `valve_task()` :305 安全超时 | 安全超时强制关阀 | `LOG_VALVE_SAFETY_TIMEOUT` | WARN | `LOG_P_OPEN_MS`, `LOG_P_LIMIT_MS` | — |
-| `valve_force_close()` :321 | 强制关阀 | `LOG_VALVE_FORCE_CLOSE` | CRITICAL（IMM） | `LOG_P_CAUSE`, `LOG_P_VALVE_OPEN_MS`, `LOG_P_GAIN_AFTER_CLOSE_G` | 安全事件，必须立即 flush |
-| 强制关阀失败 | 强制关阀失败 | `LOG_VALVE_FORCE_CLOSE_FAILED` | CRITICAL（IMM） | `LOG_P_CAUSE` | ⚠️ **当前无失败分支**，需先补检测 |
-| 溢出风险检测 | 溢出风险 | `LOG_VALVE_OVERFLOW_RISK` | CRITICAL（IMM） | `LOG_P_WEIGHT_G`, `LOG_P_TARGET_G` | ⚠️ 注释标注"需新增检测"，当前无实现 |
-| `valve_init()` :198/:204 禁用或引脚未配置 | 阀门不可用 | **建议新增 `LOG_VALVE_NOT_READY`** | WARN | `LOG_P_CAUSE` | 配置错误首发信号 |
-| `valve_init()` :227/:231 注册失败 | 注册失败 | `LOG_WF_RUNTIME_ALLOC_FAILED`? 无合适 ID | ERROR | `LOG_P_ACTION_ID`⚠️ | ⚠️ **EventId 缺口** |
+**必要性（实测）**：`valve_force_close()` 无状态判等，`dispense_guard` 把**每个** `EVENT_WEIGHT_ERROR` 都转成一次调用。
+实测 B2 会话 **50 次 / 175 s**、峰值 **6 次/s**；理论上限 **20 次/s**（`EVENT_STORM_MAX_PER_EVENT=5` / 500 ms × ×2 成对）。
+而 `LOG_VALVE_FORCE_CLOSE` 是 CRITICAL ⇒ 落 Flash（496 条环）+ 进云队列（128 槽）
+⇒ **峰值下约 83 s 就能冲光全部历史日志**。
 
-> **埋点注意**：`valve_set_gpio()` 在 `open == current_state` 时直接 return（:97），因此重复调用 `valve_open()` **不会产生第二条日志** —— 天然边沿去重，可直接埋点。
+**规则**（`valve.cpp`）：满足任一才 `log_emit`，否则**只执行 force_close、不写日志**：
+1. `cause != last_force_close_cause`
+2. `(now - last_force_close_log_ms) >= 5000`
+
+**约束**：门控**只限制日志**，`valve_force_close()` 的"无条件强制同步 GPIO"语义**零改动**；
+日志判断位置在"GPIO 动作 → 状态更新 → SystemState → `open_start_time` → 事件发布"**全部完成之后**（绝不 `if(!need_log) return;`）。
+
+**`CAUSE` 冻结定义**：`1 = WEIGHT_ERROR`（本轮唯一来源）/ `2 = MANUAL_COMMAND`（预留）/ `3 = SAFETY_TIMEOUT`（预留）。
+
+### 9.4 已知残余风险
+
+- 🔴 **`LOG_VALVE_FORCE_CLOSE_FAILED` 未门控**：实测 `valve_pin = -1` 时 **54 次调用 → 52 条 CRITICAL**
+  （约 0.6 条/s；理论上限 20 条/s）。该分支只在引脚未配置（模块不可用）时进入。
+  **建议后续按 9.3 同款门控** —— 待拍板，本轮按 spec 未加。
+- 🟠 `valve_force_close()` **不检查 `initialized`**（问题清单 **VALVE-1**）：模块被 config 禁用但引脚已配置时
+  会写未 `gpio_config()` 的引脚并**返回 `true`（假成功）**。P2-H 决策 **D2=A**：本轮**只登记不修**。
+- 🟠 `dispense_guard` 无节流（**VALVE-5**）；`valve_force_close()` 成对调用 ×2 成因未定位（**R-6**）。
+
 
 ---
 

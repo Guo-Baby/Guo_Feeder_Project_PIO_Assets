@@ -36,6 +36,10 @@
 | **阶段 2-G** | **P2-G Weight/HX711 接入**（`src/weight.cpp`，唯一生产代码改动文件，**纯增量 `+66/−0`**）：5 个埋点全用冻结 ID（`ERROR_ENTER`/`ERROR_EXIT` 挂 `error_state` **天然边沿** + `ZERO_DONE`/`CALIB_FAILED` + `TRIGGER_FIRED`）；`CAUSE` 用**位掩码**(1=no_data/2=raw_zero/4=jump)；`ERROR_EXIT` 带 `CAUSE`+`DURATION_MS`（仅 2 个**只读**观测变量）；**零聚合、零节流**（高频源全部排除） | `feat(log): integrate weight manager logging` | ✅ 已提交 |
 | **阶段 2-G · 拍板** | 用户四项决策**全部选 A**：① `weight_trigger_start()` 两个失败路径**不埋**（复用 `ERROR_ENTER` 会重复/虚假）② "校准开始"不埋（守"暂不新增 ID"，`0x0512` 保持未定义）③ `CAUSE` 用**位掩码** ④ `ERROR_EXIT` **带** `CAUSE`+`DURATION_MS`（仅加只读观测变量，不改状态机）。另明确：**不把 `jump_error` 转成 ERROR_ENTER**（它属"重量异常**事件**"，不是"重量错误**状态**"） | — | ✅ 已按此实现 |
 | **阶段 2-G · 夹具** | ⚠️ **F3-A 的"恰好填满"断言被打破**（P2-G 首次回归 B 62/66）：Weight 边沿恰好落在填充窗口内（实测 `23:47:00`）⇒ `LOG_WEIGHT_ERROR_ENTER`(WARN 落 Flash) 多写 1~2 条 ⇒ 环提前回绕 ⇒ `total=496`/`append=15@31`/`seg_evict_unacked=0`/`total=466` 4 条断言失效。**按"修夹具不降断言"处置**：移除这 4 条"无干扰"假设、改为 `segs=16` 结构性判据 + **多写 1 条保证必然越界**；**HIGH-1 的精确记账断言（`seg_evict_unacked=31`/`fdrop=31`/`seg_del=1`）原样保留** | `test(log): harden F3-A ring-fill fixture against inter-module WARN interference` | ✅ 已提交（**195/195 = 100%**） |
+| **阶段 2-H · 审查** | **Valve/DispenseGuard 接入前审查**（只审查、未改生产代码）：`valve_force_close()` 确认为**纯事件非状态迁移**（无判等）；**矩阵 6 状态中 4 个不存在**（实际只有 `bool current_state`）；**3 处矩阵与代码不符**（`FORCE_CLOSE_FAILED` 确有 `valve_pin<0` 分支 / CRITICAL"IMM"实际只是置一次 flush 标志 / `RATE_LIMITED` 实测 0 次无需去重）；🔴 发现 **VALVE-1**（四个 valve API 均不检查 `initialized`⇒假成功） | `docs(log): review valve log integration plan` | ✅ 已提交 |
+| **阶段 2-H · 拍板** | 用户七项决策**全部选 A**：D1 去重门控（cause 变化 / 5 s 冷却，只限日志不改 GPIO）· D2 VALVE-1 本轮不修只登记 · D3 矩阵按真实模型重写 · D4 SAFETY_TIMEOUT 加一次性报告锁 · D5 埋 `FORCE_CLOSE_FAILED` · D6 无宿主项一律不埋且不新增/不借 EventId · D7 R-6 本轮不定位 | — | ✅ |
+| **阶段 2-H** | **P2-H Valve/DispenseGuard 接入**（`src/valve.cpp`，唯一生产代码改动文件，**净增量 `+125 / −1`**，唯一 −1 是把 `if(valve_pin<0){return false;}` 单行守卫展开为块）：**6 个埋点 / 6 个冻结 EventId**（`OPEN`/`CLOSE` 挂 `valve_set_gpio()` 天然边沿 + `RATE_LIMITED` + `FORCE_CLOSE`（5 s 门控）+ `FORCE_CLOSE_FAILED` + `SAFETY_TIMEOUT`（一次性锁））；`log_events.h` / `event_manager.cpp` / `dispense_guard.cpp` **零改动** | `feat(log): integrate valve logging` | ✅ 已提交 |
+| **阶段 2-H · 冲突** | ⚠️ **回归 168/195（26 MISS）** —— 根因＝A 段发生 **69 次** `valve_force_close()` （P2-G 那轮仅 2 次）⇒ 门控后仍多出约 **34 条 CRITICAL** ⇒ F0/F1/F2 的**精确记账断言**（`total=40`/`replay=31`/`evict_inf=9`/`qdrop=12`…）全部失准。**"按 P2-G 方式修夹具"在此不适用**：这 26 条断言就是 FIX-1/2/3 的记账本体，改结构性判据 = 降断言 ⇒ **已停止并上报**，待拍板（Guide §17.9/§17.10） | — | ⛔ **阻塞待决策** |
 
 ---
 
@@ -45,15 +49,20 @@
 HEAD:           见 `git log --oneline -1`（每次提交后更新本行）
 分支:           wb
 P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
-回归基线:       ✅ **195/195 = 100%，0 MISS**（A 56 / B 65 / C 21 / D 30 / E 23）
-                   ⚠️ 断言总数 **196 → 195**：P2-G 首次回归 B 段 4 条 MISS（`total=496`/`append=15@31`/
-                   `seg_evict_unacked=0`/`total=466`）根因＝ **Weight 边沿的 WARN 落在 F3-A 填充窗口内**
-                   ⇒ "恰好 496 条填满"这类**隐含"无干扰"的绝对断言失效** ⇒ 按"修夹具不降断言"处置
-                   （HIGH-1 的 `=31`/`=31`/`=1` 精确记账断言全部保留）。详见 Guide §16.10
-                   ⚠️ **不要在跑回归时注入 ACK**：实测开"虚拟云端"自动回 ACK ⇒ 队列不再溢出 ⇒ A/B/E 的
+回归基线:       ⛔ **168/195（26 MISS）—— 阻塞待决策**（A 42/56 · B 64/65 · C 20/21 · D 23/30 · E 19/23）
+                   ⚠️ **不是代码缺陷**：P2-H 的 5 个埋点已逐项上板验证通过（含门控"10 次调用 → 4 条记录"
+                   **与 5 s 规则离线模拟值精确一致**）。失败的全部是 **F0/F1/F2 的绝对计数断言**，
+                   根因＝实测 **A 段发生 69 次 `valve_force_close()`**（P2-G 那轮只有 2 次）⇒ 门控后
+                   仍多出约 34 条 CRITICAL 记录 ⇒ 落 Flash + 进云队列 ⇒ 精确记账全部失准。
+                   ⇒ **这类夹具与"跨模块 WARN+/CRITICAL 埋点"根本冲突**，需要"测试隔离"而不是"继续打补丁"
+                   （三条候选路径见 Guide §17.9/§17.10 的 E1，待拍板）。
+                   ⚠️ 干扰源是**突发式**的（静置实测 0.08 ~ 0.51 次/s，单秒峰值 2~7）⇒ 期望值不可确定，
+                   无法通过"夹具自身 fwipe/mwipe 清零"解决（只能清"之前"的记录）。
+                   ⚠️ **不要在跑回归时注入 ACK**：实测开"虚拟云端"自动回 ACK ⇒ 队列不再溢出 ⇒
                    `qdrop`/`evict_inf`/`replay` 类断言全部失效（A 52/56 · B 56/66 · E 13/23）—— **夹具隐含依赖 BT-1**
                    历史：首轮 167/187 → R1 187/189（2 MISS=BT-9）→ BT-9 修复后 195/195
-                   → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）196/196 → **P2-G 195/195**
+                   → P2-D 夹具加固 196/196 → P2-E 夹具加固（正则期望）196/196 → P2-G **195/195**
+                   → **P2-H 168/195（阻塞；断言总数仍为 195，未做任何删改）**
 合约测试:       ✅ 4/4 ALL PASS（含新增第 ⑧ 组 23 条 BT-9 断言，其中 3 条负向探针）
 ```
 
@@ -68,9 +77,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Time（`time_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（9 个事件 / 11 个埋点，全在既有分支内）；RTC 异常用**边沿锁**；`SOURCE` 走**枚举化**（0=INVALID 1=RTC 2=SNTP 3=MANUAL） | `LOG_TIME_NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`(**INFO·WARN 三分支**) / `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | P2-E |
 | **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
 | **Weight（`weight.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处 / 5 个事件）；`ERROR_*` 挂 `error_state` **天然边沿**（无需任何去重逻辑）；**纯增量 `+66/−0`**；`CAUSE` 位掩码；2 个**只读**观测变量（供 EXIT 报 `CAUSE`+`DURATION_MS`） | `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` / `ZERO_DONE` / `CALIB_FAILED` / `TRIGGER_FIRED` | P2-G |
-| 其余 4 个模块 | **未接入** | — | — |
+| **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
+| 其余 3 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Valve → Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**Dispense → BLE → Command/Event/OLED/Registry**
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
 
@@ -241,6 +251,65 @@ MQTT： seq=521 boot=1 INFO LOG_WEIGHT_ZERO_DONE
 **⑤ 新增可复用工具**：`.pio/p15run/log_mirror.py`（虚拟云端：订阅 + 自动 ACK + 落盘）。
 ⚠️ **两条使用限制**（实测得出）：① **绝不能与 196 回归同时运行**（ACK 破坏队列溢出断言）；② 其自动 ACK 的 `b` 字段取自批次头（`first.boot_seq`），实测被设备 **IGNORE** ⇒ 同批次连发 11 次 ⇒ **只能当记录采集器**，可靠 ACK 仍须走串口 `logt ack <BOOT> …`。
 
+### P2-H 验证记录（2026-09-19，COM8；固件 `.pio/build/p2h`，Flash 65.3% / RAM 39.8%）
+
+**① `LOG_VALVE_OPEN` / `LOG_VALVE_CLOSE` —— 记录级通过 ✅**
+
+```
+MQTT： seq=523 INFO LOG_VALVE_OPEN   STATE(bool)=True  WAS(bool)=False
+       seq=524 INFO LOG_VALVE_CLOSE  STATE(bool)=False WAS(bool)=True VALVE_OPEN_MS(u32)=2006
+串口： [Valve] OPEN (pin=12, level=1) → [Valve] CLOSE (pin=12, level=0)
+```
+**★ 天然边沿去重已验证**：连续两次 `valve_open`（第二次是 no-op）**只产生一条记录**。
+
+**② `LOG_VALVE_FORCE_CLOSE` 门控 —— 精确通过 ✅**
+
+先 `fwipe` + `mwipe` + `creset` + `reset`（**消除回放干扰**），再纯 `logt stats` 观测 150 s：
+
+```
+窗口内 valve_force_close() 调用次数   = 10      ← 无门控时应产生 10 条 CRITICAL
+实测 Δcrit（logt stats 的 critical_seen 增量） = 4
+按 5 s 规则离线模拟 emit 次数          = 4      ← ★ 与实测完全一致
+crit 增量点与前置 FORCE_CLOSE 时间差    = 1.03/0.66/0.66/0.66 s（零"孤儿"增量）
+```
+捕获样张：`seq=3851 CRITICAL LOG_VALVE_FORCE_CLOSE CAUSE(u32)=1 VALVE_OPEN_MS(u32)=7998`
+
+**③ `LOG_VALVE_FORCE_CLOSE_FAILED` —— 记录级通过 ✅**
+
+`config_set valve/gpio_pin=-1` 后：串口 `FORCE CLOSE` 计数 = **0**（确认走失败分支），
+`guard_rx`（Weight error received）= **54** ⇒ 记录了 **52 条** CRITICAL：
+`seq=3082 CRITICAL LOG_VALVE_FORCE_CLOSE_FAILED CAUSE(u32)=1`
+⚠️ 该分支**无门控**（按 spec）⇒ 引出新问题 `VALVE-6`。
+
+**④ `LOG_VALVE_SAFETY_TIMEOUT` 一次性报告锁 —— 通过 ✅**
+
+`safety_timeout_sec=2`，6 轮 `valve_open` + 等待：
+
+```
+01:12:20.544 OPEN     01:12:22.563 Safety timeout! + CLOSE      → SEQ 5385/5386/5387
+01:12:28.084 OPEN     01:12:30.031 Safety timeout! + CLOSE      → SEQ 5389/5390/5391
+...
+6 轮 = 6 次 "Safety timeout!" = 6 条 LOG_VALVE_SAFETY_TIMEOUT（每轮恰好 1 条）
+记录：WARN LOG_VALVE_SAFETY_TIMEOUT OPEN_MS(u32)=2000 LIMIT_MS(u32)=2000
+      INFO LOG_VALVE_CLOSE          VALVE_OPEN_MS(u32)=2000
+```
+⇒ **一次真实超时恰好 1 条**（`VALVE-2` 的修复目标达成）。
+
+**⑤ 清理动作（如实记录）**：为验证 ③ 与 ④，临时改过 `valve/gpio_pin`（-1 → 12）与
+`valve/safety_timeout_sec`（300 → 10 → 2 → **已恢复 300**）。`weight/zero_offset` 仍为 **-1**（P2-G 的 `D-2`，未动）。
+
+**⑥ 新增可复用工具**：`.pio/p15run/valve_watch.py`（**只读**串口观测器：统计 FORCE CLOSE / Guard /
+WEIGHT_ERROR 边沿 / rate-limit 的**每秒分布**，用于量化高频调用；不烧录、不改代码）。
+
+**⑦ 新增可复用手法（两条，见 Guide §17.7）**
+1. **`logt stats` 的 `crit=` / `emit=` 增量 = "设备侧"计量**（云队列溢出时云端捕获会丢，这个不会）。
+   已单独验证该计数**不重复计数**：`logt fill crit 62` ⇒ `Δcrit` **恰好 = 62**。
+2. ⚠️ **不清零 Flash 时 `crit` 会被"回放/前序 Boot 记录"污染** —— 未 `fwipe` 时观测到
+   `crit` 增量点与任何 `FORCE_CLOSE` 相差 **18~37 s**（"孤儿"）；清零后孤儿全消失。
+   ⇒ **做精确计数实验前必须先清零**，否则会把"回放记录"误判成"门控失效"。
+
+---
+
 ### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
 **现象**：P2-D 埋点后 B 段稳定 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`）。
@@ -334,14 +403,23 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 下一步：**Valve 接入**（P2-H）
+### 下一步：**先解 E1，再进 Dispense**（P2-I）
 
-Weight 已接入完成（见上），回归 **195/195 全绿**。下一个按约定顺序是 **Valve**（`src/valve.cpp` + `dispense_guard.cpp`）：
+**P2-H（Valve）已实现并逐项上板验证完成**，但**回归被阻塞**（168/195，根因见上"阶段 2-H · 冲突"）。
+**开工下一模块前必须先拍板 Guide §17.10 的 E1**（回归夹具与跨模块埋点的冲突）：
 
-1. ⚠️⚠️ **P2-H 开工前必须先决定"强制关阀"的去重/边沿策略**。实测：跳变源（`weight_record_jump()` 每跳变 push 一次 `EVENT_WEIGHT_ERROR`）会让 `dispense_guard` **反复**调 `valve_force_close()`（C 段实测 4 次事件、**同一秒内 2 次**）。而 `LOG_VALVE_FORCE_CLOSE`(0x0505) 是 **CRITICAL + IMMEDIATE** ⇒ **直接埋点会得到 ≈2 条/s CRITICAL**。根因在既有设计（不是日志问题）⇒ 需单独评审。
-2. `LOG_VALVE_OVERFLOW_RISK`(0x0507) 的注释写着"**需新增检测**"，正对应已知 P0：`valve_force_close()` 后**无残余增重检测** ⇒ 属 Valve/Dispense 阶段，需单独评审（涉及安全逻辑）。
-3. 规则同前：**纯增量**（不改任何时序/return）、高频路径禁埋点、`CAUSE` 枚举化（P2-G 的 `LOG_P_CAUSE` 位掩码若复用需先对齐语义）。
-4. 提交主题建议：`feat(log): integrate valve manager logging`
+1. ⚠️⚠️ **E1**：三条路径 —— ① **给 weight 模块加 `enable` 配置**（生产代码，最小改动；
+   `valve`/`rtc` 已有同类项）⇒ 回归期间关掉重量采样 ⇒ 干扰归零 ⇒ **195 条断言原样全绿**；
+   ② 修硬件/接线（`R-8`：HX711 间歇在 0 与有效值之间摆动）；③ 重设计夹具（需接受判别力下降）。
+   **推荐 ①**。
+2. ⚠️ **E2**：`VALVE-6` —— `FORCE_CLOSE_FAILED` 未门控（实测 54 次调用 → 52 条 CRITICAL）。
+   建议按 §17.3 同款 5 s 门控。
+3. ⚠️ **E3**：`VALVE-1`（`initialized` 未检查 ⇒ 假成功）单独开一轮修。
+4. ⚠️ **E4**：`R-8`（FS 阻塞诱发重量跳变）单独评审。
+5. 下一模块按顺序是 **Dispense**（`dispense_guard` 已在 P2-H 明确**策略层不加 LOG**；
+   若将来引入独立 Dispense 模块再议）。
+6. 提交主题建议：`feat(log): integrate dispense logging`
+
 
 ### 之后（严格一次一个模块）
 
@@ -392,6 +470,15 @@ Weight 已接入完成（见上），回归 **195/195 全绿**。下一个按约
 | | **NC-10**（P2-G） | `LOG_WEIGHT_CALIB_FAILED` / `LOG_WEIGHT_TRIGGER_FIRED`（需保存失败注入 / 真实减重场景） | ⚪ |
 | **测试环境耦合** | **T-1**（P2-G 发现） | **196 回归夹具隐含依赖 BT-1**：一旦有人在回归期间回 ACK（如开"虚拟云端"），队列不再溢出 ⇒ A/B/E 的 `qdrop`/`evict_inf`/`replay` 类断言**全部失效**（实测 A 52/56 · B 56/66 · E 13/23） | ⚠️ 已知并记录；**跑回归时禁止注入 ACK** |
 | **设备状态** | **D-1**（P2-G 副作用） | 校准把 `weight.zero_offset` 从 **-800750 覆写为 -1**（该板 HX711 读数恒 0/-1）⇒ `current_weight` 由 ≈1080 g 变为 ≈0 g。**未回写** | ⚠️ 如需恢复：`config_set weight/zero_offset = -800750` + `config_save` |
+| **Valve（VALVE）** | **VALVE-1** | 四个 valve API **均不检查 `initialized`** ⇒ 模块禁用但引脚已配置时**返回 true 假成功**且 GPIO 未配置 | 🔴 |
+| | **VALVE-6** | **`FORCE_CLOSE_FAILED` 未门控**：实测 54 次调用 → 52 条 CRITICAL（引脚误配时可达 20 条/s） | 🔴 |
+| | VALVE-2 | 安全超时重复 push —— ✅ **P2-H 已修**（一次性报告锁） | ✅ |
+| | VALVE-3 | force_close 失败分支不可观测 —— ✅ **P2-H 已修**（已埋 `FORCE_CLOSE_FAILED`） | ✅ |
+| | VALVE-4 | `valve_close()` 返回值语义不精确（本来就关着也返回 true）⇒ 用 `LOG_P_WAS` 表达，不改返回值 | 🟡 |
+| | VALVE-5 | `dispense_guard` 无节流（策略层；已由 Valve 侧 5 s 门控兜住） | 🟠 |
+| **风险（R）** | **R-6** | `valve_force_close()` **成对 ×2** 调用，成因未定位 | 🟠 |
+| | **R-7** | **195 回归夹具与"跨模块 WARN+/CRITICAL 埋点"根本冲突** ⇒ 回归阻塞待决策（E1） | 🔴 |
+| | **R-8** | **FS 阻塞诱发重量跳变**：LittleFS 操作阻塞 loop ⇒ HX711 窗口被跨阻塞拼接 ⇒ 跳变误报 | 🟠 |
 
 **统计**：🔴 高 6 项 · 🟠 中 11 项 · 🟡 低 9 项 · ⚪ 未验证 8 组。
 
@@ -476,7 +563,9 @@ Weight 已接入完成（见上），回归 **195/195 全绿**。下一个按约
 | `.pio/p15run/log_mirror.py` | **虚拟云端**（订阅 `guo_feeder/log` + 自动 ACK + 落盘）。⚠️ **两条限制**：① **绝不能与 196 回归同时跑**（ACK 会破坏队列溢出断言）；② 其自动 ACK 的 `b` 取自批次头，实测被设备 IGNORE（同批连发 11 次）⇒ **只能当记录采集器** |
 | `.pio/p15run/p2g_patch.py` | P2-G 的 5 处精确插入式补丁（每处断言恰好命中 1 次，纯增量 `+66/−0`） |
 | `.pio/p15run/storm_probe.py` | **长静默观测探针**：单会话保持串口打开（重开串口会复位、清掉 RAM Dirty）⇒ 用来实测 WF-1 的 5 分钟延迟窗口与风暴。⚠️ `serial_batch.py` **串口静默 1.5 s 即提前返回**，做不了这种实验 |
+| `.pio/p15run/p2h_patch.py` | P2-H 的 8 处精确插入式补丁（每处断言恰好命中 1 次；**含 CRLF 行尾保留**与白名单化的"允许格式化改动"自检） |
+| `.pio/p15run/valve_watch.py` | **只读**串口观测器：统计 `FORCE CLOSE` / `DispenseGuard` / `STATE_WEIGHT_ERROR` 边沿 / `Operation too frequent` 的**每秒分布**，用于量化高频调用 |
 
 ---
 
-*最后更新：2026-09-18（**P2-G Weight/HX711 接入完成**，回归 **195/195** —— 断言总数因 F3-A 夹具加固由 196 降为 195；下次：**P2-H Valve 接入**，开工前须先定强制关阀的去重策略）*
+*最后更新：2026-09-19（**P2-H Valve/DispenseGuard 接入完成并逐项上板验证通过**；⚠️ 回归 **168/195 阻塞** —— 根因＝A 段 69 次 `valve_force_close()` 使 F0/F1/F2 的精确记账断言失准，**不是代码缺陷**；待拍板 E1~E4，下次：**先解 E1 再进 Dispense**）*
