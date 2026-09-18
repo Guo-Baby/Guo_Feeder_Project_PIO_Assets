@@ -6,6 +6,7 @@
 #include "system_state.h"
 #include "event_manager.h"
 #include "workflow.h"
+#include "log_manager.h"   // P2-H：观测埋点（EventId / ParamId + log_emit）
 
 // =====================================================
 // Valve 模块 - GPIO 控制（应用模块 + 底层驱动模块）
@@ -38,6 +39,30 @@ static unsigned long open_start_time = 0;
 // 防风暴保护（只在真正切换状态时刷新）
 static unsigned long last_operation_time = 0;
 static const unsigned long MIN_OPERATION_INTERVAL_MS = 50;
+
+// =====================================================
+// P2-H：日志去重门控 / 一次性报告锁（纯观测状态，不参与控制流）
+// =====================================================
+//
+// FORCE_CLOSE 去重门控（P2-H 决策 D1=A）：
+//   cause 变化 或 距上次记录 >= 5s 才写日志。
+//   门控**只限制日志**，绝不影响 valve_force_close() 的 GPIO 强制同步语义。
+static uint32_t last_force_close_log_ms = 0;
+static uint8_t  last_force_close_cause  = 0;
+static const uint32_t VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS = 5000UL;
+
+// 强制关阀 CAUSE 冻结定义（本轮实际来源只有 WEIGHT_ERROR；2/3 为预留，勿改值）
+enum : uint8_t {
+    VALVE_CAUSE_WEIGHT_ERROR   = 1,   // dispense_guard 收到 EVENT_WEIGHT_ERROR
+    VALVE_CAUSE_MANUAL_COMMAND = 2,   // 预留：人工命令
+    VALVE_CAUSE_SAFETY_TIMEOUT = 3    // 预留：安全超时（当前走 valve_set_gpio，不经此路径）
+};
+
+// 安全超时一次性报告锁（P2-H 决策 D4=A）：
+//   open_start_time 只在 valve_set_gpio(false) **成功后**清零；若本次被 50ms
+//   防风暴跳过，则下一轮 loop 会再次进入超时分支 => 无锁时同一超时会产生几十条
+//   重复记录。锁在"真正开启/关闭成功"时解除。
+static bool safety_timeout_reported = false;
 
 // =====================================================
 // Workflow Action 参数（本模块无参数）
@@ -102,9 +127,23 @@ static void valve_set_gpio(bool open)
     unsigned long now = millis();
     if (now - last_operation_time < MIN_OPERATION_INTERVAL_MS) {
         Serial.println("[Valve] Operation too frequent, skipped");
+
+        // ---- P2-H 埋点：防风暴跳过（RATE_LIMITED，WARN）----
+        // 该分支只在"真的要切换状态"时才可能进入（判等 return 在防风暴检查之前），
+        // 实测 11 个既有会话 0 次 => 无需去重，直接记录。
+        {
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_LIMIT_MS, (uint32_t)MIN_OPERATION_INTERVAL_MS);
+            log_emit(LOG_VALVE_RATE_LIMITED, LOG_LVL_WARN, p, 1);
+        }
         return;
     }
     last_operation_time = now;
+
+    // ---- P2-H：埋点取值准备（必须在 open_start_time 被刷新/清零之前）----
+    // was 此处必然 != open（上方判等已 return）；open_ms = 本次开启时长。
+    const bool was = current_state;
+    const unsigned long open_ms = (open_start_time != 0) ? (now - open_start_time) : 0;
 
     // 执行硬件操作
     int level = open ? active_level : (1 - active_level);
@@ -118,9 +157,29 @@ static void valve_set_gpio(bool open)
     if (open) {
         event_push(EVENT_VALVE_OPEN, "", "valve", 0, EVENT_POLICY_STATE, 0);
         open_start_time = millis();
+
+        // ---- P2-H 埋点：阀门开启（INFO）----
+        // 判等 return 在上方 => 天然边沿去重，重复调用 valve_open() 不会产生第二条。
+        safety_timeout_reported = false;   // 新一轮开启 => 解除超时报告锁
+        {
+            LogParamIn p[2];
+            p[0] = log_arg_bool(LOG_P_STATE, true);
+            p[1] = log_arg_bool(LOG_P_WAS,   was);
+            log_emit(LOG_VALVE_OPEN, LOG_LVL_INFO, p, 2);
+        }
     } else {
         event_push(EVENT_VALVE_CLOSE, "", "valve", 0, EVENT_POLICY_STATE, 0);
         open_start_time = 0;   // 关闭时清零
+
+        // ---- P2-H 埋点：阀门关闭（INFO）----
+        safety_timeout_reported = false;   // 已真正关闭 => 解除超时报告锁
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_bool(LOG_P_STATE, false);
+            p[1] = log_arg_bool(LOG_P_WAS,   was);
+            p[2] = log_arg_u32(LOG_P_VALVE_OPEN_MS, (uint32_t)open_ms);
+            log_emit(LOG_VALVE_CLOSE, LOG_LVL_INFO, p, 3);
+        }
     }
 
     Serial.printf("[Valve] %s (pin=%d, level=%d)\n",
@@ -304,10 +363,26 @@ void valve_task()
     unsigned long now = millis();
     if (now - open_start_time >= safety_timeout_ms) {
         Serial.printf("[Valve] Safety timeout! Forced close (open > %lu ms)\n", safety_timeout_ms);
+
+        // ---- P2-H：埋点取值准备（valve_set_gpio 会清零 open_start_time）----
+        const unsigned long timed_out_open_ms =
+            (open_start_time != 0) ? (now - open_start_time) : 0;
+
         // 强制关闭
         valve_set_gpio(false);
         // 推送异常事件
         event_push(EVENT_VALVE_ERROR, "Safety timeout", "valve", 0, EVENT_POLICY_STATE, 0);
+
+        // ---- P2-H 埋点：安全超时（WARN，一次性报告锁）----
+        // 原有 event_push 保留不动；只有本 log_emit 受锁保护。
+        // 锁在"真正开启/关闭成功"时解除 => 一次真实超时只产生一条记录。
+        if (!safety_timeout_reported) {
+            safety_timeout_reported = true;
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_OPEN_MS,  (uint32_t)timed_out_open_ms);
+            p[1] = log_arg_u32(LOG_P_LIMIT_MS, (uint32_t)safety_timeout_ms);
+            log_emit(LOG_VALVE_SAFETY_TIMEOUT, LOG_LVL_WARN, p, 2);
+        }
     }
 }
 
@@ -320,7 +395,17 @@ void valve_task()
 // =====================================================
 bool valve_force_close()
 {
-    if(valve_pin < 0)    {        return false;    }
+    if(valve_pin < 0)    {
+        // ---- P2-H 埋点：强制关阀失败（CRITICAL）----
+        // 该失败分支此前完全不可观测（调用方只会打一行串口）。
+        // 注意：模块被 config 禁用但引脚已配置时 pin>=0 => 不走这里（= VALVE-1，本轮不修，只登记）。
+        {
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_CAUSE, (uint32_t)VALVE_CAUSE_WEIGHT_ERROR);
+            log_emit(LOG_VALVE_FORCE_CLOSE_FAILED, LOG_LVL_CRITICAL, p, 1);
+        }
+        return false;
+    }
     // ==============================
     // 直接关闭GPIO
     // ==============================
@@ -331,8 +416,13 @@ bool valve_force_close()
     current_state = false;
     // 更新SystemState
     valve_update_state();
+    // ---- P2-H：埋点取值准备（必须在 open_start_time 被清零之前）----
+    const unsigned long forced_open_ms =
+        (open_start_time != 0) ? (millis() - open_start_time) : 0;
+
     // 清理安全计时
     open_start_time = 0;
+    safety_timeout_reported = false;   // P2-H：强制关闭成功 => 解除超时报告锁
     // 发布关闭事件
     event_push(
         EVENT_VALVE_CLOSE,
@@ -347,5 +437,39 @@ bool valve_force_close()
         valve_pin,
         level
     );
+
+    // =====================================================
+    // P2-H 埋点：强制关阀（CRITICAL，去重门控 —— 决策 D1=A）
+    // =====================================================
+    //
+    // ★ 位置在"GPIO 动作 -> 状态更新 -> SystemState -> open_start_time -> 事件发布"
+    //   全部完成之后：日志判断**永远不参与控制流**，force_close 的
+    //   "无条件强制同步 GPIO" 语义零改动（不做 current_state 边沿判断）。
+    //
+    // 门控规则（满足任一才 emit）：
+    //   ① cause 发生变化
+    //   ② 距上次记录 >= VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS(5s)
+    // 否则只执行 force_close、不写日志。
+    //
+    // 为何必须门控：valve_force_close() 无状态判等，实测权重跳变期可达 6~20 次/s，
+    // 而 LOG_VALVE_FORCE_CLOSE 是 CRITICAL => 落 Flash(496 条环) + 进云队列(128 槽)
+    // => 峰值下 83s 即可冲光全部历史日志。
+    {
+        const uint8_t  cause  = VALVE_CAUSE_WEIGHT_ERROR;   // 本轮唯一来源 = dispense_guard
+        const uint32_t now_ms = (uint32_t)millis();
+
+        if (cause != last_force_close_cause ||
+            (uint32_t)(now_ms - last_force_close_log_ms) >= VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS)
+        {
+            last_force_close_cause  = cause;
+            last_force_close_log_ms = now_ms;
+
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_CAUSE,         (uint32_t)cause);
+            p[1] = log_arg_u32(LOG_P_VALVE_OPEN_MS, (uint32_t)forced_open_ms);
+            log_emit(LOG_VALVE_FORCE_CLOSE, LOG_LVL_CRITICAL, p, 2);
+        }
+    }
+
     return true;
 }
