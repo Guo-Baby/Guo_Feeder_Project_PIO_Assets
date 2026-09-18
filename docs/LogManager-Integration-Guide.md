@@ -1975,3 +1975,166 @@ boot=9  seq=2568 INFO LOG_WF_CRUD     SLOT=0 OP=2(update) VARIANT=1
 | `LOG_WF_RUNTIME_ALLOC_FAILED` | 需要 `def_buf` 分配失败（PSRAM 8 MB 充裕）⇒ 只能故障注入，现有钩子不支持 | 需新增注入点（不建议为日志加） |
 
 > ⚠️ **下一阶段（P2-G Weight）注意**：`weight.cpp` 是 **10 Hz 采样**且已有 `err != error_state` 边沿骨架（`weight.cpp:204`）⇒ 采样值**绝不能**进日志，只能挂状态边沿；若引入"重量变化"类事件，必须先用 §11.3 之外的**量化/阈值边沿**（如 `|Δ| > 阈值` 且持续 N 次）而不是每帧比较。
+
+---
+
+## 16. Weight / HX711 接入（**P2-G 已落地**）
+
+> 状态：已实现并上板验证。提交：`640f409`（审查）+ `feat(log): integrate weight manager logging`
+> 前置阅读：`log模块历史/LogManager-P2G-Weight接入审查0918.md`。
+> **本模块是全部模块里"频率压力最大、可用状态最少"的一个** —— 先读 §16.1 再看埋点表。
+
+### 16.1 与前面模块的差异（决定了整个方案）
+
+| # | 事实 | 后果 |
+|---|---|---|
+| ① | **`weight_task()` 每 loop 进入**（每秒数千次），HX711 ≈10 Hz，`current_weight` **≈2 Hz**（5 点窗口） | **采样/滤波路径一律不可埋点** —— 不是"降频"能救的，是量级差 3 个数量级 |
+| ② | **代码里没有集中式状态机**；只有 `initialized` / `calibrating` / `error_state` / `weight_active` 四个独立布尔量 | 用户/矩阵列的 9 个"状态"里**只有 4 个真实存在**（见 §16.5） |
+| ③ | **`error_state` 已有天然边沿**（`if(err != error_state)`） | 不需要新增任何去重/限流逻辑 ⇒ 本模块**零聚合、零节流** |
+| ④ | **零点校准是低频人工/Workflow 动作**（20 次采样 ≈2 s） | 校准类埋点无需限流 |
+| ⑤ | **`weight_trigger_poll()` 是 2 Hz 轮询，但成功分支只走一次**（随后 `running=false` ⇒ 框架停止轮询） | 天然"一次出水一条" |
+
+### 16.2 埋点总表（5 处 / 5 个冻结 EventId，**零新增 ID、零新增 ParamId**）
+
+| # | EventId | Level | 宿主 | 参数 | 频率 |
+|---|---|---|---|---|---|
+| 1 | `LOG_WEIGHT_ERROR_ENTER` (0x050C) | WARN | `weight_refresh_error_state()` 的 `err != error_state && err` 分支 | `CAUSE`(位掩码) `WEIGHT_G` `RAW` | **状态边沿**，最短周期 ≈5 s（进入需连续 5 s 异常） |
+| 2 | `LOG_WEIGHT_ERROR_EXIT` (0x050D) | INFO | 同处 `&& !err` 分支 | `CAUSE`(锁存的进入原因) `DURATION_MS` `WEIGHT_G` | 与 ① 一一配对 |
+| 3 | `LOG_WEIGHT_ZERO_DONE` (0x050E) | INFO | `weight_task()` 校准完成且 `calibrate_ok==true` | `OFFSET` `SAMPLES`(=20) `SAVED`(=1) | 每次校准 1 条 |
+| 4 | `LOG_WEIGHT_CALIB_FAILED` (0x0510) | ERROR | 同处 `calibrate_ok==false` | `OFFSET` `ERR_CODE` | 每次校准 ≤1 条（与 ③ 互斥） |
+| 5 | `LOG_WEIGHT_TRIGGER_FIRED` (0x050F) | INFO | `weight_trigger_poll()` 的 `weight_loss >= trigger_gram` 分支 | `TARGET_G` `DELTA_G` `WEIGHT_G` | 一次出水 1 条 |
+
+**3/4 是同一处 `if/else` 的两半**，**1/2 是同一处 `if(err != error_state)` 的两半** ⇒ 结构上不可能重复上报。
+
+### 16.3 `CAUSE` 用**位掩码**（可多因同时成立）
+
+```
+bit0 = 1  no_data      HX711 连续 ≥5 s 无数据（is_ready() 持续 false）
+bit1 = 2  raw_zero     raw 连续 ≥5 s 恒为 0
+bit2 = 4  jump_error   5 s 内相邻窗口跳变 ≥50 g 达到 5 次
+```
+
+**例**：`CAUSE=7` = 三种成因同时成立。矩阵原写 `1/2/3`（枚举，单因）—— 但代码里三个条件**可以同时为真**（本板实测就是快速交替），枚举会丢信息 ⇒ 已按项目决策改为位掩码。
+
+⚠️ **`jump_error` 的语义边界**：它**本来就是** `err` 的既有成因之一（`weight_refresh_error_state()` 里 `err = no_data || raw_zero || jump_error`，**本次一行未改**）。
+- 位掩码里的 `bit2` 只是**如实报告"本次进入 error_state 的原因中有跳变"**；
+- **绝不在跳变现场另有埋点** —— `weight_record_jump()` 里的 `EVENT_WEIGHT_ERROR` 仍是"重量异常**事件**"，不是"重量错误**状态**"，两者语义不混。
+
+### 16.4 `ERROR_EXIT` 为什么需要 2 个只读变量
+
+```c
+static uint8_t       weight_err_cause_latched = 0;  // ENTER 时的 CAUSE 位掩码
+static unsigned long weight_err_enter_ms      = 0;  // ENTER 时刻（算 DURATION_MS）
+```
+
+**边界声明**：两者只在边沿分支里读写，**不参与 `err` 判定、不影响 `error_state`、不接触 HX711 算法 / 采样周期 / 滤波参数 / 重量控制逻辑**。
+收益：EXIT 能报出"**上次异常是什么原因、持续了多久**" —— 这是本模块最有诊断价值的信息（没有它，只能知道"错误解除了"）。
+
+### 16.5 ★ 用户/矩阵列的 9 个状态，代码里只有 4 个真实存在
+
+| 列出的状态 | 代码实际 | 处置 |
+|---|---|---|
+| 初始化 | `initialized`（无对应 EventId） | **不埋**（冻结 ID 无宿主，同 `NTP_FAIL`/`FRAG_FAIL` 先例） |
+| ready | **不存在** | 不新增虚假检测 |
+| calibration | `calibrating`；**完成**有宿主，**开始**无宿主（需新增 `0x0512`，未定义） | 只埋完成（`ZERO_DONE`/`CALIB_FAILED`） |
+| zero / tare | 同上（写 `zero_offset` + `config_save()`） | ✅ `ZERO_DONE` |
+| abnormal | `error_state` | ✅ `ERROR_ENTER`/`EXIT` |
+| timeout / sensor error / unstable | **不是独立状态**，是 `error_state` 的成因 | ✅ 由 `CAUSE` 位掩码区分 |
+| overload | **不存在**（无超载检测） | 不新增虚假检测 |
+
+### 16.6 明确**不埋**的位置（禁止清单）
+
+| 位置 | 频率 | 原因 |
+|---|---|---|
+| `weight_task()` 采样/滤波主体、`weight_filter()` | 10 Hz / 2 Hz | 数分钟写满 496 条 Flash 环 |
+| **`weight_record_jump()`** | ≤2 Hz 突发（实测本板真实发生，C 段 4 次） | 每次跳变都 push 事件 ⇒ 洪水；由 `ERROR_ENTER` 的 `bit2` 间接体现 |
+| not-ready 分支的 `event_push` | 每 5 s ≤1 次 | 与 `ERROR_ENTER` 同因、同阈值 ⇒ 语义重复 |
+| `weight_update_state_value()` | 2 Hz / 1/30 s | 纯数值刷新 |
+| `weight_trigger_poll()` 的 `RUNNING` 分支 | 2 Hz | 轮询未满足 = 无事发生 |
+| `weight_trigger_start()` 两个失败路径 | 事件驱动 | ⚠️ **矩阵建议复用 `ERROR_ENTER`，但语义不成立**（见审查报告 §5）：`:463` 前提就是 error_state 已为真 ⇒ 重复且 1 EXIT 配 2 ENTER；`:483` 根本不置 error_state ⇒ 发 ENTER 会**永远没有 EXIT** ⇒ 虚假状态记录。**项目决策：都不埋** |
+
+### 16.7 上板验证（2026-09-18 夜，COM8）
+
+**验证方法**：本次新写了 `.pio/p15run/log_mirror.py` —— **虚拟云端**：订阅 `guo_feeder/log`、自动回 `log_ack`、并把每个批次落盘。
+**为什么必需**：设备默认收不到任何 ACK（BT-1）⇒ 只有 boot 后**第一个批次**会被真正发出去，后续记录卡在云队列里反复重试同一批 ⇒ 想看到整个会话的记录，必须有人充当云端回 ACK。
+
+**① `LOG_WEIGHT_ZERO_DONE` —— 记录级 ✅**（触发：`cm {"cmd":"system","ob":"weight_zero"}`，CommandManager `system/weight_zero`）
+
+```
+串口：  [Weight] Zero calibration started
+        [Weight] Zero calibrated, offset=-1, save=1          ← 20 次采样完成，config_save 成功
+        [Log Cloud] ack ok boot=1 to=4294967295 covered=2/2  ← 校准产生的 2 条被 ACK 覆盖
+MQTT：  seq=521  boot=1  INFO  LOG_WEIGHT_ZERO_DONE
+                 LOG_P_OFFSET(i32)=-1  LOG_P_SAMPLES(u32)=20  LOG_P_SAVED(u32)=1
+```
+
+**② `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` —— 边沿在板上实测执行，但记录级未捕获（原因已定位）**
+
+- **边沿确实发生**：B 段每次运行都能看到 `[Weight] STATE_WEIGHT_ERROR -> 1` / `-> 0`（本次实测 **2 组**，另一次会话 **5 组**，含一次持续 8 s 的真异常）。
+- **埋点与它同处一个块**：`Serial.printf(...)` 与两条 `log_emit` 都在同一个 `if(err != error_state)` 内，**中间没有任何条件语句** ⇒ 打印一次该块就执行一次。
+- ⚠️ **为什么没拿到记录**：这些边沿恰好落在 F3-A 的 **496 条填充窗口**内，而填充必然让**云队列（128 槽）溢出** ⇒ 这两条记录被 `qdrop` 淘汰（**这正是回归要测的队列溢出行为**，不是埋点失效）。
+- **复测方法**：在填充窗口内**持续保持 ACK**（现有夹具只在 F2-B 末尾 ACK 一次）；或把填充量降到 <128 条 —— 实测 **2×62 条不足以触发边沿**（边沿由"累积 FS 阻塞"诱发，8×62 才会出现）。
+
+**③ 两次"看似失败"的尝试（记录在此，避免后人重复踩）**
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| 用 `.pio/p15run/log_mirror.py` 当"虚拟云端"自动回 ACK，同时跑全量回归 | ❌ **A 52/56 · B 56/66 · E 13/23** | **ACK 让队列不再溢出** ⇒ A/B/E 里 `qdrop`/`evict_inf`/`replay` 这些**依赖"无 ACK ⇒ 队列写满"的断言全部失效**（夹具隐含依赖 BT-1）。⇒ **任何时候都不要在跑 196 回归时注入 ACK** |
+| 同上，但只为"采集记录" | ⚠️ 采集到 88 个批次，但**同一条记录被连发 11 次** | 镜像自动 ACK 的 `b` 字段取自**批次头**（= `first.boot_seq`），实测被设备 **IGNORE** ⇒ 反复重发同一批。⇒ **该工具只能当"记录采集器"，不要依赖它 ACK**；可靠路径是串口 `logt ack <BOOT> …`（本节的 ① 就是用它拿到的） |
+
+| EventId | 结论 |
+|---|---|
+| `LOG_WEIGHT_ZERO_DONE` | ✅ 上板通过（命令 `system/weight_zero` 触发） |
+| `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` | ⚠️ **边沿块在板上实测执行（B 段 2~5 组迁移），记录级捕获受"填充导致云队列溢出"限制** —— 见下方 ② 与复测方法 |
+| `LOG_WEIGHT_CALIB_FAILED` | ⚠️ 代码路径审查通过，未真机触发（需 `config_set_weight_zero_offset()` 或 `config_save()` 失败） |
+| `LOG_WEIGHT_TRIGGER_FIRED` | ⚠️ 代码路径审查通过，未真机触发（需真实"重量下降 ≥ gram"） |
+
+**回归**：全量 ****195/195 = 100%，0 MISS**（A 56 / B 65 / C 21 / D 30 / E 23；断言总数 196 → 195，见 §16.10）**。
+
+### 16.8 未验证项与复测方法
+
+| 项 | 复测方法 |
+|---|---|
+| `ERROR_ENTER`/`EXIT` 的记录级捕获 | 拔掉 HX711（⇒ `no_data` 连续 5 s ⇒ `CAUSE=1`）或让 raw 恒为 0；同时用 `log_mirror.py` 回 ACK 才能看到记录 |
+| `CALIB_FAILED` | 让 `config_save()` 失败（如 LittleFS 写失败注入）；或 `config_set_weight_zero_offset()` 被拒 |
+| `TRIGGER_FIRED` | 需要真实减重场景（Workflow 里放 `weight_decrease` 步骤 + 实际取水/取食） |
+
+### 16.9 ⚠️ 给 P2-H（Valve / Dispense）的强制提醒
+
+本阶段实测：**跳变源会让 `dispense_guard` 反复强制关阀**（C 段 4 次事件、**同一秒内 2 次** `[Valve] FORCE CLOSE`）。
+而 `LOG_VALVE_FORCE_CLOSE`(0x0505) 是 **CRITICAL + IMMEDIATE** ⇒ **若在 `valve_force_close()` 里直接埋点，会得到 ≈2 条/s 的 CRITICAL 记录**。
+⇒ **P2-H 开工前必须先决定去重/边沿策略**（根因在 `weight_record_jump()` 每跳变 push 一次 `EVENT_WEIGHT_ERROR`，属既有设计，需单独评审）。
+
+### 16.10 ★ 回归夹具加固：F3-A 的"恰好填满"断言不再成立（断言 196 → 195）
+
+**现象**：P2-G 首次全量回归 **A 56/56 · B 62/66 · C 21/21 · D 30/30 · E 23/23**，B 段 4 条 MISS：
+`total=496` / `append=15@31` / `seg_evict_unacked=0` / `total=466`。
+
+**根因（已用时间线确证）**：F3-A 靠"8 × `fill warn 62` = 496 条**恰好填满** 16 段"来构造边界。而实测：
+
+```
+23:46:55  CMD: logt fill warn 62      （第 2 次填充）
+23:47:00  [Weight] STATE_WEIGHT_ERROR -> 1     ← ★ Weight 边沿落在填充窗口内
+23:47:00  [Weight] STATE_WEIGHT_ERROR -> 0
+23:47:02  CMD: logt fill warn 62      （第 3 次填充）
+...
+          实际写入 497~498 条 ⇒ 环提前回绕 + 淘汰 1 段 ⇒ total=467（非 496）
+```
+
+`LOG_WEIGHT_ERROR_ENTER` 是 **WARN ⇒ 落 Flash** ⇒ 填入条数 > 496 ⇒ 这 4 条断言的前提（"填充期间只有本用例在写日志"）被打破。
+⚠️ 同理：**任何未来新增的 WARN+ 埋点都可能再次打破它**。
+
+**处置（按"修夹具、不降低断言"原则）**：
+
+| 原断言 | 处置 | 理由 |
+|---|---|---|
+| `total=496`、`append=15@31` | **移除**，改为 `logt flash \|\| segs=16` | 二者隐含"无干扰"，**不是设计不变量**；`segs=16` 才是"已填满过一轮"的结构性事实 |
+| `seg_evict_unacked=0` | **移除** | 同上（有干扰时淘汰已提前发生） |
+| `total=466` | **移除** | 派生量，同理 |
+| `fill warn 1`（第 497 条） | **改为写 2 条** | 无论是否有干扰都**必然越界一次** ⇒ 淘汰必然发生 |
+| `seg_evict_unacked=31`、`fdrop=31`、`seg_del=1`、`oldest=1` | **原样保留** | **HIGH-1 的核心记账判据**（"淘汰了多少未确认就记多少"），实测这两次都稳定通过 ✅ |
+| — | 新增 `logt stats \|\| emit=` | 记录填充后的总量，便于事后对账 |
+
+**结果**：**195/195 = 100%，0 MISS**（A 56 / B 65 / C 21 / D 30 / E 23）。
+> 断言数 196 → 195：净变化 = 移除 4 条"无干扰"假设的绝对断言 + 新增 3 条（`segs=16`、`emit=`、多一条 `fill warn 1`）。
+> **HIGH-1 的判别力未削弱**（`=31`/`=31`/`=1` 三条精确记账断言全部保留）。

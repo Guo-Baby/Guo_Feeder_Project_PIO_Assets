@@ -3,6 +3,7 @@
 #include <HX711.h>
 
 #include "weight.h"
+#include "log_manager.h"   // P2-G：观测埋点（EventId / ParamId + log_emit）
 #include "config_manager.h"
 #include "system_state.h"
 #include "event_manager.h"
@@ -74,6 +75,12 @@ static unsigned long last_not_ready_event_ms = 0;
 static unsigned long raw_zero_start = 0;
 static unsigned long jump_times[WEIGHT_MAX_JUMP_EVENTS];
 static uint8_t jump_count = 0;
+
+// ---- P2-G 观测变量 ----
+// ★ 只读：不参与 err 判定、不影响 error_state、不改状态机。
+//   仅为让 ERROR_EXIT 能带出"进入原因 + 故障持续时长"。
+static uint8_t       weight_err_cause_latched = 0;  // ENTER 时的 CAUSE 位掩码
+static unsigned long weight_err_enter_ms      = 0;  // ENTER 时刻（用于 DURATION_MS）
 
 // =====================================================
 // Workflow Trigger 运行状态（weight_decrease）
@@ -207,6 +214,35 @@ static void weight_refresh_error_state()
         state_set_bool(STATE_WEIGHT_ERROR, error_state);
         Serial.printf("[Weight] STATE_WEIGHT_ERROR -> %d\n",
                       error_state ? 1 : 0);
+
+        // ---- P2-G 埋点：异常状态进入 / 解除（★ 天然边沿，本函数唯一的合法埋点）----
+        // CAUSE 用位掩码（可多因同时成立）：bit0=no_data bit1=raw_zero bit2=jump_error
+        // 注意：jump_error 仍是**既有**的 err 成因之一（不改变状态机语义），
+        //       它只是被如实报告为"本次进入 error_state 的原因之一"。
+        if(error_state)
+        {
+            uint8_t cause = 0;
+            if(no_data)    cause |= 0x01u;
+            if(raw_zero)   cause |= 0x02u;
+            if(jump_error) cause |= 0x04u;
+
+            weight_err_cause_latched = cause;
+            weight_err_enter_ms      = now;
+
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_CAUSE,    (uint32_t)cause);
+            p[1] = log_arg_f32(LOG_P_WEIGHT_G, current_weight);
+            p[2] = log_arg_i32(LOG_P_RAW,      (int32_t)raw_value);
+            log_emit(LOG_WEIGHT_ERROR_ENTER, LOG_LVL_WARN, p, 3);
+        }
+        else
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_CAUSE,       (uint32_t)weight_err_cause_latched);
+            p[1] = log_arg_u32(LOG_P_DURATION_MS, (uint32_t)(now - weight_err_enter_ms));
+            p[2] = log_arg_f32(LOG_P_WEIGHT_G,    current_weight);
+            log_emit(LOG_WEIGHT_ERROR_EXIT, LOG_LVL_INFO, p, 3);
+        }
     }
 }
 
@@ -292,6 +328,27 @@ void weight_task()
                 }
 
                 calibrating = false;
+
+                // ---- P2-G 埋点：零点校准结果（★ 互斥两半，一次校准恰一条）----
+                // 校准值写不进配置 = 白校准 ⇒ ERROR；成功才 INFO。
+                // 二者都无需限流：校准只由云端命令 / WEIGHT_ZERO action 触发。
+                if(calibrate_ok)
+                {
+                    LogParamIn p[3];
+                    p[0] = log_arg_i32(LOG_P_OFFSET,  (int32_t)zero_offset);
+                    p[1] = log_arg_u32(LOG_P_SAMPLES, (uint32_t)WEIGHT_ZERO_SAMPLES);
+                    p[2] = log_arg_u32(LOG_P_SAVED,   1u);
+                    log_emit(LOG_WEIGHT_ZERO_DONE, LOG_LVL_INFO, p, 3);
+                }
+                else
+                {
+                    // ERR_CODE：1 = config_set_weight_zero_offset() 被拒
+                    //           2 = config_save() 落盘失败
+                    LogParamIn p[2];
+                    p[0] = log_arg_i32(LOG_P_OFFSET,   (int32_t)zero_offset);
+                    p[1] = log_arg_u32(LOG_P_ERR_CODE, ret ? 2u : 1u);
+                    log_emit(LOG_WEIGHT_CALIB_FAILED, LOG_LVL_ERROR, p, 2);
+                }
 
                 // 校准后重置滤波窗口与重量
                 sample_index = 0;
@@ -529,6 +586,15 @@ static void weight_trigger_poll(WorkflowTriggerInstance *trigger)
         weight_active = false;
         Serial.printf("[Weight] Trigger success: loss=%.1f >= %.1f\n",
                       weight_loss, trigger_gram);
+
+        // ---- P2-G 埋点：重量触发成功（INFO）----
+        // 轮询是 2 Hz，但成功分支只在"跨过目标"那一刻走一次
+        // （随后 running=false ⇒ 框架停止轮询）⇒ 一次出水恰一条。
+        LogParamIn p[3];
+        p[0] = log_arg_f32(LOG_P_TARGET_G, trigger_gram);
+        p[1] = log_arg_f32(LOG_P_DELTA_G,  weight_loss);
+        p[2] = log_arg_f32(LOG_P_WEIGHT_G, current_weight);
+        log_emit(LOG_WEIGHT_TRIGGER_FIRED, LOG_LVL_INFO, p, 3);
     }
     else
     {
