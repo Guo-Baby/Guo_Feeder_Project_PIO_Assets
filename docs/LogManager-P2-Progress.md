@@ -193,8 +193,14 @@ T2（再跑 48s）    : emit=12 flash=3   ← 84s 内 3399 次失败事务，新
 
 **回归**：全量 **196/196 = 100%，0 MISS**（P2-F 改动未触碰任何断言）。
 
-**设备状态复原**：测试期间新增/删除的都是控制台临时 Workflow；结束时 `wfc del` 已清掉无效定义，`dirty=0`。
-⚠️ **遗留**：`wfc create`（控制台新建的**不完整定义**）会产生**永久 `INVALID_ARGUMENT`** ⇒ 用它做失败注入很方便，但**测完必须删掉**，否则会持续触发 WF-1 风暴（P2-F 期间已遇到一次）。
+**设备状态复原**（如实记录，供下一会话判断）：
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `dirty` | `0` ✅ | 测试期新增的无效定义已 `wfc del` 清掉，**无残留风暴**（终检 `save transaction` 计数 = 0） |
+| **Workflow registry 漂移** | ⚠️ **`[CapRegistry] WORKFLOW count=1`** | 本次清理时我把 slot 2（`queue_test` / "开阀测试"）当测试垃圾删掉了 —— 事后核对 **`data/workflow.json`（tracked，未改动）里有 3 个**（`daily_valve_test` / `daily_valve_test1` / `queue_test`）⇒ **删掉的是"真"工作流**。且该漂移**早于本次**（P2-D 期间观测到 `count=2`、P2-F 期间 `count=1`）。**恢复方式**：重建 `data/`（`tools/gen_workflow_bin.py`）+ `uploadfs`（**会整体擦除 LittleFS**，属项目既定基线流程），或删掉设备上的 registry 文件让它从 `/workflow.json` 重建 |
+| `/littlefs/log/*` 被清 | 正常 ✅ | `[Log] meta missing/corrupt -> rebuild` + `boot_seq 归 1`：回归套件里的 **`logt fwipe`（7 次）/ `logt mwipe`（7 次）是套件自带的清理动作**（`log_manager.cpp` 会 `LittleFS.remove()` 段文件与 meta）⇒ **不是异常** |
+| ⚠️ 遗留 | `wfc create`（控制台新建的**不完整定义**）会产生**永久 `INVALID_ARGUMENT`** ⇒ 用它做失败注入很方便，但**测完必须删掉**，否则 5 分钟延迟窗口一到就持续触发 WF-1 风暴（P2-F 期间已遇到一次） |
 
 ### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
