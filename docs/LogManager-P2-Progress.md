@@ -32,6 +32,7 @@
 | **阶段 2-F · 发现 WF-1** | **保存失败后重试风暴**：保存失败的**两条路径都不重置** `workflow_save_since_ms` ⇒ `workflow_delayed_save_poll()` 的 5 分钟窗口**一旦过期就永远过期** ⇒ Dirty 未清期间**每个 loop** 跑一次完整保存事务（8.6 KB `def_buf` + LittleFS 落盘尝试 + 串口 2 行）。**已实测**：151 s 内 **5828 次**事务（≈**38.6 次/秒**）、串口 ≈77 行/秒。**与 Critical Op 无关**，按规则**只报告不修复**；P2-F 埋点对它免疫（三个边沿锁）。详见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md` §3 | — | ⏳ **未修**（待单独评审） |
 | **阶段 2-F** | **P2-F Workflow 接入**（`src/workflow.cpp`，唯一生产代码改动文件，**纯增量 +261/−0，0 删除行**）：12 个冻结 EventId / **17 个发射点**全落地（**Workflow 段无"无宿主 EventId"**）；保存类事件用**三个边沿锁**（`wf_save_fail_reported[]` 逐 slot / `wf_save_partial_reported` 整事务 / `wf_alloc_fail_reported`）+ `wf_save_partial_retries` 计数；主键 `LOG_P_SLOT`（非哈希）；`OP`/`CAUSE` 枚举化 | `feat(log): integrate workflow manager logging` | ✅ 已提交 |
 | **阶段 2-F · 发现 WF-2** | **保存成功路径不记账是"正确设计"的确认**：Workflow 段**没有** `SAVE_OK` ID，且不加成功记录 ⇒ 自动后台保存（每 loop 可能）**零噪声**；唯一的成功侧记录是 `0x040C`，语义是"**从 partial 恢复**"这一**迁移**而非"成功" | 同上 | ✅ 已记录 |
+| **阶段 2-G · 审查** | **Weight/HX711 接入前审查**（只审查、未改生产代码）：HX711 链路与频率分析（进入率=每 loop / `current_weight` 2 Hz / 跳变 ≤2 Hz / not-ready 每 5 s）；**用户列的 9 个状态中只有 4 个在代码里真实存在**（`ready`/`overload` 根本不存在，`timeout`/`sensor error`/`unstable` 都被 `error_state` 的 `CAUSE` 覆盖）；5 个埋点全用冻结 ID；**★ 发现 3 处矩阵与代码能力不一致**（① `weight_trigger_start()` 两个失败路径复用 `ERROR_ENTER` 会重复/失真 ② "校准开始"需新增 `0x0512`（未定义）③ `weight_init()` 无宿主）；**板上实测**：B 段 2 组 `STATE_WEIGHT_ERROR` 迁移（同毫秒抖动）、C 段 4 次跳变事件 + 同秒 2 次强制关阀 | `docs(log): review weight log integration plan` | ✅ 已提交（实现待拍板 4 项） |
 
 ---
 
@@ -295,6 +296,48 @@ Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按�
 而 **Weight 已先行接入**（其异常事件是 guard 的触发源）。
 ⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
 先有 Weight 日志才能解释强制关阀。
+
+---
+
+## 已知但暂不修复的问题（Defect Register · 索引）
+
+> **完整清单（含证据/影响/建议/复测方法）见仓库根目录的 `未修复的问题.md`** —— 本表是它的索引，
+> 两者必须同步维护。本节只回答"**目前一共积压了哪些问题、什么优先级**"。
+> 下面「未决 / 阻塞事项」章节保留**阻塞项的细节**，不重复叙述。
+
+| 类别 | ID | 一句话 | 优先级 |
+|---|---|---|---|
+| **基线（BT）** | **BT-1** | 云端从不回 `log_ack`（Worker 不在本仓库）⇒ `acked_seq` 不前进 ⇒ Flash 段永不回收 | 🔴 |
+| | **BT-10** | 队列淘汰只给本 Boot 记录登记空洞 ⇒ 补发的上一 Boot 记录无保护 | 🔴 |
+| | **BT-11** | `give_up_seq` 单点水位 ⇒ 较旧待补发记录本 Boot 跳过（下次 Boot 恢复，不丢数据） | 🔴 |
+| | **BT-H1** | 空洞表 `LOG_HOLE_MAX=8` 可能耗尽 ⇒ `hovf=1` 停回收（与 BT-10 互为代价） | 🟡 |
+| **Workflow（WF）** | **WF-1** | **保存失败后重试风暴**：实测 **39–40 次/秒**（151 s/5828 次、84 s/3399 次） | 🔴 |
+| | **WF-2** | `WORKFLOW_WAITING` 从未被赋值（死枚举） | 🟡 |
+| | **WF-3** | 临时 Action 队尾 `if/else` 两分支相同、注释写反 | 🟠 |
+| | **WF-4** | 矩阵作用域含 Registry / workflow_storage（范围待界定） | 🟡 |
+| **P0（与日志解耦）** | **P0-1** | `event_names[]` 第 10 项错位 | 🟡 |
+| | **P0-2** | MQTT 明文密码（`mqtt.json` + `tools/mqtt_*.py` 早已入库）⇒ **需轮换口令** | 🟠 |
+| | **P0-3** | BLE 回调逐字节 hex（`MiThermometer.cpp:117`） | 🟡 |
+| | **P0-4** | **`valve_force_close()` 后无残余增重检测**（对应 `LOG_VALVE_OVERFLOW_RISK` 注释"需新增检测"） | 🔴 |
+| | **P0-5** | `reset_reason` 从不落盘（复位原因诊断盲区） | 🟠 |
+| **能力缺口** | **NTP 不可观测** | SDK 无失败通知、状态枚举无失败态 ⇒ `NTP_FAIL` 无宿主 | 🟠 |
+| | **无 `set_time` 通道** | `time_set_manual*` 无调用者 ⇒ `INVALID_ENTER` 不可触发 | 🟠 |
+| | **P2-G-①** | 矩阵建议 `weight_trigger_start()` 复用 `ERROR_ENTER` ⇒ **重复/虚假**（建议不埋） | 🟠 |
+| | **P2-G-②** | "校准开始"需 `0x0512`（**未定义**）⇒ 守"暂不新增 ID"，记为缺口 | 🟠 |
+| | **P2-G-③** | `weight_init()` 无宿主 ⇒ 初始化不可观测 | 🟠 |
+| | **F2 决策** | 字符串参数仍不可达（7 个 ParamId），现走哈希/枚举化 | 🟠 |
+| | **F6 基线** | P1.5 之前的既有回归集（核心 66 / Flash 92 / 交接 56 …）**未复跑** | 🟠 |
+| **风险（R）** | **R-1** | Weight 异常边沿**同毫秒抖动**（实测）⇒ 最坏 12 WARN/min | 🟠 |
+| | **R-3** | **跳变源让 `dispense_guard` 反复强关阀（实测同秒 2 次）** ⇒ P2-H 必须先定去重策略 | 🔴 |
+| | **R-5** | "参数非法"也会触发强制关阀（行为问题） | 🟠 |
+| **死代码（DD）** | **DD-1** | `weight_is_active()` 声明无定义、无调用者 | 🟡 |
+| | **DD-2** | `cloud_publish_fragmented()` 无调用者 ⇒ `FRAG_FAIL` 无宿主 | 🟡 |
+| | **DD-3** | `time_set_manual*` 死代码 | 🟡 |
+| | **DD-4** | `retry_interval` 死配置 | 🟡 |
+| | **DD-5** | `platformio.ini` 版本未固定（构建不可复现） | 🟡 |
+| **未验证（NC）** | **NC-1..NC-8** | Storage E/W 分支与抑制窗口 / `LOG_WIFI_LOST` / `MQTT_SLEEP_ENTER` / `PUBLISH_FAIL` / 5 个 RTC 事件 / `INVALID_ENTER` / `WF_FINISHED`+`TIMEOUT` / `WF_FAILED`+`TEMP_ACTION_TIMEOUT`+`ALLOC_FAILED` | ⚪ |
+
+**统计**：🔴 高 6 项 · 🟠 中 11 项 · 🟡 低 9 项 · ⚪ 未验证 8 组。
 
 ---
 
