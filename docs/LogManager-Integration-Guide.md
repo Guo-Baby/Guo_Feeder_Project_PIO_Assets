@@ -1820,3 +1820,158 @@ if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq) break;
 > ⚠️⚠️ **写内联正则时必须把字段名写进字面量**：`replay=/[1-9][0-9]*/`
 > 而**不是** `/[1-9][0-9]*/`。纯正则会 `search` **整行**，`offskip=1`、`ack_ok=2`
 > 之类的其它数字会造成**假命中** —— 实测 `replay=0` 也被判 OK。
+
+---
+
+## 15. Workflow 接入（**P2-F 已落地**）
+
+> 状态：已实现并上板验证。提交：`cc7c3d0`（审查）+ `feat(log): integrate workflow manager logging`
+> 前置阅读：`log模块历史/LogManager-P2F-Workflow接入审查0918.md`（Critical Op 审计全文）。
+> **本模块的规则与前面几个都不同** —— 先读 §15.1 再看埋点表。
+
+### 15.1 与 Storage / Config / WiFi / Cloud / Time 的四处关键差异
+
+| # | 差异 | 后果 |
+|---|---|---|
+| ① | **`workflow.cpp` 是 4465 行、5 个 Critical Op release 点、18 个 emit 位置的高风险文件** | 埋点**只允许纯增量追加**（本次 `+261 / −0`，**0 删除行**）⇒ 物理上不可能改动任何 return 路径 |
+| ② | **`workflow_terminate()` 没有提前 return，但 release 在同一函数内** | 埋点**不得插在其 release 之后**（那会改变"释放早于可重启"的时序观感）⇒ 本次**完全没进 terminate 函数体** |
+| ③ | **保存事务每 loop 可达**（失败路径不重置延迟窗口，见 §15.5） | 保存类事件**必须**边沿锁，否则一次故障就能刷屏 |
+| ④ | **保存事务是"逻辑全局、物理逐 Workflow"**（每个 slot 一次子事务） | "失败"要分两个粒度：**逐 slot**（`SAVE_FAILED`）与**整事务**（`SAVE_PARTIAL`） |
+
+### 15.2 埋点总表（12 个冻结 EventId / **17 个发射点**）
+
+Workflow 段 EventId **全部有宿主**（与 P2-E 的 `NTP_FAIL`、P2-D 的 `FRAG_FAIL` 不同 ⇒ 当年"待 P2 决定"的 `0x040C` 也落地了）。
+
+| EventId | Level | 宿主（发射点） | 参数 | 频率 |
+|---|---|---|---|---|
+| `LOG_WF_START` (0x0401) | INFO | `workflow_start()` 成功尾部 | `SLOT` `STEPS_DONE` `TIMEOUT_MS` | 每次启动 |
+| `LOG_WF_FINISHED` (0x0402) | INFO | `workflow_task()` 全部步骤成功 | `SLOT` `DURATION_MS` `STEPS_DONE` | 每次成功 |
+| `LOG_WF_TIMEOUT` (0x0403) | WARN | `workflow_task()` 超时分支 | `SLOT` `TIMEOUT_MS` `STUCK_STEP` | 每次超时 |
+| `LOG_WF_FAILED` (0x0404) | WARN | **4 处**：① 加载期校验失败(`CAUSE=PARSE_INVALID`) ② `workflow_start()` 的 acquire 被拒(`CAUSE=ACQUIRE_REJECTED`) ③ 任务期无 Trigger 实例 ④ 任务期其它失败 | `SLOT` `[FAIL_STEP]` `CAUSE` | 事件驱动 |
+| `LOG_WF_ACTION_FAILED` (0x0405) | WARN | **2 处**：③ 无 Action 实例 ④ Action 执行返回失败 | `SLOT` `FAIL_STEP` `CAUSE` | 事件驱动 |
+| `LOG_WF_SAVE_FAILED` (0x0406) | WARN | `workflow_save_transaction()` **逐 slot 失败**分支 | `SLOT` `ERR_CODE` | **边沿锁（每 slot）** |
+| `LOG_WF_SAVE_PARTIAL` (0x0407) | WARN | 同上，**整事务仍有 Dirty** 分支 | `SAVED` `TOTAL` | **边沿锁（整事务）** |
+| `LOG_WF_CRUD` (0x0408) | INFO | `workflow_delete()` / `workflow_create()` / `workflow_update_meta()` 成功尾部 | `SLOT` `OP` `VARIANT` | 每次 CRUD |
+| `LOG_WF_MIGRATED` (0x0409) | INFO | `workflow_migrate_*()` 完成 | `COUNT` | 每次迁移 |
+| `LOG_WF_TEMP_ACTION_TIMEOUT` (0x040A) | WARN | 临时 Action 超时分支 | `TIMEOUT_MS` `RETRY_N` | 每次超时 |
+| `LOG_WF_RUNTIME_ALLOC_FAILED` (0x040B) | ERROR | `workflow_save_transaction()` 的 `def_buf` 分配失败 | `NEED_BYTES` | **边沿锁** |
+| `LOG_WF_SAVE_PARTIAL_RETRY_OK` (0x040C) | INFO | `workflow_save_transaction()` **全部落盘成功**分支，且**此前处于 partial** | `RETRY_N` | **边沿锁（= 从 partial 恢复）** |
+
+**`LOG_P_SLOT`(0x01) 是本模块的主键**（用户要求优先使用，且**比 `WF_ID` 哈希可靠**：`workflow.id` 可重复、且本模块的 slot 就是唯一定位键）。`FAIL_STEP`/`STUCK_STEP`/`STEPS_DONE` 用 `LOG_P_FAIL_STEP`/`LOG_P_STUCK_STEP`/`LOG_P_STEPS_DONE`；`OP` 是**枚举**（1=create 2=update 3=delete）；`CAUSE` 是**枚举**（1=PARSE_INVALID 2=ACQUIRE_REJECTED 3=NO_TRIGGER_INST 4=NO_ACTION_INST 5=ACTION_FAILED）。
+
+### 15.3 ★ 三个边沿锁（本模块防洪泛的全部机制）
+
+```c
+static bool wf_save_fail_reported[WORKFLOW_MAX_COUNT];  // 逐 slot
+static bool wf_save_partial_reported = false;           // 整事务
+static bool wf_alloc_fail_reported = false;             // 分配失败
+
+static uint32_t wf_save_partial_retries = 0;            // 纯计数，不产生记录
+```
+
+| 锁 | 置位 | 清除 | 语义 |
+|---|---|---|---|
+| `wf_save_fail_reported[slot]` | 该 slot 保存失败时 | 该 slot **保存成功**时 | 一个 slot 从"失败"到"恢复"之间最多 1 条 `SAVE_FAILED` |
+| `wf_save_partial_reported` | 事务仍有 Dirty 时 | 事务**全部成功**时 | 一轮"部分失败→恢复"最多 1 条 `SAVE_PARTIAL` |
+| `wf_alloc_fail_reported` | 分配失败时 | 分配成功时 | 分配失败不刷屏 |
+
+**为什么不能只靠"频次节流"（WiFi 那种 N 次记 1 次）**：保存失败是**状态**而不是**事件** —— 同一故障会持续存在（§15.5）；只要它没被修复，就不该再产生新记录。**边沿锁表达的是"状态迁移"，而不是"采样降频"**，这才是正确的语义。
+
+**`RETRY_N` 的用法**：被抑制的重试**不丢信息** —— `wf_save_partial_retries` 累加（零日志开销），在**恢复**那一条 `0x040C` 里报出 ⇒ 云端能算出"这次故障一共重试了多少轮"。
+
+### 15.4 为什么**不**给保存成功记一条（与 Config 的做法相反）
+
+Config 有 `LOG_CFG_SAVE_OK`，Workflow **没有**对应的 `LOG_WF_SAVE_OK` —— 冻结 ID 表里就没有。这不是省事，而是**语义上更对**：
+
+- Config 的保存是**人工/云端触发的离散动作**（一次 `config_save` 命令 = 一次事件）；
+- Workflow 的保存是**自动的、每 loop 可能发生的后台事务**（延迟窗口 + 重试）⇒ 给成功记账会直接变成噪声源。
+
+所以 Workflow 的保存**只记失败**（+ 从失败恢复），成功路径**零记录**。唯一的例外是 `0x040C` —— 它记的不是"成功"，而是"**从部分失败中恢复**"这个迁移。
+
+### 15.5 ★★ WF-1：保存失败后重试风暴（**实测确认，本阶段只报告不修**）
+
+**这不是日志问题，是被日志接入"照亮"的既有设计问题**，与 Critical Op 无关。
+
+**机制**：`workflow_delayed_save_poll()` 的触发条件是"Dirty 且距 `workflow_save_since_ms` ≥ 5 分钟"。而**两条失败路径都不重置 `workflow_save_since_ms`**（`workflow.cpp` 的 partial 分支与分配失败分支）⇒ 时间条件**一旦满足就永远满足** ⇒ 只要 Dirty 因失败而留下，**每个 loop 都会跑一次完整保存事务**（8.6 KB `def_buf` 分配 + LittleFS 落盘尝试 + 串口 2 行）。
+
+**实测（2026-09-18 03:35–03:38，不完整定义 `wf02` 造成永久 `INVALID_ARGUMENT`）**：
+
+```
+[Workflow] save transaction: dirty=[2 ] critical_held=1
+[Workflow] save wf=2 id=WFWF1 -> INVALID_ARGUMENT
+[Workflow] save failed, keep dirty: wf=2 err=INVALID_ARGUMENT
+[Workflow] save partial: dirty remain, critical_held=1
+[Workflow] save transaction: FAILED (dirty kept for retry)
+   ↑ 以上 5 行在 151 秒内重复 **5828 次** ⇒ 约 **38.6 次/秒**
+```
+
+**两个后果**：
+1. **CPU/Flash**：每秒 ~39 次 8.6 KB 分配与落盘尝试（对 LittleFS 是持续擦写压力）；
+2. **串口洪泛**：~77 行/秒（这也解释了为什么它会掩盖串口命令）。
+
+**本轮**：`wfst seed`/`wfc create` 之类操作在**旧固件上**也可能留下永久失败的 Dirty。**P2-F 的处置只有一条**：让埋点对它免疫（§15.3 的三个边沿锁 + `RETRY_N` 计数）。**修复属行为变更，需独立评审与独立提交**，建议最小修法＝在那两条失败路径补 `workflow_save_since_ms = millis();`（重新武装 5 分钟窗口），但必须单独回归（它会让"故障持续时的重试频率"从 38/s 降到 1/5min）。
+
+**实测边沿锁防洪泛效果**（P2-F 固件，`.pio/p15run/storm_probe.py`；**必须单会话保持串口打开**，重开串口会复位 MCU 清掉 RAM 里的 Dirty）：
+
+```
+T0   置 Dirty 并让它永久失败 → 第一次失败：emit +2（SAVE_FAILED + SAVE_PARTIAL，两个边沿锁置位）
+T0+  ~5 分钟后延迟窗口过期 ⇒ 进入风暴
+T1   emit=12  flash=3        ← 风暴已跑 36 s
+T2   emit=12  flash=3        ← 再跑 48 s ⇒ 84 s 内 3399 次失败事务，新增记录 **0 条**
+```
+
+对照：若写成"每次失败记一条"，同等时长会产出约 **3400 条 WARN**（≈3400×128 B 落 Flash + 全部上云）。**边沿锁的收益 ≈ 3400×。**
+
+> ⚠️ **副产物（工具坑）**：`serial_batch.py` 在**串口静默 1.5 s 后即提前返回**（不是等满 QUIET）
+> ⇒ 无法用它做"挂着等 5 分钟"的实验。需要长静默观测时必须用**自写探针**（见
+> `.pio/p15run/storm_probe.py`：单会话 + `drain()` 循环）。
+
+
+### 15.6 Critical Op 审查结论（先审后用，未改动任何 release 逻辑）
+
+完整审计见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md`。结论摘要：
+
+| 检查项 | 结论 |
+|---|---|
+| **acquire/release 配对** | 3 个 acquire（`workflow_mark_step_dirty` / `workflow_start` / `enqueue_temp_action`）**全部有对应释放**；两个释放函数（`workflow_critical_release_by_index`、`temp_action_critical_release`）**幂等**（`wf_dirty_critical_held[]` 标志位） |
+| **`workflow_terminate()` 退出路径** | **零提前 return**，release 是**第一句** ⇒ 6 个调用点（`workflow_task()`）全部安全 |
+| **绕过 terminate 的终态赋值** | 仅 `workflow_parse_json()` 加载期一处（**未持有 Critical Op**）⇒ **不是泄漏** |
+| **不变量 `held==true ⇒ dirty_any()==true`** | 成立：全文件**只有 2 处**清 Dirty，且**两处都在同函数内紧跟 release 判定**，中间无 return |
+| **永久锁死风险** | **无可达路径**（曾出现在 `workflow_notify_finish()` 里因 callback 为空提前 return 而漏 release 的历史 bug 已修） |
+| **本次改动是否引入新风险** | **否** —— `+261 / −0` 纯追加，0 删除行 ⇒ 未改动任何 return/分支结构 |
+
+### 15.7 上板验证（2026-09-18，COM8；记录级解码）
+
+```
+boot=6  seq=1797 INFO LOG_WF_CRUD     SLOT=2 OP=3(delete) VARIANT=2
+        seq=1802 INFO LOG_WF_CRUD     SLOT=3 OP=1(create) VARIANT=1
+        seq=1803 INFO LOG_WF_CRUD     SLOT=3 OP=3(delete) VARIANT=2
+        seq=1804 INFO LOG_WF_START    SLOT=0 STEPS_DONE=2 TIMEOUT_MS=10000
+        seq=1805 WARN LOG_WF_ACTION_FAILED SLOT=0 FAIL_STEP=0 CAUSE=4(NO_ACTION_INST)
+
+boot=9  seq=2568 INFO LOG_WF_CRUD     SLOT=0 OP=2(update) VARIANT=1
+        seq=2569 WARN LOG_WF_SAVE_FAILED  SLOT=0 ERR_CODE=7         ← WRITE_FAILED（注入）
+        seq=2570 WARN LOG_WF_SAVE_PARTIAL SAVED=0 TOTAL=1
+        seq=2571 INFO LOG_WF_SAVE_PARTIAL_RETRY_OK RETRY_N=1        ← ★ 0x040C 落地
+```
+
+`emit` 轨迹与事件一一对应（`meta` +1、首次 save +2、恢复 save +1），`flash` 只随 WARN 增长（`1→3→3`）⇒**INFO 不落 Flash** 的 Level Policy 在 Workflow 段同样成立。第三次 `wfc save`（已无 Dirty）**零记录** ⇒ 幂等 no-op 不产生噪声。
+
+| EventId | 结论 |
+|---|---|
+| `CRUD` / `START` / `ACTION_FAILED` / `SAVE_FAILED` / `SAVE_PARTIAL` / `SAVE_PARTIAL_RETRY_OK` / `MIGRATED` | ✅ 上板通过 |
+| `FINISHED` / `TIMEOUT` / `FAILED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | ⚠️ **代码路径审查通过，未做真机触发**（原因见 §15.8） |
+
+**回归**：全量 **196/196 = 100%，0 MISS**。
+
+### 15.8 未验证项与原因
+
+| 项 | 为什么没触发 | 复测方法 |
+|---|---|---|
+| `LOG_WF_FINISHED` | 需要"所有 Step 都成功"的 Workflow。板上现存 `wf00` 是测试用（Action 必然失败），`wf02`("开阀测试") 是**真实执行机构的工作流** ⇒ 触发它会真的开阀（干烧风险）⇒ **有意不跑** | 需要一条只含无害 Action（如 `oled_*` / `log_*`）的 Workflow |
+| `LOG_WF_TIMEOUT` | 同上：需要"某步卡住直到 `timeout_ms`"的真实 Workflow | 建一条 timeout 很短 + 无害长动作的 Workflow |
+| `LOG_WF_FAILED` | 加载期校验失败需构造非法 BIN；acquire 被拒需并发冲突 | 用 `wfst overwrite` 写坏定义 |
+| `LOG_WF_TEMP_ACTION_TIMEOUT` | 临时 Action 需由云端命令下发且超时 | 发一条不存在的 action + 短超时 |
+| `LOG_WF_RUNTIME_ALLOC_FAILED` | 需要 `def_buf` 分配失败（PSRAM 8 MB 充裕）⇒ 只能故障注入，现有钩子不支持 | 需新增注入点（不建议为日志加） |
+
+> ⚠️ **下一阶段（P2-G Weight）注意**：`weight.cpp` 是 **10 Hz 采样**且已有 `err != error_state` 边沿骨架（`weight.cpp:204`）⇒ 采样值**绝不能**进日志，只能挂状态边沿；若引入"重量变化"类事件，必须先用 §11.3 之外的**量化/阈值边沿**（如 `|Δ| > 阈值` 且持续 N 次）而不是每帧比较。

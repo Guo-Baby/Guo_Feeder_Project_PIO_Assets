@@ -9,6 +9,7 @@
 #include "system_command.h"
 #include "workflow.h"
 #include "workflow_storage.h"
+#include "log_manager.h"   // P2-F：观测埋点（EventId / ParamId + log_emit）
 // =====================================================
 // 注册表
 // =====================================================
@@ -1293,6 +1294,65 @@ static bool wf_dirty_critical_held = false;
 // 0 = 无待保存；非 0 = 延迟保存窗口起点
 static unsigned long workflow_save_since_ms = 0;
 
+// =====================================================
+// P2-F：LogManager 埋点（**纯观测**，不参与任何判定）
+//
+// 所有 log_emit() 都插在既有状态迁移点 / 既有错误分支内：
+// 不改变状态机、不新增等待、**绝不移动任何 return / continue**。
+//
+//   0x0401 WF_START               —— workflow_start() 成功尾部
+//   0x0402 WF_FINISHED            —— terminate 调用点（current_step >= step_count）
+//   0x0403 WF_TIMEOUT             —— terminate 调用点（超时）
+//   0x0404 WF_FAILED              —— acquire 被拒 / Trigger 坏 / 定义解析非法
+//   0x0405 WF_ACTION_FAILED       —— terminate 调用点（Action 坏 / Action FAILED）
+//   0x0406 WF_SAVE_FAILED         —— save_transaction 逐 Workflow 失败
+//   0x0407 WF_SAVE_PARTIAL        —— save_transaction 结束仍有 Dirty
+//   0x0408 WF_CRUD                —— create / update_meta / delete / migrate
+//   0x0409 WF_MIGRATED            —— workflow_migrate_to_storage()
+//   0x040A WF_TEMP_ACTION_TIMEOUT —— 临时 Action 超时
+//   0x040B WF_RUNTIME_ALLOC_FAILED—— save_transaction 的 def_buf 分配失败
+//   0x040C WF_SAVE_PARTIAL_RETRY_OK—— 从 partial 恢复（= partial 边沿锁的解锁点）
+//
+// ⚠️ 为什么埋点放在 terminate 的 **6 个调用点**而不是 terminate 内部：
+//    `workflow_terminate()` 只收到 `WorkflowState`（4 种 ERROR 成因全是
+//    `WORKFLOW_ERROR`）⇒ 在内部**无法**区分 Trigger 失败 / Action 失败 /
+//    实例缺失，也就无法给 `WF_FAILED`(0x0404) 与 `WF_ACTION_FAILED`(0x0405)
+//    正确分工。调用点还能拿到 `wf.current_step` 等成因信息。
+//    插在 `workflow_terminate(...)` **之前**、无条件执行 ⇒ **不改变任何
+//    return 路径**，也不影响「先 Release、后置 state」的既有顺序。
+//
+// ⚠️⚠️ 保存失败路径**必须**边沿锁（★★ 见审查报告 §3）：
+//    `workflow.cpp` 的两条保存失败路径（def_buf 分配失败 :1744-1748 /
+//    partial :1821-1830）**都不重置** `workflow_save_since_ms`，而
+//    `workflow_delayed_save_poll()` 每 loop 调用一次 ⇒ 故障持续期间
+//    `workflow_save_transaction()` **每个 loop 迭代执行一次**。
+//    若按朴素方式每条失败都上报，会毫秒级打满 64 槽 RAM 环并冲掉真正的
+//    WARN+。故失败上报全部加锁：**同一失败事件最多 1 条**，条件消失才解锁
+//    （与 P2-E 的 RTC 边沿锁同范式）。
+//    ⚠️ 业务侧的重试风暴本身**属既有问题、不在 P2 范围**，只报告不修复。
+// =====================================================
+
+// 保存失败上报的边沿锁
+static bool wf_save_fail_reported[WORKFLOW_MAX_COUNT];  // 逐 slot
+static bool wf_save_partial_reported = false;           // 整事务
+static bool wf_alloc_fail_reported = false;             // 分配失败
+// partial 事件期间经历的事务次数（供 RETRY_OK 记录；同时**量化 WF-1 重试代价**）
+static uint32_t wf_save_partial_retries = 0;
+
+// `LOG_P_OP` 的取值（WF_CRUD）
+#define WF_OP_CREATE   1u
+#define WF_OP_UPDATE   2u
+#define WF_OP_DELETE   3u
+#define WF_OP_MIGRATE  4u
+
+// `LOG_P_CAUSE` 的取值（WF_FAILED / WF_ACTION_FAILED）
+#define WF_CAUSE_ACQUIRE_REJECTED 1u   // 安全窗口内拒绝启动
+#define WF_CAUSE_NO_TRIGGER_INST  2u   // Trigger 实例为空
+#define WF_CAUSE_TRIGGER_FAILED   3u   // Trigger 返回 FAILED
+#define WF_CAUSE_NO_ACTION_INST   4u   // Action 实例为空
+#define WF_CAUSE_ACTION_FAILED    5u   // Action 返回 FAILED
+#define WF_CAUSE_PARSE_INVALID    6u   // 定义非法（Step0 不是 Trigger）
+
 static inline void dirty_mark(uint8_t wf, uint8_t step)
 {
     uint16_t slot = (uint16_t)wf * WORKFLOW_MAX_STEP + step;
@@ -1736,6 +1796,8 @@ bool workflow_save_transaction()
 
     bool all_ok = true;
     bool saved_any = false;
+    uint8_t saved_cnt = 0;   // P2-F：观测用（成功落盘的 Workflow 数）
+    uint8_t dirty_cnt = 0;   // P2-F：观测用（本事务开始时的 Dirty 数）
 
     // WorkflowDefinition ~8.6KB 不能放栈（loopTask 栈 8KB），必须堆分配
     WorkflowDefinition *def_buf =
@@ -1744,8 +1806,22 @@ bool workflow_save_transaction()
     if (def_buf == NULL)
     {
         Serial.println("[Workflow] def alloc failed (save_transaction)");
+
+        // ---- P2-F 埋点：LOG_WF_RUNTIME_ALLOC_FAILED（ERROR，边沿锁）----
+        // ★ 必须加锁：本路径每 loop 可达（审查报告 §3）
+        if(!wf_alloc_fail_reported)
+        {
+            wf_alloc_fail_reported = true;
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_NEED_BYTES,
+                               (uint32_t)sizeof(WorkflowDefinition));
+            log_emit(LOG_WF_RUNTIME_ALLOC_FAILED, LOG_LVL_ERROR, p, 1);
+        }
         return false;
     }
+
+    // P2-F：分配成功 ⇒ 解除边沿锁，使"再次失败"能重新上报
+    wf_alloc_fail_reported = false;
 
     // Dirty 清单先打出来，便于核对"是否所有 Dirty Workflow 都被处理"
     {
@@ -1770,6 +1846,7 @@ bool workflow_save_transaction()
         {
             continue;
         }
+        dirty_cnt++;             // P2-F：观测用
 
         workflow_build_definition(wf, def_buf);
 
@@ -1794,6 +1871,19 @@ bool workflow_save_transaction()
                 (unsigned)wf,
                 workflow_storage_result_name(r)
             );
+
+            // ---- P2-F 埋点：LOG_WF_SAVE_FAILED（WARN，逐 slot 边沿锁）----
+            // ★ 必须加锁：本路径每 loop 可达（审查报告 §3）
+            // ERR_CODE 直接放 workflow_storage_result_name 的枚举值；
+            // 失败项保留 Dirty、循环不中断（§13 逐 Workflow 事务语义不变）。
+            if(wf < WORKFLOW_MAX_COUNT && !wf_save_fail_reported[wf])
+            {
+                wf_save_fail_reported[wf] = true;
+                LogParamIn p[2];
+                p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)wf);
+                p[1] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)r);
+                log_emit(LOG_WF_SAVE_FAILED, LOG_LVL_WARN, p, 2);
+            }
             all_ok = false;
             continue;
         }
@@ -1801,6 +1891,8 @@ bool workflow_save_transaction()
         // 该 Workflow 自己的事务成功 → 立即清它自己的 Dirty
         dirty_workflow_clear(wf);
         saved_any = true;
+        saved_cnt++;                                     // P2-F：观测用
+        wf_save_fail_reported[wf] = false;               // P2-F：解锁该 slot
     }
 
     if(!dirty_any())
@@ -1811,6 +1903,22 @@ bool workflow_save_transaction()
         // 期间 wf_dirty_critical_held 仍为 true，并发 mark_dirty
         // 不会重复 acquire，不会造成 count 泄漏。
         workflow_save_since_ms = 0;
+
+        // ---- P2-F 埋点：LOG_WF_SAVE_PARTIAL_RETRY_OK（INFO）----
+        //
+        // ★ 修正过的判断（审查报告 §4③原判"需新增状态 ⇒ 不实现"，**该判断有误**）：
+        //   `wf_save_partial_reported == true` 本身就是"上一次事务落在 partial"的
+        //   证据 ⇒ **边沿锁就是 0x040C 的宿主，无需新增任何状态**。
+        // 只有真的**从 partial 恢复**才上报 ⇒ 正常全成功路径零噪声。
+        // RETRY_N = 该事件期间经历过的 partial 事务次数（可量化重试代价）。
+        if(wf_save_partial_reported)
+        {
+            wf_save_partial_reported = false;
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_RETRY_N, wf_save_partial_retries);
+            log_emit(LOG_WF_SAVE_PARTIAL_RETRY_OK, LOG_LVL_INFO, p, 1);
+        }
+        wf_save_partial_retries = 0;
 
         if(wf_dirty_critical_held)
         {
@@ -1827,6 +1935,18 @@ bool workflow_save_transaction()
             "[Workflow] save partial: dirty remain, critical_held=%d\n",
             wf_dirty_critical_held ? 1 : 0
         );
+
+        // ---- P2-F 埋点：LOG_WF_SAVE_PARTIAL（WARN，边沿锁）----
+        // ★ 必须加锁：本路径每 loop 可达（审查报告 §3）
+        wf_save_partial_retries++;      // 纯计数，不产生记录 ⇒ 不构成洪泛
+        if(!wf_save_partial_reported)
+        {
+            wf_save_partial_reported = true;
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_SAVED, (uint32_t)saved_cnt);
+            p[1] = log_arg_u32(LOG_P_TOTAL, (uint32_t)dirty_cnt);
+            log_emit(LOG_WF_SAVE_PARTIAL, LOG_LVL_WARN, p, 2);
+        }
     }
 
     workflow_storage_free_definition(def_buf);
@@ -1929,6 +2049,18 @@ bool workflow_delete(
         (unsigned)workflows[workflow_index].variant
     );
 
+    // ---- P2-F 埋点：LOG_WF_CRUD（INFO，OP=delete）----
+    // ⚠️ 必须放在 `if(state == RUNNING) return true;` **之前**，
+    //    否则运行中删除会漏报。删除本身已落盘（valid=false）⇒ 计入审计。
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)workflow_index);
+        p[1] = log_arg_u32(LOG_P_OP, WF_OP_DELETE);
+        p[2] = log_arg_u32(LOG_P_VARIANT,
+                           (uint32_t)workflows[workflow_index].variant);
+        log_emit(LOG_WF_CRUD, LOG_LVL_INFO, p, 3);
+    }
+
     // §27：正在运行时【不销毁 Runtime Snapshot】
     //   运行中的 Runtime 持有自己的参数快照，继续执行到结束；
     //   同时不清 Definition / 不改 step_count —— 否则会让在飞运行提前结束。
@@ -1968,6 +2100,7 @@ bool workflow_delete(
 bool workflow_migrate_to_storage()
 {
     bool marked = false;
+    uint8_t migrated_cnt = 0;   // P2-F：观测用计数
 
     for(uint8_t wf = 0; wf < WORKFLOW_MAX_COUNT; wf++)
     {
@@ -1989,11 +2122,22 @@ bool workflow_migrate_to_storage()
             return false;
         }
         marked = true;
+        migrated_cnt++;          // P2-F：观测用
     }
 
     if(!marked)
     {
         return true;
+    }
+
+    // ---- P2-F 埋点：LOG_WF_MIGRATED（INFO）----
+    // 只在**真的发生迁移**（marked）时上报 ⇒ 正常启动零噪声。
+    // ⚠️ 只用 LOG_P_COUNT：矩阵另列了 LOG_P_STAGED_COUNT，但此处语义是
+    //    "被标记迁移的 Workflow 数"，staged 概念属 Registry 段，不适用。
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_COUNT, (uint32_t)migrated_cnt);
+        log_emit(LOG_WF_MIGRATED, LOG_LVL_INFO, p, 1);
     }
 
     return workflow_save_transaction();
@@ -2054,6 +2198,15 @@ bool workflow_create(
         workflow_count = (uint8_t)(workflow_index + 1);
     }
 
+    // ---- P2-F 埋点：LOG_WF_CRUD（INFO，OP=create）----
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)workflow_index);
+        p[1] = log_arg_u32(LOG_P_OP, WF_OP_CREATE);
+        p[2] = log_arg_u32(LOG_P_VARIANT, (uint32_t)w.variant);
+        log_emit(LOG_WF_CRUD, LOG_LVL_INFO, p, 3);
+    }
+
     return true;
 }
 
@@ -2082,6 +2235,15 @@ bool workflow_update_meta(
     w.name = name;
     w.enable = enable;
     w.timeout_ms = timeout_ms;
+
+    // ---- P2-F 埋点：LOG_WF_CRUD（INFO，OP=update）----
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)workflow_index);
+        p[1] = log_arg_u32(LOG_P_OP, WF_OP_UPDATE);
+        p[2] = log_arg_u32(LOG_P_VARIANT, (uint32_t)w.variant);
+        log_emit(LOG_WF_CRUD, LOG_LVL_INFO, p, 3);
+    }
 
     return true;
 }
@@ -3330,6 +3492,18 @@ bool workflow_parse_json(JsonDocument &doc)
             {
                 workflow.state =
                     WORKFLOW_ERROR;
+
+                // ---- P2-F 埋点：LOG_WF_FAILED（WARN，加载期校验失败）----
+                // 这是全文件**唯一**不经 workflow_terminate() 的终态赋值，
+                // 但发生在解析/加载期 ⇒ 该 Workflow 从未 start
+                // ⇒ workflow_critical_held[index] 必为 false ⇒ **无泄漏**。
+                // 不加边沿锁：解析期每个 Workflow 只走一次，天然低频。
+                {
+                    LogParamIn p[2];
+                    p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)index);
+                    p[1] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_PARSE_INVALID);
+                    log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 2);
+                }
             }
         }
         index++;
@@ -3534,6 +3708,18 @@ bool workflow_start(
             "workflow start aborted: %s\n",
             workflow->id.c_str()
         );
+
+        // ---- P2-F 埋点：LOG_WF_FAILED（WARN，CAUSE=acquire rejected）----
+        // 语义说明：这不是"运行失败"，而是"启动被安全窗口拒绝"。
+        // 冻结 EventId 里没有 WF_STOPPED（见审查报告 §4①）⇒ 复用
+        // LOG_WF_FAILED + LOG_P_CAUSE 区分，信息不丢失。
+        // 位置：在 acquire **之前**的分支 ⇒ 无需 release，完全安全。
+        {
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)wf_index);
+            p[1] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_ACQUIRE_REJECTED);
+            log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 2);
+        }
         return false;
     }
 
@@ -3578,6 +3764,18 @@ bool workflow_start(
         cmd_id;
     workflow->finish_callback =
         callback;
+
+    // ---- P2-F 埋点：LOG_WF_START（INFO）----
+    // 主键用 LOG_P_SLOT（= p.id，整数），**不用** LOG_P_WF_ID（STR 语义不可达）。
+    // 位于 Critical Op 已 acquire、state 已置 RUNNING 之后的**成功路径**，
+    // 无条件执行 ⇒ 不影响任何 return。
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)wf_index);
+        p[1] = log_arg_u32(LOG_P_STEPS_DONE, (uint32_t)workflow->step_count);
+        p[2] = log_arg_u32(LOG_P_TIMEOUT_MS, (uint32_t)workflow->timeout_ms);
+        log_emit(LOG_WF_START, LOG_LVL_INFO, p, 3);
+    }
     return true;
 }
 
@@ -3980,6 +4178,15 @@ void workflow_task()
         // Workflow 超时
         if((uint32_t)(now - wf.start_time) > wf.timeout_ms)
         {
+            // ---- P2-F 埋点：LOG_WF_TIMEOUT（WARN）----
+            // STUCK_STEP = 超时发生时停在的 Step（诊断"卡在哪一步"）
+            {
+                LogParamIn p[3];
+                p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                p[1] = log_arg_u32(LOG_P_TIMEOUT_MS, (uint32_t)wf.timeout_ms);
+                p[2] = log_arg_u32(LOG_P_STUCK_STEP, (uint32_t)wf.current_step);
+                log_emit(LOG_WF_TIMEOUT, LOG_LVL_WARN, p, 3);
+            }
             // 超时属于"结束"的一种，同样必须释放 Critical Operation
             workflow_terminate(
                 wf,
@@ -3990,6 +4197,15 @@ void workflow_task()
         // 全部完成
         if(wf.current_step >= wf.step_count)
         {
+            // ---- P2-F 埋点：LOG_WF_FINISHED（INFO）----
+            {
+                LogParamIn p[3];
+                p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                p[1] = log_arg_u32(LOG_P_DURATION_MS,
+                                   (uint32_t)(now - wf.start_time));
+                p[2] = log_arg_u32(LOG_P_STEPS_DONE, (uint32_t)wf.current_step);
+                log_emit(LOG_WF_FINISHED, LOG_LVL_INFO, p, 3);
+            }
             workflow_terminate(
                 wf,
                 WORKFLOW_FINISHED
@@ -4007,6 +4223,14 @@ void workflow_task()
                 step.instance.trigger;
             if(trigger == nullptr)
             {
+                // ---- P2-F 埋点：LOG_WF_FAILED（WARN）----
+                {
+                    LogParamIn p[3];
+                    p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                    p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)wf.current_step);
+                    p[2] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_NO_TRIGGER_INST);
+                    log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 3);
+                }
                 workflow_terminate(
                     wf,
                     WORKFLOW_ERROR
@@ -4051,6 +4275,14 @@ void workflow_task()
             {
                 trigger->running = false;
 
+                // ---- P2-F 埋点：LOG_WF_FAILED（WARN）----
+                {
+                    LogParamIn p[3];
+                    p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                    p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)wf.current_step);
+                    p[2] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_TRIGGER_FAILED);
+                    log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 3);
+                }
                 workflow_terminate(
                     wf,
                     WORKFLOW_ERROR
@@ -4068,6 +4300,14 @@ void workflow_task()
 
             if(action == nullptr)
             {
+                // ---- P2-F 埋点：LOG_WF_ACTION_FAILED（WARN）----
+                {
+                    LogParamIn p[3];
+                    p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                    p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)wf.current_step);
+                    p[2] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_NO_ACTION_INST);
+                    log_emit(LOG_WF_ACTION_FAILED, LOG_LVL_WARN, p, 3);
+                }
                 workflow_terminate(
                     wf,
                     WORKFLOW_ERROR
@@ -4099,6 +4339,14 @@ void workflow_task()
             {
                 action->running = false;
 
+                // ---- P2-F 埋点：LOG_WF_ACTION_FAILED（WARN）----
+                {
+                    LogParamIn p[3];
+                    p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)i);
+                    p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)wf.current_step);
+                    p[2] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_ACTION_FAILED);
+                    log_emit(LOG_WF_ACTION_FAILED, LOG_LVL_WARN, p, 3);
+                }
                 workflow_terminate(
                     wf,
                     WORKFLOW_ERROR
@@ -4125,6 +4373,19 @@ void workflow_task()
                 item.desc->id :
                 "nullptr"
             );
+
+            // ---- P2-F 埋点：LOG_WF_TEMP_ACTION_TIMEOUT（WARN）----
+            // ⚠️ 不用 LOG_P_ACTION_ID(0x0B)：STR 语义、当前不可达
+            //    （P2 定版走哈希/枚举化；此处改用"超期量"表达更有信息量）。
+            // DURATION_MS = 实际已等待时长；与 TIMEOUT_MS 之差即超期量。
+            {
+                LogParamIn p[2];
+                p[0] = log_arg_u32(LOG_P_TIMEOUT_MS, (uint32_t)item.timeout_ms);
+                p[1] = log_arg_u32(
+                    LOG_P_DURATION_MS,
+                    (uint32_t)((unsigned long)(millis() - item.start_time)));
+                log_emit(LOG_WF_TEMP_ACTION_TIMEOUT, LOG_LVL_WARN, p, 2);
+            }
 
             if(item.instance != nullptr)
             {

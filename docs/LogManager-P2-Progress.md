@@ -29,7 +29,9 @@
 | **阶段 2-E · 夹具** | P2-E 引发的 F2-B 4 条真失败：根因＝`cloud_collect_batch()` **在 `boot_seq` 变化处截断批次**，而每个 Boot 多 1 条 Flash 记录（`RTC_PROBE` 是 WARN）⇒ 积压跨 2 个 boot_seq ⇒ 单批永远排不空 ⇒ `qused=0`/`rarmed=0` 不可能达成。**只改夹具**：回归器新增**内联正则期望**（`replay=/[1-9][0-9]*/`），F2-B 判据改为"非零"+结构性事实，**断言总数 196 条不变** | 同上 | ✅ |
 | **阶段 2-E · 发现** | ① `LOG_TIME_NTP_FAIL`(0x0802) **确认无宿主**（SDK 只提供成功通知、状态枚举无失败态）⇒ 记为**未实现**，不新增看门狗；② `rtc_init()` 内的"配置禁用"分支是**死代码**（`rtc_enabled && rtc_init()` 短路求值）⇒ 埋点移到 `time_init()` 可达分支；③ `VALID_ENTER.SOURCE` 存在**实测竞态**（边沿可能早于来源确认，实测两种顺序都出现过） | 同上 | ✅ 已处理并记录 |
 | **阶段 2-F · 审查** | **Workflow 接入前审查**（只审查、未改生产代码）：Critical Op 生命周期审计（3 acquire 全配对 / 两个释放函数幂等 / `workflow_terminate()` **零提前 return** / 6 个调用点全覆盖 / **无可达绕过路径、无永久锁死风险**）、生命周期状态流转、6 个 terminate 退出路径、矩阵与代码 **4 项不一致**、14 个推荐埋点位置（含频率与限流策略） | `docs(log): review workflow logging integration plan` | ✅ 已提交 |
-| **阶段 2-F · 发现 WF-1** | **保存失败后重试风暴**（`workflow.cpp:1744-1748` 与 `:1821-1830` 两条失败路径**不重置** `workflow_save_since_ms` ⇒ `workflow_delayed_save_poll()` **每个 loop** 触发完整保存事务：8.6 KB 分配 + 落盘尝试 + 串口刷屏）。**与 Critical Op 无关**，按规则**只报告不修复**；但 P2-F 埋点必须对它免疫（全部边沿锁）。详见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md` §3 | — | ⏳ **未修**（待单独评审） |
+| **阶段 2-F · 发现 WF-1** | **保存失败后重试风暴**：保存失败的**两条路径都不重置** `workflow_save_since_ms` ⇒ `workflow_delayed_save_poll()` 的 5 分钟窗口**一旦过期就永远过期** ⇒ Dirty 未清期间**每个 loop** 跑一次完整保存事务（8.6 KB `def_buf` + LittleFS 落盘尝试 + 串口 2 行）。**已实测**：151 s 内 **5828 次**事务（≈**38.6 次/秒**）、串口 ≈77 行/秒。**与 Critical Op 无关**，按规则**只报告不修复**；P2-F 埋点对它免疫（三个边沿锁）。详见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md` §3 | — | ⏳ **未修**（待单独评审） |
+| **阶段 2-F** | **P2-F Workflow 接入**（`src/workflow.cpp`，唯一生产代码改动文件，**纯增量 +261/−0，0 删除行**）：12 个冻结 EventId / **17 个发射点**全落地（**Workflow 段无"无宿主 EventId"**）；保存类事件用**三个边沿锁**（`wf_save_fail_reported[]` 逐 slot / `wf_save_partial_reported` 整事务 / `wf_alloc_fail_reported`）+ `wf_save_partial_retries` 计数；主键 `LOG_P_SLOT`（非哈希）；`OP`/`CAUSE` 枚举化 | `feat(log): integrate workflow manager logging` | ✅ 已提交 |
+| **阶段 2-F · 发现 WF-2** | **保存成功路径不记账是"正确设计"的确认**：Workflow 段**没有** `SAVE_OK` ID，且不加成功记录 ⇒ 自动后台保存（每 loop 可能）**零噪声**；唯一的成功侧记录是 `0x040C`，语义是"**从 partial 恢复**"这一**迁移**而非"成功" | 同上 | ✅ 已记录 |
 
 ---
 
@@ -56,9 +58,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **WiFi（`wifi_module.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处，全在既有分支内） | `LOG_WIFI_CONNECT_START` / `CONNECTED` / `CONNECT_TIMEOUT` / `LOST` / `RECONNECT_TRY` | P2-C |
 | **Cloud（`cloud_manager.cpp`）** | 复用既有"回调置标志 → `cloud_task()` 消费"机制 ⇒ 埋点挂在**标志被消费处**（loop 上下文，边沿由单槽标志保证） | `LOG_MQTT_CONNECTED` / `DISCONNECTED` / `SLEEP_ENTER` / `PUBLISH_FAIL`（聚合）/ `CMD_EXEC_FAILED` | P2-D |
 | **Time（`time_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（9 个事件 / 11 个埋点，全在既有分支内）；RTC 异常用**边沿锁**；`SOURCE` 走**枚举化**（0=INVALID 1=RTC 2=SNTP 3=MANUAL） | `LOG_TIME_NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`(**INFO·WARN 三分支**) / `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | P2-E |
-| 其余 6 个模块 | **未接入** | — | — |
+| **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
+| 其余 5 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Workflow → Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry**
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
 
@@ -149,6 +152,50 @@ CBOR 批次的 `array(12)` 顺序是
 
 **现场状态**：`rtc.enable` 已恢复 `true`（`config_query` 确认，且启动日志回到 WARN 版）。
 
+### P2-F 验证记录（2026-09-18，COM8；固件 `.pio/build/p2f2`）
+
+**固件核对**：`firmware.bin` mtime **晚于** `src/workflow.cpp`，且大小比含 `0x040C` 之前的版本 +48 B ⇒ 烧录的就是最终代码。
+
+```text
+boot=6  seq=1797 INFO LOG_WF_CRUD            SLOT=2 OP=3(delete) VARIANT=2
+        seq=1802 INFO LOG_WF_CRUD            SLOT=3 OP=1(create) VARIANT=1
+        seq=1803 INFO LOG_WF_CRUD            SLOT=3 OP=3(delete) VARIANT=2
+        seq=1804 INFO LOG_WF_START           SLOT=0 STEPS_DONE=2 TIMEOUT_MS=10000
+        seq=1805 WARN LOG_WF_ACTION_FAILED   SLOT=0 FAIL_STEP=0 CAUSE=4
+
+boot=9  seq=2568 INFO LOG_WF_CRUD            SLOT=0 OP=2(update) VARIANT=1
+        seq=2569 WARN LOG_WF_SAVE_FAILED     SLOT=0 ERR_CODE=7    ← WRITE_FAILED（注入）
+        seq=2570 WARN LOG_WF_SAVE_PARTIAL    SAVED=0 TOTAL=1
+        seq=2571 INFO LOG_WF_SAVE_PARTIAL_RETRY_OK RETRY_N=1      ← ★ 0x040C 落地
+```
+
+**`emit` 轨迹逐条对齐**：`meta` +1（CRUD）→ 首次 `save` 失败 +2（SAVE_FAILED + SAVE_PARTIAL）→ 恢复 `save` 成功 +1（0x040C）→ 第三次 `save`（已无 Dirty）**+0**（幂等 no-op 零噪声）。
+**`flash` 只随 WARN 增长**（`1 → 3`）⇒ INFO 不落 Flash 的 Level Policy 在 Workflow 段同样成立。
+
+| EventId | 验证方式 | 结论 |
+|---|---|---|
+| `LOG_WF_CRUD`（create/update/delete 三向） | 记录级解码 | ✅ 上板通过（OP 枚举值正确） |
+| `LOG_WF_START` | 记录级解码 | ✅ 上板通过 |
+| `LOG_WF_ACTION_FAILED` | 记录级解码 | ✅ 上板通过（`CAUSE=4`） |
+| `LOG_WF_SAVE_FAILED` / `SAVE_PARTIAL` | 注入 `wfst failwf 0` | ✅ 上板通过（各 1 条，边沿锁生效） |
+| **`LOG_WF_SAVE_PARTIAL_RETRY_OK`(0x040C)** | 失败后再 `wfc save` 成功 | ✅ 上板通过（`RETRY_N=1`） |
+| `LOG_WF_MIGRATED` | 记录级解码 | ✅ 上板通过（`wfc migrate`） |
+| `LOG_WF_FINISHED` / `TIMEOUT` / `FAILED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | 代码路径审查 | ⚠️ **未做真机触发**（原因与复测方法见 Guide §15.8；其中 `FINISHED`/`TIMEOUT` 需要"无害 Action 的 Workflow"，板上现存工作流会**真的驱动执行机构** ⇒ 有意不跑） |
+
+**风暴下的边沿锁实测**（WF-1 场景，单会话探针 `.pio/p15run/storm_probe.py`；**重开串口会复位清掉 RAM Dirty，必须单会话**）：
+
+```text
+第一次失败（永久 INVALID_ARGUMENT）：emit +2 = SAVE_FAILED + SAVE_PARTIAL（锁置位）
+T1（风暴已跑 36s）: emit=12 flash=3
+T2（再跑 48s）    : emit=12 flash=3   ← 84s 内 3399 次失败事务，新增记录 0 条
+```
+⇒ **边沿锁把 3399 条潜在 WARN 压成 0 条**（≈3400× 削减）。若不做边沿锁，同等时长会写约 3400×128 B 到 Flash。
+
+**回归**：全量 **196/196 = 100%，0 MISS**（P2-F 改动未触碰任何断言）。
+
+**设备状态复原**：测试期间新增/删除的都是控制台临时 Workflow；结束时 `wfc del` 已清掉无效定义，`dirty=0`。
+⚠️ **遗留**：`wfc create`（控制台新建的**不完整定义**）会产生**永久 `INVALID_ARGUMENT`** ⇒ 用它做失败注入很方便，但**测完必须删掉**，否则会持续触发 WF-1 风暴（P2-F 期间已遇到一次）。
+
 ### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
 **现象**：P2-D 埋点后 B 段稳定 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`）。
@@ -217,36 +264,29 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 下一步：**Workflow 接入**（P2-F）
+### 下一步：**Weight / HX711 接入**（P2-G）
 
-Time 已接入完成（见上），回归 **196/196 全绿**。下一个按约定顺序是 **Workflow**
-（`src/workflow.cpp` 4465 行 + `workflow_storage.cpp` 1583 + `capability_registry.cpp` 1007）。
+Workflow 已接入完成（见上），回归 **196/196 全绿**。下一个按约定顺序是 **Weight**
+（`src/weight.cpp`，`dispense_guard.cpp` 的触发源）：
 
-1. ⚠️⚠️ **开工前必须先评审 `workflow_terminate()` 的 Critical Op release 收口路径**
-   （项目铁律：`release` 不能放在会中途 `return` 的函数里 —— 曾因 `workflow_notify_finish()`
-   在 callback 为空时提前返回导致漏 release = **永久无法重启**）。详见
-   `log模块历史/LogManager-P2接入准备审查0918.md` §7 R-7。
-   埋点若要插在这些函数里，必须先证明**不引入任何新的提前 return**。
-2. `workflow_terminate()` 有 **6 个终止路径目前零日志**（矩阵 §7.1），这是本模块最大缺口。
-   冻结 EventId 覆盖极好：`SLOT` / `WF_ID` / `VARIANT` / `STEPS_DONE` / `STUCK_STEP` /
-   `FAIL_STEP` / `DURATION_MS` / `TIMEOUT_MS` / `SAVED` / `TOTAL` / `OP` / `ACTION_ID` 全部已有。
-3. ⚠️ **`LOG_P_WF_ID`(0x02) / `LOG_P_ACTION_ID`(0x0B) 是字符串语义且当前不可达**
-   ⇒ 按 P2 定版走**哈希/枚举化**（参考 `cfg_hash32()` / `wifi_ssid_hash32()`），
-   或优先用已有的 **`LOG_P_SLOT`(0x01) 整数**定位（`p.id` 就是 Slot）——
-   **Slot 比哈希更可靠**，建议优先。
-4. ⚠️ `CloudManager` 下发的 workflow 命令在 **esp-mqtt 任务**上下文、
-   `workflow_task()` 在 **loop** 任务 ⇒ 埋点要放在**既有分支**里，注意跨任务可见性
-   （收口必须"先 Release、后置 state"）。
-5. ⚠️ **启动 / 保存事务是高频候选**：`workflow_save_transaction()` 若每个 Workflow 各发一条，
-   16 个 Workflow 就是 16 条 ⇒ 参考 §12 的**计数聚合**或"仅记失败者"。
-6. 提交主题建议：`feat(log): integrate workflow logging`
+1. ⚠️⚠️ **10 Hz 采样 ⇒ 原始值绝对不能进日志**。已有现成骨架：`weight_refresh_error_state()`
+   里 `err != error_state` 的**状态边沿**（`weight.cpp:204`）—— 异常进入/退出各一条。
+2. ⚠️ **5 类异常建议复用 `LOG_WEIGHT_ERROR_ENTER` + `LOG_P_CAUSE`**，暂不新增 EventId
+   （P2 定版：先用已有 EventId + `CAUSE`/`ERR_CODE` 区分）。若发现确实无法区分，**先停下报告**。
+3. ⚠️ **`weight_trigger_*` 类事件只记"触发成功/失败"**，不要记每次采样；如需"重量稳定/超重"，
+   必须用**阈值 + 持续时间**的边沿（不是每帧比较）。
+4. ⚠️ 标定类事件（`WEIGHT_CALIB_*`）当前**是否有宿主**要先 grep 确认（P2-E 的
+   `NTP_FAIL` / P2-D 的 `FRAG_FAIL` 都是"冻结 ID 无宿主"的先例 ⇒ **无宿主就不埋、只记录**）。
+5. ⚠️ `dispense_guard` 触发**强制关阀**：这条路径涉及执行机构安全 ⇒ 埋点只加观测、
+   **不得改变任何时序**（P2-F 的"纯增量 0 删除行"做法可复用）。
+6. 提交主题建议：`feat(log): integrate weight manager logging`
 
 ### 之后（严格一次一个模块）
 
-`Weight → Valve → Dispense → BLE → Command/Event/OLED/Registry`
+`Valve → Dispense → BLE → Command/Event/OLED/Registry`
 
-⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
-先有 Weight 日志才能解释强制关阀。
+⚠️ **Valve 在 Dispense 之前**：`dispense_guard` 的判定依赖阀门开度反馈；
+而 **Weight 已先行接入**（其异常事件是 guard 的触发源）。
 ⚠️ **Weight 提到 Valve 之前**：`dispense_guard` 的触发源是 `EVENT_WEIGHT_ERROR`，
 先有 Weight 日志才能解释强制关阀。
 
@@ -264,6 +304,8 @@ Time 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | P2-A 未验证项 | Storage bridge 的 **ERROR / CRITICAL 分支**与 **10 s 抑制窗口**无法用现有钩子触发 | 桥接层完整性 | ⏳ 待"结构化回调 + 故障注入"一并解决 |
 | F2 决策 | 字符串参数是否改结构化回调（现为哈希/枚举化） | Storage 路径、Config key、Workflow id/action id 等 7 个 ParamId 的可用性 | ⏳ 已按"暂不扩 API"执行，未来可评审 |
 | F6 基线 | P1.5 之前的既有回归集（P1.2 核心 66 / Flash 92 / F5 恢复 34 / F7-F9 43 / 交接 56）**未复跑** | P2 首个模块接入前的回归基线 | ⏳ 建议尽快补跑 |
+| **WF-1**（新，P2-F 发现并**实测确认**） | **保存失败后重试风暴**：保存失败的两条路径**不重置** `workflow_save_since_ms` ⇒ 5 分钟延迟窗口**一旦过期就永远过期** ⇒ Dirty 未清期间 `workflow_delayed_save_poll()` **每个 loop** 跑一次完整保存事务（8.6 KB `def_buf` + LittleFS 落盘尝试 + 串口 2 行）。**实测 39–40 次/秒**（两次独立观测：151 s/5828 次、84 s/3399 次）；串口 ≈77 行/秒 | **loop 负载、LittleFS 擦写压力、串口洪泛**；也解释了"为什么它会掩盖串口命令"。**P2-F 埋点已对它免疫**（三个边沿锁 ⇒ 风暴期新增记录 0 条） | ⏳ **未修**（属**行为变更**，超出"只加观测"范围 ⇒ 按规则只报告）。最小修法＝两条失败路径补 `workflow_save_since_ms = millis();`，但**必须单独评审 + 独立提交 + 独立回归**（会把故障持续期的重试频率从 39/s 降到 1/5min）。详见审查报告 §3 与 Guide §15.5 |
+| **P2-F 未验证项** | `FINISHED` / `TIMEOUT` / `FAILED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` 五个事件**未做真机触发**（代码路径审查通过） | Workflow 运行期观测的完整性 | ⏳ `FINISHED`/`TIMEOUT` 需要"只含无害 Action 的 Workflow"（板上现存工作流会**真的驱动执行机构** ⇒ 有意不跑）；其余需故障注入。复测方法见 Guide §15.8 |
 | **NTP 失败不可观测**（P2-E 发现） | **设备无法知道 SNTP 是否失败**：SDK 只提供成功通知，状态枚举无失败态。⇒ "设备联网正常但 NTP 一直没同步"这种故障**完全静默**（板上若 UDP 123 被墙就是这种状态） | Time 模块的诊断能力；云端的"NTP 是否可用"判断 | ⏳ **未解决**（P2-E 按约定不新增状态机）。若要做 = 加"已启动 N 秒仍无 `sntp_sync_seq` ⇒ 发 `LOG_TIME_NTP_FAIL`"的**纯观测看门狗**（约 5 行 + 1 个阈值常量 + 1 个 latch）。**建议单独评审后在 P2 收尾或 P3 处理** |
 | **RTC 芯片缺失**（P2-E 发现） | 板上 `rtc_present=false`（`ERR_CODE=2` = Wire 地址 NACK ⇒ 芯片不在）⇒ 5 个 RTC 事件（`BOOT_RESTORE` / `CALIBRATED` / `WRITE_FAILED` / `VL_FLAG` / `BCD_INVALID`）与 `RTC_PROBE` 的**成功分支**无法上板验证 | RTC 路径的观测完整性 | ⏳ **待硬件**。焊上 PCF8563T（0x51，与 OLED 共用 I2C）即可验证前 4 个；`VL_FLAG` 还需**电池耗尽** |
 | **无 `set_time` 通道**（P2-E 发现） | `time_set_manual()` / `time_set_manual_string()` **全仓库无调用者**（`time_manager_set_time()` 是预留空实现）⇒ ① `INVALID_ENTER` 无法运行时触发（需把时钟设到 2026-07-01 之前）；② `time_set_manual()` 的 RTC 写失败埋点不可达（本次**未埋点**） | `INVALID_ENTER` 的真机验证；手动校时功能本身 | ⏳ **未解决**（属功能缺失，不是日志问题）。P2-E 已按"埋点不放在不可达分支"处理并在 Guide §14.8 记录复测方法 |
@@ -301,6 +343,8 @@ Time 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | `docs/LogManager-Integration-Guide.md` **§12** | **新增**：**WiFi 接入** —— 无回调接口⇒显式埋点 / 5 个埋点表 / 失败循环节流（N 次记 1 **AND** ≥60s）/ 为何重连不发 CONNECT_START / WAS·STATE 编码 / 参数语义 / 上板验证 / 已知限制 |
 | `docs/LogManager-Integration-Guide.md` **§13** | **新增**：**Cloud/MQTT 接入** —— 复用既有单槽标志做边沿 / 5 个埋点表 / 发布失败计数聚合 / WAS·STATE 编码 / 刻意未做 / 上板验证（含 session takeover 触发技巧）/ 两项未触发的复测方法 |
 | `docs/LogManager-Integration-Guide.md` **§14** | **新增**：**TimeManager 接入** —— 10 个冻结 EventId 的最终处置（含 `NTP_FAIL` **无宿主**的 SDK 证据）/ 11 个埋点表 / **SNTP 特殊处理**（为何挂在 settled 确认点、为何禁用 `status != IN_PROGRESS`、为何不拿平滑超时当失败）/ RTC 探测三分支 + **一处不可达陷阱**（`rtc_enabled && rtc_init()` 短路）/ 边沿锁去重 / `VALID_ENTER.SOURCE` 竞态 / 上板验证 / 未验证项 / **回归夹具加固（boot_seq 截断 + 内联正则期望）** |
+| `docs/LogManager-Integration-Guide.md` **§15** | **新增**：**Workflow 接入** —— 与前面模块的 4 处差异 / 12 事件·17 发射点全表 / **三个边沿锁**（为何不用"降频"）/ 为何不记保存成功 / **WF-1 重试风暴实测**（39–40 次/秒、边沿锁 3400× 削减）/ Critical Op 审查结论表 / 上板验证 / 未验证项与 P2-G 注意事项 |
+| `log模块历史/LogManager-P2F-Workflow接入审查0918.md` | **新增**：Workflow 接入前审查（Critical Op 生命周期审计 / 6 个 terminate 退出路径 / 矩阵与代码 4 项不一致 / 14 个推荐埋点位置 / WF-1 设计问题） |
 | `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题）；**附录 R1**（用例修正与基线重录）；**附录 R2**（BT-9 分析·修复·验证 + 新基线 195/195） |
 | `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查 —— 已随 `85c88b5` 入库 |
 
@@ -321,7 +365,9 @@ Time 已接入完成（见上），回归 **196/196 全绿**。下一个按约�
 | `.pio/p15run/p2d_probe.py` | 含 **session takeover 踢会话**技巧（用设备自己的 `client_id` 再连一次 ⇒ 产生真实 `DISCONNECTED`） |
 | `.pio/p15run/expect_hit_selftest.py` | `serial_batch.py` 的 **`expect_hit` 真值表自检**（13 例含 4 条负向探针）——改匹配逻辑后必须跑 |
 | `.pio/p15run/p2e_patch.py` | P2-E 的 14 处精确插入式补丁脚本（每处断言恰好命中 1 次） |
+| `.pio/p15run/p2f_patch.py` | P2-F 的 24 处精确插入式补丁脚本（同样每处断言恰好命中 1 次） |
+| `.pio/p15run/storm_probe.py` | **长静默观测探针**：单会话保持串口打开（重开串口会复位、清掉 RAM Dirty）⇒ 用来实测 WF-1 的 5 分钟延迟窗口与风暴。⚠️ `serial_batch.py` **串口静默 1.5 s 即提前返回**，做不了这种实验 |
 
 ---
 
-*最后更新：2026-09-18（**P2-E Time/RTC 接入完成**，回归 196/196；下次：**P2-F Workflow 接入**）*
+*最后更新：2026-09-18（**P2-F Workflow 接入完成**，回归 196/196；下次：**P2-G Weight/HX711 接入**）*
