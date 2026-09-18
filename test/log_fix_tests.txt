@@ -285,8 +285,15 @@ logt cloud ||| replay_seq=/[1-9][0-9]*/
 #   （旧实现：删了就删了，无任何记账 ⇒ 云端永远不知道丢过未确认数据）
 #
 # 写满 16 段需要 496 条：8 × fill warn 62 + flush
-# 第 497 条触发第一次压力淘汰 ⇒ total = 496 - 31 + 1 = **466**
-# =====================================================
+# 第 497 条触发第一次压力淘汰 ⇒ 淘汰段的 31 条未确认必须记账（HIGH-1）
+#
+# ★★ P2-G 起的重要修正（2026-09-18）：**其它模块可能在填充窗口内插入 WARN/INFO**
+#    实测：Weight 的 STATE_WEIGHT_ERROR 边沿恰好落在填充过程中（23:47:00.748）⇒ 多出
+#    `LOG_WEIGHT_ERROR_ENTER`(WARN，落 Flash) ⇒ 实际写入 497~498 条 ⇒ 环提前回绕并淘汰 1 段。
+#    因此下面 4 条断言（total=496 / append=15@31 / seg_evict_unacked=0 / total=466）
+#    **隐含假设"填充期间只有本用例在写日志"，不是设计不变量** ⇒ 已移除。
+#    改为「多写 2 条」保证**无论是否有插入都必然越界一次**，并把断言集中到真正的不变量：
+#      16 段全在 + 恰淘汰 1 段(31 条) + 记账精确 + 淘汰的是最老段。
 logt fwipe ||| fwipe ok=1
 logt mwipe ||| mwipe ok=1
 logt reset ||| reset ok
@@ -307,16 +314,17 @@ logt fill warn 62 ||| queued=62
 logt flush ||| flush done
 logt fill warn 62 ||| queued=62
 logt flush ||| flush done
+# 结构性判据：496 条写完后 16 段必然全部被创建过（替代原来的 total=496/append=15@31）
 logt flash ||| segs=16
-logt flash ||| total=496
-logt flash ||| append=15@31
-logt stats ||| seg_evict_unacked=0
+logt stats ||| emit=
+# 第 497 / 498 条：★ 写两条（而非一条）⇒ 无论填充期是否有其它模块插入，都必然越界
+logt fill warn 1 ||| queued=1
+logt flush ||| flush done
 logt fill warn 1 ||| queued=1
 logt flush ||| flush done
 logt stats ||| seg_evict_unacked=31
 logt stats ||| fdrop=31
 logt stats ||| seg_del=1
-logt flash ||| total=466
 logt flash ||| oldest=1
 
 
