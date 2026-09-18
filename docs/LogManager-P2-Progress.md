@@ -45,6 +45,68 @@
 
 ---
 
+## P2-H Valve Logging Integration — 完成 / 冻结（**2026-09-19**）
+
+> **`P2-H implementation complete`　·　`Regression blocked by environment interference`**
+
+| 项 | 值 |
+|---|---|
+| 日期 | 2026-09-19 |
+| **生产代码 commit** | `d92d397` `feat(log): integrate valve logging` |
+| 文档 commit | `95be626`、`78ba304`、`3239890`、`d30759a` |
+| **修改文件** | **仅 `src/valve.cpp`** —— 净增量 **`+125 / −1`**（唯一 −1 = 把 `if(valve_pin<0){return false;}` 单行守卫展开为块；**条件、返回值、控制流完全不变**） |
+| 未改动（零改动） | `src/log_events.h`、`src/event_manager.cpp`、`src/event_manager.h`、`src/valve.h`、`src/dispense_guard.cpp`、`test/log_fix_tests.txt` |
+| 固件 | `.pio/build/p2h`（Flash **65.3 %** / RAM **39.8 %**，与 P2-G 相同） |
+| EventId / ParamId | **未新增任何 EventId / ParamId**（`LOG_P_MAX = 0x59` 未被触碰） |
+
+### EventId 列表（6 个埋点，全为冻结 ID）
+
+| EventId | Level | 实现位置 | 去重策略 | 上板验证 |
+|---|---|---|---|---|
+| `LOG_VALVE_OPEN` 0x0509 | INFO | `valve_set_gpio()` open 分支（`valve.cpp:168`） | **天然边沿**（`open == current_state` 判等 `return` 在其上方） | ✅ `OPEN(STATE=true, WAS=false)`；**重复 `valve_open()` 只产生 1 条** |
+| `LOG_VALVE_CLOSE` 0x050A | INFO | `valve_set_gpio()` close 分支（`valve.cpp:181`） | 同上 | ✅ `CLOSE(STATE=false, WAS=true, VALVE_OPEN_MS=2006)` |
+| `LOG_VALVE_RATE_LIMITED` 0x050B | WARN | `valve_set_gpio()` 50 ms 防风暴 `return` 分支（`valve.cpp:137`） | **不需要**（判等 return 在防风暴检查之前 ⇒ 只在"真要切换"时才可能进入；实测 11 个会话 0 次） | ⚪ 未触发（`NC-13`：串口命令做不到 50 ms 内二次真实切换） |
+| `LOG_VALVE_FORCE_CLOSE` 0x0505 | CRITICAL | `valve_force_close()` 尾部（`valve.cpp:470`） | **门控**：`cause 变化` **或** `距上次记录 ≥ 5000 ms` | ✅ **精确通过**：清零后 149.7 s 窗口 **10 次调用 → Δcrit = 4**，**离线按 5 s 规则模拟亦 = 4**，上限 30，零"孤儿"增量 |
+| `LOG_VALVE_FORCE_CLOSE_FAILED` 0x0506 | CRITICAL | `valve_force_close()` 的 `valve_pin<0` 分支（`valve.cpp:405`） | ⚠️ **无门控**（按 spec）⇒ `VALVE-6` OPEN | ✅ `gpio_pin=-1` 后：串口 `FORCE CLOSE` 计数 **0**、`guard_rx=54` ⇒ **52 条** CRITICAL（`CAUSE=1`） |
+| `LOG_VALVE_SAFETY_TIMEOUT` 0x0508 | WARN | `valve_task()` 超时分支（`valve.cpp:384`） | **一次性报告锁**（`safety_timeout_reported`；锁在"真实开启/关闭成功"处解除） | ✅ `safety_timeout_sec=2` ⇒ **6 轮超时 → 每轮恰好 1 条**（`OPEN_MS=LIMIT_MS=2000`） |
+
+### `FORCE_CLOSE` 宿主顺序（★ 无提前 return）
+
+```
+valve_force_close()
+  ├─ :398  if(valve_pin < 0) → 埋 FAILED → :407 return false     ← 唯一提前 return（失败分支，日志先于 return）
+  ├─ :413  gpio_set_level(...)        ① GPIO 动作
+  ├─ :416  current_state = false      ② 状态更新
+  ├─ :418  valve_update_state()       ② SystemState 同步
+  ├─ :424  open_start_time = 0        ② 计时清理（OPEN_MS 已在其前取值）
+  ├─ :427  event_push(...)            ③ 事件发布
+  ├─ :435  Serial.printf(...)         ③ 串口
+  ├─ :461  日志判断（门控）+ :470 log_emit     ④ ★ 日志判断在【全部之后】
+  └─ :474  return true
+```
+⇒ **GPIO 动作 → 状态更新 → 日志判断**，**没有 `if(!need_log) return;`**，
+强制关阀的"无条件强制同步 GPIO"语义**零改动**（**未**改成 `current_state` 边沿判断）。
+
+### 验证结果（记录级）
+
+- 捕获路径：MQTT `guo_feeder/log`（`.pio/p15run/p2e_probe.py` + `log_decode.py`）；**设备侧计量**：`logt stats` 的 `crit=`（已验证不减实：`logt fill crit 62` ⇒ `Δcrit` 恰好 62）
+- ⚠️ **精确计数实验前必须先 `fwipe`+`mwipe`+`creset`+`reset`**（否则回放/前序 Boot 记录会造出 18~37 s 的"孤儿增量"，极易误判成门控失效）
+- `VALVE-2`、`VALVE-3` 于本轮 **DONE**（见 `未修复的问题.md`）
+
+### 回归阻塞说明（**不是 P2-H 实现失败**）
+
+全量回归 **168/195（26 MISS）**；性质定义为 **Regression Environment Interference**：
+
+1. **Valve logging 本身正确** —— 6 个埋点逐项上板验证通过。
+2. 26 MISS 分类：**A = 5 条**（新增日志直接增加记录数量，全是 Flash 计数类）、**D = 21 条**（记录数量变化 → 存储拓扑变化，`replay`/`evict_inf`/`qdrop`/`holes` 等派生物）。
+3. **不能证明"删除 Valve logging 可恢复 195/195"** —— 依据：**P2-G 固件（完全没有 Valve logging）在同一 workload 下仍产生 MISS**
+   （A 段三次：`16调用/2边沿 → 0 MISS`、`68/11 → 9 MISS`、`48/12 → 2 MISS`）；且实测 **Weight 侧单独就能产生 +13 条额外记录**。
+4. 本轮**不处理** `R-7` / `R-8` / `VALVE-6`，均保持 **OPEN**。
+5. 完整分析：`log模块历史/LogManager-P2H-回归干扰分析报告0919.md`
+
+---
+
+
 ## Current baseline
 
 ```
