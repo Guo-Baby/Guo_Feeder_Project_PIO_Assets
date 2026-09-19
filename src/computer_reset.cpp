@@ -2,6 +2,7 @@
 
 #include "computer_reset.h"
 #include "workflow.h"
+#include "log_manager.h"   // P2-K：观测埋点（EventId / ParamId + log_emit）
 
 // =====================================================
 // Computer Reset 模块 - 实现
@@ -175,6 +176,28 @@ static void computer_reset_set_output(bool active)
         pulse_start_ms = 0;
     }
 
+    // ---- P2-K 埋点：LOG_CRESET_PULSE（INFO，LOW -> HIGH 上升沿）----
+    //
+    // 为什么挂在这里而不是 computer_reset_trigger()：
+    //   脉冲有**两条产生路径** ——
+    //     ① 手动 `computer_reset_trigger()`（main.cpp 控制台命令）
+    //     ② Workflow Action `computer_reset_action_start()`
+    //   二者最终都经本函数拉高 GPIO。若只挂 ①，则 ② 路径产生的脉冲
+    //   **完全没有日志**（漏记）。挂在本函数的上升沿可**同时覆盖两条路径**。
+    //
+    // 为什么无需去重门控（天然边沿）：
+    //   本函数开头 `if(active == output_active) return;` 已保证**同电平不重复写**
+    //   ⇒ 进入此处必然是一次真实的 LOW -> HIGH 跳变，不可能被连续进入。
+    //
+    // 参数：HOLD_MS = 本次脉冲的设计保持时长（常量，非实测）
+    //       实际时长由 poll()/task() 到期时刻决定，异常时由 SAFETY_TIMEOUT 记录。
+    if(active)
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_HOLD_MS, (uint32_t)COMPUTER_RESET_HOLD_MS);
+        log_emit(LOG_CRESET_PULSE, LOG_LVL_INFO, p, 1);
+    }
+
     Serial.printf(
         "[ComputerReset] GPIO%d = %s\n",
         COMPUTER_RESET_PIN,
@@ -258,6 +281,17 @@ static void computer_reset_action_start(WorkflowActionInstance *action)
     if(ctx == nullptr)
     {
         Serial.println("[ComputerReset] Action rejected: ctx pool exhausted");
+
+        // ---- P2-K 埋点：LOG_CRESET_POOL_EXHAUSTED（ERROR）----
+        // 天然边沿：进入即代表 4 个槽位全部占用（见下方 computer_reset_trigger()
+        // 同分支注释）。ERROR 级 ⇒ 落 Flash 且上云，作为**扩容依据**。
+        {
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_ACTIVE,   (uint32_t)active_pulse_count);
+            p[1] = log_arg_u32(LOG_P_CAPACITY, (uint32_t)COMPUTER_RESET_MAX_INSTANCE);
+            log_emit(LOG_CRESET_POOL_EXHAUSTED, LOG_LVL_ERROR, p, 2);
+        }
+
         action->result = ACTION_FAILED;
         return;
     }
@@ -427,6 +461,26 @@ void computer_reset_task()
     if((unsigned long)(now - pulse_start_ms) >=
        (COMPUTER_RESET_HOLD_MS + COMPUTER_RESET_SAFETY_MARGIN_MS))
     {
+        // ---- P2-K 埋点：LOG_CRESET_SAFETY_TIMEOUT（WARN）----
+        //
+        // 天然边沿：紧随其后的 `computer_reset_force_idle()` 会置
+        // output_active=false，而本函数上方 `if(!output_active) return;`
+        // 会拦住后续调用 ⇒ **不可能连续两次进入本块**，无需去重门控。
+        //
+        // 语义：GPIO8 卡在 HIGH 超过设计上限 ⇒ 有硬件风险
+        //       （持续按住电脑 Reset 键），故为 WARN。
+        //
+        // ★ 取值时机：DURATION_MS 必须在 force_idle() **之前**计算，
+        //   因为它依赖的 pulse_start_ms 会被 force_idle() 经 set_output(false)
+        //   清零（本文件 `pulse_start_ms = 0`）—— 属 LOG-13 铁律
+        //   "取值用于日志的变量须在源头清零前取"（`OPEN_MS` 曾踩过 3 次）。
+        {
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_HOLD_MS, (uint32_t)COMPUTER_RESET_HOLD_MS);
+            p[1] = log_arg_u32(LOG_P_DURATION_MS, (uint32_t)(now - pulse_start_ms));
+            log_emit(LOG_CRESET_SAFETY_TIMEOUT, LOG_LVL_WARN, p, 2);
+        }
+
         Serial.printf(
             "[ComputerReset] Safety timeout! Forced LOW (HIGH > %lu ms)\n",
             COMPUTER_RESET_HOLD_MS + COMPUTER_RESET_SAFETY_MARGIN_MS
@@ -449,6 +503,17 @@ bool computer_reset_trigger()
     if(ctx == nullptr)
     {
         Serial.println("[ComputerReset] Manual trigger rejected: ctx pool exhausted");
+
+        // ---- P2-K 埋点：LOG_CRESET_POOL_EXHAUSTED（ERROR）----
+        // 与 computer_reset_action_start() 的同名分支共用同一 EventId
+        // （同一语义的两个产生路径，与 PULSE 的双路径处理一致）。
+        {
+            LogParamIn p[2];
+            p[0] = log_arg_u32(LOG_P_ACTIVE,   (uint32_t)active_pulse_count);
+            p[1] = log_arg_u32(LOG_P_CAPACITY, (uint32_t)COMPUTER_RESET_MAX_INSTANCE);
+            log_emit(LOG_CRESET_POOL_EXHAUSTED, LOG_LVL_ERROR, p, 2);
+        }
+
         return false;
     }
 
