@@ -539,7 +539,47 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20（最新）：Phase 3 第 ③ 项 —— **ComputerReset 模块埋点接入完成**（P2-K）
+### 📋 2026-09-20（最新）：Phase 3 第 ④ 项**前置审查** —— `WF-4` 范围界定（**仅审查，未改代码**）
+
+> 完整报告：`log模块历史/WF4-Registry范围审查0920.md`（commit `fc250c4`）
+
+**核心结论：`WF-4` 不成立，建议关闭。**
+
+| 审查问题 | 结论（按**代码调用链**，非文档模块名） |
+|---|---|
+| Registry 是否拥有完整生命周期？ | ✅ **是，完整自持**（init / rescan / scan / sort / crc / load / save / 查询 / 导出全在 `capability_registry.cpp`） |
+| `workflow_storage` 是否只是消费者？ | ❌ **连消费者都不是** —— 不 `#include` `capability_registry.h`，全仓库对其零引用（`.h:268` 仅一行**注释**） |
+| `workflow_storage` 是否应产生 Registry 类日志？ | ❌ **不应该** —— 无调用关系，硬加即**发明不存在的事件源**（架构污染） |
+| 是否存在多模块记录同一事实？ | ⚠️ 有 **2 个真实风险点**，均可规避 |
+
+**逐事件归属（6 项，用户点名核实）**：
+
+| 事件 | 归属 |
+|---|---|
+| Registry 构建完成 / `REG_REBUILT` | `registry_sync()` 的 **`else` 分支**（:668-702）—— 该分支即"重建"的**结构性定义**，天然边沿 |
+| Registry 保存失败 / `REG_SAVE_FAILED` | `registry_sync()` 内 **`save_registry_file()` 返回值判定处**（:687-693）；★ **不埋进 `save_registry_file()` 内部的 4 个出口**（会同一事实多条记录） |
+| Workflow 读取 Registry | ⛔ **不埋** —— 高频只读（`workflow.list` 每次数十次调用），必成风暴 |
+| Workflow Storage 保存 Registry 数据 | ⛔ **该事实不存在** —— 两套独立文件与代码路径 |
+| Capability ID 分配变化 | ⛔ **不单独埋** —— 它是 checksum 变化的**结果**，已在 `REG_REBUILT` 语义内 |
+
+**★ 最重要的通用判据（本轮沉淀）**：
+> **"事件的定义点"与"事件的触发点"往往是两个不同函数。**
+> Registry 的**触发点**在 `command_manager.cpp`（4 处 `rescan()`），但**定义点**在 `registry_sync()`。
+> **必须埋"定义点"** —— 否则 4 个触发点会各记一条同一事实（且一次 create 会触发 3 次 `registry_sync`）。
+
+**频率实测（决定是否需门控）**：`.pio/p15run/*.log` 统计 —— **91 轮 `sync` 中仅 3 次 `rebuild`（≈3.3%）**
+⇒ `REBUILT` 属**低频源**（只在内容真变时触发），**INFO 不加门控可接受**。
+
+**接口结论**：✅ **只需 +2 处 `log_emit`**，无需新增 callback（同步模块）、不破坏分层。
+`REG_SAVE_FAILED` 建议**不带 `ERR_CODE`**（方案 1）—— 实测 `save_registry_file()` 的
+**4 个失败出口各有 1 条专属串口打印（1:1 严格对应）** ⇒ 精确原因 100% 已由串口覆盖，**零信息损失**，
+不必改既有函数签名。
+
+**待用户确认 D1–D4**：① WF-4 是否关闭 ② `REG_REBUILT` 宿主位置 ③ 是否带 `ERR_CODE` ④ 是否更正矩阵 §7 作用域。**确认后方进入代码修改。**
+
+---
+
+### ✅ 2026-09-20：Phase 3 第 ③ 项 —— **ComputerReset 模块埋点接入完成**（P2-K）
 
 > 完整审查记录：`log模块历史/LogManager-P2K-ComputerReset接入审查0920.md`
 
@@ -799,7 +839,7 @@ Dispense
 | **Workflow（WF）** | **WF-1** | **保存失败后重试风暴**：实测 **39–40 次/秒**（151 s/5828 次、84 s/3399 次） | 🔴 |
 | | **WF-2** | `WORKFLOW_WAITING` 从未被赋值（死枚举） | 🟡 |
 | | **WF-3** | 临时 Action 队尾 `if/else` 两分支相同、注释写反 | 🟠 |
-| | **WF-4** | 矩阵作用域含 Registry / workflow_storage（范围待界定） | 🟡 |
+| | **WF-4** | ~~矩阵作用域含 Registry / workflow_storage（范围待界定）~~ → ✅ **已审查结案：WF-4 不成立**（二者零耦合，属平行关系；报告 `log模块历史/WF4-Registry范围审查0920.md`） | ✅ |
 | **P0（与日志解耦）** | **P0-1** | `event_names[]` 第 10 项错位 | 🟡 |
 | | **P0-2** | MQTT 明文密码（`mqtt.json` + `tools/mqtt_*.py` 早已入库）⇒ **需轮换口令** | 🟠 |
 | | **P0-3** | BLE 回调逐字节 hex（`MiThermometer.cpp:117`） | 🟡 |
@@ -932,5 +972,5 @@ Dispense
 
 ---
 
-*最后更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`（`PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED`×2）；**全部天然边沿、零门控**。★ `PULSE` **上移到 `set_output()` 的 LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以同时覆盖手动与 Workflow Action 两条路径 —— **V3b 实测 Action 路径 `emit` +1 证明该决策正确**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13）。验证：V1 编译 SUCCESS（RAM 零增长 / Flash +156 B）/ V2 静置 `emit` 5→5 零增长 / V3+V3b `PULSE` 双路径实测 `emit` 各 +1 / V4 二进制 4 处逐一映射到预期函数。`SAFETY_TIMEOUT` 与 `POOL_EXHAUSTED` 属"正常时不应触发"的安全兜底/资源耗尽路径，**"不触发"即正确行为**，已由 V4 二进制确认存在。`log_events.h` / 测试断言零改动。另：**② OLED 判为"无宿主不埋"**（`oled.begin()` 无条件返回 true + U8g2 丢弃 I2C 错误码 ⇒ 原理上不可达），已移入"无宿主"清单。)*
-*上一版更新：2026-09-20（**Phase 3 第 ① 项 Command 埋点接入完成（P2-J）**：仅改 `src/command_manager.cpp`，接入 4 个冻结 EventId / 5 处 `log_emit`；`REJECTED` 用 **5 s 去重门控 + `LOG_P_COUNT` 汇总**，其余 3 处为天然边沿；`command`/`cmd_id` 一律 **FNV-1a 哈希**；`APPLIED` 刻意排除异步命令。V5 用 0.05 s 急速连发实测 `flash` 仅 +1 ⇒ 门控生效。)*
+*最后更新：2026-09-20（**Phase 3 第 ④ 项前置审查完成 —— `WF-4` 范围界定（仅审查，未改代码）**：按**代码调用链**（非文档模块名）核实，结论 **`WF-4` 不成立、建议关闭** —— `workflow_storage` 与 Registry **零耦合**（不 `#include` `capability_registry.h`；全仓库对 Registry 的引用不含 `workflow_storage`；`.h:268` 仅一行注释），二者为**平行关系**（Workflow 本体 → `/workflow/*.bin`；Registry → `/registry/*.bin`）。逐事件归属已定：`REG_REBUILT` 宿主 = `registry_sync()` 的 `else` 分支；`REG_SAVE_FAILED` 宿主 = 该函数内 `save_registry_file()` 返回值判定处（**不埋进内部 4 个出口**）；"Workflow 读取 Registry"**不埋**（高频只读）；"Workflow Storage 保存 Registry 数据"**该事实不存在**。★ 通用判据：「**事件的定义点 ≠ 触发点**，必须埋定义点」—— Registry 触发点在 `command_manager` 4 处 `rescan()`，定义点在 `registry_sync()`。频率实测 **91 轮 sync 仅 3 次 rebuild（≈3.3%）** ⇒ 低频源，INFO 不加门控可接受。接口结论：只需 **+2 处 `log_emit`**，无需 callback、不改接口（`REG_SAVE_FAILED` 不带 ERR_CODE —— 4 个失败出口各有专属串口打印，1:1 覆盖）。报告 `log模块历史/WF4-Registry范围审查0920.md`（`fc250c4`）。**待用户确认 D1–D4**。)*
+*上一版更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`；**全部天然边沿、零门控**。★ `PULSE` 上移到 `set_output()` 上升沿以覆盖手动 + Workflow Action 两条路径（V3b 实测 Action 路径 `emit` +1 证明）；`SAFETY_TIMEOUT` 的 `DURATION_MS` 在 `force_idle()` 之前取（LOG-13）。)**
