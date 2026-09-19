@@ -453,7 +453,7 @@
 | 模块 | 源码 | 现状 | 建议接入 |
 |---|---|---|---|
 | Command | `command_manager.cpp`（3204） | 有 `command_manager_set_log_callback()` 且**已在 `main.cpp:135` 注册**（打到串口） | `LOG_CMD_APPLIED`(INFO) / `LOG_CMD_REJECTED`(WARN) / `LOG_CMD_RUNTIME_QUEUE_FULL`(WARN) / `LOG_CMD_RUNTIME_TIMEOUT`(WARN) + `LOG_P_CMD_ID`⚠️ / `LOG_P_QUEUE_SIZE`。建议把已注册的 bridge 改为"串口 + LogManager"双路 |
-| Event | `event_manager.cpp`（379） | 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。契约已注明"走侧信道计数上报" ⇒ **不要为每条丢弃事件发日志**，改为周期聚合 1 条 |
+| Event | `event_manager.cpp` | ✅ **已接入（P2-M，2026-09-20）** —— 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。**按契约"走侧信道计数上报"实现**：**不为每条丢弃事件发日志**，改为**周期聚合 1 条**（窗口 60000 ms，节拍器 = `event_dispatch()` 首行）。★ **只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。宿主 = **确定丢弃的分支**（`0x0C01` 埋返回 `EVENT_QUEUE_FULL` 的唯一出口；`0x0C02` 埋风暴抑制分支），**不在调用者、不在入口**；**Σ `LOG_P_COUNT` = 真实丢弃数量**。详见 `log模块历史/LogManager-P2M-Event接入审查0920.md` |
 | OLED | `oled.cpp`（301） | 无日志 | `LOG_OLED_INIT_FAILED`(WARN) —— 单点，低风险 |
 | ComputerReset | `computer_reset.cpp`（475） | 见 §1 | `LOG_CRESET_*` 三个 |
 | Registry | `capability_registry.cpp`（1029） | ✅ **已接入（P2-L，2026-09-20）** | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR)，均落在 `registry_sync()` 内（**2 处 `log_emit`**）。宿主 = 定义点而非触发点：重建 → `else` 分支（checksum 不一致/缺失/损坏）；保存失败 → `save_registry_file()` 返回值判定处。**不得**埋 `command_manager` 的 4 个 rescan 调用点（一次 create 连触发 3 次）与 `save_registry_file()` 内部 4 个失败出口 |
@@ -475,7 +475,7 @@
 | 9 | Valve | 无 | ~8 | 缺 NOT_READY；FORCE_CLOSE 无失败分支 | P1 | 中（安全） |
 | 10 | Dispense | 无 | ~3 | 模块不存在，缺宿主 | P2 | 中 |
 | 11 | BLE | 无 | ~6 | 🔴 最高频 + 回调上下文禁令 | P2 | **高** |
-| 12 | Command/Event/OLED/Registry | 部分 | ~8 | 侧信道聚合 | P2 | 低 |
+| 12 | Command/Event/OLED/Registry | ✅ **全部完成**（Command=P2-J / Event=P2-M / OLED=**已判无宿主不埋** / Registry=P2-L） | ~8 | 侧信道聚合 | P2 | 低 |
 
 ---
 
