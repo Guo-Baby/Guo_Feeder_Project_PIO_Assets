@@ -402,6 +402,41 @@ void weight_task()
         last_not_ready_event_ms = 0;
     }
 
+    // =================================================
+    // R-8-A：读取前二次就绪确认（防 HX711 无限阻塞）
+    //
+    // 背景：HX711::read() 内部先调用**无参** wait_ready()，其实现是
+    //       `while(!is_ready()) delay(0);` —— **无超时、无上界**。
+    //       库虽另提供 wait_ready_timeout()/wait_ready_retry()，但 read()
+    //       并未使用它们，且无法通过参数让其变为有界。
+    //
+    // 风险：上方 is_ready() 与本行 read() 之间存在一个极短的失效窗口；
+    //       若 HX711 掉线（DOUT 被外部上拉拉高）⇒ is_ready() 恒为 false ⇒
+    //       read() 会**永久阻塞** => loop 停转 => Safe Restart / 阀门安全超时 /
+    //       安全链全部失效（且 delay(0) 会喂狗 => 可能连 WDT 都不触发）。
+    //
+    // 处置：读之前**再确认一次**就绪；不就绪则**不进入 read()**，
+    //       直接退回既有的"无数据"路径 —— 由 not_ready_start 与
+    //       WEIGHT_NOT_READY_TIMEOUT_MS 驱动**既有**错误流程
+    //       （event_push + STATE_WEIGHT_ERROR），语义完全不变。
+    //
+    // 注意：本分支**刻意不发 not-ready 事件**，只做状态维护。
+    //       原因：本分支每个 loop 都可能进入，而事件发布需要
+    //       "距上次发布 ≥WEIGHT_NOT_READY_TIMEOUT_MS" 的节流（见上方分支），
+    //       若在此处复制该逻辑会引入重复计数；而上方分支在下一轮 loop
+    //       即会以同一时间基准接管，事件时序不受影响。
+    //
+    // 正常路径开销：仅多一次 digitalRead()（亚微秒级），行为与修改前一致。
+    // =================================================
+    if(!scale.is_ready())
+    {
+        if(not_ready_start == 0)
+            not_ready_start = millis();
+
+        weight_refresh_error_state();
+        return;
+    }
+
     // 成功读取新的 HX711 数据
     raw_value = scale.read();
 
