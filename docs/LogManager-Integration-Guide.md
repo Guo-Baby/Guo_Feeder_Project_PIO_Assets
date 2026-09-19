@@ -2344,3 +2344,125 @@ crit 增量点与前置 FORCE_CLOSE 的时间差        = 1.03 / 0.66 / 0.66 / 0
 | **E2** | `FORCE_CLOSE_FAILED` 是否加同款 5 s 门控（`VALVE-6`） | 建议加（否则引脚误配时可达 20 条 CRITICAL/s） |
 | **E3** | `VALVE-1`（`initialized` 未检查）是否单独开一轮修 | 建议单独评审（涉及安全语义） |
 | **E4** | `R-8`（FS 阻塞诱发重量跳变）是否单独评审 | 建议单独评审（属 Weight 模块鲁棒性，非日志） |
+
+---
+
+## 18. Weight Error 日志写入压力优化（**P2-I 已落地**）
+
+> 生产代码改动：**仅 `src/log_manager.h`（`+25/−0`）与 `src/log_manager.cpp`（`+248/−5`）**。
+> `src/weight.cpp` / `src/dispense_guard.cpp` / `src/event_manager.cpp` / `src/event_manager.h` /
+> `src/log_events.h` / `test/` **全部零改动**；**未新增 EventId / ParamId**。
+
+### 18.1 问题与边界
+
+`EVENT_WEIGHT_ERROR` 同时服务两条互不相关的链：
+
+| 链 | 路径 | 要求 |
+|---|---|---|
+| **安全链** | `weight_record_jump()` → `event_push()` → EventManager → `dispense_guard` → `valve_force_close()` | **必须实时**，绝不允许延迟/去重/屏蔽 |
+| **记录链** | `weight_refresh_error_state()` 状态边沿 → `log_emit(LOG_WEIGHT_ERROR_ENTER, WARN)` | 允许合并（历史信息完整即可） |
+
+`WARN` ⇒ 落 Flash（Level Policy）。Flash 段环只有 **496 条**（16×31），重复记录会挤掉更早的历史。
+
+**硬约束（本方案的设计前提）**：LogManager **不在安全路径上** —— 安全动作由 EventManager 直接分发，
+LogManager 只是旁路消费者 ⇒ **日志侧的合并/丢弃在物理上不可能影响安全时序**。
+
+### 18.2 触发形态（先看清再动手）
+
+- `LOG_WEIGHT_ERROR_ENTER` 挂在 `err != error_state` 的**天然边沿**上，不是每条采样、也不是每个事件。
+- `jump_error = jump_count >= WEIGHT_MAX_JUMP_EVENTS(5)`（窗口 5 s）⇒ 单靠跳变路径，**天然 ≥5 s 才能再触发一次**。
+- 但 `err = no_data || raw_zero || jump_error` 是**三因或**（`weight.cpp:204-209`）⇒ 任一因先消失、
+  再成立即可在**同毫秒**产生 `-> 1` / `-> 0` 闪断（实测多次；也是 `R-6` 那个"每事件成对 ×2"的来源）。
+- ⇒ **短时间内的重复 ENTER 是真实存在的形态**，折叠有意义；但它**不是**高频源
+  （实测 0~10 条/会话，需要 5 次跳变/5 s 才会出现一次）。
+
+### 18.3 方案：窗口内折叠 + **计数守恒**（在 LogManager 内部）
+
+白名单制。当前白名单**只有一项**：`LOG_WEIGHT_ERROR_ENTER`（`s_coalesce_targets[]`，`log_manager.cpp`）。
+
+```
+log_emit(白名单事件)
+   ├─ 窗口内（< LOG_COALESCE_WINDOW_MS = 5000 ms）重复发生
+   │     ⇒ 折叠：只累计 folded++（缓存最后一次参数）
+   │        ★ 不占 seq、不进 RAM 环、不落 Flash、不上云 —— 直接 return true
+   └─ 否则（窗口已关闭 / 距上次被接受 ≥ 5 s）
+         ├─ 若上一窗口有 folded ⇒ 先产出**汇总记录**（LOG_P_COUNT = folded）
+         └─ 本条正常落地，并追加 LOG_P_COUNT = 1
+
+log_task() 阶段 0（每轮 loop）
+   └─ 窗口到期且 folded > 0 ⇒ 产出汇总记录（LOG_P_COUNT = folded）
+```
+
+**不变量（可上板核对）**：`Σ LOG_P_COUNT`（该事件全部记录）= **真实发生次数**。
+⇒ 记录条数下降，但**没有任何一次异常被"丢掉"**，只是不再逐条占用一条记录。
+
+**参数**：复用既有 `LOG_P_COUNT`（0x45）与 `LOG_WEIGHT_ERROR_ENTER`（0x050C），**未新增任何 ID**。
+被接受/汇总的记录一律是 `[原参数…] + LOG_P_COUNT`（本模块为 4 个参数），形状**确定**，便于云端解析。
+
+### 18.4 为什么不能改其它地方（逐条对照设计要求）
+
+| 约束 | 做法 |
+|---|---|
+| 不修改重量异常检测 | 阈值、HX711 采样、`jump_error` 判定、`EVENT_WEIGHT_ERROR` 产生条件**全部零改动** |
+| 不修改 DispenseGuard 安全路径 | `dispense_guard.cpp` **零改动**；不延迟、不加 debounce、不屏蔽事件 |
+| 不在 EventManager 层过滤事件 | `event_manager.*` **零改动**；`EVENT_STORM_MAX_PER_EVENT` 等参数未动 |
+| 不影响 System State | 合并状态是 `log_manager.cpp` 的**文件级 static**，不进 System State |
+| Capability 层不直接操作 LittleFS | 未新增任何 Flash API 调用；汇总记录仍走 `log_emit()` → `log_task()` 原路径 |
+| LogManager 是唯一日志存储入口 | 合并**只在** `log_emit()`/`log_task()` 内部生效 |
+
+### 18.5 方案 B / 方案 C 的结论（**已满足，不再重复修改**）
+
+- **方案 B（异步写入保护）已满足**：`log_emit()` 只做**纯 RAM 入环**（`memcpy` 到 64 槽环），
+  Flash I/O 全部在 `log_task()`（在 `loop()` 内、非阻塞、无 `delay()`/`while`）⇒
+  **安全事件回调路径中不存在耗时 Flash 操作**，无需新增后台任务。
+  唯一例外：`log_emit()` 内 `seq_reserve_next()` 每 256 条一次写 `meta.bin`，已在临界区之外且极低频。
+- **方案 C（已审）**：EventManager 的风暴抑制**确实覆盖** `EVENT_WEIGHT_ERROR`
+  （四个 push 点都是 `EVENT_POLICY_STATE`，非 `FORCE` ⇒ 受 `EVENT_STORM_MAX_PER_EVENT = 5 / 500 ms` 约束，
+  第 6 条起会 `EVENT_DROPPED`）。**判定：不构成安全缺陷** —— 因为
+  `valve_force_close()` 是**无条件的幂等强制同步**，同一窗口内的重复事件执行的是**同一个动作**
+  ⇒ 丢重复不会减少保护，且事件不会被安全路径"看见"的只是冗余副本。
+  ⇒ **不修改任何风暴参数**，本轮只在 Log 层优化。
+
+### 18.6 上板验证（2026-09-19，COM8，固件 `.pio/build/p2i`，Flash 65.3% / RAM 39.9%）
+
+**★ 关键手段：`logt fill <level> <n> <EventId(hex)>` 支持第 3 个参数指定 EventId**
+（`src/main.cpp:1292`，缺省回落 `LOG_WF_START`）⇒ 可**确定性注入**目标事件，不必靠环境诱发。
+
+| 注入 | 期望 | 实测（MQTT 记录级；`qdrop=0` / `evict_inf=0` ⇒ 捕获完整） |
+|---|---|---|
+| `logt fill warn 1 50C` | 1 条 `COUNT=1` | ✅ `seq=16904 COUNT=1` |
+| `logt fill warn 10 50C` | 1 条 `COUNT=1` + 到期 1 条 `COUNT=9` | ✅ `seq=16905 COUNT=1` / `16906 COUNT=9` |
+| `logt fill warn 6 50C` | 1 条 `COUNT=1` + 到期 1 条 `COUNT=5` | ✅ `seq=16907 COUNT=1` / `16908 COUNT=5` |
+| `logt fill info 4 50D`（EXIT，**非白名单**） | 逐条 4 条 | ✅ 4 条未合并 |
+| `logt fill warn 4 401`（`LOG_WF_START`，**非白名单**） | 逐条 4 条 | ✅ 4 条未合并 |
+
+**三项不变量**：① `ΣCOUNT = 1+1+9+1+5 = 17` == 注入 `1+10+6 = 17` ✅；
+② 记录数 **17 → 5（−70.6%）**，10 连发场景 **10 → 2（−80%）**；
+③ 被接受记录间隔 `8533 / 5000 / 6941 / 5000 ms` 全部 ≥ 窗口 ✅（两条 5000 ms 的正是窗口到期汇总条）。
+
+**真实异常路径**：捕获到真实 `LOG_WEIGHT_ERROR_ENTER(CAUSE=2 RAW=0 COUNT=1)` +
+`LOG_WEIGHT_ERROR_EXIT(CAUSE=2 DURATION_MS=91)` 配对，**EXIT 参数与语义完全未变**；
+同期 `guard_rx == FORCE_CLOSE` 计数**恒等**（6/6、4/4、2/2 …）⇒ **安全链零影响**。
+
+### 18.7 ⚠️ 验证手段的教训（**不要再重复踩**）
+
+折叠/去重类验证**不要靠"诱发环境异常"**。本轮先试了 4 种诱发方式：
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| `fill warn 24 + flush`（稀疏） | ENTER=0 | 阻塞不够密集 |
+| `fill warn 62 + flush ×12`（密集） | ENTER=3 ✅ 但 `qdrop=424` / `evict_inf=160` | 记录级捕获不完整 ⇒ 无法核对 ΣCOUNT |
+| `fwipe` + `mwipe`（阻塞但不产记录） | ENTER=0 | 擦除阻塞弱于写入阻塞，凑不满"5 次跳变/5 s" |
+| `fill warn 8 + flush`（薄填充） | ENTER=0 | 单次 append 阻塞时长不够 |
+
+⇒ **正确姿势**：`logt fill <level> <n> <EventId>` **定向注入** + **ACK 前置**（推送前先排空云队列，
+否则 62 条/次的填充会直接冲爆 128 槽队列，`qdrop` 一上来就不可核对）。
+此教训已登记 `未修复的问题.md` 的 `T-5` / `T-6`。
+
+### 18.8 回归
+
+**182/195**（A 53/56 · B 65/65 · C 20/21 · D 24/30 · E 23/23）＝ 13 MISS，
+全部为 **`R-7` 环境干扰类**（`replay=` / `evict_inf=` / `qdrop=` / `holes=` / `hole_evict=` / `tx_valid=` / `partial=`，
+即"绝对值 / 拓扑派生"断言）。**夹具 0 改动、断言仍 195 条**。
+对照 P2-H 同环境 168/195（26 MISS）—— 本改动**减少**了环境记录量，但两次运行的环境异常强度不同，
+**不声明因果**；结论仍是 `R-7` 所定义的"需要测试隔离"。

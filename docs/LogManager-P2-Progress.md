@@ -42,6 +42,7 @@
 | **阶段 2-H · 冲突** | ⚠️ **回归 168/195（26 MISS）** —— 根因＝A 段发生 **69 次** `valve_force_close()` （P2-G 那轮仅 2 次）⇒ 门控后仍多出约 **34 条 CRITICAL** ⇒ F0/F1/F2 的**精确记账断言**（`total=40`/`replay=31`/`evict_inf=9`/`qdrop=12`…）全部失准。**"按 P2-G 方式修夹具"在此不适用**：这 26 条断言就是 FIX-1/2/3 的记账本体，改结构性判据 = 降断言 ⇒ **已停止并上报**，待拍板（Guide §17.9/§17.10） | — | ⛔ **阻塞待决策** |
 | **阶段 2-H · 判定** | **回归干扰隔离实验（纯运行时观测，未改任何代码/夹具）**：同一 workload 跑 **P2-G 固件**（无 Valve 日志）与 **P2-H 固件** ⇒ 额外记录配比 **Valve `crit`=9 : Weight≈6**；`qdrop`/`fdrop`/`seg_evict_unacked`/`seg_new`/`seg_del` **几乎或完全相同**（结构行为未被改变）；**决定性判定**：P2-G 固件跑同一 A 段夹具三次 ⇒ `16调用/2边沿 → 0 MISS`、`68/11 → 9 MISS`、`48/12 → 2 MISS` ⇒ **失败与"是否有 Valve 日志"不相关，只与环境重量异常强度相关**；另实测 **Weight 侧单独就能 +13 条额外记录** （P2-G #3 `emit` 509 vs 基数 496、`crit` 恒 0）⇒ **去掉 Valve 日志不能归零** | `log模块历史/LogManager-P2H-回归干扰分析报告0919.md` | ✅ 已提交 |
 | **阶段 2-H · 结论** | **本轮决定：`R-7` / `R-8` / `VALVE-6` 全部登记 OPEN、不修、不改代码**；**明确不采用"给 weight 加 `enable`"**（改变 Weight 能力边界、影响 System Config，超出 P2-H 范围）；另修正 `R-6` 表述（`force_close` 调用数 == `guard_rx` 恒等 ⇒ **不是"调用被复制"**，而是**同毫秒两个独立 `EVENT_WEIGHT_ERROR`**） | — | ✅ |
+| **阶段 2-I** | **P2-I Weight Error 日志写入压力优化**（**仅 `src/log_manager.h` `+25/−0` 与 `src/log_manager.cpp` `+248/−5`**；`weight.cpp` / `dispense_guard.cpp` / `event_manager.*` / `log_events.h` **零改动**）：在 LogManager 内部引入 **突发合并（Burst Coalescing）**（白名单 = `LOG_WEIGHT_ERROR_ENTER`）：5 s 窗口内重复发生折叠为计数，被接受的记录携带 `LOG_P_COUNT`，窗口到期由 `log_task()` 汇总一条；**不变量Σ `LOG_P_COUNT` = 真实发生次数**（实测 17 次发生 → 5 条记录，降幅 **70.6%**）；安全链（EventManager→DispenseGuard→valve）**零接触** | `feat(log): coalesce repeated weight error records` | ✅ 已提交 |
 
 ---
 
@@ -384,6 +385,59 @@ WEIGHT_ERROR 边沿 / rate-limit 的**每秒分布**，用于量化高频调用�
 
 ---
 
+### P2-I 验证记录（2026-09-19，COM8；固件 `.pio/build/p2i`，Flash 65.3% / RAM 39.9%）
+
+**改动**：`src/log_manager.h` `+25/−0`、`src/log_manager.cpp` `+248/−5`（`−5` 为**签名新增形参**与
+`param_count → use_n` 的机械替换）。`weight.cpp` / `dispense_guard.cpp` / `event_manager.*` /
+`log_events.h` / `test/` **全部零改动**；**未新增 EventId / ParamId**。
+
+**机制**：白名单（当前仅 `LOG_WEIGHT_ERROR_ENTER`）事件在 `LOG_COALESCE_WINDOW_MS = 5000` 窗口内重复发生时
+**不产生记录**、只累计 `folded`；被接受的记录自动追加 `LOG_P_COUNT`（=1）；窗口到期由
+`log_task()` 阶段 0 产出**汇总记录**（`LOG_P_COUNT` = 折叠次数）。
+
+**★ 决定性验证（确定性注入，非环境诱发）**
+
+关键手段：**`logt fill <level> <n> <EventId(hex)>`** 支持第 3 个参数指定 EventId
+（`src/main.cpp:1292`，缺省回落 `LOG_WF_START`）⇒ 可**定向注入** `LOG_WEIGHT_ERROR_ENTER`：
+
+| 注入 | 期望 | 实测（MQTT 记录级，`qdrop=0` / `evict_inf=0` ⇒ 捕获完整） |
+|---|---|---|
+| `fill warn 1 50C` | 1 条 `COUNT=1` | ✅ `seq=16904 COUNT=1` |
+| `fill warn 10 50C` | 1 条 `COUNT=1` + 到期 1 条 `COUNT=9` | ✅ `seq=16905 COUNT=1` / `seq=16906 COUNT=9` |
+| `fill warn 6 50C` | 1 条 `COUNT=1` + 到期 1 条 `COUNT=5` | ✅ `seq=16907 COUNT=1` / `seq=16908 COUNT=5` |
+| `fill info 4 50D`（EXIT，**非白名单**） | 逐条 4 条 | ✅ 4 条，**未合并** |
+| `fill warn 4 401`（`LOG_WF_START`，**非白名单**） | 逐条 4 条 | ✅ 4 条，**未合并** |
+
+**三项不变量实测**
+
+1. **Σ `LOG_P_COUNT` = 真实发生次数**：`1+1+9+1+5 = 17` vs 注入 `1+10+6 = 17` ⇒ ✅ **守恒**
+2. **记录数下降**：**17 次发生 → 5 条记录**（降幅 **70.6%**）；10 连发场景 **10 → 2 条（−80%）**
+3. **被接受记录间隔 ≥ 窗口**：实测 `8533 / 5000 / 6941 / 5000 ms` ⇒ ✅ 成立
+   （两条正好 5000 ms 的就是窗口到期产出的汇总条）
+
+**真实重量异常路径（非注入）**：V2/V6 会话捕获到真实
+`LOG_WEIGHT_ERROR_ENTER(CAUSE=2 RAW=0 COUNT=1)` + `LOG_WEIGHT_ERROR_EXIT(CAUSE=2 DURATION_MS=91)` 配对，
+**EXIT 参数与语义完全未变**；同期 `guard_rx == FORCE_CLOSE` 计数**恒等**（6/6、4/4、2/2 …）
+⇒ **安全链未受任何影响**。
+
+**上板路径上的 4 次失败尝试（避免后人重复踩）**
+
+| 尝试 | 结果 | 原因 |
+|---|---|---|
+| `fill warn 24 + flush`（稀疏） | ENTER=0 | 阻塞不够密集 |
+| `fill warn 62 + flush ×12`（密集） | ENTER=3 ✅ 但 `qdrop=424` / `evict_inf=160` | 记录级捕获**不完整** ⇒ 无法核对 ΣCOUNT |
+| `fwipe`/`mwipe`（阻塞但不产记录） | ENTER=0 | 擦除阻塞弱于写入阻塞，不足以凑满"5 次跳变/5 s" |
+| `fill warn 8 + flush`（薄填充） | ENTER=0 | 单次 append 的阻塞时长不够 |
+
+⇒ **结论：不要靠"诱发环境异常"做折叠/去重类验证**，改用 `logt fill … <EventId>` 定向注入。
+
+**★ 关于触发门槛（重要认知）**：`LOG_WEIGHT_ERROR_ENTER` 是 `error_state` 的**边沿**记录，而
+`jump_error = jump_count >= WEIGHT_MAX_JUMP_EVENTS(5)`（窗口 5 s）⇒ **单靠跳变路径天然 ≥5 s 才能再触发**；
+但 `err = no_data || raw_zero || jump_error` 是**三因或**，任一因先消失再成立即可产生
+**同毫秒 ENTER/EXIT 闪断**（实测多次）⇒ 短时间内的重复 ENTER 是真实存在的形态，折叠有意义。
+
+---
+
 ### ★ 回归夹具加固（P2-D 期间发现，**P2-E 又加深了一层**）
 
 **现象**：P2-D 埋点后 B 段稳定 4 条 MISS（`replay=8` / `qused=8` / `qused=0` / `rarmed=0`）。
@@ -626,6 +680,10 @@ Dispense
 | `log模块历史/LogManager-P2F-Workflow接入审查0918.md` | **新增**：Workflow 接入前审查（Critical Op 生命周期审计 / 6 个 terminate 退出路径 / 矩阵与代码 4 项不一致 / 14 个推荐埋点位置 / WF-1 设计问题） |
 | `docs/LogManager-Integration-Guide.md` **§16** | **新增**：**Weight/HX711 接入** —— 频率压力（进入率=每 loop / 10 Hz / 2 Hz）为何决定方案 / 5 埋点表 / `CAUSE` **位掩码** / `ERROR_EXIT` 的 2 个只读变量 / 9 个状态 vs 代码实际 / 禁止清单 / **上板验证（含两次"看似失败"的尝试）** / **§16.10 回归夹具第三层加固（F3-A 恰好填满断言）** |
 | `log模块历史/LogManager-P2G-Weight接入审查0918.md` | **新增**：Weight 接入前审查（频率分析 / 状态对照 / EventId↔宿主 / **3 处矩阵不一致** / 风险 R-1..R-5 / 待拍板 4 项） |
+| `docs/LogManager-Integration-Guide.md` **§17** | **新增**：**Valve / DispenseGuard 接入** —— 为何不能照矩阵直接埋点（纯事件 vs 状态迁移）/ 6 埋点表 / **突发频率实测** / `FORCE_CLOSE` 门控 / 一次性报告锁 / 状态机真相 / 上板验证 / **第四层教训** |
+| `log模块历史/LogManager-P2H-Valve接入审查0919.md` | **新增**：Valve 接入前审查 + 实现与验证结果（含 7 项决策 D1~D7） |
+| `docs/LogManager-Integration-Guide.md` **§18** | **新增**：**Weight Error 日志写入压力优化（P2-I）** —— 问题与边界 / 触发形态 / **窗口内折叠 + ΣCOUNT 守恒** / 逐条对照设计约束 / **方案 B、C 结论（已满足不重复修改）** / 定向注入验证 / **四种失败尝试的教训** / 回归 |
+| `log模块历史/LogManager-P2I-Weight日志写入压力优化0919.md` | **新增**：**P2-I 全记录** —— 问题定义 / 现状核实（4 个 push 点 + 落盘路径 + 触发形态）/ 方案 / 方案 C 审查结论 / **确定性注入验证（5 组注入 + 3 项不变量）** / 三场景对照 / **四种失败尝试** / 回归归因 / 架构影响 / 安全语义论证 |
 | `docs/LogManager-P1.5-Board-Test-Report0918.md` | **新增**：P1.5 上板验证报告（环境 / 初始化 / MQTT / ACK / replay / F0–F8 / 已知问题）；**附录 R1**（用例修正与基线重录）；**附录 R2**（BT-9 分析·修复·验证 + 新基线 195/195） |
 | `docs/P2_Log_Integration_Matrix.md` · `log模块历史/LogManager-P2接入准备审查0918.md` | 前置审查 —— 已随 `85c88b5` 入库 |
 
@@ -654,7 +712,10 @@ Dispense
 | `.pio/p15run/valve_watch.py` | **只读**串口观测器：统计 `FORCE CLOSE` / `DispenseGuard` / `STATE_WEIGHT_ERROR` 边沿 / `Operation too frequent` 的**每秒分布**，用于量化高频调用 |
 | `.pio/p15run/gen_iso.py` + `iso_report.py` | 隔离实验：生成"同一 workload"（`P2H_ISO.txt`，85 命令）并提取 T0/T1 增量 + 串口侧异常量。**用于"换固件跑同一 workload"的 A/B 归因** |
 | `.pio/p15run/miss_table2.py` | 26 条 MISS 明细提取器（case/行号/命令/期望/实际/偏差/分类），输出可直接内联进报告 |
+| `.pio/p15run/p2i_patch.py` | P2-I 的 10 处精确插入式补丁（含 **CRLF 行尾保留** 与"允许的机械替换白名单"自检；自检会报出每一行删改） |
+| `.pio/p15run/p2i_report.py` | 折叠验证报告：从 MQTT 捕获提取 `LOG_WEIGHT_ERROR_ENTER` 序列，核对 **ΣCOUNT 守恒 / 记录数降幅 / 接受间隔 ≥ 窗口** 三项不变量 |
+| `.pio/p15run/gen_p2i1..7.py` | P2-I 的诱因/验证序列生成器（V1..V7）。★ 其中 **V7** 是唯一成功的确定性方案：**`logt fill warn 10 50C` 定向注入** |
 
 ---
 
-*最后更新：2026-09-19（**P2-H 回归干扰分析完成（纯观测、未改代码）**：26 MISS 全明细 A=5/D=21；判定实验证明 **P2-G 固件（无 Valve 日志）在异常强度高时同样 MISS 9/2 条**、Weight 侧单独可 +13 条额外记录 ⇒ **失败与环境重量异常强度相关，与 Valve 日志不相关**；`R-6` 表述已修正。**R-7 / R-8 / VALVE-6 全部登记 OPEN、不修、不改代码** —— 等待进一步决策）*
+*最后更新：2026-09-19（**P2-I Weight Error 日志写入压力优化完成**：仅改 `log_manager.h/.cpp`（`+273/−5`），在 LogManager 内引入**突发合并**（白名单 = `LOG_WEIGHT_ERROR_ENTER`，5 s 窗口折叠为 `LOG_P_COUNT`）；确定性注入实测 **17 次发生 → 5 条记录（−70.6%）且 ΣCOUNT 守恒**；安全链（EventManager→DispenseGuard→valve）零接触；回归 **182/195**（13 MISS 全属 `R-7` 环境干扰类，夹具 0 改动、断言仍 195；对照 P2-H 的 26 MISS）。`R-7` / `R-8` / `VALVE-6` 仍登记 OPEN）*
