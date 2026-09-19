@@ -151,10 +151,11 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
 | **Weight（`weight.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处 / 5 个事件）；`ERROR_*` 挂 `error_state` **天然边沿**（无需任何去重逻辑）；**纯增量 `+66/−0`**；`CAUSE` 位掩码；2 个**只读**观测变量（供 EXIT 报 `CAUSE`+`DURATION_MS`） | `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` / `ZERO_DONE` / `CALIB_FAILED` / `TRIGGER_FIRED` | P2-G |
 | **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
-| **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J**（本次） |
-| 其余 3 个模块 | **未接入** | — | — |
+| **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J** |
+| **ComputerReset（`computer_reset.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（3 个事件 / **4 处 `log_emit`**）；**全部天然边沿、零门控**；★ `PULSE` 上移到 `set_output()` 的 **LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以**同时覆盖手动与 Workflow Action 两条路径**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13） | `LOG_CRESET_PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED` | **P2-K** |
+| 其余 2 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**OLED → ComputerReset → Registry → Event**（**BLE 暂缓**）
+未接入清单（按约定顺序）：**Registry → Event**（**BLE 暂缓**；**OLED 已判无宿主不埋**）
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
@@ -538,7 +539,42 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20（最新）：Phase 3 第 ① 项 —— **Command 模块埋点接入完成**（P2-J）
+### ✅ 2026-09-20（最新）：Phase 3 第 ③ 项 —— **ComputerReset 模块埋点接入完成**（P2-K）
+
+> 完整审查记录：`log模块历史/LogManager-P2K-ComputerReset接入审查0920.md`
+
+| 项 | 结果 |
+|---|---|
+| **改动** | **仅 `src/computer_reset.cpp`**（+include / **+4 处 `log_emit`**，`+65/−0` 纯增量） |
+| **约束遵守** | 未改 `EventId` / `ParamId`（`log_events.h` **零改动**）/ 日志协议 / `System State` / `EventManager` 风暴策略 / GPIO 时序 / 池容量 / 测试断言 |
+| **V1 编译** | SUCCESS，RAM 130616 B（39.9%，**零增长**）/ Flash 1370281 B（+156 B） |
+| **V2 零回归** | 静置 `emit` **5 → 5**（**零增长**）⇒ 3 个埋点无虚假触发 |
+| **V3 `PULSE` 手动路径** | 控制台 `computer_reset` ⇒ `emit` **+1**、`flash` **+0**（INFO 只上云 ✅）、GPIO8 HIGH→LOW 800 ms 正确 |
+| **V3b `PULSE` Action 路径** ★ | `execute_action` ob=`COMPUTER_RESET` ⇒ `emit` **+1** ⇒ **证明"上移到 `set_output()` 上升沿"的决策正确**（若照矩阵只挂 `trigger()`，此条**将不存在**） |
+| **V4 二进制映射** | 4 处 `log_emit` **逐一映射**到 `set_output` / `action_start` / `task` / `trigger`，与源码 4 处一致 |
+| **未覆盖项** | `SAFETY_TIMEOUT`（正常路径**结构性不可达**：手动/Action 两条路径都在 800 ms 回收，到不了 2000 ms；触发需"实例泄漏"异常条件）与 `POOL_EXHAUSTED`（需 4 实例同时活跃）。**二者均为"正常时不应触发"的安全兜底/资源耗尽路径 ⇒ "不触发"即正确行为**，已由 V4 二进制确认存在 |
+
+**★ 本项沉淀的四条教训**：
+1. **矩阵给的是"语义宿主"，落地要按"代码事实"找"物理宿点"。** 矩阵写 `trigger()`，
+   但脉冲有**两条产生路径** ⇒ 挂 `trigger()` 会漏掉 Action 路径。
+   **正解是上移到两条路径的公共汇合点**（`set_output()` 上升沿）。
+2. **埋点顺序在"取值依赖会被清零的变量"时是正确性问题，不是风格问题。**
+   `DURATION_MS` 依赖 `pulse_start_ms`，而紧随的 `force_idle()` 会清零它 ⇒
+   埋点**必须**写在前面（LOG-13 的具体化）。
+3. **"天然边沿"的论证可直接引用既有的防御性代码。** `set_output()` 的
+   `if(active == output_active) return;` 本为"避免重复写 GPIO"，但**同时**构成了
+   天然边沿的结构性证明 ⇒ 现有守卫常可复用为门控依据，**无需新增去重逻辑**。
+4. **"正常时不应触发"的埋点，其"不触发"本身就是验收项。** 安全兜底类埋点的验收
+   标准是**"二进制存在 + 正常路径零增长"**，而非"实测能触发"。
+
+**下一步**：Phase 3 第 ④ 项 —— **Registry**（`LOG_REG_REBUILT = 0x0B01` / `LOG_REG_SAVE_FAILED = 0x0B02`，⚠️ 需先解 `WF-4` 矩阵作用域界定）。
+
+> **② OLED 已判"无宿主不埋"**（2026-09-20 用户拍板）—— `oled.begin()` 无条件返回 true
+> 且 U8g2 丢弃 I2C 错误码 ⇒ **原理上不可达**；且无消费方。已移入"无宿主"清单。
+
+---
+
+### ✅ 2026-09-20：Phase 3 第 ① 项 —— **Command 模块埋点接入完成**（P2-J）
 
 > 完整审查记录：`log模块历史/LogManager-P2J-Command接入审查0920.md`
 
@@ -698,8 +734,8 @@ C3  VALVE-1 / C5 WF-1 / C6 P0-4 独立评审
 B7  Dispense                        ← ★ 必须等 baseline 稳定
 ```
 
-**剩余未接入模块（按约定顺序）**：~~`Command`~~ ✅ → **OLED** → **ComputerReset**
-→ **Registry** → **Event**（**BLE 暂缓**；`Dispense` 归入 Phase 4 业务开发）
+**剩余未接入模块（按约定顺序）**：~~`Command`~~ ✅ → ~~**OLED**~~ ⛔（判无宿主不埋）
+→ ~~**ComputerReset**~~ ✅ → **Registry** → **Event**（**BLE 暂缓**；`Dispense` 归入 Phase 4 业务开发）
 
 > ⚠️ **2026-09-20 起 `R-7` 已 `DEFERRED`** ⇒ **不再需要等 regression baseline 稳定**，
 > `Dispense` 亦不再作为埋点项等待（其埋点随模块本体一起建，见 Phase 4）。
@@ -896,4 +932,5 @@ Dispense
 
 ---
 
-*最后更新：2026-09-20（**Phase 3 第 ① 项 Command 埋点接入完成（P2-J）**：仅改 `src/command_manager.cpp`，接入 4 个冻结 EventId / 5 处 `log_emit`；`REJECTED` 用 **5 s 去重门控 + `LOG_P_COUNT` 汇总**（本模块唯一"状态型"语义），其余 3 处为**天然边沿**免门控；`command`/`cmd_id` 一律 **FNV-1a 哈希**入日志；`APPLIED` 刻意排除异步命令（避免与 Workflow 段跨段重复）。验证：V1 编译 SUCCESS / V2 静置零回归 / V3 二进制 5 处调用一一对应 / V4 `APPLIED` 实测 `emit` +1 per 命令 / **V5 `REJECTED` 用 0.05 s 急速连发实测 `flash` 仅 +1 ⇒ 门控生效**。`QUEUE_FULL`/`RUNTIME_TIMEOUT` 因环境工具限制未做端到端实测，如实登记。`log_events.h` / 测试断言零改动。)*
+*最后更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`（`PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED`×2）；**全部天然边沿、零门控**。★ `PULSE` **上移到 `set_output()` 的 LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以同时覆盖手动与 Workflow Action 两条路径 —— **V3b 实测 Action 路径 `emit` +1 证明该决策正确**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13）。验证：V1 编译 SUCCESS（RAM 零增长 / Flash +156 B）/ V2 静置 `emit` 5→5 零增长 / V3+V3b `PULSE` 双路径实测 `emit` 各 +1 / V4 二进制 4 处逐一映射到预期函数。`SAFETY_TIMEOUT` 与 `POOL_EXHAUSTED` 属"正常时不应触发"的安全兜底/资源耗尽路径，**"不触发"即正确行为**，已由 V4 二进制确认存在。`log_events.h` / 测试断言零改动。另：**② OLED 判为"无宿主不埋"**（`oled.begin()` 无条件返回 true + U8g2 丢弃 I2C 错误码 ⇒ 原理上不可达），已移入"无宿主"清单。)*
+*上一版更新：2026-09-20（**Phase 3 第 ① 项 Command 埋点接入完成（P2-J）**：仅改 `src/command_manager.cpp`，接入 4 个冻结 EventId / 5 处 `log_emit`；`REJECTED` 用 **5 s 去重门控 + `LOG_P_COUNT` 汇总**，其余 3 处为天然边沿；`command`/`cmd_id` 一律 **FNV-1a 哈希**；`APPLIED` 刻意排除异步命令。V5 用 0.05 s 急速连发实测 `flash` 仅 +1 ⇒ 门控生效。)*
