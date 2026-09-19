@@ -232,7 +232,7 @@ Command 转换
 MQTT
 ├── down   guo_feeder/down    Cloud → Device   命令 + 协议级消息
 ├── up     guo_feeder/up      Device → Cloud   业务上行（ACK / Result / Registry / 上线通知）
-└── log    guo_feeder/log     Device → Cloud   ★ 预留：仅 LogManager 结构化日志批次（尚未实现）
+└── log    guo_feeder/log     Device → Cloud   ✅ 已实现：LogManager 结构化日志批次（CBOR，at-least-once + 云端幂等）
 ```
 
 | Topic | 方向 | 当前状态 | 说明 |
@@ -275,6 +275,9 @@ LogManager  ──(注入的 upload_callback)──►  CloudManager  ──► 
 - **LogManager 不直接调用 MQTT Client**，只持有由 `main.cpp` 注入的上行回调。
 - 依赖方向单向：`CloudManager ↑ LogManager`，二者互不 include，由 `main.cpp` 绑定。
 - 日志上传走**独立的 `log` Topic**，不混入业务 `up`。
+- **安全路径不经过 LogManager**：重量异常等安全事件由
+  `EventManager → DispenseGuard → 执行机构` 直接完成，日志只是旁路消费者。
+- **写入压力控制**：Level Policy（INFO 不落 Flash）+ 突发合并，详见 §4.15.1。
 - 详细设计见 `log模块历史/LogManager详细设计规划0915.md`。
 
 # 2.7 系统整体数据流
@@ -831,23 +834,39 @@ System State显示
 
 # 4.15 Log Manager
 
-目前尚未正式实现。
+**已实现**（P1 基础设施 + P2 逐模块接入，当前 11 个模块）。
+进度：`docs/LogManager-P2-Progress.md`；接入规范：`docs/LogManager-Integration-Guide.md`。
 
-未来负责：
+负责记录：
 
 系统事件
 错误
 故障
 关键状态
 运行记录
-       ↓
-Log
-       ↓
-本地保存
-       ↓
-未来云端上传
+       ↓  log_emit()（**纯 RAM 入环，无 Flash I/O**）
+RAM 环（64 槽 × 128 B，PSRAM 优先）
+       ↓  log_task()（在 loop() 内，非阻塞、无 delay/while）
+   ┌───┴────────────┐
+   ↓                ↓
+Flash 段环        云队列（128 槽）
+（16×31 = 496 条）      ↓  MQTT `guo_feeder/log`
+离线耐久层 / 重启补发源  ↑  `log_ack` 回执（幂等，at-least-once）
 
-设计重点是降低 Flash 写入次数和对主循环性能的影响。
+## 4.15.1 写入压力控制（设计重点）
+
+| 机制 | 作用 |
+|---|---|
+| **Level Policy（冻结）** | DEBUG 不入环；INFO 只上云；WARN / ERROR / CRITICAL 落 Flash |
+| **RAM→Flash 安全交接** | 只有落盘成功才算消费；失败则保留并下轮重试，**绝不静默丢弃 WARN+** |
+| **突发合并（Burst Coalescing）** | 白名单事件（当前仅 `LOG_WEIGHT_ERROR_ENTER`）在 5 s 窗口内的重复发生**折叠为计数**（`LOG_P_COUNT`），窗口到期由 `log_task()` 汇总一条 ⇒ **Σ `LOG_P_COUNT` = 真实发生次数** |
+
+实测（P2-I）：定向注入 17 次 `LOG_WEIGHT_ERROR_ENTER`（1 + 10 + 6）⇒ 只产生 **5 条记录**（降幅 **70.6%**），
+`Σ LOG_P_COUNT = 17` 完全守恒；对照组的 `LOG_WEIGHT_ERROR_EXIT`（非白名单）逐条不漏。
+
+**边界（必须保持）**：LogManager 是**唯一日志存储入口**，且**不在任何安全路径上**。
+安全事件（重量异常 → 强制关阀）由 `EventManager → DispenseGuard → valve` 直接完成，
+LogManager 只是旁路消费者 ⇒ 日志合并**不可能**影响安全时序。
 
 ---
 ## 五、已完成功能清单
@@ -996,7 +1015,7 @@ VALVE_OPEN → WEIGHT_DECREASE(20g) → VALVE_CLOSE
 
 🟡 第三阶段：可靠性及设备化
 
-8. Log Manager
+8. Log Manager ✅ **已完成**（P1 基础设施 + P2 逐模块接入；见 §4.15）
 
 ESP32 本地 Log 框架
 Event → Log
@@ -1007,7 +1026,7 @@ Workflow → Log
 RAM Buffer
 LittleFS 持久化
 环形日志 / 日志容量控制
-降低 Flash 写入频率
+降低 Flash 写入频率  ✅ 动态：Level Policy（INFO 不落 Flash）+ 突发合并（窗口内折叠为计数）
 Log 上传云端
 
 ↓
