@@ -153,9 +153,15 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
 | 其余 3 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Dispense → BLE → Command/Event/OLED/Registry**
+未接入清单（按约定顺序）：**Command → OLED → ComputerReset → Registry → Event**（**BLE 暂缓**）
 
-⚠️ 顺序不变，但 **Dispense 需等 regression baseline 稳定后才启动**（见 `## Next`）
+> **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
+> 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
+> ① **前 4 项成本极小、风险极低**（与 P2-B / P2-C 同构，回调已注册或单点埋点），
+> 可低成本批量推进；② **`Event` 需要特殊设计**（聚合 / 统计 / 周期报告 / drop 统计），
+> 放最后做；③ **`BLE` 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；
+> ④ **`Dispense` 移出埋点清单**，归入 Phase 4 业务开发（其埋点随模块本体一起建）。
+> ⚠️ `Dispense` **不再等待 regression baseline 稳定**（`R-7` 已 `DEFERRED`）。
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
 
@@ -531,7 +537,92 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 🔄 2026-09-20 更新：`R-7` / `R-8` **本轮只记录、不修复**（用户决策）
+### ✅ 2026-09-20 更新（最新）：Phase 1 完成 —— `R-8-A` **已修复并上板验证通过**
+
+> Commit：**`129606f` `fix(weight): prevent HX711 blocking wait`**
+> 完整记录：`log模块历史/R8A-HX711阻塞分析0920.md`（已扩写至第 8 章"实施与上板验证记录"）
+
+| 项 | 结果 |
+|---|---|
+| **改动** | **仅 `src/weight.cpp`**，纯增量 **+35 / −0** —— 在采样分支 `scale.read()` 前加**二次 `is_ready()` 确认**，不就绪即退回**既有** `not_ready` 路径 |
+| **约束遵守** | 未改重量阈值 / 采样策略 / 事件策略 / `DispenseGuard` / `EventId` / `ParamId` / `System State` 架构；未 fork 库 |
+| **V1 编译** | SUCCESS，Flash **65.3%** / RAM **39.9%**（与 P2-I 基线**零增长**） |
+| **V2 正常路径** | `STATE_WEIGHT_ERROR`=0、`not ready`=0 ⇒ **零回归** |
+| **V3 核心验收** | HX711 **全部线未接**：`logt stats` **秒回**（loop 存活）+ **5 s 后**自动 `DispenseGuard` → `Valve FORCE CLOSE` ⇒ **安全链端到端可用** |
+| **V4 恢复验证** | HX711 接回：`emit/crit/consumed` 20 s **零增长**、`DispenseGuard`=0 ⇒ **自动恢复** |
+| **顺带解决** | `R-8-B`（`not_ready` 超时路径原"不可达" —— V3 实测已可达） |
+| **残留风险** | 二次确认与 `read()` 间 ≈1 µs TOCTOU 窗口（10 Hz 下 100 ms 内自行解除）；**用户已确认 DOUT 有外部上拉** ⇒ 与软件构成双重保险 |
+
+**两条重要教训（已写入 `未修复的问题.md`）**：
+- **V3 方法论**：`R-8-A` 这类"**loop 是否存活**"的验收**必须用主动命令**（`logt stats`）
+  **主动探测**；**禁止**依赖被动串口输出的疏密 —— 该板静置时数秒才一行，
+  "低日志量" 与 "挂起" 无法从被动观测区分（本轮曾据此误判一次）。
+- **V4 判据**：计数增长的判据应是"**静置期内是否增长**"，而非"累计值是否变大"。
+  本轮 `crit` 2→28 曾疑似"残留误报"，经用户澄清为**手动按压电子秤的真实报错**
+  ⇒ 反而**反证 HX711 工作正常**。
+
+---
+
+### 🔄 2026-09-20 路线调整：`R-7` / `R-8` 双双 `DEFERRED`（产品侧复审）
+
+| 项 | 产品判定 | 处置 |
+|---|---|---|
+| **`R-7`**（测试隔离） | 不影响产品功能 / 不影响用户使用 / **不作为开发阻塞项** | **`DEFERRED`** —— 保留分析文档，归入**后续测试基础设施优化**，**不再投入开发时间** |
+| **`R-8`**（采样间隔变化） | 重量检测目标是**秒级控制**而非高速实时控制；HX711 10 Hz 偶因 MCU 任务 / Flash / BLE 降频**可以接受** ⇒ **非产品缺陷** | **`DEFERRED`** —— **不修改**采样窗口逻辑 / 不加 gap reset / 不改异常阈值 / 不改 `EventManager` / 不改 `DispenseGuard`。`R8-Fix-1` 技术方案**存档不实施** |
+| **`R-8-A`**（HX711 无限阻塞） | **单独处理** —— 独立可靠性问题 | ✅ **已修复**（见上） |
+
+> ⚠️ **`R-7` 相关的"不要跑回归时注入 ACK"等注意事项仍然有效**（夹具隐含依赖 `BT-1`），
+> 只是 `R-7` 本身**不再作为任何 Phase 的前置**。
+> ⚠️ **底线不变**：`test/` 夹具 0 改动、195 条断言保持原样（**禁降断言**）。
+
+---
+
+### 🗺 新路线：4 个 Phase（**取代原串行依赖链**）
+
+> 原路线 `A1 R-7 评审 → A2 baseline 恢复 → …` **已作废**。
+> 原因：产品侧确认 **LogManager 是基础服务，不应阻塞业务开发**；
+> 且 `R-8-A` 的修复证明 —— "安全链修复"**不依赖回归夹具**
+> （V3 判据是"loop 是否存活"，**不是绝对计数断言**）。
+
+```
+Phase 1  系统可靠性低风险修复
+         ✅ R-8-A 消除 read() 无限阻塞 —— 已完成（129606f）
+  ↓
+Phase 2  BLE 性能清理
+         ▸ 检查 callback 中大量 Serial / 高频 hex dump / 不必要调试打印
+         ▸ 重点：MiThermometer.cpp:117-123 onResult() 逐字节 hex 打印（≈7.8 ms/包）
+         ▸ 目标：降低 BLE active 时 CPU/loop 压力
+         ▸ 约束：不改解码逻辑 / 不改 System State / 不改数据流程
+                 保留必要错误日志 / 不删调试能力，只降默认输出
+  ↓
+Phase 3  LogManager 埋点接入（按序）
+         ① Command   ② OLED   ③ ComputerReset   ④ Registry
+         ⑤ Event（★ 需要特殊设计：聚合 / 统计 / 周期报告 / drop 统计；
+                  **禁止"一条消息一条 log"**，避免日志风暴）
+         ⏸ BLE 暂缓 —— 高频来源，须先设计"事件筛选 / 聚合策略 / callback 上下文安全"
+  ↓
+Phase 4  恢复核心业务开发
+         ▸ 进入 Dispense（注水过程）
+         ▸ 不等 R-7 完美解决 / 不等 195/195 / 不等日志 100% 覆盖
+         ▸ 必要条件（4 项现已全部满足 ✅）：
+             ✅ Valve 稳定   ✅ Weight 安全链明确
+             ✅ LogManager 基础稳定   ✅ HX711 不会永久阻塞
+```
+
+**Phase 4 必要条件核对（进入 Dispense 前）**：
+
+| 条件 | 状态 | 依据 |
+|---|---|---|
+| Valve 稳定 | ✅ | P2-H 已冻结、逐项上板验证；`VALVE-2`/`VALVE-3` 已 DONE；`VALVE-1` 为"假成功"语义问题（非功能性故障） |
+| Weight 安全链明确 | ✅ | `weight.cpp` → `event_push(EVENT_WEIGHT_ERROR, STATE)` → `dispense_guard_event_callback` → `valve_force_close()`；**V3 实测端到端闭环** |
+| LogManager 基础稳定 | ✅ | P2-A~P2-I 全部落地；`log_emit()` 非阻塞已证；`P2-I` 合并优化实测 **−70.6%** 写入 |
+| **HX711 不会永久阻塞** | ✅ | **本轮 `129606f`**（V3：掉线时 loop 存活 + 安全链闭环） |
+
+---
+
+### 历史路线（P2-H 冻结时的原计划，已被上方取代）
+
+### 🔄 2026-09-20 更新（前一版）：`R-7` / `R-8` **只记录、不修复**（用户决策）
 
 **本轮已完成**：`R-8` 专项评审（**纯分析，零代码改动**）。
 产出 `log模块历史/R7-R8-后续评审与系统性能权衡0920.md`，
