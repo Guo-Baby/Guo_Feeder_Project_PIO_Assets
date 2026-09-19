@@ -117,6 +117,212 @@ static LogStats s_stats;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // =====================================================
+// ★ 突发合并（Burst Coalescing）—— 仅 LogManager
+//
+// 目的：对"高频但非安全关键响应"的记录做窗口内折叠，
+//       降低 Flash 段环与云队列的写入压力。
+// 不变式：Σ LOG_P_COUNT == 真实发生次数（可上板核对）
+//
+// 线程约定：合并状态只在"发出该事件的上下文"与 log_task()（loop）
+//           之间共享，所有读改都在 s_mux 内完成；任何 log_emit() 调用
+//           都在临界区**之外**发生（避免自锁）。
+// =====================================================
+
+struct LogCoalesceTarget
+{
+    LogEventId id;
+    LogLevel   level;
+};
+
+static const LogCoalesceTarget s_coalesce_targets[] = {
+    // 重量异常"进入"：由 weight_refresh_error_state() 的 error_state 边沿产生。
+    // 安全响应走 EventManager → DispenseGuard → valve_force_close()，
+    // **完全不经过本模块** ⇒ 折叠日志不可能影响安全时序。
+    { LOG_WEIGHT_ERROR_ENTER, LOG_LVL_WARN }
+};
+
+static const uint8_t s_coalesce_target_count =
+    (uint8_t)(sizeof(s_coalesce_targets) / sizeof(s_coalesce_targets[0]));
+
+static bool       s_coalesce_active      = false;  // 合并窗口是否活动
+static uint32_t   s_coalesce_last_ms     = 0;      // 最近一条"被接受"记录的时刻
+static uint16_t   s_coalesce_folded      = 0;      // 窗口内被折叠的发生次数
+static LogEventId s_coalesce_event       = LOG_EVT_NONE;
+static LogLevel   s_coalesce_level       = LOG_LVL_WARN;
+static LogParamIn s_coalesce_params[LOG_MAX_PARAMS];
+static uint8_t    s_coalesce_param_count = 0;
+
+// 前置声明：汇总记录必须走与普通记录**完全相同**的编码 / 入环路径
+static bool log_emit_internal(LogEventId event_id, LogLevel level,
+                              const LogParamIn *params, uint8_t param_count,
+                              bool allow_coalesce);
+
+static bool log_coalesce_is_target(LogEventId id)
+{
+    for (uint8_t i = 0; i < s_coalesce_target_count; i++)
+    {
+        if (s_coalesce_targets[i].id == id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 汇总记录：把窗口内被折叠的次数合并为一条（LOG_P_COUNT = 折叠次数）
+static void log_coalesce_emit_summary(LogEventId event_id, LogLevel level,
+                                      const LogParamIn *base, uint8_t base_n,
+                                      uint16_t folded)
+{
+    if (base == nullptr || base_n == 0 ||
+        base_n >= LOG_MAX_PARAMS || folded == 0)
+    {
+        return;
+    }
+
+    LogParamIn p[LOG_MAX_PARAMS];
+
+    for (uint8_t i = 0; i < base_n; i++)
+    {
+        p[i] = base[i];
+    }
+
+    p[base_n] = log_arg_u32(LOG_P_COUNT, (uint32_t)folded);
+
+    // allow_coalesce = false：汇总记录自身绝不能再被折叠
+    (void)log_emit_internal(event_id, level, p, (uint8_t)(base_n + 1), false);
+}
+
+// 窗口到期 ⇒ 结清悬挂的折叠计数（由 log_task() 每轮调用，非阻塞、无 Flash I/O）
+static void log_coalesce_tick()
+{
+    const uint32_t now_ms = (uint32_t)millis();
+
+    LogParamIn cached[LOG_MAX_PARAMS];
+    LogEventId ev     = LOG_EVT_NONE;
+    LogLevel   lv     = LOG_LVL_WARN;
+    uint8_t    base_n = 0;
+    uint16_t   folded = 0;
+
+    portENTER_CRITICAL(&s_mux);
+
+    if (s_coalesce_active && s_coalesce_folded > 0 &&
+        (uint32_t)(now_ms - s_coalesce_last_ms) >= LOG_COALESCE_WINDOW_MS)
+    {
+        ev     = s_coalesce_event;
+        lv     = s_coalesce_level;
+        base_n = s_coalesce_param_count;
+        folded = s_coalesce_folded;
+
+        if (base_n > 0)
+        {
+            memcpy(cached, s_coalesce_params,
+                   (uint32_t)base_n * sizeof(LogParamIn));
+        }
+
+        s_coalesce_active      = false;
+        s_coalesce_folded      = 0;
+        s_coalesce_param_count = 0;
+    }
+
+    portEXIT_CRITICAL(&s_mux);
+
+    if (base_n > 0 && folded > 0)
+    {
+        log_coalesce_emit_summary(ev, lv, cached, base_n, folded);
+    }
+}
+
+// 在编码之前调用：
+//   返回 true  = 本条已被折叠（不得进入 RAM 环、不占用 seq）
+//   返回 false = 本条正常落地；out_p / out_n 为"已追加 LOG_P_COUNT"的最终参数
+static bool log_coalesce_filter(LogEventId event_id, LogLevel level,
+                                const LogParamIn *params, uint8_t param_count,
+                                LogParamIn *out_p, uint8_t &out_n)
+{
+    out_n = param_count;
+
+    if (!log_coalesce_is_target(event_id) || param_count >= LOG_MAX_PARAMS)
+    {
+        return false;
+    }
+
+    const uint32_t now_ms = (uint32_t)millis();
+
+    LogParamIn cached[LOG_MAX_PARAMS];
+    LogEventId ev     = LOG_EVT_NONE;
+    LogLevel   lv     = LOG_LVL_WARN;
+    uint8_t    base_n = 0;
+    uint16_t   folded = 0;
+
+    portENTER_CRITICAL(&s_mux);
+
+    // ---- ① 窗口内重复发生 ⇒ 折叠（只累计计数，不产生记录）----
+    if (s_coalesce_active &&
+        (uint32_t)(now_ms - s_coalesce_last_ms) < LOG_COALESCE_WINDOW_MS)
+    {
+        if (params != nullptr && param_count > 0)
+        {
+            memcpy(s_coalesce_params, params,
+                   (uint32_t)param_count * sizeof(LogParamIn));
+            s_coalesce_param_count = param_count;
+        }
+
+        if (s_coalesce_folded < 0xFFFFu)
+        {
+            s_coalesce_folded++;
+        }
+
+        s_coalesce_event = event_id;
+        s_coalesce_level = level;
+
+        portEXIT_CRITICAL(&s_mux);
+        return true;
+    }
+
+    // ---- ② 接受本条：先结清上一窗口的折叠计数（保证记录时间序）----
+    if (s_coalesce_active && s_coalesce_folded > 0)
+    {
+        ev     = s_coalesce_event;
+        lv     = s_coalesce_level;
+        base_n = s_coalesce_param_count;
+        folded = s_coalesce_folded;
+
+        if (base_n > 0)
+        {
+            memcpy(cached, s_coalesce_params,
+                   (uint32_t)base_n * sizeof(LogParamIn));
+        }
+    }
+
+    s_coalesce_active      = true;
+    s_coalesce_last_ms     = now_ms;
+    s_coalesce_folded      = 0;
+    s_coalesce_param_count = 0;
+    s_coalesce_event       = event_id;
+    s_coalesce_level       = level;
+
+    portEXIT_CRITICAL(&s_mux);
+
+    if (base_n > 0 && folded > 0)
+    {
+        log_coalesce_emit_summary(ev, lv, cached, base_n, folded);
+    }
+
+    // ---- ③ 放行本条，标注 LOG_P_COUNT = 1（本条代表 1 次真实发生）----
+    for (uint8_t i = 0; i < param_count; i++)
+    {
+        out_p[i] = params[i];
+    }
+
+    out_p[param_count] = log_arg_u32(LOG_P_COUNT, 1u);
+    out_n = (uint8_t)(param_count + 1);
+
+    return false;
+}
+
+
+// =====================================================
 // P1.4：Cloud Log Topic 状态
 //
 //   P1.4 只负责"把记录送出去"；ACK / 超时 / 重试 / 退避属 P1.5。
@@ -1378,6 +1584,12 @@ bool log_init()
     portENTER_CRITICAL(&s_mux);
     memset(&s_stats, 0, sizeof(s_stats));
     s_flush_requested = false;
+
+    // 突发合并状态复位（重新 init 视为无活动窗口）
+    s_coalesce_active      = false;
+    s_coalesce_last_ms     = 0;
+    s_coalesce_folded      = 0;
+    s_coalesce_param_count = 0;
     portEXIT_CRITICAL(&s_mux);
 
     s_ring_bytes = bytes;
@@ -1473,8 +1685,9 @@ bool log_init()
 // log_emit
 // =====================================================
 
-bool log_emit(LogEventId event_id, LogLevel level,
-              const LogParamIn *params, uint8_t param_count)
+static bool log_emit_internal(LogEventId event_id, LogLevel level,
+                              const LogParamIn *params, uint8_t param_count,
+                              bool allow_coalesce)
 {
     if (!s_ready)
     {
@@ -1504,12 +1717,31 @@ bool log_emit(LogEventId event_id, LogLevel level,
         return false;
     }
 
+    // ---- ★ 突发合并：白名单事件在窗口内的重复发生只折叠计数，不产生记录 ----
+    // 折叠 ⇒ 不占 seq、不进 RAM 环、不落 Flash、不上云；
+    // 被接受 ⇒ 追加 LOG_P_COUNT(=1) 后按原路径继续（行为与既有实现一致）。
+    LogParamIn       coalesce_p[LOG_MAX_PARAMS];
+    const LogParamIn *use_p = params;
+    uint8_t           use_n = param_count;
+
+    if (allow_coalesce &&
+        log_coalesce_filter(event_id, level, params, param_count,
+                            coalesce_p, use_n))
+    {
+        return true;    // 已折叠
+    }
+
+    if (use_n != param_count)
+    {
+        use_p = coalesce_p;
+    }
+
     LogRecord rec;
     memset(&rec, 0, LOG_RECORD_SIZE);
 
     rec.version     = (uint8_t)LOG_RECORD_VERSION;
     rec.level       = (uint8_t)level;
-    rec.param_count = param_count;
+    rec.param_count = use_n;
     rec.event_id    = (uint16_t)event_id;
     rec.packed      = 0;                 // context_kind = 0（P1.2 未实现 Context）
     rec.uptime_ms   = (uint32_t)millis();
@@ -1529,9 +1761,9 @@ bool log_emit(LogEventId event_id, LogLevel level,
     }
 
     // 参数编码：每项 6 B { id:u8, type:u8, value:u32le }
-    for (uint8_t i = 0; i < param_count; i++)
+    for (uint8_t i = 0; i < use_n; i++)
     {
-        const LogParamIn &p = params[i];
+        const LogParamIn &p = use_p[i];
         uint8_t *dst = &rec.params[(uint32_t)i * LOG_PARAM_SIZE];
 
         uint32_t raw = p.v.u;
@@ -1631,6 +1863,13 @@ bool log_emit(LogEventId event_id, LogLevel level,
     return true;
 }
 
+// 公开 API：语义与调用方式完全不变（allow_coalesce = true）
+bool log_emit(LogEventId event_id, LogLevel level,
+              const LogParamIn *params, uint8_t param_count)
+{
+    return log_emit_internal(event_id, level, params, param_count, true);
+}
+
 // =====================================================
 // log_task（仅在 loop() 内调用）
 // =====================================================
@@ -1641,6 +1880,10 @@ void log_task()
     {
         return;
     }
+
+    // ---- 阶段 0：突发合并窗口到期 ⇒ 结清折叠计数 ----
+    // 只做 RAM 入环（与普通记录同一路径），不在此处做任何 Flash I/O。
+    log_coalesce_tick();
 
     // =================================================
     // 阶段 1：窥视 + 分拣（**不推进 s_rd**）
