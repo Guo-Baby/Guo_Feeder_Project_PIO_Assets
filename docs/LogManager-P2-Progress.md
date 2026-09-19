@@ -151,9 +151,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
 | **Weight（`weight.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处 / 5 个事件）；`ERROR_*` 挂 `error_state` **天然边沿**（无需任何去重逻辑）；**纯增量 `+66/−0`**；`CAUSE` 位掩码；2 个**只读**观测变量（供 EXIT 报 `CAUSE`+`DURATION_MS`） | `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` / `ZERO_DONE` / `CALIB_FAILED` / `TRIGGER_FIRED` | P2-G |
 | **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
+| **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J**（本次） |
 | 其余 3 个模块 | **未接入** | — | — |
 
-未接入清单（按约定顺序）：**Command → OLED → ComputerReset → Registry → Event**（**BLE 暂缓**）
+未接入清单（按约定顺序）：**OLED → ComputerReset → Registry → Event**（**BLE 暂缓**）
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
@@ -537,7 +538,36 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20 更新（最新）：Phase 1 完成 —— `R-8-A` **已修复并上板验证通过**
+### ✅ 2026-09-20（最新）：Phase 3 第 ① 项 —— **Command 模块埋点接入完成**（P2-J）
+
+> 完整审查记录：`log模块历史/LogManager-P2J-Command接入审查0920.md`
+
+| 项 | 结果 |
+|---|---|
+| **改动** | **仅 `src/command_manager.cpp`**（+include / +`cmd_hash32()` / +`command_log_rejected()` / **+4 个埋点**） |
+| **约束遵守** | 未改 `EventId` / `ParamId`（`log_events.h` **零改动**）/ 日志协议 / `System State` 架构 / `EventManager` 风暴策略 / `WeightManager` 阈值 |
+| **V1 编译** | SUCCESS，RAM 130616 B（39.9%）/ Flash 1370125 B（65.3%） |
+| **V2 零回归** | 45 s 静置，**无任何 `[CMD][WARN]`** ⇒ 4 个埋点**无虚假触发** |
+| **V3 二进制确认** | `objdump -dr` 反汇编 = **5 处 `log_emit` 调用**，与源码 `grep -c` = 5 **一一对应** |
+| **V4 `APPLIED` 实测** | `query_workflows` / `workflow.list` ⇒ **`emit` 恰好 +1 / 命令**；异步命令**正确排除** ✅ |
+| **V5 `REJECTED` 门控实测** | **0.05 s 急速连发 5 次**同 `cmd_id`（1 accepted + 4 rejected，全在 250 ms 内）⇒ **`flash` 仅 +1**（WARN 路径只产 1 条）⇒ **5 s 门控生效** ✅ |
+| **未覆盖项** | `QUEUE_FULL`（需占满 8 槽，无长效同步 action 可占坑）/ `RUNTIME_TIMEOUT`（需等 60 s~10 min，探针受"串口静默 1.5 s 提前返回"限制**挂不住**）。**如实登记为环境工具限制，非代码问题**（代码路径已由 V3 二进制确认） |
+
+**★ 本项沉淀的三条教训**：
+1. **判据要用能"分离两类记录"的计数器。** 只盯 `emit` 会得出"+3 ≠ 预期 +2"的**误判**；
+   改用 `flash`（只收 WARN+）与 `cloud`（全收）**分离**后，`flash +1` 一举证明门控生效。
+   ⇒ **"INFO 只上云不落 Flash"这条既有设计，本身就是免费的验证通道。**
+2. **高频路径的复现靠"缩短注入间隔"而非"延长时间"。** 早期用 3 s 间隔发同 `cmd_id`
+   连续失败 3 次（首条已 `release`，第 2 条**正常受理**而非"重复被拒"）。
+   ⇒ **先确认被测对象的存活时间，再审定注入节奏。**
+3. **"天然边沿"必须论证，不能假定。** ①③ 免门控是因为"进入分支 ⇒ 状态必然不允许再入"
+   这一**结构性保证**。把论证写进埋点注释，是防止后人误加/误删门控的关键。
+
+**下一步**：Phase 3 第 ② 项 —— **OLED**（`LOG_OLED_INIT_FAILED = 0x0E01`）。
+
+---
+
+### ✅ 2026-09-20 更新：Phase 1 完成 —— `R-8-A` **已修复并上板验证通过**
 
 > Commit：**`129606f` `fix(weight): prevent HX711 blocking wait`**
 > 完整记录：`log模块历史/R8A-HX711阻塞分析0920.md`（已扩写至第 8 章"实施与上板验证记录"）
@@ -668,12 +698,13 @@ C3  VALVE-1 / C5 WF-1 / C6 P0-4 独立评审
 B7  Dispense                        ← ★ 必须等 baseline 稳定
 ```
 
-**剩余未接入模块（按约定顺序）**：`bin_storage` → **Command** → **OLED/ComputerReset**
-→ **Registry** → **Event** → **BLE** → **Dispense**
+**剩余未接入模块（按约定顺序）**：~~`Command`~~ ✅ → **OLED** → **ComputerReset**
+→ **Registry** → **Event**（**BLE 暂缓**；`Dispense` 归入 Phase 4 业务开发）
 
-> ⚠️ 顺序不变，但 **Dispense 需等 regression baseline 稳定后才启动**。
+> ⚠️ **2026-09-20 起 `R-7` 已 `DEFERRED`** ⇒ **不再需要等 regression baseline 稳定**，
+> `Dispense` 亦不再作为埋点项等待（其埋点随模块本体一起建，见 Phase 4）。
 > ⚠️ **`bin_storage` 是"最低成本的一步"**：`main.cpp:474` 当前只注册了串口版 `bin_log_serial`，
-> 与 P2-A 的 `json_storage`/`file_storage` 桥接**同构**，改双路即可。
+> 与 P2-A 的 `json_storage`/`file_storage` 桥接**同构**，改双路即可（当前**未排入** Phase 3 序列）。
 > ⚠️ **BLE 是最需要谨慎的一块**：最高频 + 回调上下文禁令 ⇒ **必须先删 `P0-3` 的 hex 打印**，
 > 再走"置标志 → task 消费"路径。
 > ⚠️ **Event 必须周期聚合**：契约明令"不得为每条丢弃事件发日志"，否则与 `R-7` 噪声**相互放大**。
@@ -865,4 +896,4 @@ Dispense
 
 ---
 
-*最后更新：2026-09-19（**P2-I Weight Error 日志写入压力优化完成**：仅改 `log_manager.h/.cpp`（`+273/−5`），在 LogManager 内引入**突发合并**（白名单 = `LOG_WEIGHT_ERROR_ENTER`，5 s 窗口折叠为 `LOG_P_COUNT`）；确定性注入实测 **17 次发生 → 5 条记录（−70.6%）且 ΣCOUNT 守恒**；安全链（EventManager→DispenseGuard→valve）零接触；回归 **182/195**（13 MISS 全属 `R-7` 环境干扰类，夹具 0 改动、断言仍 195；对照 P2-H 的 26 MISS）。`R-7` / `R-8` / `VALVE-6` 仍登记 OPEN）*
+*最后更新：2026-09-20（**Phase 3 第 ① 项 Command 埋点接入完成（P2-J）**：仅改 `src/command_manager.cpp`，接入 4 个冻结 EventId / 5 处 `log_emit`；`REJECTED` 用 **5 s 去重门控 + `LOG_P_COUNT` 汇总**（本模块唯一"状态型"语义），其余 3 处为**天然边沿**免门控；`command`/`cmd_id` 一律 **FNV-1a 哈希**入日志；`APPLIED` 刻意排除异步命令（避免与 Workflow 段跨段重复）。验证：V1 编译 SUCCESS / V2 静置零回归 / V3 二进制 5 处调用一一对应 / V4 `APPLIED` 实测 `emit` +1 per 命令 / **V5 `REJECTED` 用 0.05 s 急速连发实测 `flash` 仅 +1 ⇒ 门控生效**。`QUEUE_FULL`/`RUNTIME_TIMEOUT` 因环境工具限制未做端到端实测，如实登记。`log_events.h` / 测试断言零改动。)*
