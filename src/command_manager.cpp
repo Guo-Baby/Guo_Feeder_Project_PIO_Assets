@@ -10,6 +10,30 @@
 #include "config_manager.h"
 #include "weight.h"
 #include "system_command.h"
+#include "log_manager.h"   // P2-J：观测埋点（EventId / ParamId + log_emit）
+
+// =====================================================
+// P2-J：Command 埋点 —— 本地字符串哈希（FNV-1a 32）
+//
+// 冻结约束：LogManager **不处理 JSON、不传 String**（AI_RULES 硬性规范）。
+// 因此命令行 / 对象名 / cmd_id 一律**哈希化**为 uint32 后落 LOG_P_CMD /
+// LOG_P_OBJ / LOG_P_CMD_ID。
+//
+// ⚠️ 该 helper 与 config_manager.cpp 的 `cfg_hash32()`、wifi_module.cpp 的
+//    `wifi_ssid_hash32()` **实现相同但各自本地定义**。按"不为观测扩
+//    LogManager API"的既定约束，本轮**不**抽取公共 helper
+//    （抽公共需改头文件/新增依赖，属独立重构，与本阶段"低风险接入"不符）。
+// =====================================================
+static uint32_t cmd_hash32(const char *s)
+{
+    uint32_t h = 2166136261u;
+    while (s != nullptr && *s != '\0')
+    {
+        h ^= (uint8_t)(*s++);
+        h *= 16777619u;
+    }
+    return h;
+}
 
 // =====================================================
 // 统一错误码（command_send_error 使用）
@@ -228,6 +252,65 @@ static bool command_is_execute(const String &command);
 static bool command_is_query(const String &command);
 static bool command_is_system(const String &command);
 
+// =====================================================
+// P2-J：命令"被拒"埋点（带 5 s 去重门控）
+//
+// 为什么需要门控：
+//   `LOG_CMD_REJECTED` 属**状态型**语义（"命令被拒"），而非一次性事件。
+//   若同一条非法/重复命令被反复重发（云端重试、脚本刷），
+//   无门控会按重发次数刷屏 ⇒ 必须按"失败是状态不是事件"用**边沿锁**（LOG-5 铁律）。
+//
+// 实现：静态单槽记录"上次上报键 + 时刻"。同键且未超窗口 ⇒ 只累加计数；
+//       换键或超窗时，先把上一窗口的累加数用 LOG_P_COUNT 汇总补报 1 条，
+//       再上报本次的新记录。⇒ **ΣCOUNT = 真实被拒次数**，不静默丢失。
+//
+// 约束：纯静态、零堆分配、无 String、无阻塞、无 ISR 调用。
+// =====================================================
+static constexpr unsigned long CMD_REJECT_DEDUP_MS = 5000UL;
+
+static uint32_t s_cmd_rej_key = 0;      // 上次上报键 = cmd_hash ^ cmd_id_hash ^ reason
+static uint32_t s_cmd_rej_cmd = 0;      // 上次上报的 command 哈希（补报时用）
+static unsigned long s_cmd_rej_ms = 0;  // 上次上报时刻
+static uint32_t s_cmd_rej_count = 0;    // 当前窗口内累计次数（含首次上报的那条）
+
+static void command_log_rejected(const CommandMessage &cmd, uint32_t reason)
+{
+    const unsigned long now = millis();
+    const uint32_t cmd_h = cmd_hash32(cmd.command.c_str());
+    const uint32_t id_h  = cmd_hash32(cmd.cmd_id.c_str());
+    const uint32_t key   = cmd_h ^ (id_h << 1) ^ (reason * 2654435761u);
+
+    // 同一键、窗口内 ⇒ 只累加，不发记录
+    if (key == s_cmd_rej_key && s_cmd_rej_ms != 0 &&
+        (now - s_cmd_rej_ms) < CMD_REJECT_DEDUP_MS)
+    {
+        s_cmd_rej_count++;
+        return;
+    }
+
+    // 换键 / 超窗：先把上一窗口的累加部分补报（COUNT = 窗口内除首条外的次数）
+    if (s_cmd_rej_count > 1u)
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_CMD,   s_cmd_rej_cmd);
+        p[1] = log_arg_u32(LOG_P_REASON, 0u);   // 0 = 窗口汇总记录
+        p[2] = log_arg_u32(LOG_P_COUNT, s_cmd_rej_count - 1u);
+        log_emit(LOG_CMD_REJECTED, LOG_LVL_WARN, p, 3);
+    }
+
+    // 本次（新窗口首条）单独上报，REASON 携带真实原因
+    LogParamIn p[3];
+    p[0] = log_arg_u32(LOG_P_CMD,    cmd_h);
+    p[1] = log_arg_u32(LOG_P_REASON, reason);
+    p[2] = log_arg_u32(LOG_P_CMD_ID, id_h);
+    log_emit(LOG_CMD_REJECTED, LOG_LVL_WARN, p, 3);
+
+    s_cmd_rej_key   = key;
+    s_cmd_rej_cmd   = cmd_h;
+    s_cmd_rej_ms    = now;
+    s_cmd_rej_count = 1u;
+}
+
 // 异步回调接收者（WorkflowManager 按最终契约调用）
 static void command_temp_action_callback(
     const String &cmd_id,
@@ -268,6 +351,18 @@ static CommandRuntime *command_runtime_insert(
     }
     if (slot == nullptr) {
         command_log("WARN", "Command runtime queue full");
+
+        // ---- P2-J 埋点：运行时槽位耗尽（天然边沿）----
+        // 该分支本身即"拒绝"分支，每次进入必然对应一条被拒命令 ⇒ 无重复计数风险。
+        // 无需门控：进入即代表运行时表已满，不可能在同一时刻被反复进入。
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_CMD,    cmd_hash32(cmd.command.c_str()));
+            p[1] = log_arg_u32(LOG_P_CMD_ID, cmd_hash32(cmd.cmd_id.c_str()));
+            p[2] = log_arg_u32(LOG_P_TOTAL,  (uint32_t)MAX_COMMAND_RUNTIME);
+            log_emit(LOG_CMD_RUNTIME_QUEUE_FULL, LOG_LVL_WARN, p, 3);
+        }
+
         command_send_error(
             cmd,
             CMD_ERROR_QUEUE_FULL,
@@ -280,6 +375,12 @@ static CommandRuntime *command_runtime_insert(
     if (cmd.cmd_id.length() > 0 &&
         command_runtime_find_by_cmd_id(cmd.cmd_id) != nullptr) {
         command_log("WARN", "Duplicate command_id rejected");
+
+        // ---- P2-J 埋点：cmd_id 重复被拒（同属"拒绝"语义，无天然边沿）----
+        // 用 (cmd_id) 做去重键 + 5s 门控：同一条重复命令短时间反复重发时只记 1 条，
+        // 其余累加计数（下个窗口以 LOG_P_COUNT 上报）—— 与 P2-I 突发合并同思路。
+        command_log_rejected(cmd, 1u /* reason=1 重复 cmd_id */);
+
         command_send_error(
             cmd,
             CMD_ERROR_DUPLICATE_CMD_ID,
@@ -347,6 +448,21 @@ static void command_runtime_release(CommandRuntime *rt)
 static void command_runtime_report_timeout(CommandRuntime *rt)
 {
     command_log("WARN", "Command runtime timeout, entry released");
+
+    // ---- P2-J 埋点：异步命令等待超时（天然边沿）----
+    // `command_runtime_scan_timeouts()` 有状态判定（state == PENDING）+
+    // 到达此处即 release ⇒ 同一 rt 不会重复进入 ⇒ 无需额外节流。
+    // 参数：命令哈希 / DURATION_MS=实际等待时长 / CMD_ID
+    {
+        LogParamIn p[4];
+        p[0] = log_arg_u32(LOG_P_CMD,
+                           cmd_hash32(rt->message.command.c_str()));
+        p[1] = log_arg_u32(LOG_P_DURATION_MS,
+                           (uint32_t)(millis() - rt->start_ms));
+        p[2] = log_arg_u32(LOG_P_LIMIT_MS, (uint32_t)rt->timeout_ms);
+        p[3] = log_arg_u32(LOG_P_CMD_ID, cmd_hash32(rt->cmd_id.c_str()));
+        log_emit(LOG_CMD_RUNTIME_TIMEOUT, LOG_LVL_WARN, p, 4);
+    }
 
     JsonDocument doc;
     doc["cmd"] = "result";
@@ -565,6 +681,22 @@ bool command_manager_execute(const CommandMessage &cmd)
         "INFO",
         "Command executed"
     );
+
+    // ---- P2-J 埋点：同步命令成功应用（天然边沿：唯一成功出口）----
+    // ★ 刻意**排除异步命令**（`execute_action` / `execute_workflow`）：
+    //   异步命令在此处只是"已受理"，真正结果由 callback / 超时决定，
+    //   而 callback 那两条路径由 Workflow 段（P2-F `LOG_WF_FINISHED` 等）
+    //   与 Command 段的 `LOG_CMD_RUNTIME_TIMEOUT` 负责。
+    //   若在此也记一条，会与 Workflow 段**跨段重复上报**（违反"分工"原则）。
+    //   ⇒ 本埋点只覆盖 query_* / system / workflow.* 等**同步**命令。
+    if (!command_is_async(command))
+    {
+        LogParamIn p[3];
+        p[0] = log_arg_u32(LOG_P_CMD,    cmd_hash32(command.c_str()));
+        p[1] = log_arg_u32(LOG_P_CMD_ID, cmd_hash32(cmd.cmd_id.c_str()));
+        p[2] = log_arg_u32(LOG_P_ACTIVE, 0u);   // 预留：0=同步命令
+        log_emit(LOG_CMD_APPLIED, LOG_LVL_INFO, p, 3);
+    }
     return true;
 }
 
@@ -1675,6 +1807,10 @@ static bool command_workflow_create(
 
     if (!workflow_apply_workflow_json((uint8_t)slot, wf_obj, true))
     {
+        // ---- P2-J 埋点：workflow.create 被拒（running / dirty acquire 失败）----
+        // reason=2 区分本路径（事务 acquire 失败）与 cmd_id 重复（reason=1）。
+        command_log_rejected(cmd, 2u);
+
         command_send_error(
             cmd,
             CMD_ERROR_REJECTED,
@@ -1782,6 +1918,9 @@ static bool command_workflow_set(
 
     if (!workflow_apply_workflow_json(index, wf_obj, false))
     {
+        // ---- P2-J 埋点：workflow.set 被拒（reason=3 区分 create=2 / 重复=1）----
+        command_log_rejected(cmd, 3u);
+
         command_send_error(
             cmd,
             CMD_ERROR_REJECTED,
