@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include "event_manager.h"
 
+#include "log_manager.h"   // P2-M：观测埋点（EventId / ParamId + log_emit）
+
 #define EVENT_QUEUE_SIZE     32
 #define MAX_EVENT_TYPE       32
 #define MAX_EVENT_SUBSCRIBER 8
@@ -12,6 +14,95 @@
 // 每个事件独立风暴窗口统计
 static unsigned long storm_window_tick[MAX_EVENT_TYPE] = {0};
 static int storm_counter[MAX_EVENT_TYPE] = {0};
+
+// =====================================================
+// P2-M：EventManager 自身异常观测
+//
+// ★ 职责边界：EventManager 是**传输 / 分发基础设施**，不是事实源。
+//   业务事件（EVENT_WIFI_* / EVENT_TIME_* / EVENT_CLOUD_* /
+//   EVENT_WEIGHT_ERROR / EVENT_VALVE_* 等）由各自的**发布方模块**记录
+//   —— 实测 17 个 event_push 调用点中 13 个发布方已埋 log_emit。
+//   在此逐条转发业务事件会造成**同一事实重复记录** ⇒ 一律不记。
+//
+//   本模块**只记录自身运行异常**：
+//     A. 队列溢出（无法接受新事件）  → LOG_EVT_QUEUE_FULL
+//     B. 风暴抑制触发（事件被丢弃）  → LOG_EVT_STORM_DROPPED
+//
+// ★ 为什么必须由本模块记录：17 个调用点 **100% 忽略 event_push()
+//   返回值**，且 event_get_drop_count() / duplicate_count() /
+//   queue_count() 三个 getter **零消费方** ⇒ 丢弃事件在此之前
+//   **完全不可观测**：发布方看不到、外部查不到。
+//
+// ★ 为什么必须聚合：风暴的定义就是"超过 5 次 / 500ms 的持续流"，
+//   逐条记录会形成**新的日志风暴**并瞬间填满 64 槽 RAM 环。
+//   故采用「只累加 + 周期窗口上报 1 条」：
+//     Σ LOG_P_COUNT = 真实被丢弃数量（信息零丢失，条目数恒定）
+//   与 cloud_manager.cpp 的 CLOUD_PUBLISH_FAIL_REPORT_MS 同构。
+//
+// ★ 节拍器：event_dispatch() 由 loop() 每轮无条件调用 ⇒ 直接复用，
+//   **不新增 Task / 不修改 main.cpp / 不新建 timer / 无 delay / 无 while 等待**。
+//
+// ★ 为什么累加器用模块内 static 而不是栈上：
+//     · 累加器必须跨调用存活 ⇒ 不能是栈上局部；
+//     · 参数（LogParamIn）才是栈上局部，且只在 evt_report_faults()
+//       内构造 —— 该函数**只**由 event_dispatch()（loop 上下文）调用，
+//       不存在 Registry 那种"可能跑在 esp-mqtt 任务"的问题 ⇒ 无需 PSRAM。
+//
+// ★ 跨任务可见性（诚实标注）：cloud_manager 的 4 处 event_push 可能跑在
+//   esp-mqtt 任务 ⇒ 累加器存在理论上的无锁竞争（可能少计，不会损坏内存）。
+//   这与既有 drop_count / duplicate_count **完全相同**（本就是无锁全局），
+//   不额外加锁以免改变事件路径时序 —— 属"观测精度"而非"正确性"风险。
+// =====================================================
+#define EVT_FAULT_REPORT_WINDOW_MS  60000u
+
+static uint32_t evt_queue_full_drops = 0;   // A. 队列溢出被丢弃条数
+static uint32_t evt_storm_drops      = 0;   // B. 风暴抑制被丢弃条数
+static unsigned long evt_fault_report_ms = 0;
+
+// 只累加，不发射（由 evt_report_faults() 周期上报）
+static void evt_note_queue_full()
+{
+    if (evt_queue_full_drops < 0xFFFFFFFFu) evt_queue_full_drops++;
+}
+
+static void evt_note_storm_drop()
+{
+    if (evt_storm_drops < 0xFFFFFFFFu) evt_storm_drops++;
+}
+
+// 周期窗口到 ⇒ 各上报 1 条；窗口内无异常 ⇒ 完全静默
+static void evt_report_faults()
+{
+    // 无异常 ⇒ 完全静默，且**不推进窗口**
+    // （保证"首次异常立即上报"，而非等满 60 s 才可见）
+    if (evt_queue_full_drops == 0 && evt_storm_drops == 0) return;
+
+    const unsigned long now = millis();
+    if (evt_fault_report_ms != 0 &&
+        (now - evt_fault_report_ms) < EVT_FAULT_REPORT_WINDOW_MS)
+    {
+        return;
+    }
+    evt_fault_report_ms = now;
+
+    if (evt_queue_full_drops > 0)
+    {
+        // LOG_P_COUNT = 本窗口被丢弃的条数；LOG_P_QUEUE_SIZE = 队列容量
+        LogParamIn p[2];
+        p[0] = log_arg_u32(LOG_P_COUNT,      evt_queue_full_drops);
+        p[1] = log_arg_u32(LOG_P_QUEUE_SIZE, (uint32_t)EVENT_QUEUE_SIZE);
+        log_emit(LOG_EVT_QUEUE_FULL, LOG_LVL_WARN, p, 2);
+        evt_queue_full_drops = 0;
+    }
+
+    if (evt_storm_drops > 0)
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_COUNT, evt_storm_drops);
+        log_emit(LOG_EVT_STORM_DROPPED, LOG_LVL_WARN, p, 1);
+        evt_storm_drops = 0;
+    }
+}
 
 // ==========================
 // 队列
@@ -219,6 +310,10 @@ EventPushResult event_push(SystemEvent event,String data,String source,int prior
 
         if (storm_counter[eid] > EVENT_STORM_MAX_PER_EVENT)
         {
+            // P2-M：风暴抑制触发 —— **只累加**，由 event_dispatch() 周期聚合上报。
+            // 绝不在此逐条 log_emit：本分支的定义就是"高频持续流"，
+            // 逐条记录会形成新的日志风暴（也会重复记录业务模块已记的事实）。
+            evt_note_storm_drop();
             drop_count++;
             return EVENT_DROPPED;
         }
@@ -262,6 +357,15 @@ EventPushResult event_push(SystemEvent event,String data,String source,int prior
         }
         else
         {
+            // P2-M：队列溢出 —— **只累加**，由 event_dispatch() 周期聚合上报。
+            // 只在此分支累加（= 返回 EVENT_QUEUE_FULL 的唯一出口）：
+            //   · 不在调用者记录（17 个调用点 100% 忽略返回值，看不到）
+            //   · 不在 event_push() 入口记录（入口不等于丢弃）
+            //   · FORCE 分支（上方 `priority > 最低优先级` 判否时的
+            //     `return EVENT_DROPPED`）**不计入**：语义是"被更高优先级
+            //     挤占"而非"队列溢出"，且实测 EVENT_POLICY_FORCE 零发布方
+            //     ⇒ 当前为死路径。
+            evt_note_queue_full();
             drop_count++;
             return EVENT_QUEUE_FULL;
         }
@@ -321,6 +425,12 @@ bool event_subscribe(SystemEvent event,EventCallback callback)
 // =================================================
 void event_dispatch()
 {
+    // P2-M 节拍器：必须放在**函数最开头、while 之前**。
+    // event_dispatch() 由 loop() 每轮无条件调用 ⇒ 天然周期节拍，
+    // 不新增 Task / 不改 main.cpp / 不新建 timer / 无 delay / 无 while 等待。
+    // 放在 while 之后会被 processed 上限与"队列空则直接跳过"吞掉节拍。
+    evt_report_faults();
+
     const int MAX_PROCESS_PER_DISPATCH = 4;
     int processed = 0;
 
