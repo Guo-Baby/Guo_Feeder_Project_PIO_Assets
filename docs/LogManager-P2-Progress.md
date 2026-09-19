@@ -153,9 +153,10 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
 | **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J** |
 | **ComputerReset（`computer_reset.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（3 个事件 / **4 处 `log_emit`**）；**全部天然边沿、零门控**；★ `PULSE` 上移到 `set_output()` 的 **LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以**同时覆盖手动与 Workflow Action 两条路径**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13） | `LOG_CRESET_PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED` | **P2-K** |
-| 其余 2 个模块 | **未接入** | — | — |
+| **Capability Registry（`capability_registry.cpp`）** | **单向依赖 `→ log_manager`，无回调、无 EventManager 转发、无 System State**（2 处 / 2 个事件，**纯增量 `+24/−0`**）；★ **宿主选"定义点"而非"触发点"**：重建埋 `registry_sync()` 的 `else` 分支、保存失败埋 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 的 4 处 `rescan()` 调用点（一次 create 连触发 3 次）；**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印，1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）；参数用**栈上局部 `LogParamIn`**（禁 `static`/全局 —— 可能跑在 loopTask 8KB 或 esp-mqtt 任务上，防并发踩踏） | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) | **P2-L** |
+| 其余 1 个模块 | **未接入**（Event 待特殊设计） | — | — |
 
-未接入清单（按约定顺序）：**Registry → Event**（**BLE 暂缓**；**OLED 已判无宿主不埋**）
+未接入清单（按约定顺序）：**Event**（**BLE 暂缓**；**OLED 已判无宿主不埋**；**Registry 已于 P2-L 接入**）
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
@@ -539,7 +540,42 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 📋 2026-09-20（最新）：Phase 3 第 ④ 项**前置审查** —— `WF-4` 范围界定（**仅审查，未改代码**）
+### ✅ 2026-09-20（最新）：Phase 3 第 ④ 项 —— **Registry 埋点接入完成**（P2-L，`WF-4` 关闭）
+
+> commit `4b2e04b` `feat(log): integrate capability registry logging`
+> 前置审查：`WF-4-Registry范围审查0920.md`（`fc250c4`）
+
+**改动范围：仅 `src/capability_registry.cpp`（+24 行 / 2 处 `log_emit`）**
+
+| EventId | Level | 宿主（**定义点**，非触发点） | 参数 |
+|---|---|---|---|
+| `LOG_REG_REBUILT` = 0x0B01 | INFO | `registry_sync()` 的 **`else` 分支**（checksum 不一致 / 文件缺失 / 损坏） | `LOG_P_REG_TYPE`, `LOG_P_COUNT`, `LOG_P_VERSION` |
+| `LOG_REG_SAVE_FAILED` = 0x0B02 | ERROR | 同函数内 **`save_registry_file()` 返回值判定处** | `LOG_P_REG_TYPE` |
+
+**设计决策落地**：
+- ✅ 埋"定义点"：`command_manager.cpp` 的 4 处 `capability_registry_rescan()` **未埋** —— 一次 `workflow.create` 会连触发 3 次 `registry_sync`，埋触发点会重复记录 3 条。
+- ✅ **不进** `save_registry_file()` 内部 4 个失败出口（:167/:202/:225/:244，各有 1 条专属串口打印，1:1 覆盖）⇒ **不带 `ERR_CODE`、不改签名、零信息损失**。
+- ✅ 参数用**栈上局部 `LogParamIn`**；禁用 `static` / 全局缓存（本函数可能跑在 `loopTask(8KB)` 或 `esp-mqtt` 任务上，需防并发踩踏）。
+- ✅ 单向依赖 `capability_registry → log_manager`；无 callback、无 EventManager 转发、无 System State。
+- ✅ **未新增**任何 EventId / ParamId / 配置项 / enable 开关；`workflow_storage.cpp` / `log_events.h` / `EventManager` / 测试代码**零改动**。
+
+**验证结果（V1–V4）**：
+
+| 项 | 方法 | 结果 |
+|---|---|---|
+| **V1** | 全量编译（`.pio/build/p2l_reg`） | ✅ SUCCESS 22.0s；**RAM 130616 B（±0）** / **Flash 1370533 B（+408）** |
+| **V2** | 上板启动，三表 | ✅ ACTION/TRIGGER/WORKFLOW **全走 `reuse`**；`REG_REBUILT`=**0**、`REG_SAVE_FAILED`=**0** ⇒ reuse 路径**不产生日志** |
+| **V3** | `create`×1 + `delete`×1 定向触发 rebuild | ✅ **恰好 2 条** (`v10→v11→v12`)，ACTION/TRIGGER 保持 `reuse`。**若误埋触发点应为 6 条** |
+| **V4a** | 运行期路由（`logt fwipe`+`reset` 清零后精确计数） | ✅ `emit` 0→3、`cloud` 0→**+3**、`flash` **+0** ⇒ `REG_REBUILT` 为 INFO **走云侧、不落 Flash**；rebuild 仅 1 次 |
+| **V4b** | 静态可达性（`objdump -dr` 按符号去重） | ✅ **2 个 `log_emit` 调用点**，均在 `registry_sync` 内；参数编码 `(count=3, level=1=INFO)` 与 `(count=1, level=3=ERROR)`，与源码意图逐一对应 |
+
+> ⚠️ **V4b 说明**：`capability_registry.cpp` 内**无故障注入钩子**，且任务约束禁止为此新增测试代码 / 改签名 ⇒ 无法在运行时人为制造 save 失败。故 `REG_SAVE_FAILED` 采用**二进制级静态验证**（调用点数量 + 参数编码 + Level 常量比对），配合 V4a 证明同分支内 ERROR 级路由必然落 Flash。
+
+**文档同步**：`docs/P2_Log_Integration_Matrix.md` §7 作用域已更正（移除误导性的 Registry / `workflow_storage.cpp` 并列关联，加零耦合说明与报告链接）；§7.2 末行 Registry 条目**删除**并指向 §12；§12 Registry 行更新为"✅ 已接入"。
+
+---
+
+### 📋 2026-09-20：Phase 3 第 ④ 项**前置审查** —— `WF-4` 范围界定（**仅审查，未改代码**）
 
 > 完整报告：`log模块历史/WF4-Registry范围审查0920.md`（commit `fc250c4`）
 
@@ -575,7 +611,9 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 **4 个失败出口各有 1 条专属串口打印（1:1 严格对应）** ⇒ 精确原因 100% 已由串口覆盖，**零信息损失**，
 不必改既有函数签名。
 
-**待用户确认 D1–D4**：① WF-4 是否关闭 ② `REG_REBUILT` 宿主位置 ③ 是否带 `ERR_CODE` ④ 是否更正矩阵 §7 作用域。**确认后方进入代码修改。**
+**待用户确认 D1–D4**：① WF-4 是否关闭 ② `REG_REBUILT` 宿主位置 ③ 是否带 `ERR_CODE` ④ 是否更正矩阵 §7 作用域。
+
+> ✅ **2026-09-20 已确认并执行完毕**：四项**全部采纳** —— ① WF-4 关闭；② 宿主 = `registry_sync()` `else` 分支；③ **不带** `ERR_CODE`；④ 矩阵 §7 作用域已更正。实施结果见本节上方「Phase 3 第 ④ 项 —— Registry 埋点接入完成（P2-L，`4b2e04b`）」。
 
 ---
 
@@ -607,7 +645,7 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 4. **"正常时不应触发"的埋点，其"不触发"本身就是验收项。** 安全兜底类埋点的验收
    标准是**"二进制存在 + 正常路径零增长"**，而非"实测能触发"。
 
-**下一步**：Phase 3 第 ④ 项 —— **Registry**（`LOG_REG_REBUILT = 0x0B01` / `LOG_REG_SAVE_FAILED = 0x0B02`，⚠️ 需先解 `WF-4` 矩阵作用域界定）。
+**下一步**：Phase 3 第 ⑤ 项 —— **Event**（`LOG_EVT_QUEUE_FULL = 0x0C01` / `LOG_EVT_STORM_DROPPED = 0x0C02`）。⚠️ **须特殊设计**：`event_manager.cpp` 已有风暴抑制 + `drop_count`，契约要求**走侧信道计数聚合**，**禁止一条消息一条 log**（须周期聚合上报，排在本 Phase 最后）。
 
 > **② OLED 已判"无宿主不埋"**（2026-09-20 用户拍板）—— `oled.begin()` 无条件返回 true
 > 且 U8g2 丢弃 I2C 错误码 ⇒ **原理上不可达**；且无消费方。已移入"无宿主"清单。
@@ -702,7 +740,7 @@ Phase 2  BLE 性能清理
                  保留必要错误日志 / 不删调试能力，只降默认输出
   ↓
 Phase 3  LogManager 埋点接入（按序）
-         ① Command   ② OLED   ③ ComputerReset   ④ Registry
+         ① Command ✅   ② OLED ⛔(无宿主)   ③ ComputerReset ✅   ④ Registry ✅(P2-L)
          ⑤ Event（★ 需要特殊设计：聚合 / 统计 / 周期报告 / drop 统计；
                   **禁止"一条消息一条 log"**，避免日志风暴）
          ⏸ BLE 暂缓 —— 高频来源，须先设计"事件筛选 / 聚合策略 / callback 上下文安全"
@@ -839,7 +877,7 @@ Dispense
 | **Workflow（WF）** | **WF-1** | **保存失败后重试风暴**：实测 **39–40 次/秒**（151 s/5828 次、84 s/3399 次） | 🔴 |
 | | **WF-2** | `WORKFLOW_WAITING` 从未被赋值（死枚举） | 🟡 |
 | | **WF-3** | 临时 Action 队尾 `if/else` 两分支相同、注释写反 | 🟠 |
-| | **WF-4** | ~~矩阵作用域含 Registry / workflow_storage（范围待界定）~~ → ✅ **已审查结案：WF-4 不成立**（二者零耦合，属平行关系；报告 `log模块历史/WF4-Registry范围审查0920.md`） | ✅ |
+| | **WF-4** | ~~矩阵作用域含 Registry / workflow_storage（范围待界定）~~ → ✅ **已结案关闭**：二者**零耦合**、属平行关系；Registry 埋点已按"定义点"落地于 `registry_sync()`（`4b2e04b`），**不增加** `workflow_storage` 相关 Registry 日志，矩阵 §7 作用域已更正。报告 `log模块历史/WF4-Registry范围审查0920.md` | ✅ 关闭 |
 | **P0（与日志解耦）** | **P0-1** | `event_names[]` 第 10 项错位 | 🟡 |
 | | **P0-2** | MQTT 明文密码（`mqtt.json` + `tools/mqtt_*.py` 早已入库）⇒ **需轮换口令** | 🟠 |
 | | **P0-3** | BLE 回调逐字节 hex（`MiThermometer.cpp:117`） | 🟡 |
@@ -972,5 +1010,6 @@ Dispense
 
 ---
 
-*最后更新：2026-09-20（**Phase 3 第 ④ 项前置审查完成 —— `WF-4` 范围界定（仅审查，未改代码）**：按**代码调用链**（非文档模块名）核实，结论 **`WF-4` 不成立、建议关闭** —— `workflow_storage` 与 Registry **零耦合**（不 `#include` `capability_registry.h`；全仓库对 Registry 的引用不含 `workflow_storage`；`.h:268` 仅一行注释），二者为**平行关系**（Workflow 本体 → `/workflow/*.bin`；Registry → `/registry/*.bin`）。逐事件归属已定：`REG_REBUILT` 宿主 = `registry_sync()` 的 `else` 分支；`REG_SAVE_FAILED` 宿主 = 该函数内 `save_registry_file()` 返回值判定处（**不埋进内部 4 个出口**）；"Workflow 读取 Registry"**不埋**（高频只读）；"Workflow Storage 保存 Registry 数据"**该事实不存在**。★ 通用判据：「**事件的定义点 ≠ 触发点**，必须埋定义点」—— Registry 触发点在 `command_manager` 4 处 `rescan()`，定义点在 `registry_sync()`。频率实测 **91 轮 sync 仅 3 次 rebuild（≈3.3%）** ⇒ 低频源，INFO 不加门控可接受。接口结论：只需 **+2 处 `log_emit`**，无需 callback、不改接口（`REG_SAVE_FAILED` 不带 ERR_CODE —— 4 个失败出口各有专属串口打印，1:1 覆盖）。报告 `log模块历史/WF4-Registry范围审查0920.md`（`fc250c4`）。**待用户确认 D1–D4**。)*
+*最后更新：2026-09-20（**Phase 3 第 ④ 项 Registry 埋点接入完成（P2-L）** —— 仅改 `src/capability_registry.cpp`（`+24/−0`），接入 2 个冻结 EventId / 2 处 `log_emit`。★ **宿主选"定义点"而非"触发点"**：`REG_REBUILT` 落 `registry_sync()` 的 `else` 分支（checksum 不一致/缺失/损坏，与 `reuse` 互斥 ⇒ 天然边沿无需门控），`REG_SAVE_FAILED` 落该函数内 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 4 处 `rescan()`（一次 create 连触发 3 次）、**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印 1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）。参数用栈上局部 `LogParamIn`（禁 `static`/全局：可能跑在 loopTask 8KB 或 esp-mqtt 任务上）。**WF-4 正式关闭**（`workflow_storage` 与 Registry 零耦合）；矩阵 §7 作用域已更正。验证：**V1** 编译 SUCCESS，RAM 130616 B（±0）/ Flash 1370533 B（+408）；**V2** 三表全 `reuse`、`REG_*` 均 0 条；**V3** create×1+delete×1 → **恰好 2 条** rebuild（若误埋触发点应为 6）；**V4a** 清零后精确计数 emit +3 / cloud +3 / **flash +0**（INFO 不落 Flash）；**V4b** `objdump` 静态确认 2 个调用点参数编码 `(3,INFO)` / `(1,ERROR)`。提交 `4b2e04b`。)*
+*上一版更新：2026-09-20（Phase 3 第 ④ 项前置审查 —— `WF-4` 范围界定，仅审查未改代码，报告 `log模块历史/WF4-Registry范围审查0920.md`（`fc250c4`）；结论 `WF-4` 不成立、建议关闭。)*
 *上一版更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`；**全部天然边沿、零门控**。★ `PULSE` 上移到 `set_output()` 上升沿以覆盖手动 + Workflow Action 两条路径（V3b 实测 Action 路径 `emit` +1 证明）；`SAFETY_TIMEOUT` 的 `DURATION_MS` 在 `force_idle()` 之前取（LOG-13）。)**

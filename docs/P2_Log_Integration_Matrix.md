@@ -238,7 +238,17 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/workflow.cpp`（4465）、`src/workflow.h`（827）、`src/workflow_storage.cpp`（1583）、`src/capability_registry.cpp`（1007） |
+| 源码文件 | `src/workflow.cpp`（4465）、`src/workflow.h`（827）、`src/workflow_storage.cpp`（1583） |
+
+> ⚠️ **作用域更正（2026-09-20 / WF-4 审查结论）**：
+> 本节的 Registry 相关条目（§7.2 末行）**已移出 Workflow 作用域**，归入 §12 的
+> `capability_registry` 独立模块。原因：`workflow_storage.cpp` 与 Capability Registry
+> **零耦合** —— 其 7 个 `#include` 不含 `capability_registry.h`，全仓库对 Registry API 的
+> 引用仅出现在 `cloud_manager.cpp` / `command_manager.cpp` / `main.cpp`，
+> `workflow_storage.cpp/.h` 中唯一提及 Registry 之处是 `workflow_storage.h:268`
+> 的一条**注释**（描述下游后果，非调用关系）。两者是**平行关系**：
+> Workflow 本体 → `/workflow/*.bin`；Registry → `/registry/*.bin`。
+> 报告：`log模块历史/WF4-Registry范围审查0920.md`
 
 ### 7.1 当前状态
 
@@ -267,7 +277,8 @@
 | 部分保存重试成功 | 重试成功 | `LOG_WF_SAVE_PARTIAL_RETRY_OK` | INFO | `LOG_P_RETRY_N` | ID 保留，P2 决定是否实现 |
 | `workflow_create/update/delete` | CRUD | `LOG_WF_CRUD` | INFO | `LOG_P_SLOT`, `LOG_P_OP`, `LOG_P_VARIANT` | — |
 | `workflow_migrate_to_storage()` :1968 | JSON→BIN 迁移 | `LOG_WF_MIGRATED` | INFO | `LOG_P_COUNT`, `LOG_P_STAGED_COUNT` | — |
-| `capability_registry` 重建/保存失败 | Registry | `LOG_REG_REBUILT` / `LOG_REG_SAVE_FAILED` | INFO / ERROR | `LOG_P_REG_TYPE`, `LOG_P_COUNT` | — |
+
+> Registry 埋点**不属于本节**（见 §12）。`workflow_storage.cpp` 不产生 Registry 类日志。
 
 ---
 
@@ -445,7 +456,7 @@
 | Event | `event_manager.cpp`（379） | 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。契约已注明"走侧信道计数上报" ⇒ **不要为每条丢弃事件发日志**，改为周期聚合 1 条 |
 | OLED | `oled.cpp`（301） | 无日志 | `LOG_OLED_INIT_FAILED`(WARN) —— 单点，低风险 |
 | ComputerReset | `computer_reset.cpp`（475） | 见 §1 | `LOG_CRESET_*` 三个 |
-| Registry | `capability_registry.cpp`（1007） | 无日志 | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) |
+| Registry | `capability_registry.cpp`（1029） | ✅ **已接入（P2-L，2026-09-20）** | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR)，均落在 `registry_sync()` 内（**2 处 `log_emit`**）。宿主 = 定义点而非触发点：重建 → `else` 分支（checksum 不一致/缺失/损坏）；保存失败 → `save_registry_file()` 返回值判定处。**不得**埋 `command_manager` 的 4 个 rescan 调用点（一次 create 连触发 3 次）与 `save_registry_file()` 内部 4 个失败出口 |
 
 ---
 
