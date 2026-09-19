@@ -531,13 +531,69 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### P2-H 已冻结 —— 下一阶段：**R-7 测试隔离方案评审**
+### 🔄 2026-09-20 更新：`R-7` / `R-8` **本轮只记录、不修复**（用户决策）
+
+**本轮已完成**：`R-8` 专项评审（**纯分析，零代码改动**）。
+产出 `log模块历史/R7-R8-后续评审与系统性能权衡0920.md`，
+并已把结论增量登记进 `未修复的问题.md`（含新增 `R-8-A` / `R-8-B` / `R-8-C` / `SYS-1` / `SYS-2`
+与「埋点覆盖率实况」「后续开发任务总览」两节）。
+
+**R-8 评审核心结论**：
+
+| 项 | 结论 |
+|---|---|
+| `R-8` 是否真实缺陷 | ✅ **是**，且升格为高优先级（机理确证 + 后果污染安全链 + 危险区间定量） |
+| **危险区间（非单调）** | `< 100 ms` 无害 ｜ **`100–500 ms` 最危险** ｜ `> 500 ms` 整窗换血反而不误报 |
+| 后果 | 不止多写日志 —— 经 `EVENT_WEIGHT_ERROR`(CRITICAL/STATE) → DispenseGuard → **`valve_force_close()`** |
+| **`R-8-A`（新，🔴 P0）** | `HX711::read()` 内 `wait_ready()` = `while(!is_ready())` **无限阻塞** ⇒ HX711 掉线时 **loop 永久挂起**（唯一 `ESP.restart()` 也进不去）。**独立于 R-8，更危险** |
+| `R-8-B`（新） | `WEIGHT_NOT_READY_TIMEOUT_MS` 超时**正常运行时不可达**（与 `NC-13` 吻合） |
+| `R-8-C`（新） | `R-1` 获统一解释；修 `R-8` 大概率一并解决 |
+| **`SYS-1`** | **LogManager 无需新增性能限制**（`log_emit()` 非阻塞成立；`LOG_DRAIN_MAX_PER_TASK=8` 已是单轮上限；**不推荐时间预算**——撞 §22/§23 冻结边界） |
+| **`SYS-2`** | **BLE 与 LogManager 无并发竞争**（共用 loopTask）⇒ "给 LogManager 降优先级"**不可实现亦不必要**；BLE 侧真正消耗 = `P0-3`（≈7.8 ms/包） |
+
+**最小修法 `R8-Fix-1`（已设计，未实施）**：仅改 `src/weight.cpp` 三处 ——
+`last_sample_ms` + `WEIGHT_SAMPLE_GAP_MAX_MS`（建议 150 ms，需标定）+ 成功 `read()` 后判 gap，
+超阈则 `sample_index = 0; have_last_window = false;`。内存 +4 B，依赖方向不变。
+
+---
+
+### 下一阶段路线（**更新后**）
+
+```
+【本轮】R-8 评审 → 只登记（✅ 已完成，零代码改动）
+   ↓
+A1  R-7 测试隔离方案评审            ← 硬阻塞，其余任务都依赖它
+   ↓
+A2  Regression baseline 恢复        ← 182/195 → 全绿；断言不做任何删改
+   ↓
+B1  bin_storage 接入（改双路）→ B2 Command → B3 OLED+ComputerReset → B4 Registry
+   ↓                                ← 低成本批量接入（见「埋点覆盖率实况」）
+C1  R-8-A 消除 read() 无限阻塞（P0）→ C2 R-8 采样间隔守卫 → C7 P0-3 删 BLE hex 打印
+   ↓                                ← 安全链修复（C7 与 C2 同批）
+B5  Event（周期聚合）→ B6 BLE（须先 C7）
+   ↓
+C3  VALVE-1 / C5 WF-1 / C6 P0-4 独立评审
+   ↓
+B7  Dispense                        ← ★ 必须等 baseline 稳定
+```
+
+**剩余未接入模块（按约定顺序）**：`bin_storage` → **Command** → **OLED/ComputerReset**
+→ **Registry** → **Event** → **BLE** → **Dispense**
+
+> ⚠️ 顺序不变，但 **Dispense 需等 regression baseline 稳定后才启动**。
+> ⚠️ **`bin_storage` 是"最低成本的一步"**：`main.cpp:474` 当前只注册了串口版 `bin_log_serial`，
+> 与 P2-A 的 `json_storage`/`file_storage` 桥接**同构**，改双路即可。
+> ⚠️ **BLE 是最需要谨慎的一块**：最高频 + 回调上下文禁令 ⇒ **必须先删 `P0-3` 的 hex 打印**，
+> 再走"置标志 → task 消费"路径。
+> ⚠️ **Event 必须周期聚合**：契约明令"不得为每条丢弃事件发日志"，否则与 `R-7` 噪声**相互放大**。
+
+### 历史路线（P2-H 冻结时的原计划，已被上方取代）
 
 **P2-H（Valve）已实现、逐项上板验证完成，并已冻结**（生产代码 `d92d397`；**生产代码不再修改**）。
-当前唯一阻塞项是回归 **168/195**，其性质已判定为 **Regression Environment Interference**
+当前唯一阻塞项是回归 **168/195**（现为 `182/195`），其性质已判定为 **Regression Environment Interference**
 （**不是** P2-H implementation failure）。
 
-**下一阶段目标：恢复可靠 regression baseline。**
+原计划的下一步为：
 
 1. ⚠️⚠️ **`R-7` 测试隔离方案评审**（唯一前置）—— 评审并选定"让被测系统在回归期间安静"的方案。
    - ⚠️ **明确不采用**：给 weight 模块加 `enable` 配置（会改变 Weight 能力边界、影响 System Config，超出 P2-H 范围）。
@@ -546,11 +602,11 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
      且 Weight 侧单独就能产生 **+13 条**额外记录 ⇒ **只去掉 Valve 日志不能归零**）。
 2. **Regression baseline 恢复** —— `R-7` 有解后重跑全量，确认基线稳定。**断言不做任何删改**。
 3. **`VALVE-1` 独立安全评审** —— `initialized` 未检查 ⇒ 模块禁用时返回 `true`（假成功）。
-4. **`R-8` 独立安全评审** —— FS 阻塞诱发重量跳变 ⇒ 写入卡顿被误判成重量异常（同时是安全语义问题）。
+4. **`R-8` 独立安全评审** —— ✅ **2026-09-20 已完成**（结论见上方）。
 5. ⚠️ **在 regression baseline 稳定前，不进入 Dispense。**
 6. 另登记（列入后续独立评审，本轮不修）：`VALVE-6` —— `FORCE_CLOSE_FAILED` 无门控。
 
-### 后续顺序
+### 后续顺序（原）
 
 ```
 P2-H Freeze
