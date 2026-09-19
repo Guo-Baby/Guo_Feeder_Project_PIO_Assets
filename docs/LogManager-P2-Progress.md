@@ -154,9 +154,9 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J** |
 | **ComputerReset（`computer_reset.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（3 个事件 / **4 处 `log_emit`**）；**全部天然边沿、零门控**；★ `PULSE` 上移到 `set_output()` 的 **LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以**同时覆盖手动与 Workflow Action 两条路径**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13） | `LOG_CRESET_PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED` | **P2-K** |
 | **Capability Registry（`capability_registry.cpp`）** | **单向依赖 `→ log_manager`，无回调、无 EventManager 转发、无 System State**（2 处 / 2 个事件，**纯增量 `+24/−0`**）；★ **宿主选"定义点"而非"触发点"**：重建埋 `registry_sync()` 的 `else` 分支、保存失败埋 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 的 4 处 `rescan()` 调用点（一次 create 连触发 3 次）；**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印，1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）；参数用**栈上局部 `LogParamIn`**（禁 `static`/全局 —— 可能跑在 loopTask 8KB 或 esp-mqtt 任务上，防并发踩踏） | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) | **P2-L** |
-| 其余 1 个模块 | **未接入** —— `Event` 前置审查已完成（P2-M，待确认 E1–E4 后实施） | `LOG_EVT_QUEUE_FULL` / `LOG_EVT_STORM_DROPPED` | 审查报告已出 |
+| **Event（`event_manager.cpp`）** | **无回调接口 ⇒ 直接显式埋点，但只记"自身运行异常"**（2 个事件 / **2 处累加 + 1 个周期上报器 = 2 个 `log_emit` 调用点**，**纯增量 `+110/−0`**）；★ **业务事件一律不记**（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）；★ **周期聚合方案 A**：窗口 **60000 ms**，节拍器 = **`event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；窗口内无异常**完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（信息零丢失、条目数恒定），与 `cloud_manager.cpp` 的 `CLOUD_PUBLISH_FAIL_REPORT_MS` 同构；FORCE 优先级不足分支**不计入**（语义为"被挤占"且零发布方） | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN) | **P2-M** |
 
-未接入清单：**Event**（**BLE 暂缓**；**OLED 已判无宿主不埋**；**Registry 已于 P2-L 接入**）
+未接入清单：**（P2 埋点清单已全部完成）** —— **BLE 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；**OLED 已判无宿主不埋**；**Dispense 移出埋点清单**，归入 Phase 4 业务开发（其埋点随模块本体一起建）。
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
@@ -540,7 +540,66 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 📋 2026-09-20（最新）：Phase 3 第 ⑤ 项**前置审查** —— `Event` 模块日志接入设计（**仅审查，未改代码**）
+### ✅ 2026-09-20（最新）：Phase 3 第 ⑤ 项 —— **EventManager 埋点接入完成**（P2-M）
+
+> commit `604a892` `feat(log): integrate event manager fault logging`
+> 前置审查：`log模块历史/LogManager-P2M-Event接入审查0920.md`（`52c93f9`）
+
+**改动范围：仅 `src/event_manager.cpp`（`+110 / −0`）** —— `log_events.h` / `event_manager.h` / `main.cpp` / `dispense_guard.cpp` / 测试代码 **全部零改动**。
+
+| EventId | Level | 宿主（**确定丢弃的分支**） | 参数 | 聚合 |
+|---|---|---|---|---|
+| `LOG_EVT_QUEUE_FULL` 0x0C01 | WARN | `event_push()` 中返回 `EVENT_QUEUE_FULL` 的**唯一出口**（非 FORCE 且 `queue_count >= 32`） | `LOG_P_COUNT`(丢弃条数) + `LOG_P_QUEUE_SIZE`(32) | 60 s 窗口，窗口内只发 **1 条** |
+| `LOG_EVT_STORM_DROPPED` 0x0C02 | WARN | 风暴抑制分支（`storm_counter[eid] > EVENT_STORM_MAX_PER_EVENT`） | `LOG_P_COUNT`(被抑制条数) | 同上 |
+
+**关键实现决策**
+
+| 决策 | 理由 |
+|---|---|
+| **只累加、不逐条发射** | 风暴分支的定义就是"超过 5 次/500 ms 的持续流"，逐条记会形成**新的日志风暴**并瞬间填满 64 槽 RAM 环 |
+| **节拍器 = `event_dispatch()` 首行** | 该函数由 `loop()` 每轮无条件调用 ⇒ 天然周期节拍；**不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 `delay()` / 无 while 等待** |
+| **必须放在 `while` 之前** | 放在循环后会被 `processed` 上限与"队列空直接跳过"吞掉节拍（铁律 13 的反面） |
+| **无异常 ⇒ 完全静默且不推进窗口** | 保证**首次异常立即可见**，而不是等满 60 s |
+| **Σ `LOG_P_COUNT` = 真实丢弃数量** | 信息零丢失、条目数恒定；与 `cloud_manager.cpp` 的 `CLOUD_PUBLISH_FAIL_REPORT_MS` 同构 |
+| **FORCE 优先级不足分支不计入** | 语义是"被更高优先级挤占"而非"队列溢出"，且 `EVENT_POLICY_FORCE` **零发布方**（死路径） |
+| **累加器用模块内 `static`** | 必须跨调用存活；而 `LogParamIn` 是**栈上局部**，且只在 loop 上下文构造（不涉 esp-mqtt 任务）⇒ 无需 PSRAM |
+| ⚠️ 跨任务可见性（诚实标注） | `cloud_manager` 的 4 处 `event_push` 可能跑在 esp-mqtt 任务 ⇒ 累加器存在理论上的无锁竞争（**可能少计，不会损坏内存**）。与既有 `drop_count` / `duplicate_count` **完全相同**，不额外加锁以免改变事件路径时序 |
+
+**验证结果**
+
+| 项 | 结果 |
+|---|---|
+| **V1 编译** | ✅ SUCCESS；RAM **130616 → 130624（+8 B）**、Flash **1370533 → 1370701（+168 B）** |
+| **V2 正常事件链** | ✅ 空闲 25 s `emit` **+0**；`valve_open` / `valve_close` 只产生 valve 自身 **2 条 INFO**（`flash +0`，INFO 不落 Flash）⇒ EventManager **0 条**重复记录 |
+| **V5 高频事件** | ✅ 40 次 `valve_toggle` **全部成功**（0 次 `Operation too frequent`）：`emit` **+42**，全部归属 valve 40 条 INFO + wifi 2 条 WARN（`0x0603` / `0x0605`）⇒ EventManager **0 条** |
+| **V3 队列满** | ⚪ **运行时不可达**（见下）⇒ objdump 静态确认埋点位置与参数编码 |
+| **V4 风暴** | ⚪ **运行时不可达**（见下）⇒ objdump 静态确认；`0x0C01` / `0x0C02` 实测各 **0 条**（逐条核对 Flash 记录确认） |
+
+**★ V3 / V4 不可达的定量论证（诚实标注 —— 这是"未触发"，不是"验证通过"）**
+
+- **队列满（V3）**：队列容量 32，`event_dispatch()` 每轮 drain ≤4 且 loop 连续运行 ⇒ 需**单轮 loop 内 >36 次**入队。现有 17 个发布方全是**边沿型 / 低频**，`EVENT_POLICY_STATE` 还会先清空同类型旧消息 ⇒ 不可能达成。
+- **风暴（V4）**：阈值 **>5 次 / 500 ms（同类型）**。最快的发布方是 valve（`MIN_OPERATION_INTERVAL_MS=50`），但开/关交替 ⇒ 同类型间隔 **100 ms + ε**；第 6 次同类型的时刻 = **500 ms + 10ε > 500** ⇒ 风暴窗口**先刷新**，计数永远到不了 6。实测 40 次 toggle 全部成功、0 条 `0x0C02`，与该推演一致。
+- ⇒ 两个 EventId 属于**「睡眠中的观察者」**：正常负载下**零 Flash 压力**，一旦出现即代表真实异常。这**反向印证了聚合方案的必要性**——若当初采用"逐条记录"，这里就是日常的日志风暴源。
+
+**objdump 静态证据（`.pio/build/p2m_evt`，`xtensa-esp32s3-elf-objdump -d -r`）**
+
+| 证据 | 值 |
+|---|---|
+| `evt_report_faults()` 内联位置 | 进 `event_dispatch()` 的**函数最开头**（偏移 `0x0c`–`0x82`；dispatch 循环自 `0x84` 开始）⇒ 节拍不会被吞 |
+| 站点 A | `l32r a10 ← .literal+0x14 = 0x00000C01`、`a11=2`(WARN)、`a13=2`(param_count)、p[0]={id `0x45`, u32, count}、p[1]={id `0x53`, u32, **32**} |
+| 站点 B | `l32r a10 ← .literal+0x18 = 0x00000C02`、`a11=2`(WARN)、`a13=1`、p[0]={id `0x45`, u32, count} |
+| 窗口常量 | `.literal+0x10 = 0xEA5F = 59999`（`delta < 60000` 的等价形式）⇒ **60000 ms 确认** |
+| 累加器落地 | `event_push()` 的字面量池同时含 `.bss.evt_storm_drops`(+0xc) 与 `.bss.evt_queue_full_drops`(+0x1c) ⇒ 两处累加均已编入 |
+
+**零协议新增 / 事件机制完全冻结**：未新增 EventId / ParamId / System State / Config 参数 / enable 开关；未改 `EVENT_STORM_WINDOW_MS` / `EVENT_STORM_MAX_PER_EVENT` / 队列大小 / dispatch 流程 / 风暴策略 —— **只增加观测能力**。
+
+**遗留**：`EVT-1`（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三个阀门事件无法解析 ⇒ Workflow 无法订阅阀门事件）**单独开缺陷单，不修 EventId 编号**（EventId 属冻结协议）。
+
+**Phase 3 状态：①②③④⑤ 全部完成** ⇒ 下一步进入 **Phase 4：Dispense 模块开发**（4 项前置已满足）；`BLE` 埋点暂缓。
+
+---
+
+### 📋 2026-09-20：Phase 3 第 ⑤ 项**前置审查** —— `Event` 模块日志接入设计（**仅审查，未改代码**）
 
 > 完整报告：`log模块历史/LogManager-P2M-Event接入审查0920.md`
 
@@ -705,7 +764,7 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 4. **"正常时不应触发"的埋点，其"不触发"本身就是验收项。** 安全兜底类埋点的验收
    标准是**"二进制存在 + 正常路径零增长"**，而非"实测能触发"。
 
-**下一步**：Phase 3 第 ⑤ 项 —— **Event** 埋点实施（`LOG_EVT_QUEUE_FULL = 0x0C01` / `LOG_EVT_STORM_DROPPED = 0x0C02`，**前置审查已完成，待确认 E1–E4**）。方案 A：计数聚合 + 60 s 周期上报，`event_dispatch()` 作节拍器。**未确认前不修改** `event_manager.cpp` / `event_manager.h` / `log_events.h` / EventId / ParamId / System State / 测试代码。
+**下一步**：✅ **Phase 3 第 ⑤ 项 Event 埋点已实施完成**（`604a892`，见本节顶部「Phase 3 第 ⑤ 项 —— EventManager 埋点接入完成（P2-M）」）。用户已确认 E1–E4：**方案 A（计数聚合 + 60 s 周期上报）**、`event_dispatch()` 作节拍器、不新增 EventId/ParamId、`EVT-1` 单独开单。**Phase 3 ①②③④⑤ 全部完成** ⇒ 进入 **Phase 4：Dispense 业务开发**；`BLE` 埋点暂缓。
 
 > **② OLED 已判"无宿主不埋"**（2026-09-20 用户拍板）—— `oled.begin()` 无条件返回 true
 > 且 U8g2 丢弃 I2C 错误码 ⇒ **原理上不可达**；且无消费方。已移入"无宿主"清单。
@@ -801,8 +860,7 @@ Phase 2  BLE 性能清理
   ↓
 Phase 3  LogManager 埋点接入（按序）
          ① Command ✅   ② OLED ⛔(无宿主)   ③ ComputerReset ✅   ④ Registry ✅(P2-L)
-         ⑤ Event（★ 需要特殊设计：聚合 / 统计 / 周期报告 / drop 统计；
-                  **禁止"一条消息一条 log"**，避免日志风暴）
+         ⑤ Event ✅(P2-M，2026-09-20) —— **阶段完成**
          ⏸ BLE 暂缓 —— 高频来源，须先设计"事件筛选 / 聚合策略 / callback 上下文安全"
   ↓
 Phase 4  恢复核心业务开发
@@ -1070,6 +1128,7 @@ Dispense
 
 ---
 
-*最后更新：2026-09-20（**Phase 3 第 ⑤ 项前置审查完成 —— `Event` 模块日志接入设计（仅审查，未改代码）**）。结论：**EventManager 是日志宿主，但仅限"自身运行异常"**；业务事件 **76%（13/17）发布方已埋点** ⇒ 逐条记即重复。★ **决定性证据**：17 个 `event_push` 调用点 **100% 忽略返回值** + `event_get_drop_count()`/`duplicate_count()`/`queue_count()` **零消费方** ⇒ **事件丢弃当前 100% 不可观测**，只能由 EventManager 内部记录。`0x0C01`（队列满，`event_push():266`）与 `0x0C02`（风暴，`event_push():220-224`）**均不可逐条记**（后者定义即"超过 5 次/500ms 的持续流"）⇒ 采用**方案 A：计数聚合 + 60 s 周期上报**，复用 P2-D `cloud_manager.cpp:100-156` 模板，**以 `event_dispatch()` 为节拍器**（不新增任务、不改 `main.cpp`、不新增 EventId/ParamId/System State/配置项/开关、不改风暴策略）。⚠️ 陷阱：`EVENT_DROPPED` 返回值在 3 个分支返回（`:206` 越界/`:223` 风暴/`:260` FORCE 失败）⇒ **必须分支内埋点，不能用返回值判据**。重复记录：现状一条物理事实 2~3 条，若逐条记业务事件将达 4~6 条。**新增发现 EVT-1~EVT-5**，其中 **EVT-1**（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三阀门事件 14/15/16 无法解析 ⇒ **Workflow 无法订阅阀门事件**，静默失败）建议单独开单。报告 `log模块历史/LogManager-P2M-Event接入审查0920.md`。**待用户确认 E1–E4**。)*
+*最后更新：2026-09-20（**Phase 3 第 ⑤ 项 EventManager 埋点接入完成（P2-M）** —— 仅改 `src/event_manager.cpp`（`+110/−0`），接入 2 个冻结 EventId。**★ 只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。`0x0C01` 埋在 `event_push()` 返回 `EVENT_QUEUE_FULL` 的**唯一出口**（确定丢弃分支；不在调用者、不在入口；FORCE 挤占分支不计入），`0x0C02` 埋在风暴抑制分支。二者**都只累加不逐条发射** ⇒ 采用**周期聚合方案 A**：窗口 60000 ms，**节拍器 = `event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；**无异常完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（零丢失、条目恒定）。验证：**V1** 编译 SUCCESS，RAM 130616→130624（**+8 B**）/ Flash 1370533→1370701（**+168 B**）；**V2** 空闲 25 s `emit +0`、阀门开合只有 valve 自身 2 条 INFO（`flash +0`）；**V5** 40 次 `valve_toggle` 全成功 ⇒ `emit +42` 全部归属 valve 40 条 INFO + wifi 2 条 WARN（`0x0603`/`0x0605`），**逐条核对 Flash 记录 ⇒ `0x0C01`/`0x0C02` 各 0 条**；**V3 队列满 / V4 风暴运行时不可达**（定量论证：队列 32 且每轮 drain ≤4 ⇒ 需单轮 >36 次入队；风暴需同类型 6 次/500 ms，而 valve 同类型间隔 100 ms+ε ⇒ 第 6 次时窗口已刷新）⇒ 以 **objdump 静态证据**（站点 A/B 的 EventId·level·param_count·ParamId 编码 + 窗口常量 59999≡60000 + `event_push` 字面量池含两个累加器）确认埋点正确。**零协议新增**（无新 EventId/ParamId/System State/Config/开关），**事件机制完全冻结**（不改风暴策略/队列大小/dispatch 流程）。提交 `604a892`。**Phase 3 ①②③④⑤ 全部完成** ⇒ 下一步 **Phase 4 Dispense 开发**；`BLE` 埋点暂缓。`EVT-1` 单独开单、不改 EventId 编号。）*
+*上一版更新：2026-09-20（**Phase 3 第 ⑤ 项前置审查完成 —— `Event` 模块日志接入设计（仅审查，未改代码）**）。结论：**EventManager 是日志宿主，但仅限"自身运行异常"**；业务事件 **76%（13/17）发布方已埋点** ⇒ 逐条记即重复。★ **决定性证据**：17 个 `event_push` 调用点 **100% 忽略返回值** + `event_get_drop_count()`/`duplicate_count()`/`queue_count()` **零消费方** ⇒ **事件丢弃当前 100% 不可观测**，只能由 EventManager 内部记录。`0x0C01`（队列满，`event_push():266`）与 `0x0C02`（风暴，`event_push():220-224`）**均不可逐条记**（后者定义即"超过 5 次/500ms 的持续流"）⇒ 采用**方案 A：计数聚合 + 60 s 周期上报**，复用 P2-D `cloud_manager.cpp:100-156` 模板，**以 `event_dispatch()` 为节拍器**（不新增任务、不改 `main.cpp`、不新增 EventId/ParamId/System State/配置项/开关、不改风暴策略）。⚠️ 陷阱：`EVENT_DROPPED` 返回值在 3 个分支返回（`:206` 越界/`:223` 风暴/`:260` FORCE 失败）⇒ **必须分支内埋点，不能用返回值判据**。重复记录：现状一条物理事实 2~3 条，若逐条记业务事件将达 4~6 条。**新增发现 EVT-1~EVT-5**，其中 **EVT-1**（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三阀门事件 14/15/16 无法解析 ⇒ **Workflow 无法订阅阀门事件**，静默失败）建议单独开单。报告 `log模块历史/LogManager-P2M-Event接入审查0920.md`。**待用户确认 E1–E4**。)*
 *上一版更新：2026-09-20（**Phase 3 第 ④ 项 Registry 埋点接入完成（P2-L）** —— 仅改 `src/capability_registry.cpp`（`+24/−0`），接入 2 个冻结 EventId / 2 处 `log_emit`。★ **宿主选"定义点"而非"触发点"**：`REG_REBUILT` 落 `registry_sync()` 的 `else` 分支（checksum 不一致/缺失/损坏，与 `reuse` 互斥 ⇒ 天然边沿无需门控），`REG_SAVE_FAILED` 落该函数内 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 4 处 `rescan()`（一次 create 连触发 3 次）、**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印 1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）。参数用栈上局部 `LogParamIn`（禁 `static`/全局：可能跑在 loopTask 8KB 或 esp-mqtt 任务上）。**WF-4 正式关闭**（`workflow_storage` 与 Registry 零耦合）；矩阵 §7 作用域已更正。验证：**V1** 编译 SUCCESS，RAM 130616 B（±0）/ Flash 1370533 B（+408）；**V2** 三表全 `reuse`、`REG_*` 均 0 条；**V3** create×1+delete×1 → **恰好 2 条** rebuild（若误埋触发点应为 6）；**V4a** 清零后精确计数 emit +3 / cloud +3 / **flash +0**（INFO 不落 Flash）；**V4b** `objdump` 静态确认 2 个调用点参数编码 `(3,INFO)` / `(1,ERROR)`。提交 `4b2e04b`。)*
 *上一版更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`；**全部天然边沿、零门控**。★ `PULSE` 上移到 `set_output()` 上升沿以覆盖手动 + Workflow Action 两条路径（V3b 实测 Action 路径 `emit` +1 证明）；`SAFETY_TIMEOUT` 的 `DURATION_MS` 在 `force_idle()` 之前取（LOG-13）。)**
