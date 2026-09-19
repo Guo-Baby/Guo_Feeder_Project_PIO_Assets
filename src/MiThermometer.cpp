@@ -77,7 +77,36 @@ struct RawAdvItem
 };
 
 // =====================================================
-//捕获蓝牙数据后回调，做mac过滤+空包过滤
+// Phase 2（BLE 性能清理）：模块级编译期调试开关
+//
+// 背景：`onResult()` 运行在 **NimBLE 主机任务上下文**（非 loopTask），
+//       其中逐字节 `Serial.printf("%02X ")` 会把每个广播包转成
+//       约 3×N 字符的串口输出。实测均值 ≈ 7.8 ms/包（`P0-3`），
+//       属于"callback 中大量 Serial 输出"。
+//
+// 处置原则（遵守用户约束）：
+//   ① 不改变 BLE 解码逻辑；② 不改变 System State；③ 不改变数据流程；
+//   ④ 保留必要错误日志；⑤ **不删除调试能力，只降低默认输出**。
+//
+// ⇒ 用宏把这些**逐包/逐帧的诊断输出**改为**编译期可开关**，
+//   默认 0（关闭）。需要排查 BLE 协议问题时，把下面这行改成 1
+//   重新编译即可**完整恢复**全部原始输出（含 hex dump）。
+//
+// 注意：本宏**只影响打印**，不参与任何判定分支 ⇒ 打开/关闭对
+//       BLE 行为、状态、队列、解码结果**零影响**。
+// =====================================================
+#ifndef MI_THERMO_DEBUG_VERBOSE
+#define MI_THERMO_DEBUG_VERBOSE 0
+#endif
+
+#if MI_THERMO_DEBUG_VERBOSE
+#define MI_THERMO_VLOG(...) Serial.printf(__VA_ARGS__)
+#else
+#define MI_THERMO_VLOG(...) ((void)0)
+#endif
+
+// =====================================================
+// 捕获蓝牙数据后回调，做mac过滤+空包过滤
 // =====================================================
 class MiAdvCallback : public NimBLEScanCallbacks
 {
@@ -114,13 +143,22 @@ public:
         item.adv_len = static_cast<uint8_t>(len);
         memcpy(item.adv_data, payload.data(), len);
         item.timestamp = millis();
+
+        // =====================================================
+        // Phase 2：逐包 hex dump 改为编译期开关（默认关闭）
+        //
+        // 开关打开时（MI_THERMO_DEBUG_VERBOSE=1）输出与改动前**逐字节一致**。
+        // 关闭时整段被预处理器移除 ⇒ callback 内不再有任何字符串格式化。
+        // 唯一保留的 `len=` 前缀由 MI_THERMO_VLOG 一并承担。
+        // =====================================================
+#if MI_THERMO_DEBUG_VERBOSE
         Serial.printf("[MiThermo] ADV len=%d : ", payload.size());
-        
-        //debug
         for(size_t i = 0; i < payload.size(); i++) {
             Serial.printf("%02X ", payload[i]);
         }
         Serial.println();
+#endif
+
         // =====================================================
         // 5. 入队
         // =====================================================
@@ -140,7 +178,6 @@ static uint32_t mi_random_sleep_ms()
         MI_THERMO_SLEEP_MAX_MS
     );
 }
-
 
 //扫描间隔时间随机数，避免和温湿度计广播周期锁相。
 static uint32_t mi_random_scan_off_ms()
@@ -298,7 +335,8 @@ void MiThermometer_task()
         case MI_THERMO_BOOT_DELAY:
         {
             if(now - s_boot_time >= 15000UL) {
-                Serial.println("[MiThermo] enter scan window");
+                // Phase 2：窗口/休眠的状态迁移属周期性节奏输出 ⇒ 归入 verbose
+                MI_THERMO_VLOG("[MiThermo] enter scan window\n");
                 s_got_temperature = false;
                 s_got_humidity = false;
                 s_scan_window_start_time = now;
@@ -315,18 +353,21 @@ void MiThermometer_task()
             // 检查扫描窗口是否结束
             if(now - s_scan_window_start_time >= mi_get_scan_window_ms()) {
                 if(s_ble_scanning) { pBLEScan->stop(); s_ble_scanning = false; }
-                Serial.println("[MiThermo] scan window finished");
+                MI_THERMO_VLOG("[MiThermo] scan window finished\n");
                 // 判断本轮扫描是否成功（必须同时收到 temperature + humidity）
                 if(s_got_temperature && s_got_humidity) {
-                    Serial.println("[MiThermo] scan success");
+                    MI_THERMO_VLOG("[MiThermo] scan success\n");
                     s_scan_fail_count = 0;
                     s_thermo_level = MI_THERMO_LEVEL0;
                 } else {
                     s_scan_fail_count++;
+                    // Phase 2：失败计数与等级提升**保留为常态输出** —— 这是
+                    // 判断"温湿度计是否离线 / 是否需要人工介入"的关键业务信号；
+                    // 且其频率上限被扫描窗口（15/30 分钟）严格约束，无压力。
                     Serial.printf("[MiThermo] scan failed count=%d level=%d\n", s_scan_fail_count, s_thermo_level);
                     if(s_thermo_level == MI_THERMO_LEVEL0) {
                         s_thermo_level = MI_THERMO_LEVEL1;
-                        Serial.println("[MiThermo] enter LEVEL1");
+                        MI_THERMO_VLOG("[MiThermo] enter LEVEL1\n");
                     } else if(s_thermo_level == MI_THERMO_LEVEL1) {
                         if(s_scan_fail_count >= MI_THERMO_MAX_FAIL) {
                             s_thermo_level = MI_THERMO_LEVEL2;
@@ -336,6 +377,8 @@ void MiThermometer_task()
                             }
                             state_set_bool(STATE_MI_THERMO_ENABLE, false);
                             s_scan_state = MI_THERMO_DISABLED;
+                            // Phase 2：进入 LEVEL2 = 采集功能**永久停用**（需云端/
+                            // Workflow 重新开启）⇒ 属**必须保留**的错误级提示。
                             Serial.println("[MiThermo] LEVEL2: scanning disabled");
                         }
                     }
@@ -359,7 +402,7 @@ void MiThermometer_task()
         case MI_THERMO_SCAN_WINDOW_WAIT:
         {
             if(now - s_scan_window_start_time >= mi_get_scan_window_ms()) {
-                Serial.println("[MiThermo] scan window finished");
+                MI_THERMO_VLOG("[MiThermo] scan window finished\n");
                 s_scan_fail_count = 0;
                 s_thermo_level = MI_THERMO_LEVEL0;
                 mi_enter_sleep();
@@ -395,7 +438,7 @@ void MiThermometer_task()
         case MI_THERMO_SLEEP:
         {
             if(now - s_sleep_start_time >= s_sleep_target_ms) {
-                Serial.println("[MiThermo] wakeup from sleep");
+                MI_THERMO_VLOG("[MiThermo] wakeup from sleep\n");
                 s_got_temperature = false;
                 s_got_humidity = false;
                 s_scan_window_start_time = now;
@@ -424,7 +467,8 @@ void MiThermometer_task()
         bool result = lywsd03_decrypt(rawItem.mac, g_bin_bindkey, rawItem.adv_data, rawItem.adv_len, value, data_type);
         if(result)
         {
-            Serial.println("[MiThermo] decrypt OK");
+            // Phase 2：解密成功是"每帧一次"的正常事件（非错误）⇒ 归入 verbose
+            MI_THERMO_VLOG("[MiThermo] decrypt OK\n");
             time_t ts = time(nullptr);
             switch(data_type)
             {
@@ -520,7 +564,8 @@ static bool lywsd03_decrypt(const uint8_t mac[6], const uint8_t bindkey[16], con
         default:
             return false;
     }
-    Serial.printf("[MiThermo] decode type=%d value=%.2f\n", out_type, out_value);
+    // Phase 2：解密结果明细属诊断输出 ⇒ 归入 verbose（开关打开时逐字一致）
+    MI_THERMO_VLOG("[MiThermo] decode type=%d value=%.2f\n", out_type, out_value);
     return true;
 }
 
