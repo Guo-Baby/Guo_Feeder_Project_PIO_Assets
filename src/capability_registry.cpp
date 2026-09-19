@@ -6,6 +6,8 @@
 
 #include "workflow.h"
 
+#include "log_manager.h"   // P2-L：观测埋点（EventId / ParamId + log_emit）
+
 // =====================================================
 // RAM Runtime Cache
 //
@@ -686,11 +688,33 @@ static bool registry_sync(CapabilityType type)
 
 if (!save_registry_file(path, magic, *table))
 {
+    // P2-L：唯一的"保存失败"判定点。
+    // 只在此记录，不进入 save_registry_file() 内部 4 个失败出口 ——
+    // 那些出口各有 1 条专属串口打印，精确原因已 100% 覆盖，
+    // 故不带 LOG_P_ERR_CODE，避免重复记录与签名改动。
+    // 参数用栈上局部数组：本函数可能跑在 loopTask(8KB) 或
+    // esp-mqtt 任务上，禁用 static / 全局缓存（会并发踩踏）。
+    LogParamIn p[1];
+    p[0] = log_arg_enum(LOG_P_REG_TYPE, (uint32_t)type);
+    log_emit(LOG_REG_SAVE_FAILED, LOG_LVL_ERROR, p, 1);
+
     Serial.printf(
         "[CapRegistry] %s flash save failed, RAM cache kept\n",
         capability_type_name(type)
     );
 }
+
+// P2-L：REG_REBUILT 埋点。
+// 位置 = registry_sync() 中"真正发生 rebuild"的 else 分支定义点。
+// 该分支的进入条件（checksum 不一致 / 文件缺失 / 损坏）即"重建"
+// 的结构性定义，天然是边沿事件 —— 与 reuse 分支互斥，无需门控。
+// 不在 command_manager 的 rescan 调用点埋：那里一次 workflow create
+// 会连触发 3 次 registry_sync，会造成同一事实重复记录 3 条。
+LogParamIn p[3];
+p[0] = log_arg_enum(LOG_P_REG_TYPE, (uint32_t)type);
+p[1] = log_arg_u32(LOG_P_COUNT, (uint32_t)table->count);
+p[2] = log_arg_u32(LOG_P_VERSION, (uint32_t)table->version);
+log_emit(LOG_REG_REBUILT, LOG_LVL_INFO, p, 3);
 
 Serial.printf(
     "[CapRegistry] %s rebuild version=%u count=%u checksum=%u\n",
