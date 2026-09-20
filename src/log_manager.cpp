@@ -138,7 +138,22 @@ static const LogCoalesceTarget s_coalesce_targets[] = {
     // 重量异常"进入"：由 weight_refresh_error_state() 的 error_state 边沿产生。
     // 安全响应走 EventManager → DispenseGuard → valve_force_close()，
     // **完全不经过本模块** ⇒ 折叠日志不可能影响安全时序。
-    { LOG_WEIGHT_ERROR_ENTER, LOG_LVL_WARN }
+    { LOG_WEIGHT_ERROR_ENTER, LOG_LVL_WARN },
+
+    // Phase 4：DispenseGuard 安全响应决策。
+    //
+    // 为什么必须合并：本埋点的宿主在 weight 异常回调内，而实测权重跳变期
+    // 该回调可达 6~20 次/s（valve.cpp:454 实测）⇒ 不合并时 5s 内可达
+    // 30~100 条 WARN，会同时压满 Flash 段环(496 条)与云队列(128 槽)。
+    //
+    // 为什么合并是安全的：本 EventId 只承载"决策已作出"这一**观测事实**，
+    // 安全动作（valve_force_close() 的 GPIO 写入）在 callback 内**先于**本
+    // log_emit 之前就已由控制流决定，且 log_emit 不参与任何分支判断 ⇒
+    // 折叠日志不可能改变安全动作的次数与时序。
+    //
+    // 与 valve 侧的互补关系（非冗余）：LOG_VALVE_FORCE_CLOSE(0x0505) 带
+    // 5s 日志门控 ⇒ 只记"发生过"；本 ID 的 Σ LOG_P_COUNT 记"发生了几次"。
+    { LOG_DISPENSE_SAFETY_RESPONSE, LOG_LVL_WARN }
 };
 
 static const uint8_t s_coalesce_target_count =

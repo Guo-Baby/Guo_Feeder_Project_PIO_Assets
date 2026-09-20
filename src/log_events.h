@@ -278,6 +278,15 @@ enum LogEventId : uint16_t
     LOG_WEIGHT_ZERO_DONE           = 0x050E,   // INFO
     LOG_WEIGHT_TRIGGER_FIRED       = 0x050F,   // INFO
     LOG_WEIGHT_CALIB_FAILED        = 0x0510,   // ERROR
+    // Phase 4：DispenseGuard 安全响应决策（不是"重量异常"也不是"关阀动作"）
+    //   语义 = "Dispense 响应了 EVENT_WEIGHT_ERROR 并决定发起安全动作"
+    //   已有记录的分工：重量异常 → LOG_WEIGHT_ERROR_ENTER(0x050C)（weight 定义点）
+    //                   关阀动作 → LOG_VALVE_FORCE_CLOSE(0x0505)（valve 定义点）
+    //   为何需要独立 ID：0x0505 带 5s 日志门控 ⇒ 只记"发生过"，不记"发生了几次"；
+    //                   本 ID 走 LogManager 突发合并（ΣCOUNT 守恒）⇒ 次数权威。
+    //   为何不复用 0x0501-0x0504：四个 ID 描述"一次供水过程"的生命周期，
+    //                   与"安全响应决策"范畴不同（安全响应是终止供水，非开始）。
+    LOG_DISPENSE_SAFETY_RESPONSE   = 0x0511,   // WARN（走突发合并；Σ COUNT = 真实响应次数）
 
     // ---- 0x06xx WiFi ----
     LOG_WIFI_CONNECT_START         = 0x0601,   // INFO
@@ -599,6 +608,7 @@ static_assert(LOG_EVT_NONE == 0x0000, "LOG_EVT_NONE");
 static_assert(LOG_SYS_BOOT_COMPLETE == 0x0101, "LOG_SYS_BOOT_COMPLETE");
 static_assert(LOG_WF_START == 0x0401, "LOG_WF_START");
 static_assert(LOG_VALVE_FORCE_CLOSE == 0x0505, "LOG_VALVE_FORCE_CLOSE");
+static_assert(LOG_DISPENSE_SAFETY_RESPONSE == 0x0511, "LOG_DISPENSE_SAFETY_RESPONSE");
 static_assert(LOG_OLED_INIT_FAILED == 0x0E01, "LOG_OLED_INIT_FAILED");
 
 // ParamId 关键值
