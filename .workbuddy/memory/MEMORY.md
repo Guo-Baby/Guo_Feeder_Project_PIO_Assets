@@ -4,7 +4,35 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 > 专题：**LogManager → `MEMORY-logmanager.md`** · 每日日志 → `YYYY-MM-DD.md`
 
 ## 文档索引
-`readme.md`(架构) · `需求文档.md` V2.1 · **`未修复的问题.md`（全项目问题权威清单，含 `LOG-n`/`VALVE-n`/`R-n`/`T-n` 编号）** · `AI_RULES.md`(分层·非阻塞) · Config：`config_manager接口文档.md`+`jsonstorage开发架构.md`+`json_storage接口文档.md`+`bin_storage开发说明0910.md` · `system_command接口文档.md`+`critical_operation接入规范.md` · `cloud_protocol.md`(V2.0 权威) · `workflow_cloud_interface.md`(Workflow↔Cloud 唯一契约) · `docs/LogManager-Integration-Guide.md`+`docs/P2_Log_Integration_Matrix.md` · `log模块历史/` · `workflow修改历史需求/`
+`readme.md`(架构) · `需求文档.md` V2.1 · **`未修复的问题.md`（全项目问题权威清单：`LOG-n`/`VALVE-n`/`R-n`/`T-n`/`EVT-n`/`LV-n`）** · `AI_RULES.md` · Config：`config_manager接口文档.md`+`jsonstorage开发架构.md`+`json_storage接口文档.md`+`bin_storage开发说明0910.md` · `system_command接口文档.md`+`critical_operation接入规范.md` · `cloud_protocol.md`(V2.0) · `workflow_cloud_interface.md` · `docs/LogManager-Integration-Guide.md`+`docs/P2_Log_Integration_Matrix.md` · `log模块历史/`
+
+## 当前阶段（2026-09-20）
+- **LogManager 埋点：Phase 3 ①②③④⑤ + Phase 4 Dispense 安全响应 已完成** —— 已接入 **13 模块**
+- **★ Phase 5 前置审查完成（`5b5b529` + `9d5eae4`；报告 `Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`）** —— 最高优先级接入项 = **`0x01xx` System/Boot 段 12 个 ID 整段零宿主**（`system_command.cpp:222` 已缓存 `esp_reset_reason()`、`:97` 已有名称映射表 ⇒ **有 ID、有判据、有宿主，只差接线**）
+- **★ Phase 5-A/B/C 执行计划已提交（`aeb6708`，零代码改动）** —— 计划书 `log模块历史/Phase5-ABC执行计划0920.md`；**等待 E1–E8 裁决后开工**
+  - **核实推翻 3 条先前判断**：① **5-A 零协议改动**（7 个 ID + 所需 ParamId 全已冻结，`log_events.h` **不需改**）；② **`EVT-1` 断点不是 `event_push`**（它/`event_subscribe`/`init` 都用 `MAX_EVENT_TYPE`(32) ⇒ 阀门事件**发布订阅正常**），真正断点是 `event_from_string()`（表仅 14 项）；③ **`BOOT_INCOMPLETE_PREV` 判据已存在**（`config_manager.cpp:1108` `last_boot_ok`）⇒ 无需新增持久化
+  - **`P0-1` 升级为功能性缺陷**：两张字符串表都多出幻影 `"EVENT_CLOUD_COMMAND"`（index 10）⇒ index ≥10 全错位 ⇒ 声明 `event_weight_error` 的 WF Trigger 被解析成 `EVENT_ERROR`(13) ⇒ **永不触发且静默**；`event_*` 触发器全仓库**零使用者** ⇒ 零回归风险 ⇒ **并入 5-B 同批修**
+  - **新增登记**：`PROTO-2`（`(IMM)` **无实现** ⇒ `RESTART_EXECUTED`(INFO) 在 10 s 窗口内**不保证送达**）· **`LV-3`**（BLE `xQueueSend` 返回值被忽略 ⇒ 队列满静默丢包）
+  - **`logt` 支持 `ring`**（RAM 环）⇒ **INFO 记录可上板自证**（`LV-2` 只影响参数值，不影响记录存在性）
+- **执行顺序（已确认）**：**#1 `0x01xx` System/Boot（7 ID）** → #2 BLE（4 ID）→ #3 `bin_storage` 桥接 → #4 `LV-2` 工具增强 → #5 OLED 不埋 → #6 `workflow_storage` 接口 → #7 Dispense 业务（阻塞 `DSP-1/2/4`）· **5-B（`EVT-1`+`P0-1`）与日志改动严格分离**
+- **待裁决 E1–E8**（计划书 §七）；另 `LV-1` / `LV-2` / `EVT-1` 均 OPEN
+- **`R-7`/`R-8` 仍 DEFERRED —— Phase 5 审查明确未重新升级**（优先级/状态/结论均未改动）
+
+### ★ Dispense 边界（Phase 4 审查定论；**细节全在 `log模块历史/Phase4-Dispense边界审查0920.md`**）
+- **Dispense 本体不存在**：只有 `dispense_guard.cpp/.h`；**无电机/步进/出粮状态机/出粮 Action**；重量反馈闭环**属 Water 域**（Workflow 组合：`VALVE_OPEN` → `weight_decrease` Trigger → `VALVE_CLOSE`）
+- **★ 命名冲突**：代码里 **"Dispense" = 供水**（`0x05xx` Water 段）；**出粮已叫 "Motor"**（`0x0Fxx` 段已预留）⇒ 推荐 `DispenseManager`（编排）+ `Motor`（驱动）
+- **三硬约束**：① 重量反馈必用 `weight_get_gram()`（读 System State 会得 30 s 陈值）② `timeout_ms` 必填并钳位 ≤60 s（Temp Action FIFO 队头阻塞）③ **DispenseGuard 不能守护出粮**（只关水阀）；**DSP-1..10 未决**（P0 = 命名 / 日志段 / 队头阻塞）
+
+### ★★ 铁律 29–32（**完整论述在 `MEMORY-logmanager.md`**）
+- **29 纯转发模块的埋点数天然为 0**：① 列全部数据流 → ② 逐个问"**定义点**在哪"（在别的模块 ⇒ 别人记）→ ③ 只剩"自己失效"这类自指事实时，有 EventId 就记、没有就"零埋点 + 登记"。**"总线类模块记几条"没有统一答案**（对比：`dispense_guard` 记 1 条决策；`event_manager` 记 2 条自身异常）
+- **30 突发合并三条硬约束**：① **被合并埋点必须至少带 1 个参数**（`log_coalesce_emit_summary()` 在 `base_n==0` 时**静默丢弃**折叠计数）② 参数须 `< LOG_MAX_PARAMS(8)` ③ **折叠对调用方透明**（`logt fill` 的 `queued=N` **恒等于 N**，真实记录数看 `stats` 的 `emit`/`flash` 增量）
+- **31 新增日志前必须问"现有日志缺的是哪一维"** —— "**来源可分**"与"**次数可数**"是两件独立的事（Phase 4：来源区分已由 `0x0509/0x050A` vs `0x0505`+`CAUSE=1` 满足，缺的是**次数守恒**）。**答不上来就说明不该新增**
+- **32 统计"埋点宿主覆盖率"必须检索三类证据**：① 字面实参 ② **`log_emit0(...)` 变体** ③ **映射函数的 `return LOG_X;`**（`cfg_bridge_event()`/`stg_bridge_event()`），并剥除注释 —— 否则 **`0x02xx`/`0x03xx` 会被系统性误判为整段零宿主**（首版实际踩到）。工具 `.pio/p5run/evtid_audit.py`
+- 通用配套：**`LOG_P_CAUSE` = 0x16**（`0x1F` 是 `LOG_P_REASON`）；**N:1 冗余判据**（埋点前核对两侧"计数语义"是否同频）
+
+### Phase 4 实施结果（细节在 `MEMORY-logmanager.md`）
+- `0x0511` 埋在 `dispense_guard_event_callback()`（过滤后、`valve_force_close()` **前**）⇒ 记"**决策**"，与 Valve 侧"**动作**"（`0x0505`）互补：后者丢次数、前者 **Σ `LOG_P_COUNT` = 真实响应次数**；`DISPENSE_CAUSE_*` 与 `VALVE_CAUSE_*` **同值对齐**
+- **`0x0501–0x0504` 未占用**（语义是"一次供水过程"生命周期，安全响应是**终止**供水 ⇒ 复用 `START` 会伪造事实）；验证 **V1 ✅**（+0 RAM / +28 Flash）+ **V4 objdump ✅**；**V2/V3 ⏳ 未执行**（无串口设备；用例 `test/p4_dispense_log_tests.txt`）
 
 ## 硬性规范
 - 零全局裸变量，状态走 System State；新增 State 改三处：`system_state.h` 枚举 + `.cpp` state_map + 产生模块
@@ -19,54 +47,46 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **跨任务并发（P0）**：`workflow_start()` 在 esp-mqtt 任务、`workflow_task()` 在 loop 任务 ⇒ 收口必须**先 Release、后置 state**。通式：**"释放"早于"让对象对外可见地变为可重新开始"**
 - **Action 引擎差异**：临时 Action 同轮立即 `poll()`；Step Action 首轮只 start；两者 `poll()` 都可能带 `result != RUNNING` → **不得**在此全局强制复位
 
-## Workflow 云端契约（09-13 定版；细节全在 `workflow_cloud_interface.md`）
-- **`p.id` = Slot 整数(0..15) 唯一定位键**；`workflow.id` 可重复；`stable_id` 仅 Registry metadata；`count` = 占用 Slot 数（含 valid=false）
-- `variant` = uint32 内容版本号（**非 hash、绝不时间戳**）：create=1/有变化 +1/一致不变/delete+1/**重复 delete 幂等**；Meta v3(89B)；`valid` = **RAM 标志**（不进 BIN）→ 重启后 `get` 返回 **error 5**；Registry v2 magic `AP2A/AP2T/AP2W`
-- `save` = **逻辑全局、物理逐 Workflow 事务**：成功者清 Dirty、失败者保留、循环不中断；任一失败→10；`delete` 逻辑删且**立即落盘**后清 Dirty（留 Dirty 会让 save 把 valid 置回 true **撤销删除**）
+## Workflow 云端契约（09-13 定版；**细节全在 `workflow_cloud_interface.md`**）
+- **`p.id` = Slot 整数(0..15) 唯一定位键**；`workflow.id` 可重复；`count` = 占用 Slot 数（含 valid=false）；`variant` = uint32 内容版本号（**非 hash、绝不时间戳**）；`valid` = **RAM 标志**（不进 BIN）⇒ 重启后 `get` 返回 **error 5**
+- `save` = **逻辑全局、物理逐 Workflow 事务**；`delete` 逻辑删且**立即落盘**后清 Dirty（留 Dirty 会让 save 把 valid 置回 true **撤销删除**）
 - **严格 Contract**：Step `type` 必填、`steps>16`、`params>8` 一律**整体拒绝(11)**
 - **四条易踩**：① `stable_id` 按 `runtime_id` 字母序生成，新增/改名会让后续**整体平移**；② `enable` 缺省两路径不一致（JSON `true`/BIN `false`）⇒ 永远显式传；③ `step.id` 写错**不报错**但永不执行；④ `registry_version` 变 ≠ 只有 Workflow 变
-- **形态约束**：内容必须嵌套在 `p.workflow` 下 —— 曾允许平铺，`p:{"id":"WF1"}` 被当完整 Workflow 而**静默清空 steps**。**定位字段与内容载荷绝不能共用同一 key**
-- 新增 Workflow 字段时 `workflow_storage_load()` 每个拷贝点都要回填（variant 曾漏过）
+- **形态约束**：内容必须嵌套在 `p.workflow` 下 —— 平铺会让 `p:{"id":"WF1"}` 被当完整 Workflow 而**静默清空 steps**。**定位字段与内容载荷绝不能共用同一 key**
 
-## LogManager（**摘要；细节在 `MEMORY-logmanager.md`**）
-> **P2：8 模块已接入**（Storage→Config→WiFi→Cloud→Time→Workflow→Weight→Valve）+ **P2-I 写入压力优化**。
-> 回归 **182/195**（13 MISS 全属 `R-7` 环境干扰；**夹具 0 改动、断言仍 195**）。
-> ★ **失败与环境重量异常强度相关、与固件无关**：P2-G（**无 Valve 日志**）高强度下同样 MISS（9/2 条）
-> ⇒ **要的是"测试隔离"，不是消除某个模块的埋点**。
-> **P2-I**：LogManager 侧**突发合并**（白名单 `LOG_WEIGHT_ERROR_ENTER`，窗口 5 s，记录带 `LOG_P_COUNT`）
-> ⇒ **ΣCOUNT = 真实发生次数**（实测 17 → 5 条，**−70.6%**）；**安全链零接触**（安全事件不经 LogManager）。
-> 状态：`VALVE-2/3`·`R-6`·`NC-9`·`LOG-1` ✅ ｜ `VALVE-1/4/5/6`·`R-7`·`R-8`·`NC-11~13` OPEN；
-> 下一步 **`R-7` 测试隔离方案**（未定 ⇒ 暂不进 Dispense）。
+## LogManager 摘要（**细节与铁律 22–31 在 `MEMORY-logmanager.md`**）
+- **已接入 13 模块**：Storage(A)·Config(B)·WiFi(C)·Cloud(D)·Time(E)·Workflow(F)·Weight(G)·Valve(H)·Command(J)·ComputerReset(K)·Registry(L)·Event(M)·**DispenseGuard(Phase 4)**
+- 冻结：Record 128B v2 / 16 段×31 条 / COW 零原地改 / ACK **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）
+- **INFO 只上云不落 Flash；WARN+ 落 Flash** ⇒ 任何新 WARN 埋点都会扰动 496 条环的绝对计数。回归当前 **168/195**（26 MISS 全属 `R-7` 环境干扰）
+- **刻意不埋**：LogManager 自身 5 个 ID ⇒ 走**批次头侧信道计数**，**是设计非缺口**
+- **无宿主**：`CFG_FACTORY_RESET`(0208)·`CLOUD_FRAG_FAIL`(0706)·`TIME_NTP_FAIL`(0802)·`OLED_INIT_FAILED`(0E01)；**需新增检测**：`VALVE_OVERFLOW_RISK`(0507)=`P0-4`
+- 剩余待办：**BLE 暂缓** · **`LV-1`** · **`LV-2`** · **`EVT-1`** · `bin_storage` 桥接 · `workflow_storage` 回调接口
 
-**十五条铁律（论证在专题文件）**
-1. `seq` 对每条非 DEBUG 记录分配 ⇒ **段内 seq 必然稀疏**，禁止 `first_seq+n-1` 推导。
-2. 冻结：Record 128B v2 / 16×31 / COW 零原地改 / ACK 批次级 **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）/ 推进依据 = 收到 ACK。
-3. **INFO 只上云不落 Flash；WARN+ 落 Flash** ⇒ 新 WARN 埋点会扰动 496 条环的绝对计数。
-4. 埋点三原则：只放既有迁移点/错误分支；**高频源禁埋**；必须验证**可达性**。
-5. **失败是状态不是事件** ⇒ 用**边沿锁**而非降频。
-6. 高频路径用**边沿/计数聚合**（N 次记 1 **AND** ≥60s）。
-7. 水位语义分离：`acked_seq`(仅观测) / `gc_seq`(**连续**可回收) / `gc_floor`(钳制)。
-8. 夹具须顺序无关；内联正则**必须把字段名写进字面量**，否则假命中。
-9. 低频模块：`CAUSE` 用**位掩码**；`jump_error` 是"异常**事件**"非"错误**状态**"。
-10. **★ 跑 195 回归禁止注入 ACK**（夹具隐含依赖 BT-1）。
-11. **★ 断言不能隐含"执行期间只有本用例在写日志"**（P2-D 绝对计数 / P2-E 与历史相关 / P2-G "恰好填满" / P2-H 前提本身）⇒ **"改判据"＝删记账本体时就是降断言 ⇒ 正解是"测试隔离"**。
-12. **★ 精确计数前必须先清零**（`fwipe`+`mwipe`+`creset`+`reset`）：否则**回放 / 前序 Boot 记录**造成 18~37 s"孤儿增量"，易误判成门控失效。
-13. **★ 门控只能加在"全部执行完成之后"**：纯事件型函数去重**绝不提前 return**；**"取值用于日志"的变量须在源头清零前取**（`OPEN_MS` 踩过 3 次）。
-14. **★ 合并类改动三条**：折叠判定须在 **`seq` 分配之前**；汇总记录须**先于**触发它的记录入环；合并状态读改全在 `s_mux` 内且 **`log_emit()` 永不持锁**（用形参而非全局标志串行化）。
-15. **★★ 折叠 / 去重 / 门控类验证用"定向注入"**：`logt fill <lv> <n> <EventId(hex)>`（`main.cpp:1292`）＝现成的确定性注入器；本轮 4 种"诱发环境异常"方式**全部失败或不可核对**；**记录级核对须 ACK 前置**（与铁律 10 相反 —— 区别只在**是否在跑回归**）。
+**铁律（完整 1–31 条在 `MEMORY-logmanager.md`）** —— 以下是跨模块通用的 4 条：
+- **★ 精确计数前必须先清零**（`logt fwipe`+`mwipe`+`creset`+`reset`），否则"孤儿增量"易误判成门控失效
+- **★ 断言不能隐含"执行期间只有本用例在写日志"** ⇒ "改判据"＝删记账本体时就是降断言 ⇒ 正解是**测试隔离**
+- **★ 门控只能加在"全部执行完成之后"**：纯事件型函数去重**绝不提前 return**；**"取值用于日志"的变量须在源头清零前取**
+- **★★ 折叠/去重/门控类验证用"定向注入"**：`logt fill <lv> <n> <EventId(hex)>`；**记录级核对须 ACK 前置**（与"跑回归禁注入 ACK"相反，区别只在**是否在跑回归**）
+
+## Weight / R-8（**细节在 `log模块历史/R7-R8-后续评审与系统性能权衡0920.md`**）
+- **`R-8` = 真实缺陷**：滤波窗口无时间信息 + HX711 **覆盖式输出**（无 FIFO）⇒ 阻塞跨界 ⇒ 混合窗口 ⇒ 假跳变。**★ 危险区间非单调**：`<100ms` 无害 ｜ **`100–500ms` 最危险** ｜ `>500ms` 整窗换血反而不误报
+- **后果升级**：假跳变经 `EVENT_WEIGHT_ERROR` → DispenseGuard → **`valve_force_close()`** ⇒ **`R-3` 与 `R-8` 同根因**（污染安全功能）
+- **`R-8-A` 已修（`129606f`）**：`HX711::read()` 内 `wait_ready()` 无超时 ⇒ 掉线时 loop 永久挂起；修法＝`read()` 前二次 `is_ready()` 确认。**`R-8-B` 顺带解决**；**`R-8-C`** OPEN
+- **`SYS-1`** LogManager **无需新增性能限制**；**`SYS-2`** BLE 与 LogManager **无并发**（共用 loopTask）
+- **执行顺序铁律**：先修"会卡死/误动作的"，**再**修"让测试失准的"。⚠️ 修 `BT-1` 会使上行频次 `~1/15s → 2Hz`（**30×**）
 
 ## 其它模块要点（详见对应文档）
-- **TimeManager V2**：`time_init()` 必须晚于 `oled_init()`；RTC(PCF8563T,0x51) **复用 OLED 的 Wire，绝不 `Wire.begin()`/`setClock()`**；**SNTP 陷阱**：IDF v4.4 COMPLETED **瞬时**并自动回落 RESET，"从未同步"也是 RESET ⇒ **禁用 `status != IN_PROGRESS` 判成功**，用「callback 通知 + loop 延迟确认」；上板 **RTC 仍 `rtc_present=false`**
-- **CloudManager**：两种下发格式（`compact = !doc["c"].isNull()`）—— 旧 `{"cmd":"execute_action","id":"8010","ob":"<RUNTIME_ID>"}`（调试首选）/ 新 `{"c":"action",i,v,k}`；registry 查询 `{"c":"registry","i":..,"k":0}`（0=ACTION/1=TRIGGER/2=WORKFLOW）；命令 `id` **每条唯一**；**协议级消息旁路 CommandManager**；**无应用层 TX 队列**、上行是 JSON 文本；**离线直接返回 false 不排队**；`retry_interval` 是**死配置**；⚠️ 明文打印密码
-- **烧录基线**：**`uploadfs` 整分区擦除**（`0x410000→0xffffff`），`esptool write_flash 0x10000 firmware.bin` **不碰** LittleFS；`data/` 被 gitignore ⇒ `tools/gen_config_version.py`+`gen_workflow_bin.py` 重建（⚠️ `WF_STG_META_VERSION` 升级必须同步脚本，否则 `VERSION_TOO_NEW` → 回退 `/workflow.json`）；**`bootstrap_version_file()` 必须在模块加载之后**
+- **TimeManager V2**：`time_init()` 必须晚于 `oled_init()`；RTC(PCF8563T,0x51) **复用 OLED 的 Wire，绝不 `Wire.begin()`**；**SNTP 陷阱**：IDF v4.4 COMPLETED **瞬时**并自动回落 RESET ⇒ **禁用 `status != IN_PROGRESS` 判成功**
+- **CloudManager**：两种下发格式（`compact = !doc["c"].isNull()`）—— 旧 `{"cmd":...,"ob":"<RUNTIME_ID>"}`（调试首选）/ 新 `{"c":"action",i,v,k}`；命令 `id` **每条唯一**；**协议级消息旁路 CommandManager**；**无应用层 TX 队列**、**离线直接返回 false 不排队**；`retry_interval` 是**死配置**
+- **烧录基线**：**`uploadfs` 整分区擦除**；`esptool write_flash 0x10000` **不碰** LittleFS；`data/` 被 gitignore ⇒ 用 `tools/gen_config_version.py`+`gen_workflow_bin.py` 重建（⚠️ `WF_STG_META_VERSION` 升级必须同步脚本）；**`bootstrap_version_file()` 必须在模块加载之后**
 
 ## 环境操作铁律（Windows + PlatformIO）
 - **Bash PATH 可能损坏** ⇒ 前加 `export PATH="/c/Users/wang/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:$PATH"`
-- 沙箱拦删 `.o`/`.elf` ⇒ **增量编译必然失败** ⇒ `PLATFORMIO_BUILD_DIR=.pio/build/xxx pio run`（全量 60–190s）；⚠️ 全新 BD 首次偶发 `sconsign314.dblite` 缺失 ⇒ 先 `mkdir -p "$BD/esp32-s3-devkitc-1"`
-- `pio run -t upload` **可能完全不烧录** ⇒ 直接 `esptool.py write_flash -z 0x10000 <firmware.bin>`（`D:/platformIO/packages/tool-esptoolpy/esptool.py`）；Python 用 `C:/Users/wang/.workbuddy/binaries/python/envs/default/Scripts/python.exe`
-- **串口回归**：`python test/serial_batch.py <COM> <log> <用例txt> [QUIET] [HIT_GRACE]`；用例 `<命令> ||| 期望子串`（断言串**不要加引号**）；命中后 0.35s 静默即返回；**QUIET**：fill ≤62 用 **3.0**，含 `fill 100/200/300` 用 **5.0**（`logt stats` **先排空 RAM 环**）；**开串口即复位板子**
-- **⚠️ `serial_batch.py` 串口静默 1.5s 即提前返回**（不是等满 QUIET）⇒ 做不了"挂着等 N 分钟"的实验；长静默须用**单会话探针**（`.pio/p15run/storm_probe.py`）。**RAM 状态类实验（Dirty/5 分钟窗口/重试计数）必须单会话**（重开串口即复位）。用 `logt stats` 的 **`emit` 增量**度量"某动作产生几条日志"
-- **★ 等待上限**：编译 `timeout 190` / 烧录 `timeout 120` / 串口回归 `timeout 185`；超时(124) **不重跑**，grep 结果文件或拆用例
-- **同一文件的多个 Edit 必须串行**（并行互相覆盖且仍报成功，改完必须 grep 复核）；**Bash heredoc 写 Python 极易被引号搞崩且失败静默无改动** ⇒ 先 Write 成文件再跑
-- ⚠️ `platformio.ini` 的 `platform`/`lib_deps` **未固定版本**（违反 PIO 生产规范，待处理）
+- 沙箱拦删 `.o`/`.elf` ⇒ **增量编译必然失败** ⇒ `PLATFORMIO_BUILD_DIR=.pio/build/xxx pio run`；⚠️ 全新 BD 首次偶发 `sconsign314.dblite` 缺失 ⇒ 先 `mkdir -p "$BD/esp32-s3-devkitc-1"`
+- `pio run -t upload` **可能完全不烧录** ⇒ 直接 `esptool.py write_flash -z 0x10000 <firmware.bin>`（`D:/platformIO/packages/tool-esptoolpy/`）；Python 用 `C:/Users/wang/.workbuddy/binaries/python/envs/default/Scripts/python.exe`
+- **串口回归**：`python test/serial_batch.py <COM> <log> <用例txt> [QUIET] [HIT_GRACE]`；用例 `<命令> ||| 期望子串`（断言串**不要加引号**）；QUIET：fill ≤62 用 **3.0**、`fill 100+` 用 **5.0**；**开串口即复位**
+- **⚠️ `serial_batch.py` 串口静默 1.5s 即提前返回** ⇒ 长静默 / RAM 状态类实验**必须单会话探针**。用 `logt stats` 的 **`emit` 增量**度量"某动作产生几条日志"
+- **★ 自写探针必须按行缓冲**：`read(in_waiting)` 会把**半行**当整行 ⇒ 解析 `logt` 输出全部失败（踩过）
+- **★ 等待上限**：编译 `timeout 190` / 烧录 `120` / 串口回归 `185`；超时(124) **不重跑**，grep 结果文件或拆用例
+- **同一文件多个 Edit 必须串行**（并行互相覆盖且仍报成功，改完必须 grep 复核）；**★ Bash heredoc 跑 Python 极易被引号搞崩且失败静默无改动** ⇒ **先 Write 成文件再执行**（本轮又踩过一次）
 - **用户偏好**：每阶段独立 commit；**禁 `git add -A`/`.`**（`.workbuddy/memory/`、`data/config/` 下有 force-add 的 tracked 文件）；测试资产放受跟踪的 `test/`；编译临时文件可直接删，其他目录删除需用户同意；文档（除 gitignore 内的）都可 commit
