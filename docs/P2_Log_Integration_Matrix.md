@@ -462,7 +462,7 @@
 | 错误处理 | ✅ 三级降级：LEVEL0 → LEVEL1 → LEVEL2（禁用扫描，`MI_THERMO_MAX_FAIL=4`）；解码失败、bindkey/MAC 缺失、队列创建失败均有处理 |
 | 状态机 | ✅ 7 态：`BOOT_DELAY / SLEEP / SCAN_WINDOW_RUN / SCAN_WINDOW_WAIT / SCAN_ON / SCAN_OFF / DISABLED` |
 | 关键状态迁移点 | 扫描窗口结束判定 :316-343（成功/fail_count++/LEVEL 迁移/禁扫）、解码队列消费 :419-457、`mi_thermo_start_scan()` :531 / `stop_scan()` :564 |
-| **高频源** | 🔴 **最高风险**：1s 扫描窗口内可能收到数十个 ADV；队列 16 槽，`xQueueSend` 返回值被忽略（:127，静默丢包）；`xQueueReceive` 循环每轮最多消费 16 条 |
+| **高频源** | 🔴 **最高风险 —— 但须区分两个速率**（Phase 5 审查修正）：<br>① **`onResult()` 触发率**：所有在空中的广播设备 ⇒ 密集环境可达**数十/秒** ⇒ **无任何可记录事实**（MAC 不匹配在 `:124-126` 就 `return`）<br>② **通过 MAC + 长度过滤、真正 `xQueueSend` 入队的帧**：**≈ 1 包 / 3 s**（P2-BLE 实测：广播周期 1–2 s × 扫描占空"1 s 开 / 1.8–2.3 s 关"）⇒ **这才是"可记录事实"的速率**<br>③ **窗口级事件**：15 / 30 min<br>⚠️ 队列 16 槽，`xQueueSend` 返回值**被忽略**（`:165`，静默丢包） |
 
 ### 11.2 建议接入
 
@@ -478,6 +478,32 @@
 
 > 🔴 **硬禁令**：**不得在 `MiAdvCallback::onResult()` 中调用 `log_emit()`**。理由：① 运行在 NimBLE host 任务上下文，非 loop；② 该回调已被逐字节串口打印拖慢；③ 每包一条会瞬间填满 64 槽 RAM 环。正确做法：回调内只置计数/标志，日志在 `MiThermometer_task()` 中按窗口聚合上报。
 
+> ### ✅ **Phase 5 审查补充（2026-09-20）：这条禁令在本设计中根本不会被触发**
+>
+> **代码事实**：`onResult()`（`:114-167`）的全部动作 = MAC 逐字节过滤 → payload 空检查 → 长度过滤（`<29`）→ 构造 `RawAdvItem`（memcpy）→ [`MI_THERMO_DEBUG_VERBOSE` 开关的 hex dump，默认关闭] → `xQueueSend`。
+> ⇒ **callback 里没有"决策"，只有"搬运"** ⇒ 按铁律 25「总线只搬运，不代记」⇒ **callback 埋点数 = 0**。
+>
+> **上表 4 个已冻结 ID 的天然宿主全部在 `MiThermometer_task()`（loop 上下文）**：
+> | EventId | 宿主位置 | 速率 | 需聚合？ |
+> |---|---|---|---|
+> | `DATA_DECODED` 0x0901 | `:468` `if(result){}` | **≤1 / 扫描窗口**（收到 temp+humid ⇒ `SCAN_WINDOW_WAIT` **停扫**，`:490-499`）⇒ 代码天然保证；埋点处需加"本窗口已上报"标志 | ❌ |
+> | **`DECODE_FAIL` 0x0902** | `:468` **`else`** 分支 | **可达 1/3 s = 20/min**（**bindkey 配置错误** ⇒ CCM 对每包都失败） | ✅ **必须** |
+> | `SENSOR_LOST` 0x0903 | `:362` `s_scan_fail_count++` 分支 | ≤1 / 15–30 min | ❌ |
+> | `SCAN_DISABLED` 0x0904 | `:373-382` 进入 `LEVEL2`（`state_set_bool(ENABLE,false)` 前） | 1 次 / 生命周期（迁移后 `s_scan_state = DISABLED`） | ❌ |
+>
+> **★ Flash 风险定量**：`DECODE_FAIL` 是 **WARN ⇒ 落 Flash**；20 条/min ⇒ **496 条段环 ≈ 25 min 冲满**（对照 `R-3` 的 CRITICAL 83 s 冲光，量级低 3 个数量级，但**在"长期错误配置"下会持续消耗**）⇒ **必须聚合**。
+> **聚合方式建议**：**模块内窗口聚合**（复用既有 `s_scan_fail_count`，窗口结束上报 1 条带 `LOG_P_FAIL_COUNT`）⇒ **零 LogManager 改动**；若改走 LogManager 突发合并白名单（5 s），须满足 **铁律 30**：被合并埋点**必须至少带 1 个参数**（`log_coalesce_emit_summary()` 在 `base_n == 0` 时静默丢弃折叠计数）。
+>
+> **技术补充（为什么"技术上可以但工程上不应该"）**：`log_emit_internal()` **无 I/O / 无 malloc / 无 delay**，临界区仅 128 B memcpy（µs 级），栈开销 ≈200 B vs **NimBLE host task 栈 4096 B**（`nimconfig.h:217`）⇒ 可行；但 NimBLE host task 优先级**高于 loopTask** ⇒ 在 `s_mux` 上引入**优先级反转**（唯一被拖慢的是 loop 的 `log_task()`，µs 级、可忽略，**但方向是错的**）。
+>
+> 📄 详见 `log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1
+>
+> **尚未覆盖的 BLE 自身异常（候选，需新增 ID —— 未批准）**：
+> | 候选 | 位置 | 为何是真实缺口 |
+> |---|---|---|
+> | `BLE_INIT_FAILED`（ERROR） | `MiThermometerInit()` `:247-251`（MAC/bindkey 空）、`:277-281`（`xQueueCreate` 失败） | `:247` 分支 **`return false` 但调用方 `main.cpp:508` 忽略返回值** ⇒ 模块永久不可用却**静默**（与 `LV-1` 同构） |
+> | `BLE_QUEUE_FULL`（WARN） | `onResult()` `:165` `xQueueSend(...,0)` 返回值被忽略，队列 16 槽 | 静默丢帧；**不能在 callback 记录** ⇒ 需回调置计数、task 侧消费上报（同 `EVT_QUEUE_FULL` 做法） |
+
 ---
 
 ## 12. Command / Event / OLED（收尾）
@@ -486,7 +512,7 @@
 |---|---|---|---|
 | Command | `command_manager.cpp`（3204） | 有 `command_manager_set_log_callback()` 且**已在 `main.cpp:135` 注册**（打到串口） | `LOG_CMD_APPLIED`(INFO) / `LOG_CMD_REJECTED`(WARN) / `LOG_CMD_RUNTIME_QUEUE_FULL`(WARN) / `LOG_CMD_RUNTIME_TIMEOUT`(WARN) + `LOG_P_CMD_ID`⚠️ / `LOG_P_QUEUE_SIZE`。建议把已注册的 bridge 改为"串口 + LogManager"双路 |
 | Event | `event_manager.cpp` | ✅ **已接入（P2-M，2026-09-20）** —— 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。**按契约"走侧信道计数上报"实现**：**不为每条丢弃事件发日志**，改为**周期聚合 1 条**（窗口 60000 ms，节拍器 = `event_dispatch()` 首行）。★ **只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。宿主 = **确定丢弃的分支**（`0x0C01` 埋返回 `EVENT_QUEUE_FULL` 的唯一出口；`0x0C02` 埋风暴抑制分支），**不在调用者、不在入口**；**Σ `LOG_P_COUNT` = 真实丢弃数量**。详见 `log模块历史/LogManager-P2M-Event接入审查0920.md` |
-| OLED | `oled.cpp`（301） | 无日志 | `LOG_OLED_INIT_FAILED`(WARN) —— 单点，低风险 |
+| OLED | `oled.cpp`（301）+ `oled_animation.h`（1367） | ⚠️ **判定已修正（Phase 5 审查，2026-09-20）**：**不是"无宿主"，而是"有异常、有 ID、但缺判据"** | `LOG_OLED_INIT_FAILED`(0x0E01, WARN)。★ **缺判据的根因**：`oled_init()` `:103` `oled.begin();` **丢弃了 `U8g2::begin()` 的 `bool` 返回值**（对照 `U8g2lib.h:144` `bool begin(void)`），并在 `:110` **无条件**打印 `"OLED init OK"` ⇒ **假成功**（OLED 未接 / I2C NACK / 地址错误时串口仍显示 OK）⇒ 登记 **`OLED-1`**。⇒ **当前维持"不埋点"**（埋点无可依附判据；修 `begin()` 检查属**生产代码改动**，须单独批准）。<br>★ **分层澄清**："占位"只适用于**事件响应层**（`oled_event_handler()` 仅 2 个有效 case 且都只 `Serial.println`；注册 4 个事件、3 个落 `default`）；**显示层已实现**。附带缺陷：`oled_restart()`（`:251`）**零调用者 = 死代码**；`oled.h:16` 的 `void oled_event_handler(SystemEvent)` **永不定义 = 死声明**；`oled_event_init()` **4 次 `event_subscribe()` 返回值全被忽略**（与 `LV-1` 同构） |
 | ComputerReset | `computer_reset.cpp`（475） | 见 §1 | `LOG_CRESET_*` 三个 |
 | Registry | `capability_registry.cpp`（1029） | ✅ **已接入（P2-L，2026-09-20）** | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR)，均落在 `registry_sync()` 内（**2 处 `log_emit`**）。宿主 = 定义点而非触发点：重建 → `else` 分支（checksum 不一致/缺失/损坏）；保存失败 → `save_registry_file()` 返回值判定处。**不得**埋 `command_manager` 的 4 个 rescan 调用点（一次 create 连触发 3 次）与 `save_registry_file()` 内部 4 个失败出口 |
 
@@ -506,8 +532,9 @@
 | 8 | Weight | 无 | ~8 | 🔴 高频源，必须边沿 | P1 | 中 |
 | 9 | Valve | 无 | ~8 | 缺 NOT_READY；FORCE_CLOSE 无失败分支 | P1 | 中（安全） |
 | 10 | Dispense Guard | 无 | ✅ **1**（`0x0511` WARN） | ✅ **已完成（Phase 4，`94912bb`）**：纯转发模块 ⇒ **只记"决策"**；`0x0511` 与 Valve 的 `0x0505` **互补非冗余**（后者 5 s 门控丢次数，前者 ΣCOUNT 守恒）；已注册进合并白名单 | Phase 4 | **低** |
-| 11 | BLE | 无 | ~6 | 🔴 最高频 + 回调上下文禁令 | P2 | **高** |
-| 12 | Command/Event/OLED/Registry | ✅ **全部完成**（Command=P2-J / Event=P2-M / OLED=**已判无宿主不埋** / Registry=P2-L） | ~8 | 侧信道聚合 | P2 | 低 |
+| 11 | BLE | 无 | ✅ **4 个已冻结**（不新增） | ✅ **边界已定（Phase 5 审查，2026-09-20）** ⇒ 待裁决后接入：**4 个天然宿主全在 `MiThermometer_task()`（loop）** —— `DATA_DECODED`=`:468 if` / `DECODE_FAIL`=`:468 else` / `SENSOR_LOST`=`:362` / `SCAN_DISABLED`=`:373-382`。★ **callback 禁令根本不会被触发**（`onResult()` 只有 MAC 过滤+memcpy+`xQueueSend`，无可记录事实）。★ **唯一 Flash 风险 = `DECODE_FAIL`(WARN)**：bindkey 错误场景 20 条/min ⇒ 496 条环 ≈**25 min** ⇒ **必须模块内窗口聚合**（复用 `s_scan_fail_count`，零 LogManager 改动） | Phase 5 | **中**（比原判"高"降级，因宿主全在 loop） |
+| 12 | Command/Event/OLED/Registry | ✅ **Command=P2-J / Event=P2-M / Registry=P2-L 完成**；OLED=**判定修正为"缺判据"**（`OLED-1`） | ✅ | 侧信道聚合 | P2 / Phase 5 | 低 |
+| — | **System/Boot `0x01xx`** | **12 个 ID 整段零宿主**（`grep LOG_SYS_` 仅 1 行注释） | ✅ **全部已冻结** | 🔴 **★ Phase 5 判定为最高优先级接入项**：`system_command.cpp:222` **已缓存 `esp_reset_reason()`**、`:97` **已有名称映射表** ⇒ **有 ID、有判据、有宿主，只差接线**；全部为**启动期一次性**记录 ⇒ **零频率风险、零 Flash 压力**。接入前需裁决：`0x0106 FS_MOUNT_FAILED` 与 `LOG_STG_FS_UNAVAILABLE`(0x0301) 去重；`HEAP_LOW` 门控策略 | **Phase 5** | **极低** |
 
 ---
 
