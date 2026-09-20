@@ -8,6 +8,8 @@
 // =====================================================
 #include "system_command.h"
 
+#include "log_manager.h"   // LOG_SYS_RESET_ABNORMAL（log_emit / log_arg_*）
+
 #include <LittleFS.h>
 #include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() / ESP.restart()
 #include <stdarg.h>
@@ -123,6 +125,24 @@ const char *system_command_reset_reason_name()
     }
 }
 
+// 复位原因是否属于异常。未列举的原因一律返回 false（宁可漏报不误报）。
+static bool syscmd_reset_reason_is_abnormal(uint8_t reason)
+{
+    switch ((esp_reset_reason_t)reason)
+    {
+        case ESP_RST_PANIC:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+        case ESP_RST_BROWNOUT:
+        case ESP_RST_SDIO:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
 // =====================================================
 // 内部辅助（资源查询部分）
 // =====================================================
@@ -220,6 +240,14 @@ void system_command_init()
 
     // Reset Reason 必须在早期读取：代表"本次为什么启动"。
     s_reset_reason = (uint8_t)esp_reset_reason();
+
+    // 只记录异常复位（正常上电 / 软复位 / 深睡唤醒不记录）。
+    if (syscmd_reset_reason_is_abnormal(s_reset_reason))
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_RESET_REASON, (uint32_t)s_reset_reason);
+        log_emit(LOG_SYS_RESET_ABNORMAL, LOG_LVL_CRITICAL, p, 1);
+    }
 
     syscmd_log(
         "I",
