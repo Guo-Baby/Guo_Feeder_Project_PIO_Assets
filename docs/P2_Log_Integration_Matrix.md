@@ -286,24 +286,56 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/dispense_guard.cpp`（73）、`src/dispense_guard.h`（2） |
+| 源码文件 | `src/dispense_guard.cpp`（原 73 → 现 138）、`src/dispense_guard.h`（3） |
+| 状态 | ✅ **已接入（Phase 4，2026-09-20，`94912bb`）** |
 
-### 8.1 当前状态
+### 8.1 当前状态（接入后）
 
 | 检查项 | 现状 |
 |---|---|
-| 已有日志 | ❌ 无，仅 4 处 `Serial.println` |
-| 错误处理 | ⚠️ 弱：`valve_force_close()` 返回 false 时只打印，**无状态记录、无重试** |
-| 状态机 | 无（纯事件回调） |
-| 关键状态迁移点 | `EVENT_WEIGHT_ERROR` 到达 → `valve_force_close()` → 成功/失败 |
+| 已有日志 | ✅ **1 处 `log_emit`**（`LOG_DISPENSE_SAFETY_RESPONSE` 0x0511 WARN） |
+| 错误处理 | ⚠️ 弱（原生行为，本次未改）：`valve_force_close()` 返回 false 时只打印，**无状态记录、无重试** ⇒ 其可观测性由 `valve.cpp:405` 的 `LOG_VALVE_FORCE_CLOSE_FAILED` 承担 |
+| 状态机 | 无（纯事件回调）—— **本轮确认：`dispense_guard` 就是"Dispense 模块"本体，其唯一职责 = 安全响应**，不再规划出粮控制/电机/状态机 |
+| 关键状态迁移点 | `EVENT_WEIGHT_ERROR` 到达 → **【决策埋点 0x0511】** → `valve_force_close()` → 成功/失败（由 Valve 侧记 0x0505/0x0506） |
 
-### 8.2 建议接入
+### 8.2 实际接入（★ 结论：本模块**只记"决策"，不记"输入"也不记"输出"**）
 
-| 位置 | 事件 | EventId | Level | Params | 原因 |
+| 位置 | 语义 | EventId | Level | Params | 是否重复 |
 |---|---|---|---|---|---|
-| `dispense_guard_event_callback()` :23 收到 weight error | 出水中断 | `LOG_DISPENSE_FAILED` | WARN | `LOG_P_CAUSE`, `LOG_P_WEIGHT_G`, `LOG_P_VALVE_OPEN_MS` | 说明"为什么关阀" |
-| `dispense_guard_init()` :68 订阅失败 | 保护未生效 | `LOG_WF_RUNTIME_ALLOC_FAILED`? 无合适 ID | ERROR | `LOG_P_CAUSE` | ⚠️ **EventId 缺口**：订阅失败后整个安全链失效，建议纳入新增清单 |
-| 出水开始/完成/超时 | — | `LOG_DISPENSE_START` / `LOG_DISPENSE_DONE` / `LOG_DISPENSE_TIMEOUT` (0x0501-0x0504) | INFO/INFO/WARN | `LOG_P_TARGET_G`, `LOG_P_FINAL_G`, `LOG_P_DURATION_MS` | ⚠️ **当前代码中不存在 Dispense 模块**，这三个 EventId 暂无宿主，需 P2 定义宿主（建议放在 Weight+Valve 协同层） |
+| `dispense_guard_event_callback()` 过滤后、`valve_force_close()` 前 | **安全响应决策**（"我响应了，并决定发起安全动作"） | **`LOG_DISPENSE_SAFETY_RESPONSE` 0x0511** | **WARN** | `LOG_P_CAUSE`(=1) —— 合并器再追加 `LOG_P_COUNT` | ✅ **不重复**（见下） |
+| ~~收到 weight error~~ | ~~出水中断~~ | ~~`LOG_DISPENSE_FAILED` 0x0503~~ | — | — | ❌ **重复**：`weight.cpp:236` 已记 `LOG_WEIGHT_ERROR_ENTER` 0x050C（边沿 + 突发合并），且逐条转记会形成 **N:1 放大** |
+| ~~`valve_force_close()` 调用后~~ | ~~关阀动作~~ | ~~`LOG_VALVE_FORCE_CLOSE` 0x0505~~ | — | — | ❌ **重复**：`valve.cpp:470` 已记（CRITICAL + 5 s 门控），且 `LOG_P_CAUSE=1` **已带出"来源 = dispense_guard"** |
+| `dispense_guard_init()` 订阅失败 | 保护未生效 | ❌ **仍缺 ID** | — | — | 📌 登记为 **`LV-1`**（需新增 `0x0512` 之类；用户裁决本轮不新增 ⇒ 保持零改动） |
+| ~~出水开始/完成/超时~~ | — | ~~0x0501-0x0504~~ | — | — | ⚠️ **本轮判定：四个 ID 语义均不对位**（描述"一次供水过程"的生命周期；安全响应是"终止供水"，复用 `START` 会伪造事实）⇒ **不占用，留给未来真正的 Dispense 业务流程** |
+
+### 8.3 ★ 为何 0x0511 不是 0x0505 的重复（决定性论据）
+
+| 维度 | Valve 侧 `0x0505` | Dispense 侧 `0x0511` |
+|---|---|---|
+| 记录的事实 | **执行器动作**（GPIO 写入尝试；`pin<0` 时走 0x0506） | **决策**（响应了哪个事件并决定动作） |
+| 次数语义 | ⚠️ **5 s 日志门控**（`VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS`）⇒ **只记"发生过"，丢失次数** | ✅ **突发合并**（5 s 窗口）⇒ **Σ `LOG_P_COUNT` = 真实响应次数** |
+| Level | CRITICAL（触发 immediately-flush） | WARN（仅路由 Flash+Cloud，**不抢通道**） |
+| 依赖执行结果 | 是（与 `result` 耦合） | 否（纯决策，与执行解耦） |
+
+⇒ 二者**互补**：`0x0505` 回答"阀门关了没有"，`0x0511` 回答"响应了几次"。
+
+### 8.4 限流（**只限制日志，不限制安全动作**）
+
+`LOG_DISPENSE_SAFETY_RESPONSE` 已注册进 LogManager 的 `s_coalesce_targets[]`
+（`LOG_COALESCE_WINDOW_MS = 5000`）。合并发生在 `log_emit()` 内、**回调的安全逻辑早已完成**，
+且埋点块无 `return` / 无分支 / 不读不改 `result` ⇒ **短时间多个重量异常时安全动作次数不减少**。
+
+| 项 | 值 |
+|---|---|
+| 实测最坏频率 | **6~20 次/s**（`valve.cpp:454`，R-3） |
+| 不合并 5 s 内 | 30 ~ 100 条 WARN（会同时压满 Flash 段环 496 与云队列 128） |
+| 合并后 5 s 内 | **2 条**（1 立即 + 1 汇总），ΣCOUNT = 30~100，**信息零丢失** |
+
+### 8.5 已知缺口
+
+- ⚠️ `dispense_guard` 无节流（**VALVE-5**）：日志侧已由合并白名单兜住；**动作侧仍无节流**（本轮不改安全逻辑）
+- 📌 `LV-1`：订阅失败不可观测（需新增 EventId，未批准）
+- 📌 **观测工具缺口**：`logt fver` 只打印 `params=<个数>`，**不打印参数值** ⇒ ΣCOUNT 的精确值只能在**云端批次解码**侧验证（用 `.pio/p15run/log_decode.py` + `p2i_report.py` 模式，仅改 2 处字面量）。已在 `test/p4_dispense_log_tests.txt` 中写明步骤。
 
 ---
 
@@ -473,7 +505,7 @@
 | 7 | Workflow | **0** | ~13 | 🔴 Critical Op release 收口；缺 WF_STOPPED | P1 | **高** |
 | 8 | Weight | 无 | ~8 | 🔴 高频源，必须边沿 | P1 | 中 |
 | 9 | Valve | 无 | ~8 | 缺 NOT_READY；FORCE_CLOSE 无失败分支 | P1 | 中（安全） |
-| 10 | Dispense | 无 | ~3 | 模块不存在，缺宿主 | P2 | 中 |
+| 10 | Dispense Guard | 无 | ✅ **1**（`0x0511` WARN） | ✅ **已完成（Phase 4，`94912bb`）**：纯转发模块 ⇒ **只记"决策"**；`0x0511` 与 Valve 的 `0x0505` **互补非冗余**（后者 5 s 门控丢次数，前者 ΣCOUNT 守恒）；已注册进合并白名单 | Phase 4 | **低** |
 | 11 | BLE | 无 | ~6 | 🔴 最高频 + 回调上下文禁令 | P2 | **高** |
 | 12 | Command/Event/OLED/Registry | ✅ **全部完成**（Command=P2-J / Event=P2-M / OLED=**已判无宿主不埋** / Registry=P2-L） | ~8 | 侧信道聚合 | P2 | 低 |
 

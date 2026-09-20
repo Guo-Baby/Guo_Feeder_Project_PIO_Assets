@@ -83,13 +83,25 @@ logt reset ||| reset ok
 #   ② total=1          → 窗口内：10 次只落 **1** 条
 #   ③ total=2          → 窗口到期后：**2** 条（1 立即 + 1 汇总）
 #
-# ⚠️ 已知观测局限（**不是代码缺陷，是观测工具缺口**）：
-#   `logt fver` 只打印 `params=<个数>`，**不打印参数值** ⇒ 无法在串口侧直接读到
-#   LOG_P_COUNT 的数值。ΣCOUNT 的**精确值**需从云端批次（WARN ⇒ Cloud=YES）解码，
-#   或为 `fver` 增加"打印参数值"能力（属独立工具增强，不属本次范围）。
-#   本条用例以 ②③ 的**记录条数**作为聚合生效的判据；聚合机制的 ΣCOUNT 守恒
-#   已在 P2-I（LOG_WEIGHT_ERROR_ENTER）上板实测过（17 次 → 5 条，ΣCOUNT 守恒），
-#   本次只是把一个**新 EventId 注册进同一白名单**，机制未变。
+# ⚠️ 已知观测局限 + 精确 ΣCOUNT 的验证路径：
+#   `logt fver` 只打印 `params=<个数>`，**不打印参数值** ⇒ 无法在**串口侧**直接读到
+#   LOG_P_COUNT 的数值。ΣCOUNT 的**精确值**走**云端批次解码**（WARN ⇒ Cloud=YES）：
+#
+#   步骤 6（需 MQTT，可复用 P2-I 既有工具链）：
+#     a) python test/mqtt_log_probe.py listen 30 > .pio/p4d_probe.log
+#        （或直接用 .pio/p15run/p2i_probe*.py 同款探针捕获 `guo_feeder/log`）
+#     b) 复用 `.pio/p15run/log_decode.py`（CBOR 批次 → 记录级解码，
+#        输出 `event_name` 与**每个 ParamId 的真值**，含 LOG_P_COUNT）
+#     c) 复用 `.pio/p15run/p2i_report.py` 的三项不变量框架，仅需改 2 处字面量：
+#          · 事件过滤： 'LOG_WEIGHT_ERROR_ENTER'     → 'LOG_DISPENSE_SAFETY_RESPONSE'
+#          · 串口正则： r'...event=0x050C queued='  → r'...event=0x0511 queued='
+#        即可输出「记录条数 / ΣCOUNT / 真实发生次数 / 降幅 / 接受间隔」四项结论。
+#     判据：ΣCOUNT == Σ(queued)  ⇒  ✅ 次数守恒
+#
+#   本条用例以 ②③ 的**记录条数**作为串口侧可独立完成的判据；聚合机制的 ΣCOUNT
+#   守恒已在 P2-I（LOG_WEIGHT_ERROR_ENTER，同一白名单机制）上板实测过
+#   （17 次 → 5 条，ΣCOUNT 守恒）。本次只是把一个**新 EventId 注册进同一白名单**，
+#   机制本身未变；objdump 已确认两个常量（-0x511 / -0x50C）同时出现在该检查内。
 # =====================================================
 logt fwipe ||| fwipe ok=1
 logt mwipe ||| mwipe ok=1
