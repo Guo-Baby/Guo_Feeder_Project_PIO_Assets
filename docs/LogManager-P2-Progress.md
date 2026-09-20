@@ -541,7 +541,43 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20（最新）：**Phase 5-A —— System/Boot 复位证据链 + 重启生命周期接入完成**
+### ✅ 2026-09-21（最新）：**Phase 5-B-2 —— SystemEvent Registry 一致性修复完成**
+
+> Commit：**`7fb9437`** `fix(event): synchronize event registry and string mapping`
+> 改动范围：`src/event_manager.h` **+1/−1**、`src/event_manager.cpp` **+8/−4**（**仅 Event Registry 相关文件**）
+> 纪律：**EventId 数值与顺序零改动** · 未新增 EventId / ParamId / 配置项 / 开关 · 未改 `log_events.h` / `log_manager.*` / `system_state.*` / `main.cpp` / `config_manager.cpp` / `system_command.cpp` / `test/`
+
+**修改内容**
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `src/event_manager.h:53` | `#define SYSTEM_EVENT_COUNT (EVENT_ERROR + 1)` ⇒ **14** | `#define SYSTEM_EVENT_COUNT (EVENT_VALVE_ERROR + 1)` ⇒ **17** |
+| `src/event_manager.cpp:143-159`（`event_from_string` 的 `event_names[]`） | 15 项；idx10 = 幻影 `"EVENT_CLOUD_COMMAND"`；无阀门项 | 删幻影；`"EVENT_ERROR"` 后补 `"EVENT_VALVE_OPEN"` / `"EVENT_VALVE_CLOSE"` / `"EVENT_VALVE_ERROR"` ⇒ **17 项** |
+| `src/event_manager.cpp:180-199`（`event_to_string` 的 `event_names[]`） | 同上 | 同上 ⇒ **17 项** |
+
+`:161` 循环上界与 `:176` 边界判定**未改**（均使用宏，自动覆盖 17）；`"EVENT_UNKNOWN"` / `EVENT_NONE` 语义**未改**（无效 ID 仍返回 `EVENT_UNKNOWN`，未知字符串仍返回 `EVENT_NONE`）。
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 编译（`pio run`） | ✅ **SUCCESS** |
+| 体积 | **RAM 130624 / Flash 1370873**，与基线（`1186044`）**相同 ⇒ +0 / +0** |
+| **enum 数值未变化** | ✅ 17 项数值与顺序逐项核对未变（未重排、未插入、未改数值） |
+| **17 项数量一致** | ✅ `SYSTEM_EVENT_COUNT = 17` = enum 项数 = 两张表长度；目标文件实测表符号 `0x3c`(15 项) → **`0x44`**(17 项) |
+| `event_to_string` 全覆盖 | ✅ **17/17 正确**（`EVENT_NONE` … `EVENT_VALVE_ERROR`） |
+| `event_from_string` 往返 | ✅ `to(from(x)) == x`，17 项 × 3 种写法 = **51/51 通过** |
+| 越界行为 | ✅ `-1 / 17 / 18 / 100 / 255` → `"EVENT_UNKNOWN"`；`""` / `"unknown"` / `"cloud_command"`（旧幻影）/ 双前缀 → `EVENT_NONE` |
+| 旧错位修复证明 | ✅ `command_result` 11→**10** · `weight_ready` 12→**11** · `weight_error` 13→**12** · `error` NONE→**13** · `valve_open/close/error` NONE→**14/15/16** |
+| 主机侧验证脚本 | `.pio/p5b_verify.py`（**未入库**，`.pio/` 被 ignore；从真实源文件解析 enum/宏/两表，不硬编码） |
+
+### ⚠️ 特别注明：Registry 数据一致性修复 ≠ Workflow Event Trigger 功能启用
+
+- `WORKFLOW_EVENT_ENABLED = 0`（`src/workflow.h:18`）⇒ `workflow_event_init()` / `workflow_event_callback()` 整体位于 `#if` 内**未编译**；`event_to_string()` 全仓库**零调用者**。
+- ⇒ **`event_from_string` / `event_to_string` 及其两张 `.rodata` 表当前被 `--gc-sections` 从最终镜像剔除**（最终 ELF 中无这两个函数符号；对象文件层面确认修复生效）⇒ **本修复不会立即改变运行行为**，RAM/Flash 也因此为 **+0**。
+- ⇒ **后续启用 Workflow Event Trigger 时，仍需先处理 `P0-1b`**：`workflow.cpp:4655/4684` 闸门用 **`event_`（下划线）**，而 `event_manager.cpp:132` 解析器剥 **`event.`（点）** ⇒ 任何字符串都无法同时满足两者（详见 `未修复的问题.md` **`P0-1b`**，本阶段按 C2 裁决**不修**）。
+
+### ✅ 2026-09-20：**Phase 5-A —— System/Boot 复位证据链 + 重启生命周期接入完成**
 
 > 提案/计划：`log模块历史/Phase5-ABC执行计划0920.md`（`aeb6708`）
 > 纪律：**零协议改动**（7 个 EventId 与所需 ParamId 全部已冻结 ⇒ **`log_events.h` 零改动**）· 未新增 EventId / ParamId / 配置项 / enable 开关 · 未动 System State / EventManager / LogManager 架构 · 未改初始化顺序

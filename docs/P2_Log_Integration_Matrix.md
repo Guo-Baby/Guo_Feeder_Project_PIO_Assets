@@ -90,6 +90,28 @@
 | `LOG_SYS_PSRAM_ALLOC_FAILED` 0x0107 · `HEAP_LOW` 0x0108 | 运行时阈值定义不明确；`HEAP_LOW` 若接入必须先定门控（跨阈值边沿 + ≥60 s），否则内存枯竭时形成日志风暴 |
 | `LOG_SYS_FS_MOUNT_FAILED` 0x0106 | 另见风险 `R-1`：该点在 `log_init()` **之前**，物理上无法记录 |
 
+### 1.4 SystemEvent Registry 状态（Phase 5-B-2，2026-09-21 · `7fb9437`）
+
+**状态：✅ Registry 已修复**（此前为"存在错位"）。
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| `SYSTEM_EVENT_COUNT`（`event_manager.h:53`） | `(EVENT_ERROR + 1)` = **14**（偏小 3） | **`(EVENT_VALVE_ERROR + 1)` = 17** |
+| `event_names[]`（`event_from_string`，`event_manager.cpp:143-159`） | 15 项；idx10 为幻影 `"EVENT_CLOUD_COMMAND"`；`EVENT_VALVE_*` 缺字符串 | **17 项**，与 enum 逐项对齐 |
+| `event_names[]`（`event_to_string`，`event_manager.cpp:180-199`） | 同上 | **17 项**，与 enum 逐项对齐 |
+| `SystemEvent` enum 数值 / 顺序 | — | **完全未变**（未重排、未插入、未改数值） |
+
+修复前后果（已消除）：`event_to_string(EVENT_WEIGHT_ERROR)` 返回 `"EVENT_WEIGHT_READY"`；`event_from_string("weight_error")` 返回 `EVENT_ERROR`(13)；`"EVENT_ERROR"` 越界永不可解析；`event_to_string(EVENT_VALVE_*)` 返回 `"EVENT_UNKNOWN"`。
+
+**职责边界（本阶段顺带明确）**
+
+| 组件 | 职责 | 不在职责内 |
+|---|---|---|
+| **EventManager** | 负责**事件总线注册**与**字符串映射**（`SystemEvent` enum ↔ `event_names[]` ↔ `to/from`） | **不负责业务日志记录** —— 业务事件事实由各自**发布方模块**记录（本项目既定原则）；EventManager 自身只记自身运行异常（`P2-M`） |
+| **Workflow Event Trigger** | 由 `workflow.cpp` 的 `event_` 闸门 + `event_from_string()` 解析实现 | **当前仍关闭**（`WORKFLOW_EVENT_ENABLED = 0`，`workflow.h:18`）⇒ **不属于本阶段范围**；启用前需先解决 `P0-1b`（`event_` / `event.` 前缀规范不一致，见 `未修复的问题.md`） |
+
+> ⚠️ 因 `WORKFLOW_EVENT_ENABLED = 0`，`event_from_string` / `event_to_string` 及两张表**当前被 `--gc-sections` 从最终镜像剔除** ⇒ 本修复**不会立即改变运行行为**（对象文件层面已确认生效：表符号 `0x3c` → `0x44`）。
+
 
 ---
 
