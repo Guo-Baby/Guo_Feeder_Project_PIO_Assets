@@ -337,6 +337,9 @@ void system_command_task()
             syscmd_log("W", "safe window elapsed, restarting now");
             Serial.flush();
 
+            // 重启前记录（INFO，不落 Flash）
+            log_emit0(LOG_SYS_RESTART_EXECUTED, LOG_LVL_INFO);
+
             ESP.restart();
             return;
         }
@@ -383,6 +386,10 @@ bool system_command_request_restart()
 
     if (first_request)
     {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_COUNT, cnt);
+        log_emit(LOG_SYS_RESTART_REQUESTED, LOG_LVL_INFO, p, 1);
+
         syscmd_log(
             "W",
             "restart requested (critical=%lu), waiting for drain",
@@ -499,6 +506,8 @@ bool system_command_critical_operation_release()
             "critical op release underflow: count already 0, "
             "acquire/release not paired"
         );
+
+        log_emit0(LOG_SYS_CRITICAL_OP_UNDERFLOW, LOG_LVL_CRITICAL);
     }
 
     return ok;
