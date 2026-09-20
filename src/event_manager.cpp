@@ -151,11 +151,13 @@ SystemEvent event_from_string(const String &str)
         "EVENT_CLOUD_CONNECTED",
         "EVENT_CLOUD_DISCONNECTED",
         "EVENT_CLOUD_UPLOAD",
-        "EVENT_CLOUD_COMMAND",
         "EVENT_COMMAND_RESULT",
         "EVENT_WEIGHT_READY",
         "EVENT_WEIGHT_ERROR",
-        "EVENT_ERROR"
+        "EVENT_ERROR",
+        "EVENT_VALVE_OPEN",
+        "EVENT_VALVE_CLOSE",
+        "EVENT_VALVE_ERROR"
     };
     
     for (int i = 0; i < SYSTEM_EVENT_COUNT; i++) {
@@ -188,14 +190,16 @@ String event_to_string(SystemEvent event)
         "EVENT_CLOUD_CONNECTED",
         "EVENT_CLOUD_DISCONNECTED",
         "EVENT_CLOUD_UPLOAD",
-        "EVENT_CLOUD_COMMAND",
         "EVENT_COMMAND_RESULT",
         "EVENT_WEIGHT_READY",
         "EVENT_WEIGHT_ERROR",
 
 
         //新增的枚举字符串按顺序放在上方
-        "EVENT_ERROR"
+        "EVENT_ERROR",
+        "EVENT_VALVE_OPEN",
+        "EVENT_VALVE_CLOSE",
+        "EVENT_VALVE_ERROR"
     };
     
     return String(event_names[idx]);
