@@ -413,6 +413,8 @@ static void config_log_bridge(const char *level, const char *message)
 // =====================================================
 void setup()
 {
+    const unsigned long setup_begin_ms = millis();
+
     Serial.begin(115200);
     delay(1000);
     // =====================================================
@@ -548,6 +550,10 @@ void setup()
     // =====================================================
     if (!config_boot_validate()) {
         Serial.println("[WARN] Config boot validate failed");
+    } else {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_INIT_MS, (uint32_t)(millis() - setup_begin_ms));
+        log_emit(LOG_SYS_BOOT_COMPLETE, LOG_LVL_INFO, p, 1);
     }
 }
 
