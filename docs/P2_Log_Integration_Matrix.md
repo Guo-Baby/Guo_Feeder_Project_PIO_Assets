@@ -46,12 +46,12 @@
 
 | 检查项 | 现状 |
 |---|---|
-| 已有日志 | **仅 41 处 `LOG_`/`log_` 引用，全部是 `main.cpp` 的串口测试钩子**（`logtest` / `logfill` 等命令），不是业务埋点 |
+| 已有日志 | ✅ **Phase 5-A 已接入 6 个业务埋点**（`6194e3b` + `9c32675`）：`LOG_SYS_RESET_ABNORMAL` / `BOOT_INCOMPLETE_PREV` / `RESTART_REQUESTED` / `RESTART_EXECUTED` / `CRITICAL_OP_UNDERFLOW` / `BOOT_COMPLETE`；另有 `main.cpp` 的串口测试钩子（`logt` 等） |
 | 错误处理 | `system_command.cpp` 有完整 Safe Restart V2 状态机（`RESTART_IDLE/REQUESTED/PENDING/RESTARTING`）+ Critical Operation 计数（acquire/release/count） |
 | 状态机 | ✅ 有：Safe Restart 状态机、ComputerReset 脉冲状态机 |
 | 关键状态迁移点 | 重启请求 → 10s 安全窗口 → `ESP.restart()`（`system_command.cpp:312`，全系统唯一）；Critical Op 计数归零/泄漏 |
 
-### 1.2 建议接入
+### 1.2 建议接入（**下方为 P2 阶段的设计建议；Phase 5-A 落地结果见 1.3，两者以 1.3 为准**）
 
 | 位置（文件:行 / 函数） | 事件 | EventId | Level | Params | 原因 |
 |---|---|---|---|---|---|
@@ -68,6 +68,28 @@
 | `computer_reset_trigger()` :441 | 电脑重启脉冲 | `LOG_CRESET_PULSE` | INFO | `LOG_P_HOLD_MS` | 动作完成 |
 | `computer_reset_task()` 安全超时 | 脉冲回收超时 | `LOG_CRESET_SAFETY_TIMEOUT` | WARN | `LOG_P_HOLD_MS` | GPIO 卡在 active 有硬件风险 |
 | `computer_reset_ctx_release()` / 池耗尽 | 上下文池耗尽 | `LOG_CRESET_POOL_EXHAUSTED` | ERROR | `LOG_P_ACTIVE`, `LOG_P_CAPACITY` | 需扩容依据 |
+
+### 1.3 实际接入（Phase 5-A，2026-09-20 · `6194e3b` + `9c32675`）
+
+| EventId | Level | 参数（实际） | 实际宿主（唯一语义定义点） | 与 1.2 建议的差异 |
+|---|---|---|---|---|
+| `LOG_SYS_BOOT_INCOMPLETE_PREV` 0x0102 | CRITICAL | `LOG_P_RESET_REASON` | **`config_manager.cpp` `config_init()`**：`bool last_boot_ok = json_storage_exists(CONFIG_BOOT_FLAG_FILE);` 之后、`json_storage_remove()` 之前 | ★ **宿主不是 `main.cpp config_boot_validate()` 失败** —— 事实由 **boot flag 机制**定义（`config_init()` 读、`config_boot_validate()` 写），按"埋定义点"归 ConfigManager；★ **参数不是 `LOG_P_BOOT_SEQ`**（boot_seq 已在每个批次头 `log_cbor.h:101`，再记一次是冗余） |
+| `LOG_SYS_RESET_ABNORMAL` 0x0103 | CRITICAL | `LOG_P_RESET_REASON` | `system_command.cpp` `system_command_init()`：紧接 `s_reset_reason = (uint8_t)esp_reset_reason();` 之后 | 按建议接入；**只记异常**（`RESET_NORMAL` 未接入） |
+| `LOG_SYS_RESTART_REQUESTED` 0x0109 | INFO | `LOG_P_COUNT` = critical 计数 | `system_command.cpp` `system_command_request_restart()` 的 `if (first_request)` 块首 | 参数改为 `LOG_P_COUNT`（请求时的实际计数，用于解释"为什么还要等"） |
+| `LOG_SYS_RESTART_EXECUTED` 0x010A | INFO | **无参** | `system_command.cpp` `system_command_task()`：`Serial.flush()` 之后、`ESP.restart()` 之前 | ★ **`（IMM）` 未实现**：无生产 flush 消费链 ⇒ INFO 不落 Flash，**可能因重启丢失** ⇒ 登记 **`PROTO-2`（OPEN / DEFERRED）**，本阶段不修 |
+| `LOG_SYS_CRITICAL_OP_UNDERFLOW` 0x010C | CRITICAL | **无参** | `system_command.cpp` `system_command_critical_operation_release()` 的 `if (!ok)` 下溢分支 | 按建议接入（保留既有 `syscmd_log("E",…)` 串口输出） |
+| `LOG_SYS_BOOT_COMPLETE` 0x0101 | INFO | `LOG_P_INIT_MS` = setup 总耗时 | `main.cpp` `setup()`：`config_boot_validate()` **成功分支**；入口新增局部变量 `setup_begin_ms` | 参数只留 `LOG_P_INIT_MS`（`LOG_P_BOOT_SEQ` 冗余） |
+
+**本阶段明确不接入 / 未实现**
+
+| EventId | 原因 |
+|---|---|
+| `LOG_SYS_RESTART_CANCELLED` 0x010B | **架构无合法宿主**：`system_command.h` 明示 Restart **不可取消**（无 cancel 接口），状态机 `IDLE→REQUESTED→PENDING→RESTARTING` **单向不可逆**；`request_restart()` 返回 false 的分支语义是"**拒绝**"而非"**取消**" ⇒ 挂上去属**语义伪造** |
+| `LOG_SYS_RESET_NORMAL` 0x0104 | 用户清单明示排除；`BOOT_COMPLETE` 已提供"启动发生"的锚点 |
+| `LOG_SYS_INIT_FAILED` 0x0105 · `FS_MOUNT_FAILED` 0x0106 | `FS_MOUNT_FAILED` 与 `LOG_STG_FS_UNAVAILABLE`(0x0301，已有宿主) **语义重叠** |
+| `LOG_SYS_PSRAM_ALLOC_FAILED` 0x0107 · `HEAP_LOW` 0x0108 | 运行时阈值定义不明确；`HEAP_LOW` 若接入必须先定门控（跨阈值边沿 + ≥60 s），否则内存枯竭时形成日志风暴 |
+| `LOG_SYS_FS_MOUNT_FAILED` 0x0106 | 另见风险 `R-1`：该点在 `log_init()` **之前**，物理上无法记录 |
+
 
 ---
 
@@ -522,7 +544,7 @@
 
 | # | 模块 | 现有日志 | 建议埋点数 | 阻塞项 | 优先级 | 风险 |
 |---|---|---|---|---|---|---|
-| 1 | System/Boot | 仅测试钩子 | ~11 | R-1（FS 失败在 log_init 前） | P0 | 低 |
+| 1 | System/Boot | ✅ **已接入 6 个**（Phase 5-A，`6194e3b` + `9c32675`） | ✅ **6**（`0x0101/0x0102/0x0103/0x0109/0x010A/0x010C`）；剩余 5 个明示排除（`0x0104/0x0105/0x0106/0x0107/0x0108`）+ `0x010B` 无合法宿主 | `RESTART_EXECUTED`(INFO) 因重启可能丢失 ⇒ **`PROTO-2`（OPEN/DEFERRED）**；R-1（FS 失败在 log_init 前） | Phase 5-A | **低** |
 | 2 | Storage | 回调存在但**静默**（json 37 + file 30） | 6 类（+67 条自动） | 字符串 `LOG_P_PATH` 不可达 | P0 | 低（零侵入） |
 | 3 | Config | 静默 | ~12 | `LOG_P_KEY` 不可达；缺 SAVE_FAILED | P0 | 中（事务语义） |
 | 4 | WiFi | 无 | ~6 | 重连洪泛需限流 | P1 | 低 |

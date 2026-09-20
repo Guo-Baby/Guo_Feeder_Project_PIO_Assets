@@ -541,7 +541,44 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### 📋 2026-09-20（最新）：**Phase 5 前置审查 —— BLE / OLED / Dispense 业务边界 + LogManager 完整性**（**仅审查，未改代码**）
+### ✅ 2026-09-20（最新）：**Phase 5-A —— System/Boot 复位证据链 + 重启生命周期接入完成**
+
+> 提案/计划：`log模块历史/Phase5-ABC执行计划0920.md`（`aeb6708`）
+> 纪律：**零协议改动**（7 个 EventId 与所需 ParamId 全部已冻结 ⇒ **`log_events.h` 零改动**）· 未新增 EventId / ParamId / 配置项 / enable 开关 · 未动 System State / EventManager / LogManager 架构 · 未改初始化顺序
+
+**完成清单（6 个 EventId）**
+
+| 子阶段 | EventId | Level | 参数 | 宿主（唯一语义定义点） | commit |
+|---|---|---|---|---|---|
+| **5-A-1** | `LOG_SYS_RESET_ABNORMAL` **0x0103** | CRITICAL | `LOG_P_RESET_REASON` | `system_command.cpp` `system_command_init()`：紧接 `s_reset_reason = (uint8_t)esp_reset_reason();` 之后；判定函数 `syscmd_reset_reason_is_abnormal()`（PANIC/INT_WDT/TASK_WDT/WDT/BROWNOUT/SDIO ⇒ true，**其余与未列举值 ⇒ false，fail-safe**） | `6194e3b` |
+| **5-A-1** | `LOG_SYS_BOOT_INCOMPLETE_PREV` **0x0102** | CRITICAL | `LOG_P_RESET_REASON` | `config_manager.cpp` `config_init()`：紧接 `bool last_boot_ok = json_storage_exists(CONFIG_BOOT_FLAG_FILE);` 之后、`json_storage_remove()` **之前**（boot flag 逻辑未变） | `6194e3b` |
+| **5-A-2** | `LOG_SYS_RESTART_REQUESTED` **0x0109** | INFO | `LOG_P_COUNT` = 请求时的 critical 计数 | `system_command.cpp` `system_command_request_restart()` 的 **`if (first_request)` 块首**（不在入口、不在调用方；后续重复请求不记录） | `9c32675` |
+| **5-A-2** | `LOG_SYS_RESTART_EXECUTED` **0x010A** | INFO | 无参（`log_emit0`） | `system_command.cpp` `system_command_task()` RESTART_PENDING：`syscmd_log` → `Serial.flush()` → **埋点** → `ESP.restart()`（全系统唯一 restart 路径） | `9c32675` |
+| **5-A-3** | `LOG_SYS_CRITICAL_OP_UNDERFLOW` **0x010C** | CRITICAL | 无参（`log_emit0`） | `system_command.cpp` `system_command_critical_operation_release()` 的 **`if (!ok)` 下溢分支**，在既有 `syscmd_log("E",…)` **之后**（保留未替换） | `9c32675` |
+| **5-A-3** | `LOG_SYS_BOOT_COMPLETE` **0x0101** | INFO | `LOG_P_INIT_MS` = setup 总耗时 | `main.cpp` `setup()`：`if (!config_boot_validate()) {…} else { 埋点 }` ⇒ **仅成功路径**；入口新增**局部**变量 `setup_begin_ms`（无全局状态） | `9c32675` |
+
+**★ 设计决策（两条，均已确认）**
+
+1. **`LOG_SYS_RESTART_CANCELLED`(0x010B) 未实现** —— `system_command.h` 三条硬性规则明示「Restart 一旦被请求**不可取消**（不提供 cancel 接口）」，`system_command_task()` 状态机 `IDLE→REQUESTED→PENDING→RESTARTING` **单向不可逆**（无回退分支）；`request_restart()` 返回 false 的唯一分支语义是"**拒绝**"而非"**取消**"。⇒ **当前架构无合法宿主**；挂到"被拒绝"分支属**语义伪造** ⇒ **不接入、登记即可**（全仓库零引用）。
+2. **`LOG_SYS_RESTART_EXECUTED` 保持 INFO，不加强制上传** —— 该 ID 在 `ESP.restart()` 前产生，而 **INFO 不落 Flash**（`log_level_to_flash`），且 `SYSTEM_RESTART_SAFE_DELAY_MS = 10000` < 实际上传节拍 ≈15 s（`BT-1`）⇒ **存在重启导致该记录丢失的可能**。已按决策**接受**：本阶段**未引入** restart 前 flush / upload barrier / 任何新通信能力 ⇒ `PROTO-2` **保留登记（OPEN / DEFERRED）**。
+
+**★ 实施期另修正的一处取值时机（5-A-1）**
+
+`LOG_SYS_BOOT_INCOMPLETE_PREV` 的参数**不能**用 `system_command_reset_reason()`：`main.cpp:483 config_init()` **早于** `main.cpp:512 command_manager_init()` → `command_manager.cpp:534 system_command_init()` ⇒ 该时刻缓存仍为 0，会把 PANIC 伪造成 `ESP_RST_UNKNOWN`。⇒ 改为直接调用 **`esp_reset_reason()`**（IDF 原值、同一次启动返回恒定），未新增跨模块接口、未复制"原因→字符串"映射。
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 编译（`pio run`，分两阶段各一次） | ✅ **SUCCESS**（5-A-1 / 5-A-2+3 各自独立验证） |
+| 体积 | **RAM 130624 → 130624（+0 B）** / **Flash 1370729 → 1370873（+144 B）** |
+| objdump 静态验证 | ✅ 6 处埋点全部逐字段核对：`0x103`+`lvl 4`+`0x220` ｜ `0x102`+`lvl 4`+`0x220`（`bnez` 跳过守卫） ｜ `0x109`+`lvl 1`+`0x245`+`count 1`+栈上 ｜ `0x10a`+`lvl 1`+**`nullptr/0`** 且紧邻 `EspClass::restart()` ｜ `0x10c`+**`lvl 4`**+`nullptr/0`（位于 `syscmd_log("E")` 后）｜ `0x101`+`lvl 1`+`0x222`+`sub a10,a10,a3` |
+| 成功路径守卫 | ✅ `config_boot_validate` → `bnez a10,+0x14c`；失败路径 `println` 后 `retw.n` **不记录** |
+| 上板验证 | ⏳ **未执行** —— `[System.IO.Ports.SerialPort]::getportnames()` 返回**空**（无开发板）。INFO 类（`RESTART_REQUESTED` / `BOOT_COMPLETE`）可用 `logt ring` 自证，待设备接入后补跑 |
+
+**尚未接入（`0x01xx` 段剩余，均为本阶段明示排除）**：`RESET_NORMAL`(0x0104) · `INIT_FAILED`(0x0105) · `FS_MOUNT_FAILED`(0x0106，与 `LOG_STG_FS_UNAVAILABLE` 语义重叠) · `PSRAM_ALLOC_FAILED`(0x0107) · `HEAP_LOW`(0x0108，需先定门控)。
+
+### 📋 2026-09-20：**Phase 5 前置审查 —— BLE / OLED / Dispense 业务边界 + LogManager 完整性**（**仅审查，未改代码**）
 
 > 报告：`log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`
 > 纪律：零代码改动（`git diff --stat src/` 为空）· 未新增 EventId / ParamId / 配置项 / enable 开关 · 未动 System State / EventManager
