@@ -150,20 +150,21 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Time（`time_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（9 个事件 / 11 个埋点，全在既有分支内）；RTC 异常用**边沿锁**；`SOURCE` 走**枚举化**（0=INVALID 1=RTC 2=SNTP 3=MANUAL） | `LOG_TIME_NTP_OK` / `VALID_ENTER` / `INVALID_ENTER` / `RTC_PROBE`(**INFO·WARN 三分支**) / `RTC_BOOT_RESTORE` / `RTC_CALIBRATED` / `RTC_WRITE_FAILED` / `RTC_VL_FLAG` / `RTC_BCD_INVALID` | P2-E |
 | **Workflow（`workflow.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（12 个事件 / **17 个发射点**，全在既有分支内）；**纯增量 `+261/−0`（0 删除行）**；保存类事件用**三个边沿锁**（逐 slot / 整事务 / 分配失败）+ `RETRY_N` 计数；主键用 **`LOG_P_SLOT`**（不用 id 哈希） | `LOG_WF_START` / `FINISHED` / `TIMEOUT` / `FAILED`(4 处) / `ACTION_FAILED`(2 处) / `SAVE_FAILED` / `SAVE_PARTIAL` / **`SAVE_PARTIAL_RETRY_OK`** / `CRUD`(3 处) / `MIGRATED` / `TEMP_ACTION_TIMEOUT` / `RUNTIME_ALLOC_FAILED` | P2-F |
 | **Weight（`weight.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（5 处 / 5 个事件）；`ERROR_*` 挂 `error_state` **天然边沿**（无需任何去重逻辑）；**纯增量 `+66/−0`**；`CAUSE` 位掩码；2 个**只读**观测变量（供 EXIT 报 `CAUSE`+`DURATION_MS`） | `LOG_WEIGHT_ERROR_ENTER` / `ERROR_EXIT` / `ZERO_DONE` / `CALIB_FAILED` / `TRIGGER_FIRED` | P2-G |
-| **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 未改（策略层不加 LOG） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
+| **Valve（`valve.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（6 处 / 6 个事件）；`OPEN`/`CLOSE` 挂 `valve_set_gpio()` **天然边沿**；`FORCE_CLOSE` 用 **5 s / cause 门控**（只限日志，不改 GPIO 语义）；`SAFETY_TIMEOUT` 用**一次性报告锁**；**净增量 `+125/−1`**；`dispense_guard.cpp` 当时未改（策略层不加 LOG，**后由 Phase 4 补上其唯一埋点**） | `LOG_VALVE_OPEN` / `CLOSE` / `RATE_LIMITED` / `FORCE_CLOSE` / `FORCE_CLOSE_FAILED` / `SAFETY_TIMEOUT` | `feat(log): integrate valve logging` |
 | **Command（`command_manager.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（4 个事件 / **5 处 `log_emit`**）；**只对 `REJECTED` 加 5 s 去重门控**（本模块唯一"状态型"语义），其余 3 处均为**天然边沿**；`command`/`cmd_id` 一律 **FNV-1a 哈希后入日志**（不上报原文）；④ 刻意**排除 `execute_action`/`execute_workflow`**（异步，避免与 Workflow 段跨段重复上报） | `LOG_CMD_RUNTIME_QUEUE_FULL` / `REJECTED` / `RUNTIME_TIMEOUT` / `APPLIED` | **P2-J** |
 | **ComputerReset（`computer_reset.cpp`）** | 无回调接口 ⇒ **直接显式埋点**（3 个事件 / **4 处 `log_emit`**）；**全部天然边沿、零门控**；★ `PULSE` 上移到 `set_output()` 的 **LOW→HIGH 上升沿**（而非矩阵写的 `trigger()`）以**同时覆盖手动与 Workflow Action 两条路径**；`SAFETY_TIMEOUT` 的 `DURATION_MS` **必须在 `force_idle()` 之前取**（LOG-13） | `LOG_CRESET_PULSE` / `SAFETY_TIMEOUT` / `POOL_EXHAUSTED` | **P2-K** |
 | **Capability Registry（`capability_registry.cpp`）** | **单向依赖 `→ log_manager`，无回调、无 EventManager 转发、无 System State**（2 处 / 2 个事件，**纯增量 `+24/−0`**）；★ **宿主选"定义点"而非"触发点"**：重建埋 `registry_sync()` 的 `else` 分支、保存失败埋 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 的 4 处 `rescan()` 调用点（一次 create 连触发 3 次）；**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印，1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）；参数用**栈上局部 `LogParamIn`**（禁 `static`/全局 —— 可能跑在 loopTask 8KB 或 esp-mqtt 任务上，防并发踩踏） | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) | **P2-L** |
 | **Event（`event_manager.cpp`）** | **无回调接口 ⇒ 直接显式埋点，但只记"自身运行异常"**（2 个事件 / **2 处累加 + 1 个周期上报器 = 2 个 `log_emit` 调用点**，**纯增量 `+110/−0`**）；★ **业务事件一律不记**（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）；★ **周期聚合方案 A**：窗口 **60000 ms**，节拍器 = **`event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；窗口内无异常**完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（信息零丢失、条目数恒定），与 `cloud_manager.cpp` 的 `CLOUD_PUBLISH_FAIL_REPORT_MS` 同构；FORCE 优先级不足分支**不计入**（语义为"被挤占"且零发布方） | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN) | **P2-M** |
+| **Dispense Guard（`dispense_guard.cpp`）** | ★ **纯转发模块 ⇒ 运行期只记 1 条（"决策"）**（1 个事件 / 1 处 `log_emit`，**纯增量 `+65/−0`**）；**4 处候选逐点判重**：q1 调用 `valve_force_close()`（已被 `0x0505` 覆盖，且 `LOG_P_CAUSE=1` 已带出来源）、q2 收到 `EVENT_WEIGHT_ERROR`（已被 `0x050C` 覆盖，且逐条转记会 **N:1 放大**）、q3 `valve_force_close()` 失败（已被 `0x0506` 覆盖）⇒ **均不埋**；仅 q4 决策点新增。**限流走 LogManager 既有合并白名单**（`5000 ms`），埋点块**无 return / 无分支 / 不读改 result** ⇒ 安全动作次数不变；`LOG_P_CAUSE` 与 Valve 侧**同值对齐**（`=1`）便于云端交叉关联 | `LOG_DISPENSE_SAFETY_RESPONSE`(0x0511, WARN) | **Phase 4** (`94912bb`) |
 
-未接入清单：**（P2 埋点清单已全部完成）** —— **BLE 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；**OLED 已判无宿主不埋**；**Dispense 移出埋点清单**，归入 Phase 4 业务开发（其埋点随模块本体一起建）。
+未接入清单：**BLE 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；**OLED 已判无宿主不埋**；**Dispense Guard 已完成**（Phase 4）；`dispense_guard_init()` 订阅失败仍缺 EventId（登记 `LV-1`）。
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
 > ① **前 4 项成本极小、风险极低**（与 P2-B / P2-C 同构，回调已注册或单点埋点），
 > 可低成本批量推进；② **`Event` 需要特殊设计**（聚合 / 统计 / 周期报告 / drop 统计），
 > 放最后做；③ **`BLE` 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；
-> ④ **`Dispense` 移出埋点清单**，归入 Phase 4 业务开发（其埋点随模块本体一起建）。
+> ④ **`Dispense` 原先移出埋点清单**，归入 Phase 4 业务开发 —— **2026-09-20 已由 Phase 4 完成**：确认 `dispense_guard` 即"Dispense 模块"本体（唯一职责 = 安全响应，**不做出粮控制 / 电机 / 状态机**），埋点仅 **1 条**（`0x0511`，决策点）。
 > ⚠️ `Dispense` **不再等待 regression baseline 稳定**（`R-7` 已 `DEFERRED`）。
 
 （未实现的冻结 EventId，均**无宿主** ⇒ 不埋点、编号保留：）
@@ -540,7 +541,73 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20（最新）：Phase 3 第 ⑤ 项 —— **EventManager 埋点接入完成**（P2-M）
+### ✅ 2026-09-20（最新）：Phase 4 —— **Dispense 安全响应日志接入完成**
+
+> commit `94912bb` `feat(log): add dispense safety response logging`
+> 前置审查：`log模块历史/Phase4-Dispense日志边界审查0920.md`（`b2493da`，审查报告 §七 四问 + 方案裁决）
+
+**改动范围：3 个源文件（`+91 / −1`）+ 1 个测试用例**
+
+| 文件 | 改动 | 说明 |
+|---|---|---|
+| `src/log_events.h` | **+10 / −0** | 新增 `LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（**WARN**，`0x0500` Water 段尾，从 `LOG_WEIGHT_CALIB_FAILED`(0x0510) **自然续号，不扩段、不改既有编号**）+ 1 条 `static_assert` 防重编号 |
+| `src/log_manager.cpp` | **+16 / −1** | `s_coalesce_targets[]` 追加 `{ LOG_DISPENSE_SAFETY_RESPONSE, LOG_LVL_WARN }`（复用**既有**突发合并机制，**零新机制**） |
+| `src/dispense_guard.cpp` | **+65 / −0** | `#include "log_manager.h"` + 回调内 1 处 `log_emit`（过滤后、`valve_force_close()` **之前**） |
+| `test/p4_dispense_log_tests.txt` | **+162** | V1 / V3 / V4-A 上板用例（serial_batch 格式） |
+
+### ★ 边界结论：DispenseGuard 是"纯转发模块" ⇒ 运行期只记 **1 条**（决策）
+
+四处候选逐点核对（**用户要求"注意不要重复埋点"**）：
+
+| # | 位置 | 记录的事实 | **是否重复** | 覆盖者 / 处置 |
+|---|---|---|---|---|
+| q1 | 调用 `valve_force_close()` | 关阀动作 | ❌ **重复** | `valve.cpp:470` `LOG_VALVE_FORCE_CLOSE`(0x0505)；且 `LOG_P_CAUSE=1` **已带出"来源 = dispense_guard"** ⇒ 不埋 |
+| q2 | 收到 `EVENT_WEIGHT_ERROR` | 重量异常 | ❌ **重复 + N:1 放大** | `weight.cpp:236/244` `LOG_WEIGHT_ERROR_ENTER/EXIT`(0x050C/0x050D)（边沿）；`weight_record_jump()` 每条跳变都 `event_push` ⇒ 回调可被唤醒 N 次 ⇒ 不埋 |
+| q3 | `valve_force_close()` 返回 false | 关阀失败 | ❌ **重复** | `valve.cpp:405` `LOG_VALVE_FORCE_CLOSE_FAILED`(0x0506)（`VALVE-3` 已 DONE）⇒ 不埋 |
+| **q4** | **决策点**（过滤后、调用前） | **"我响应了，并决定发起安全动作"** | ✅ **不重复** | **唯一埋点** ⇒ `0x0511` |
+
+**★ 为何 `0x0511` 不是 `0x0505` 的重复（决定性论据）**
+
+| 维度 | Valve `0x0505` | Dispense `0x0511` |
+|---|---|---|
+| 事实 | **执行器动作**（GPIO 写入尝试） | **决策**（响应并决定动作） |
+| 次数 | ⚠️ **5 s 日志门控** ⇒ 只记"发生过"，**丢次数** | ✅ **突发合并** ⇒ **Σ `LOG_P_COUNT` = 真实响应次数** |
+| Level | CRITICAL（触发 immediately-flush） | WARN（Flash+Cloud，**不抢通道**） |
+
+### ★ 全链路记录分工（每段恰好一条，无重复链）
+
+```
+① weight.cpp:236   LOG_WEIGHT_ERROR_ENTER      0x050C  WARN      ← 异常事实（weight 定义点）
+② 【本次新增】      LOG_DISPENSE_SAFETY_RESPONSE 0x0511  WARN      ← 决策事实（dispense_guard 定义点）
+③ valve.cpp:470    LOG_VALVE_FORCE_CLOSE      0x0505  CRITICAL  ← 执行事实（valve 定义点）
+```
+
+### 验证结果
+
+| 项 | 结果 |
+|---|---|
+| **V1 编译** | ✅ `SUCCESS`（21.72 s）。相对基线（`604a892`，期间 `src/` 零改动 ⇒ 二进制可比）：**RAM 130624 → 130624（+0 B）** / **Flash 1370701 → 1370729（+28 B）**。RAM 零增长符合预期：白名单项落 `.rodata`，`LogParamIn` 是栈上局部，无新增静态量 |
+| **V4 静态（objdump）** | ✅ 埋点编码：`dispense_guard_event_callback`（`0x42016cc4`）内 —— `bnei a2,12`（`EVENT_WEIGHT_ERROR=12`）→ `movi a8,0x216`（`params[0].id=0x16 LOG_P_CAUSE`, `type=0x02 U32`，**单条 16 位存储**）→ `movi.n a13,1`（**param_count=1**，同值复用为 `params[0].v.u=1`，即 铁律 24 的死存储现象）→ `movi.n a11,2`（**level=WARN**）→ `addi.n a12,a1,8`（**params 在栈上**，非 static）→ `movi a10,0x511`（**EventId**）→ `call8 log_emit` |
+| **V4 静态（白名单）** | ✅ `log_emit_internal` 内联块中 `movi a7,0xfffffaf4`（= −1292 = **−0x50C**）与 `movi a6,0xfffffaef`（= −1297 = **−0x511**）**并列出现**在 `log_coalesce_is_target()` 的判定位置，其后紧跟 `bltui a5,8`（`param_count < LOG_MAX_PARAMS` 守卫）⇒ **新 EventId 确实已进白名单，且参数个数守卫生效** |
+| **V2 / V3 上板** | ⏳ **未执行** —— 本机 `[System.IO.Ports.SerialPort]::getportnames()` 返回**空**（开发板未连接）。**诚实标注为"未执行"，非"通过"**。用例已就绪：`test/p4_dispense_log_tests.txt`（含 V1 命令路径 `cm {"cmd":"execute_action",...}`、V3 定向注入 `logt fill warn 10 511`、V4-B 手工拔 HX711 步骤），运行命令见文件头 |
+
+**★ V3 的判据设计（三步，串口侧可独立完成）**：`logt fill warn 10 511` ⇒ ① `queued=10`（**折叠对调用方完全透明**：10 次调用全部返回 true）② 窗口内 `flash total=1`（10 次只落 1 条）③ 窗口到期后 `flash total=2`（1 立即 + 1 汇总）。
+**ΣCOUNT 的精确值**（== 10）需云端批次解码（WARN ⇒ Cloud=YES），路径与 2 处字面量改法已写入用例文件头（复用 `.pio/p15run/log_decode.py` + `p2i_report.py` 框架）。
+
+### 关键实现细节（防回归）
+
+- **★ 埋点必须至少带 1 个参数**：`log_coalesce_emit_summary()` 在 `base_n == 0` 时**静默丢弃**折叠计数 ⇒ 不带参会破坏 ΣCOUNT 守恒。本埋点固定带 `LOG_P_CAUSE`（1 个），合并器再追加 `LOG_P_COUNT` ⇒ 合计 2 ≤ `LOG_MAX_PARAMS`(8)
+- **纯观测块**：独立花括号作用域，**无 `return` / 无分支 / 不读不改 `result`** ⇒ 安全动作次数与执行路径**逐字不变**（用户 §四："只限制日志，不限制安全动作"）
+- **CAUSE 值对齐 Valve**：`DISPENSE_CAUSE_WEIGHT_ERROR = 1` 与 `VALVE_CAUSE_WEIGHT_ERROR = 1` **同值** ⇒ 云端可按 `LOG_P_CAUSE` 把 `0x0511` 与 `0x0505` **交叉关联为同一次安全响应**
+- **零协议新增（除已批准的那 1 个 EventId）**：无新 ParamId / System State / Config 参数 / enable 开关；**未改** EventManager 风暴参数、`EVENT_WEIGHT_ERROR` 策略、Weight、Valve、Workflow
+
+### 未落地 / 遗留
+
+- 📌 **`LV-1`**：`dispense_guard_init()` 的 `event_subscribe()` 失败仍不可观测（需再加 1 个 EventId，本轮未批准 ⇒ 保持零改动）
+- 📌 **观测工具缺口**：`logt fver` 只打印 `params=<个数>`，**不打印参数值** ⇒ ΣCOUNT 的精确值无法纯串口验证（已写明云端解码路径；如需要可另立工具增强项）
+- 📌 `0x0501–0x0504`（`DISPENSE_START/DONE/FAILED/TIMEOUT`）**本轮判定语义不对位、未占用** —— 保留给未来真正的"一次供水/出粮过程"生命周期
+
+### ✅ 2026-09-20：Phase 3 第 ⑤ 项 —— **EventManager 埋点接入完成**（P2-M）
 
 > commit `604a892` `feat(log): integrate event manager fault logging`
 > 前置审查：`log模块历史/LogManager-P2M-Event接入审查0920.md`（`52c93f9`）
@@ -595,7 +662,7 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 **遗留**：`EVT-1`（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三个阀门事件无法解析 ⇒ Workflow 无法订阅阀门事件）**单独开缺陷单，不修 EventId 编号**（EventId 属冻结协议）。
 
-**Phase 3 状态：①②③④⑤ 全部完成** ⇒ 下一步进入 **Phase 4：Dispense 模块开发**（4 项前置已满足）；`BLE` 埋点暂缓。
+**Phase 3 状态：①②③④⑤ 全部完成** ⇒ **Phase 4 —— Dispense 安全响应日志接入已完成（`94912bb`）**。剩余：`BLE` 埋点暂缓；`LV-1`（订阅失败无 ID）、`bin_storage` 桥接、`workflow_storage` 回调接口 待办。
 
 ---
 
@@ -1128,6 +1195,7 @@ Dispense
 
 ---
 
+*最后更新：2026-09-20（**Phase 4 —— Dispense 安全响应日志接入完成**，commit `94912bb` `feat(log): add dispense safety response logging`；前置审查 `b2493da`）。**改动 3 个源文件（`+91/−1`）+ 1 个用例文件**：`log_events.h` 新增 **`LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（WARN，`0x0500` 段尾从 `0x0510` 自然续号、不扩段不改旧编号）**+ 1 条 `static_assert`；`log_manager.cpp` 的 `s_coalesce_targets[]` **追加 1 项**（复用既有突发合并，**零新机制**）；`dispense_guard.cpp` 加 `#include "log_manager.h"` + 回调内 1 处 `log_emit`。★ **边界定论：DispenseGuard 是"纯转发模块"⇒ 运行期只记 1 条** —— 4 处候选逐点判重：q1 调用 `valve_force_close()`（已被 `0x0505` 覆盖，且 `LOG_P_CAUSE=1` **已带出"来源=dispense_guard"**）、q2 收到 `EVENT_WEIGHT_ERROR`（已被 `0x050C` 覆盖，且逐条转记会 **N:1 放大**：weight 侧是 `error_state` 边沿 1 条/次，而 `weight_record_jump()` 每条跳变都 `event_push` ⇒ 回调可被唤醒 N 次）、q3 `valve_force_close()` 失败（已被 `0x0506` 覆盖）⇒ **均不埋**；仅 q4 决策点（过滤后、调用前）新增。★ **`0x0511` 不是 `0x0505` 的重复**：Valve 侧是"带 5 s 冷却的**执行器动作**记录"（丢次数），本 ID 是"无冷却、**Σ `LOG_P_COUNT` 守恒**的**决策**记录"（Level WARN ⇒ Flash+Cloud，不抢 flush 通道）。**限流只限日志**：埋点块无 return / 无分支 / 不读改 `result` ⇒ 安全动作次数与执行路径逐字不变。验证：**V1** 编译 SUCCESS，RAM 130624→130624（**+0 B**）/ Flash 1370701→1370729（**+28 B**）；**V4 objdump 静态**：埋点编码（`bnei a2,12`=`EVENT_WEIGHT_ERROR`；`movi a8,0x216`=`LOG_P_CAUSE`+`U32` 单条 16 位存储；`movi.n a13,1`=`param_count=1`；`movi.n a11,2`=`WARN`；`addi.n a12,a1,8`=`params 在栈上`；`movi a10,0x511`=`EventId`）+ 白名单（`-1292 ≡ -0x50C` 与 `-1297 ≡ -0x511` 并列于 `log_coalesce_is_target()` 判定处，其后 `bltui a5,8` 为 param_count 守卫）；**V2 / V3 上板未执行**（本机 `getportnames()` 返回空 ⇒ 开发板未连接，**诚实标注"未执行"**），用例已备 `test/p4_dispense_log_tests.txt`（含 V3 三步判据：`queued=10` → 窗口内 `total=1` → 窗口后 `total=2`；ΣCOUNT 精确值路径=云端批次解码，复用 `.pio/p15run/log_decode.py` + `p2i_report.py` 模式）。★ 新沉淀：**"纯转发模块"的埋点数天然为 0**（有可观测自指事实才记 1 条）；**合并器要求埋点至少带 1 个参数**（`log_coalesce_emit_summary()` 在 `base_n==0` 时静默丢弃折叠计数）。遗留 `LV-1`（订阅失败仍缺 EventId）。另修正既有文档 ParamId 笔误：`LOG_P_CAUSE` 是 **0x16**，`0x1F` 是 `LOG_P_REASON`（`37d953d`）。)*
 *最后更新：2026-09-20（**Phase 3 第 ⑤ 项 EventManager 埋点接入完成（P2-M）** —— 仅改 `src/event_manager.cpp`（`+110/−0`），接入 2 个冻结 EventId。**★ 只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。`0x0C01` 埋在 `event_push()` 返回 `EVENT_QUEUE_FULL` 的**唯一出口**（确定丢弃分支；不在调用者、不在入口；FORCE 挤占分支不计入），`0x0C02` 埋在风暴抑制分支。二者**都只累加不逐条发射** ⇒ 采用**周期聚合方案 A**：窗口 60000 ms，**节拍器 = `event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；**无异常完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（零丢失、条目恒定）。验证：**V1** 编译 SUCCESS，RAM 130616→130624（**+8 B**）/ Flash 1370533→1370701（**+168 B**）；**V2** 空闲 25 s `emit +0`、阀门开合只有 valve 自身 2 条 INFO（`flash +0`）；**V5** 40 次 `valve_toggle` 全成功 ⇒ `emit +42` 全部归属 valve 40 条 INFO + wifi 2 条 WARN（`0x0603`/`0x0605`），**逐条核对 Flash 记录 ⇒ `0x0C01`/`0x0C02` 各 0 条**；**V3 队列满 / V4 风暴运行时不可达**（定量论证：队列 32 且每轮 drain ≤4 ⇒ 需单轮 >36 次入队；风暴需同类型 6 次/500 ms，而 valve 同类型间隔 100 ms+ε ⇒ 第 6 次时窗口已刷新）⇒ 以 **objdump 静态证据**（站点 A/B 的 EventId·level·param_count·ParamId 编码 + 窗口常量 59999≡60000 + `event_push` 字面量池含两个累加器）确认埋点正确。**零协议新增**（无新 EventId/ParamId/System State/Config/开关），**事件机制完全冻结**（不改风暴策略/队列大小/dispatch 流程）。提交 `604a892`。**Phase 3 ①②③④⑤ 全部完成** ⇒ 下一步 **Phase 4 Dispense 开发**；`BLE` 埋点暂缓。`EVT-1` 单独开单、不改 EventId 编号。）*
 *上一版更新：2026-09-20（**Phase 3 第 ⑤ 项前置审查完成 —— `Event` 模块日志接入设计（仅审查，未改代码）**）。结论：**EventManager 是日志宿主，但仅限"自身运行异常"**；业务事件 **76%（13/17）发布方已埋点** ⇒ 逐条记即重复。★ **决定性证据**：17 个 `event_push` 调用点 **100% 忽略返回值** + `event_get_drop_count()`/`duplicate_count()`/`queue_count()` **零消费方** ⇒ **事件丢弃当前 100% 不可观测**，只能由 EventManager 内部记录。`0x0C01`（队列满，`event_push():266`）与 `0x0C02`（风暴，`event_push():220-224`）**均不可逐条记**（后者定义即"超过 5 次/500ms 的持续流"）⇒ 采用**方案 A：计数聚合 + 60 s 周期上报**，复用 P2-D `cloud_manager.cpp:100-156` 模板，**以 `event_dispatch()` 为节拍器**（不新增任务、不改 `main.cpp`、不新增 EventId/ParamId/System State/配置项/开关、不改风暴策略）。⚠️ 陷阱：`EVENT_DROPPED` 返回值在 3 个分支返回（`:206` 越界/`:223` 风暴/`:260` FORCE 失败）⇒ **必须分支内埋点，不能用返回值判据**。重复记录：现状一条物理事实 2~3 条，若逐条记业务事件将达 4~6 条。**新增发现 EVT-1~EVT-5**，其中 **EVT-1**（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三阀门事件 14/15/16 无法解析 ⇒ **Workflow 无法订阅阀门事件**，静默失败）建议单独开单。报告 `log模块历史/LogManager-P2M-Event接入审查0920.md`。**待用户确认 E1–E4**。)*
 *上一版更新：2026-09-20（**Phase 3 第 ④ 项 Registry 埋点接入完成（P2-L）** —— 仅改 `src/capability_registry.cpp`（`+24/−0`），接入 2 个冻结 EventId / 2 处 `log_emit`。★ **宿主选"定义点"而非"触发点"**：`REG_REBUILT` 落 `registry_sync()` 的 `else` 分支（checksum 不一致/缺失/损坏，与 `reuse` 互斥 ⇒ 天然边沿无需门控），`REG_SAVE_FAILED` 落该函数内 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 4 处 `rescan()`（一次 create 连触发 3 次）、**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印 1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）。参数用栈上局部 `LogParamIn`（禁 `static`/全局：可能跑在 loopTask 8KB 或 esp-mqtt 任务上）。**WF-4 正式关闭**（`workflow_storage` 与 Registry 零耦合）；矩阵 §7 作用域已更正。验证：**V1** 编译 SUCCESS，RAM 130616 B（±0）/ Flash 1370533 B（+408）；**V2** 三表全 `reuse`、`REG_*` 均 0 条；**V3** create×1+delete×1 → **恰好 2 条** rebuild（若误埋触发点应为 6）；**V4a** 清零后精确计数 emit +3 / cloud +3 / **flash +0**（INFO 不落 Flash）；**V4b** `objdump` 静态确认 2 个调用点参数编码 `(3,INFO)` / `(1,ERROR)`。提交 `4b2e04b`。)*

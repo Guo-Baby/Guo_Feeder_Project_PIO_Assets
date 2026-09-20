@@ -570,4 +570,169 @@ enum : uint8_t {
 ---
 
 **最后更新**：2026-09-20 · Phase 4 Dispense 日志边界审查
-**当前状态**：**审查完成，等待 §7.4 方案裁决后实施**（本轮未改 `src/`）
+**当前状态**：✅ **已实施**（用户裁决 **方案 1** —— 新增 `0x0511`/WARN）
+**实现提交**：`94912bb` `feat(log): add dispense safety response logging` · **文档提交**：`docs(progress): record dispense logging completion`
+
+---
+
+# 附录 C：实施记录（2026-09-20，commit `94912bb`）
+
+> 用户裁决：**方案 1 —— 新增 `LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（WARN）**
+
+## C.1 实际改动（3 个源文件 `+91 / −1` + 1 个用例文件）
+
+| # | 文件 | numstat | 内容 |
+|---|---|---|---|
+| 1 | `src/log_events.h` | `+10 / −0` | 新增 `LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（`0x0500` 段尾，从 `LOG_WEIGHT_CALIB_FAILED`(0x0510) **自然续号**）+ 语义注释（说明为何不复用 `0x0501–0x0504`）+ 1 条 `static_assert` 防重编号 |
+| 2 | `src/log_manager.cpp` | `+16 / −1` | `s_coalesce_targets[]` **追加 1 项** `{ LOG_DISPENSE_SAFETY_RESPONSE, LOG_LVL_WARN }`（附注释：为何必须合并 / 为何合并安全 / 与 Valve 侧的互补关系） |
+| 3 | `src/dispense_guard.cpp` | `+65 / −0` | `#include "log_manager.h"`、`DISPENSE_CAUSE_WEIGHT_ERROR = 1`（模块内 `enum`，**与 `valve.cpp` 的 `VALVE_CAUSE_*` 同值**）、职责边界注释块、回调内 1 处 `log_emit` |
+| 4 | `test/p4_dispense_log_tests.txt` | `+162` | V1 / V3 / V4-A 上板用例（serial_batch 格式）+ V4-B 手工步骤 + objdump 证据附注 |
+
+**`log_events.h` 的精确改动**
+
+```c
+    LOG_WEIGHT_CALIB_FAILED        = 0x0510,   // ERROR
+    // Phase 4：DispenseGuard 安全响应决策（不是"重量异常"也不是"关阀动作"）
+    //   ...
+    LOG_DISPENSE_SAFETY_RESPONSE   = 0x0511,   // WARN（走突发合并；Σ COUNT = 真实响应次数）
+```
+
+```c
+static_assert(LOG_VALVE_FORCE_CLOSE == 0x0505, "LOG_VALVE_FORCE_CLOSE");
+static_assert(LOG_DISPENSE_SAFETY_RESPONSE == 0x0511, "LOG_DISPENSE_SAFETY_RESPONSE");   // ← 新增
+```
+
+**`dispense_guard.cpp` 的精确改动**（安全逻辑**逐字不变**）
+
+```c
+    Serial.println("[DispenseGuard] Weight error received");
+
+    /* Phase 4 埋点：安全响应决策（WARN）—— 纯观测，无 return / 无分支 / 不读改 result */
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_CAUSE, (uint32_t)DISPENSE_CAUSE_WEIGHT_ERROR);
+        log_emit(LOG_DISPENSE_SAFETY_RESPONSE, LOG_LVL_WARN, p, 1);
+    }
+
+    bool result = valve_force_close();      // ← 原有调用，逐字不变
+```
+
+## C.2 验证结果
+
+### V1 —— 编译 ✅
+
+```
+$ pio run
+RAM:   [====      ]  39.9% (used 130624 bytes from 327680 bytes)
+Flash: [=======   ]  65.4% (used 1370729 bytes from 2097152 bytes)
+========================= [SUCCESS] Took 21.72 seconds =========================
+```
+
+**基线可比性证明**（无需重新构建基线）：`git log --oneline 604a892..HEAD -- src/` 输出为空
+⇒ 从 P2-M 提交到本次改动前，`src/` **零改动** ⇒ `604a892` 的 V1 测量值即 HEAD 的二进制尺寸。
+
+| 项 | 基线（`604a892`） | 本次 | 增量 |
+|---|---|---|---|
+| RAM | 130624 B | **130624 B** | **+0 B** |
+| Flash | 1370701 B | **1370729 B** | **+28 B** |
+
+> **RAM +0 的解释**：白名单项落 `.rodata`（不占 RAM）；`LogParamIn` 是**栈上局部**（objdump 已证 `addi.n a12, a1, 8`）；`DISPENSE_CAUSE_WEIGHT_ERROR` 是编译期常量 ⇒ **模块内无任何新增静态量**。
+
+### V4 —— 来源可分：objdump 静态证据 ✅
+
+**证据 1：埋点编码**（`0x42016cc4 <dispense_guard_event_callback>`）
+
+```asm
+42016cc9: bnei   a2, 12, <+0x3a>     ; a2 = msg.event；12 = EVENT_WEIGHT_ERROR（枚举值）
+42016cd4: call8  Print::println      ; "[DispenseGuard] Weight error received"
+42016cd7: movi   a8, 0x216           ; 0x0216 → params[0].id=0x16(LOG_P_CAUSE), .type=0x02(U32)
+42016cda: movi.n a13, 1              ; ★ param_count = 1（同一寄存器稍后复用为 params[0].v.u = 1）
+42016cdc: movi.n a11, 2              ; ★ level = 2 = LOG_LVL_WARN
+42016cde: addi.n a12, a1, 8          ; ★ params 指针 = SP+8 ⇒ 栈上局部（非 static）
+42016ce0: movi   a10, 0x511          ; ★ EventId = LOG_DISPENSE_SAFETY_RESPONSE
+42016ce3: s16i   a8, a1, 8           ; 单条 16 位存储写入 id + type
+42016ce6: s32i.n a13, a1, 12         ; params[0].v.u = 1 = DISPENSE_CAUSE_WEIGHT_ERROR
+42016ce8: call8  log_emit(LogEventId, LogLevel, const LogParamIn*, uint8_t)
+42016ceb: call8  valve_force_close   ; ★ 埋点**之后**才是安全动作（顺序正确）
+```
+
+> ⚠️ 注意 `a13` 的**双重用途**（先作 `param_count`，后被 `s32i.n` 复用为参数值）——
+> 这正是**铁律 24** 警告的"同一栈帧被多调用点复用产生死存储"现象。
+> ⇒ **必须按 `param_count`（=1）判定实际传了几个参数，不能按立即数出现个数推断。**
+
+**证据 2：白名单已含新 EventId**（`log_emit_internal` 的内联合并检查）
+
+```asm
+42018f90: movi a6, 0xfffffaef        ; -1297 = -0x511  ← ★ 新增项 LOG_DISPENSE_SAFETY_RESPONSE
+42018f95: add.n a6, a2, a6           ; a6 = event_id - 0x511
+42018f9e: extui a6, a9, 0, 8
+42018fa1: bne a6, a7, <+0x34>        ; 命中 0x511 ⇒ 进入合并路径
+42018fa4: movi a7, 0xfffffaf4        ; -1292 = -0x50C  ← 既有项 LOG_WEIGHT_ERROR_ENTER
+42018fa7: add a7, a2, a7
+42018fad: beqz a6, <不合并>           ; 两个都不命中 ⇒ 不合并
+42018fb0: bltui a5, 8, <继续>         ; ★ param_count(a5) < LOG_MAX_PARAMS(8) 守卫
+42018fb3: j <不合并>                  ; 否则不合并（无空间追加 LOG_P_COUNT）
+```
+
+⇒ **两个常量（`−0x50C` 与 `−0x511`）并列出现在同一判定位置**，且其后紧跟 `param_count < 8` 守卫
+⇒ **白名单注册生效 + 参数个数守卫生效**，均已静态证明。
+
+### V2 / V3 —— 上板 ⏳ **未执行**（诚实标注）
+
+```
+$ [System.IO.Ports.SerialPort]::getportnames()
+（空）
+```
+
+⇒ **开发板未连接** ⇒ V2（单次 weight error 三段式记录）与 V3（连续注入下的聚合）**本轮无法执行**。
+**明确标注为"未执行"，而非"通过"**（沿用 `EVT-1` / `R-8` 的诚实标注惯例）。
+
+**用例已就绪**：`test/p4_dispense_log_tests.txt`
+
+- **V1**：`cm {"cmd":"execute_action","ob":"VALVE_OPEN","id":"v1"}`（走完整 CommandManager → 临时 Action → Valve）
+  ⇒ 断言 `logt flash total=0`（INFO 不落 Flash）⇒ 该路径**零** `0x0511`
+- **V3**：`logt fill warn 10 511` ⇒ 三步判据：
+
+  1. `queued=10`（**折叠对调用方完全透明** —— 10 次 `log_emit` 全部返回 `true`）
+  2. 窗口内 `logt flash total=1`（10 次只落 **1** 条）
+  3. 窗口到期后 `logt flash total=2`（1 立即 + 1 汇总）
+
+  运行命令：`python test/serial_batch.py COM8 <log> test/p4_dispense_log_tests.txt 6.5 0.35`
+- **V4-B（情况 B）**：需**手工拔 HX711 DOUT 线**（`logt fill` 只注入日志，**不注入 `EVENT_WEIGHT_ERROR`**；仓库内无 `event_push` 注入控制台）⇒ 步骤与期望串口输出已逐行写明
+
+**ΣCOUNT 精确值（== 10）的验证路径**（串口侧读不到，见 `LV-2`）：
+
+```
+a) 捕获云端批次：python test/mqtt_log_probe.py listen 30 > .pio/p4d_probe.log
+b) 记录级解码：  .pio/p15run/log_decode.py（CBOR → event_name + 每个 ParamId 真值，含 LOG_P_COUNT）
+c) 复用不变量框架：.pio/p15run/p2i_report.py，仅改 2 处字面量
+     · 事件过滤 LOG_WEIGHT_ERROR_ENTER  → LOG_DISPENSE_SAFETY_RESPONSE
+     · 串口正则 event=0x050C queued=    → event=0x0511 queued=
+   ⇒ 输出「记录条数 / ΣCOUNT / 真实发生次数 / 降幅 / 接受间隔」四项
+判据：ΣCOUNT == Σ(queued) ⇒ ✅ 次数守恒
+```
+
+## C.3 实施中发现的两条硬约束（防回归）
+
+| # | 约束 | 依据 |
+|---|---|---|
+| 1 | **★ 被合并的埋点必须至少带 1 个参数** | `log_coalesce_emit_summary()`（`log_manager.cpp:173-181`）在 `base == nullptr` 或 `base_n == 0` 或 `folded == 0` 时 **`return`（静默丢弃折叠计数）**、且**不报错** ⇒ 不带参会**破坏 ΣCOUNT 守恒**。本埋点固定带 `LOG_P_CAUSE`（1 个） |
+| 2 | 参数个数必须 `< LOG_MAX_PARAMS(8)` | `log_coalesce_filter()`（`:245`）在 `param_count >= LOG_MAX_PARAMS` 时直接返回"不合并"；合并器还要追加 `LOG_P_COUNT` 占 1 位。本处 1 + 1 = 2 ⇒ 安全（objdump `bltui a5, 8` 已证守卫生效） |
+
+## C.4 同步文档
+
+| 文档 | 改动 |
+|---|---|
+| `docs/LogManager-P2-Progress.md` | 新增「Phase 4」章节（改动表 / 边界结论 / 判重表 / `0x0511` vs `0x0505` 对照 / 验证结果 / 防回归细节 / 遗留）；模块表新增 Dispense Guard 行；Valve 行补注；路线调整 ④ 更新；末行更新 |
+| `docs/P2_Log_Integration_Matrix.md` | §8 由"建议接入"改写为"**实际接入（已接入）**"（含 8.1 现状 / 8.2 实际接入 + 逐点判重 / 8.3 互补论据 / 8.4 限流 / 8.5 已知缺口）；速览表第 10 行更新 |
+| `未修复的问题.md` | 最近更新行；覆盖率表（已接入 12 → **13**、已落地 63 → **64**、尚未接入 3 → **2**、"零埋点"行改写）；DispenseGuard 行改为已接入；B8 完成；编号规则 `LV-n` 含义拓宽；**新增 `LV-2`**（观测工具缺口）；`B7` 树更新 |
+| `test/p4_dispense_log_tests.txt` | 新增（V1/V3/V4-A 用例 + V4-B 手工步骤 + objdump 证据 + ΣCOUNT 云端验证路径） |
+
+## C.5 遗留
+
+| ID | 内容 | 状态 |
+|---|---|---|
+| **`LV-1`** | `dispense_guard_init()` 的 `event_subscribe()` 失败仍不可观测（需再加 1 个 EventId） | 🟡 OPEN（本轮未批准新增 ⇒ 零改动） |
+| **`LV-2`** | `logt fver` 不打印参数值 ⇒ ΣCOUNT 无法纯串口自证 | 🟡 OPEN（本轮未实施） |
+| `DSP-1` / `DSP-2` / `DSP-4` | Phase 4 前置审查的 P0 未决项（Dispense/Motor 命名、日志段归属、Temp Action 队头阻塞） | 🟡 **`DSP-2` 的一部分已被本次决策隐式回答**：`0x0500` 段确实用于安全响应（`0x0511`），而 `0x0Fxx` Motor 段仍留给未来出粮驱动 |
+| `0x0501–0x0504` | 四个已冻结 ID **语义不对位、未占用** | ⚪ 保留给未来真正的"一次供水/出粮过程"生命周期 |
