@@ -15,6 +15,9 @@
 // PSRAM 分配接口（heap_caps_malloc / heap_caps_free）
 #include <esp_heap_caps.h>
 
+// esp_reset_reason()
+#include <esp_system.h>
+
 // Restart 能力已收回 SystemCommand（V2 迁移）。
 //
 // 本模块不再执行 ESP.restart()，也不再维护自己的重启安全窗口。
@@ -1106,6 +1109,15 @@ bool config_init()
     //
     //    两者解决不同问题，任一异常都要回到 Last Known Good Config。
     bool last_boot_ok = json_storage_exists(CONFIG_BOOT_FLAG_FILE);
+
+    // config_init() executes before system_command_init(),
+    // therefore use IDF reset reason directly instead of cached value.
+    if (!last_boot_ok)
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_RESET_REASON, (uint32_t)esp_reset_reason());
+        log_emit(LOG_SYS_BOOT_INCOMPLETE_PREV, LOG_LVL_CRITICAL, p, 1);
+    }
 
     s_commit_state = commit_state_read();
 
