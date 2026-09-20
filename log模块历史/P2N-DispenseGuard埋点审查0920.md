@@ -199,7 +199,7 @@ bool event_subscribe(SystemEvent event, EventCallback callback)
 |---|---|
 | 提议 EventId | `LOG_GUARD_SUBSCRIBE_FAILED` = **`0x0511`**（`0x0500` Water/Dispense 段尾，**从 `LOG_WEIGHT_CALIB_FAILED`(0x0510) 自然续号，不扩段**） |
 | Level | `LOG_LVL_CRITICAL`（与 `LOG_VALVE_FORCE_CLOSE_FAILED` 0x0506 语义齐平 —— 都是"安全功能失效"） |
-| 参数 | `LOG_P_MODULE`(0x1D，已冻结) + `LOG_P_CAUSE`(0x1F，已冻结) |
+| 参数 | `LOG_P_MODULE`(0x1D，已冻结) + `LOG_P_CAUSE`(0x16，已冻结) |
 | 依赖方向 | `dispense_guard → log_manager`（单向，与 P2-H Valve 同构） |
 | 合同测试 | 建议同步 `log_events.h:597-602` 增加一条 `static_assert` |
 
