@@ -1,0 +1,162 @@
+# =====================================================
+# Phase 4 —— Dispense 安全响应日志 上板用例（V1 / V3 / V4-情况A）
+#
+# 状态：**未执行**（本机 `SerialPort.getportnames()` 返回空 ⇒ 开发板未连接）。
+#       数值全部按代码 + objdump 静态证据推导；上板后若某条不符，先看设备实际输出再判定。
+#
+# 被测改动（commit: feat(log): add dispense safety response logging）：
+#   src/log_events.h     + LOG_DISPENSE_SAFETY_RESPONSE = 0x0511 (WARN)
+#   src/log_manager.cpp  + s_coalesce_targets[] 追加 {0x0511, WARN}
+#   src/dispense_guard.cpp + 回调内 1 处 log_emit（过滤后、valve_force_close() 前）
+#
+# 运行（QUIET 必须 >= 6.5：合并窗口 5 s，用例中用"无期望行"做等待）：
+#   python test/serial_batch.py COM8 .pio/p4d_v1v3.log test/p4_dispense_log_tests.txt 6.5 0.35
+#
+# -----------------------------------------------------
+# 关键常量
+#   LOG_DISPENSE_SAFETY_RESPONSE = 0x0511  WARN   → (Flash=1, Cloud=1)
+#   LOG_COALESCE_WINDOW_MS       = 5000
+#   LOG_MAX_PARAMS               = 8
+#   EVENT_WEIGHT_ERROR           = 12     （event_manager.h 枚举值，objdump 已确认）
+#   LOG_P_CAUSE                  = 0x16   （本埋点的 base 参数）
+#   LOG_P_COUNT                  = 0x45   （合并器自动追加）
+#   LOG_LVL_WARN                 = 2
+# -----------------------------------------------------
+# 已验证的 logt 输出格式（断言串必须与之一致）
+#   [LogT] stats emit=%u debug=%u ring=%u/%u hw=%u drop=%u consumed=%u flash=%u cloud=%u ..
+#   [LogT] fill level=%s n=%ld event=0x%04lX queued=%u
+#   [LogT] flash ready=%u segs=%u oldest=%u newest=%u append=%u@%u total=%u ..
+#   [LogT] fseg  seg=%ld ok=%u magic=0x%08X index=%u first_seq=%u recs=%u crc=0x%08X
+#   [LogT] fver seg=%ld rec=%ld crc=%u ver=%u lvl=%u seq=%u boot=%u evt=0x%04X params=%u up=%u
+#   [LogT] fwipe ok=%d /  mwipe ok=%d / creset ok / reset ok
+# -----------------------------------------------------
+# objdump 静态证据（本机上板前已核对，见审查报告 §七）
+#   埋点编码（0x42016cc4 <dispense_guard_event_callback>）：
+#     bnei a2, 12              ← EVENT_WEIGHT_ERROR == 12
+#     movi a8, 0x216           ← params[0].id = 0x16(LOG_P_CAUSE), type = 0x02(U32)
+#     movi.n a13, 1            ← param_count = 1     （同时是 params[0].v.u = 1）
+#     movi.n a11, 2            ← level = 2 (WARN)
+#     addi.n a12, a1, 8        ← params 在**栈上**（非 static）
+#     movi a10, 0x511          ← event_id = 0x0511
+#     call8 log_emit(...)
+#   白名单（log_emit_internal $part$6）：
+#     movi a6, 0xfffffaef → -1297 = -0x511     ← 新增项
+#     movi a7, 0xfffffaf4 → -1292 = -0x50C     ← 既有项
+#     bltui a5, 8                              ← param_count < LOG_MAX_PARAMS 守卫
+# -----------------------------------------------------
+
+
+# =====================================================
+# V1 —— Workflow 来源调用 Valve：**不应出现任何 0x0511**
+#
+# 原理：`cm` 走完整 CommandManager 路由（execute_action → workflow_enqueue_action
+#       → 临时 Action 引擎 → valve），即"情况 A"。
+#       VALVE_OPEN/CLOSE 是 INFO ⇒ 只上云不落 Flash
+#       ⇒ 若 Flash 仍为 0，则证明"该路径未产生任何 WARN+ 记录"（含 0x0511）。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt creset ||| creset ok
+logt reset ||| reset ok
+logt flash ||| total=0
+cm {"cmd":"execute_action","ob":"VALVE_OPEN","id":"v1"} ||| ret=1
+cm {"cmd":"execute_action","ob":"VALVE_CLOSE","id":"v2"} ||| ret=1
+# 阀门动作是即时完成；给一次性收口留一点时间
+logt ring
+logt flash ||| total=0
+logt fseg 0 ||| absent
+logt reset ||| reset ok
+
+
+# =====================================================
+# V3 —— 连续多次注入：**动作不降 / 日志聚合 / 次数守恒**
+#
+# 原理：`logt fill warn 10 511` 连发 10 次 log_emit(0x0511, WARN)
+#   · 第 1 次被"接受" ⇒ 立即产生 1 条记录（带 LOG_P_COUNT=1）
+#   · 后 9 次落在 5 s 窗口内 ⇒ **折叠**（不占 seq、不进 RAM 环、不落 Flash、不上云）
+#   · 窗口到期（由 log_task() 每轮调用的 log_coalesce_tick() 结清）
+#     ⇒ 追加 1 条汇总记录，其 LOG_P_COUNT = 9
+#   ⇒ 合计 **2 条**记录承载 **10 次**发生：Σ LOG_P_COUNT = 1 + 9 = 10
+#
+# ★ 三步断言（本条用例的核心）：
+#   ① queued=10        → 调用方视角 10 次全部"受理"（折叠对调用方完全透明）
+#   ② total=1          → 窗口内：10 次只落 **1** 条
+#   ③ total=2          → 窗口到期后：**2** 条（1 立即 + 1 汇总）
+#
+# ⚠️ 已知观测局限（**不是代码缺陷，是观测工具缺口**）：
+#   `logt fver` 只打印 `params=<个数>`，**不打印参数值** ⇒ 无法在串口侧直接读到
+#   LOG_P_COUNT 的数值。ΣCOUNT 的**精确值**需从云端批次（WARN ⇒ Cloud=YES）解码，
+#   或为 `fver` 增加"打印参数值"能力（属独立工具增强，不属本次范围）。
+#   本条用例以 ②③ 的**记录条数**作为聚合生效的判据；聚合机制的 ΣCOUNT 守恒
+#   已在 P2-I（LOG_WEIGHT_ERROR_ENTER）上板实测过（17 次 → 5 条，ΣCOUNT 守恒），
+#   本次只是把一个**新 EventId 注册进同一白名单**，机制未变。
+# =====================================================
+logt fwipe ||| fwipe ok=1
+logt mwipe ||| mwipe ok=1
+logt reset ||| reset ok
+logt flash ||| total=0
+logt fill warn 10 511 ||| queued=10
+logt fill warn 10 511 ||| event=0x0511
+logt flush ||| flush done
+logt flash ||| total=1
+
+# ★ 等待合并窗口（5000 ms）到期 —— 本行**刻意不写期望**，
+#   使 serial_batch 按 QUIET(>=6.5 s) 整条等待。
+logt ring
+
+logt flush ||| flush done
+logt flash ||| total=2
+logt fseg 0 ||| recs=2
+logt fseg 0 ||| first_seq=1
+logt fver 0 0 ||| evt=0x0511
+logt fver 0 0 ||| params=2
+logt fver 0 0 ||| lvl=2
+logt fver 0 1 ||| evt=0x0511
+logt fver 0 1 ||| params=2
+logt fver 0 1 ||| lvl=2
+logt reset ||| reset ok
+
+
+# =====================================================
+# V4 —— 来源可分（情况 A vs 情况 B）
+#
+#   情况 A（Workflow → Valve）：
+#     LOG_VALVE_OPEN(0x0509) / LOG_VALVE_CLOSE(0x050A)  INFO
+#     ⇒ Flash 中**无** 0x0511、**无** 0x0505
+#     断言：本段 V1 已覆盖（total=0）
+#
+#   情况 B（Weight → Event → DispenseGuard → Valve）：
+#     LOG_WEIGHT_ERROR_ENTER(0x050C) + LOG_DISPENSE_SAFETY_RESPONSE(0x0511)
+#     + LOG_VALVE_FORCE_CLOSE(0x0505, CAUSE=1)
+#
+# ★ 情况 B 无法用串口注入（`logt fill` 只注入**日志**，不注入 EVENT_WEIGHT_ERROR；
+#   仓库内无 event_push 注入控制台）⇒ **必须手工制造重量异常**。
+#
+# ------------------------- V4-B（手工步骤）-------------------------
+# 1) 先清零：
+#      logt fwipe
+#      logt mwipe
+#      logt reset
+# 2) 拔掉 HX711 的 DOUT 线（最极端掉线；见 未修复的问题.md 的 R-8-A V3 记录）
+# 3) 5 s 内串口应依次出现（这三行是"三段式记录"的串口侧证据）：
+#      [Weight] STATE_WEIGHT_ERROR -> 1            ← ① 重量异常事实（weight 定义点）
+#      [DispenseGuard] Weight error received       ← ② 安全响应决策（本次新增埋点所在）
+#      [Valve] FORCE CLOSE (pin=12, level=0)       ← ③ 关阀动作（valve 定义点）
+#      [DispenseGuard] Valve force closed
+# 4) 读记录（Flash 中应为 3 种 EventId 各至少 1 条）：
+#      logt flush
+#      logt fseg 0
+#      logt fver 0 0
+#      logt fver 0 1
+#      logt fver 0 2
+#   期望出现：evt=0x050C（WARN）/ evt=0x0511（WARN）/ evt=0x0505（CRITICAL）
+# 5) 恢复：接回 HX711，logt reset
+# -------------------------------------------------------------------
+#
+# ⚠️ 注意事项：
+#   · `0x0505` 带 5 s 日志门控（VALVE_FORCE_CLOSE_LOG_COOLDOWN_MS）⇒ 5 s 内
+#     多次强制关阀只会产生 **1** 条 0x0505，但 `[DispenseGuard] Weight error received`
+#     串口打印次数 = 真实响应次数 ⇒ 这正是"0x0511 的次数权威性"的现场证据：
+#     **串口响应次数 N ≫ 0x0505 记录数，而 0x0511 的 ΣCOUNT == N**。
+#   · 若 R-8 假跳变导致持续误报，0x0511 会以"1 立即 + N 汇总"的形式出现，
+#     ΣCOUNT 仍守恒；此时可对照 `logt stats` 的 `emit` 增量（只计被接受条数）。
