@@ -541,7 +541,98 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-20（最新）：Phase 4 —— **Dispense 安全响应日志接入完成**
+### 📋 2026-09-20（最新）：**Phase 5 前置审查 —— BLE / OLED / Dispense 业务边界 + LogManager 完整性**（**仅审查，未改代码**）
+
+> 报告：`log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`
+> 纪律：零代码改动（`git diff --stat src/` 为空）· 未新增 EventId / ParamId / 配置项 / enable 开关 · 未动 System State / EventManager
+
+**★ 结论 1（最高优先级）：`0x01xx` System/Boot 段 12 个 EventId 整段零宿主**
+
+```
+$ grep -rn "LOG_SYS_" src/ --include=*.cpp --include=*.h | grep -v log_events.h
+src/main.cpp:258: // （重启请求归 System 段 LOG_SYS_RESTART_REQUESTED，避免跨段重复）
+（仅一行注释 —— 零个 log_emit 调用点）
+```
+
+**判据与宿主候选都已在代码中现成存在**：
+```cpp
+// system_command.cpp:222
+    s_reset_reason = (uint8_t)esp_reset_reason();   // ★ 启动时已采样并缓存
+// system_command.cpp:97
+    switch ((esp_reset_reason_t)s_reset_reason) { ... }   // ★ 已有"复位原因 → 名称"完整映射
+```
+⇒ 与其他缺口**恰好相反**：`LV-1` 是"有宿主候选但无 EventId"，这里是「**有 ID、有判据、有宿主，只差一行 `log_emit`**」。
+
+| 缺失语义 | 它本该回答的问题 | 命中用户关注点 |
+|---|---|---|
+| `0x0103 RESET_ABNORMAL` / `0x0102 BOOT_INCOMPLETE_PREV` | 设备是否在**崩溃重启循环**？上次是否跑完就死？ | 🎯 **数据不可恢复** |
+| `0x0109–0x010B RESTART_REQUESTED/EXECUTED/CANCELLED` | `system_command.cpp:312`（**全系统唯一 `ESP.restart()`**）的三态**零记录** | 🎯 **数据不可恢复** |
+| `0x010C CRITICAL_OP_UNDERFLOW` | Critical Op 计数**多 release** ⇒ **永久无法重启**，当前**无任何记录能发现** | 🎯 **数据不可恢复** + **系统卡死** |
+| `0x0108 HEAP_LOW` / `0x0107 PSRAM_ALLOC_FAILED` | 内存枯竭前兆 | 🎯 **系统卡死** |
+| `0x0101 BOOT_COMPLETE` | 日志时间轴**缺"本次启动开始"锚点**（只有记录级 `boot_seq`） | 可观测性基础 |
+
+**成本 / 风险**：全部是**启动期一次性**记录 ⇒ **零频率风险、零 Flash 压力**；**无需新增 ID**（12 个均已冻结）。
+**接入前需先裁决**：① `0x0106 FS_MOUNT_FAILED` 与 `LOG_STG_FS_UNAVAILABLE`(0x0301，**已有宿主**) 语义重叠 ⇒ 建议只留 STG；② `0x0108 HEAP_LOW` 必须定**门控**（跨阈值边沿 + ≥60 s 刷新），否则内存枯竭时会形成**日志风暴**（`R-3` 同类）；③ 是否同时批准 `LV-1`。
+
+**★ 结论 2：BLE 的 callback 禁令**根本不会被触发**
+
+| 速率 | 量级 | 可记录的事实 |
+|---|---|---|
+| `onResult()` 被调用次数（**所有**广播设备） | 密集环境可达 **数十/秒** | ❌ 无 —— MAC 不匹配在 `:124-126` 就 `return` |
+| 通过 MAC+长度过滤、真正入队的帧 | **≈1 包 / 3 s**（P2-BLE 实测） | ✅ 温湿度/电量/解码失败 |
+| 扫描窗口级事件 | 15 / 30 min | ✅ 窗口成功/失败/LEVEL 迁移/禁扫 |
+
+**★ `0x09xx` 4 个 ID 的天然宿主全部在 `MiThermometer_task()`（loop 上下文）**：
+| EventId | 宿主位置 |
+|---|---|
+| `DATA_DECODED` 0x0901 | `:468` `if(result){}`（**≤1/窗口**：收到 temp+humid ⇒ `SCAN_WINDOW_WAIT` 停扫） |
+| `DECODE_FAIL` 0x0902 | `:468` **`else`** 分支 |
+| `SENSOR_LOST` 0x0903 | `:362` `s_scan_fail_count++` 分支（**≤1/窗口**） |
+| `SCAN_DISABLED` 0x0904 | `:373-382` 进入 `LEVEL2`（**天然边沿**） |
+
+⇒ `onResult()` 的全部动作 = MAC 过滤 + memcpy + `xQueueSend` ⇒ **无可记录事实**（铁律 25：总线只搬运不代记）⇒ **矩阵 §11 的"不得在 callback 内 `log_emit`"硬禁令不会被触发**。
+（技术补充：`log_emit_internal()` **无 I/O / 无 malloc / 无 delay**、临界区仅 128 B memcpy；栈开销 ≈200 B vs NimBLE host task 栈 **4096 B**（`nimconfig.h:217`）⇒ **技术上可行，但优先级反转方向是错的，且完全没必要**。）
+
+**★ 结论 3：BLE 唯一 Flash 风险 = `DECODE_FAIL`（已定量）**
+
+| EventId | Level | 落 Flash | 最坏速率 | 496 条环耗尽 | 判定 |
+|---|---|---|---|---|---|
+| `DATA_DECODED` 0x0901 | INFO | ❌ | ≤1/15 min | — | ✅ |
+| **`DECODE_FAIL` 0x0902** | **WARN** | ✅ | **1/3 s = 20/min**（**bindkey 配置错误** ⇒ CCM 对每包都失败） | **≈25 min** | 🔴 **必须聚合** |
+| `SENSOR_LOST` 0x0903 | WARN | ✅ | ≤1/15 min | ≈124 h | ✅ |
+| `SCAN_DISABLED` 0x0904 | INFO | ❌ | 1 次/生命周期 | — | ✅ |
+
+⇒ 建议**模块内窗口聚合**（复用既有 `s_scan_fail_count`，窗口结束上报 1 条带 `LOG_P_FAIL_COUNT`）⇒ **零 LogManager 改动**；若改走 LogManager 白名单则须满足 **铁律 30**（至少带 1 个参数）。
+
+**★ 结论 4：OLED "占位"需分两层 + `OLED-1` 修正**
+
+| 层 | 状态 |
+|---|---|
+| **显示层** | ✅ **已实现**（`oled.cpp` 301 行 + `oled_animation.h` **1367 行**动画帧表；4 项配置齐全） |
+| **事件响应层** | ⚠️ **占位**（`oled_event_handler()` 仅 2 个有效 case 且都只 `Serial.println`；注册 4 个事件、3 个落 `default`） |
+| **恢复能力** | ❌ `oled_restart()`（`:251`）**全仓库零调用者 = 死代码** |
+
+★ **`oled_init()` 丢弃 `U8g2::begin()` 的 `bool` 返回值并无条件打印 `"OLED init OK"`**（`:103` / `:110`；对照 `U8g2lib.h:144` `bool begin(void)`）⇒ **假成功** ⇒ **先前"OLED 无宿主不埋"的判定修正为「有异常、有 ID、但缺判据」**（登记 **`OLED-1`**）。⇒ **本轮维持"不埋点"**（埋点无可依附的判据；修 `begin()` 检查属生产代码改动，须单独批准）。
+
+**★ 结论 5：LogManager 完整性（脚本审计，工具 `.pio/p5run/evtid_audit.py`）**
+
+| 项 | 数值 |
+|---|---|
+| EventId 定义总数 / 有宿主 / **零宿主** | **102 / 69 / 33** |
+| 零宿主五分类 | 待接入 **5**（BLE 4+OLED 1）· **`0x01xx` 整段 12** · 无产生点 **6** · 刻意侧信道 **5**（设计）· 保留不用 **5** |
+| 编号空间 | 15 段 × 255 = **3825** 容量，已用 **102** ⇒ **剩余 3723（97.3%）**；`0x10`–`0xFF` 共 240 段**完全未启用** |
+| 存储完整性缺口 | `bin_storage`（`main.cpp:474` 只注册串口版桥接）· `workflow_storage`（无回调接口） |
+
+⚠️ **协议缺口 `PROTO-1`**：`log_manager.cpp:2282` `h.event_dict_ver = LOG_RECORD_VERSION`（=2）⇒ 批次头的"**事件字典版本**"字段被填成"**记录格式版本**"（`log_cbor.h:100` 注释明确写的是"事件字典版本"；`log_events.h:535` 的 `LOG_BKEY_EVENT_DICT_VER = 1u` **只是 CBOR 整数键索引**）⇒ **新增/删除任何 EventId 都不会反映到该字段**，云端无法判断事件集合是否变化。**建议仅登记 + 云端容忍未知 EventId**；引入真正的字典版本属**冻结协议变更**，须单独立项。
+
+⚠️ **方法学（本轮踩坑）**：审计覆盖率必须同时检索「**字面实参**」+「**`log_emit0` 变体**」+「**映射函数 `return` 值**」三类证据，并剥除注释。首版仅查字面实参 ⇒ `0x02xx`/`0x03xx` 因 `cfg_bridge_event()` / `stg_bridge_event()` **被系统性误判为零宿主**（`LOG_CFG_SAVE_OK` 也因 `log_emit0` 漏检）。
+
+**性能（按用户指定的 4 项）**：① **系统卡死** —— 无新增无界阻塞；② **安全链断裂** —— 无新增（`LV-1` 仍 OPEN）；③ **Flash 异常消耗** —— 唯一新增风险为 BLE `DECODE_FAIL`（已定量）+ 接入 `HEAP_LOW` 时须预先定门控；④ **数据不可恢复** —— **`0x01xx` 空缺即核心缺口**。
+⚠️ **本轮未重新升级 `R-7` / `R-8`**（按用户指令）：两者仍 `DEFERRED`，优先级/状态/结论均未改动。（`§5.1` 的"OLED 单帧 I2C ≈92 ms 估算"仅用于说明"仍小于 HX711 的 100 ms 采样周期"，**不构成对 `R-8` 的升级依据**。）
+
+**待裁决：`D1`–`D10`**（报告 §七）—— 其中 **`D1`（是否接入 `0x01xx`、接哪 7 个）/ `D4`（BLE 只接 4 个还是 +2 新增）/ `D6`（OLED 是否登记 `OLED-1`）/ `D7`（`PROTO-1` 处置）/ `D9`（`DSP-1`/`DSP-2` 裁决）** 为后续开工的前置条件。
+
+### ✅ 2026-09-20：Phase 4 —— **Dispense 安全响应日志接入完成**
 
 > commit `94912bb` `feat(log): add dispense safety response logging`
 > 前置审查：`log模块历史/Phase4-Dispense日志边界审查0920.md`（`b2493da`，审查报告 §七 四问 + 方案裁决）
