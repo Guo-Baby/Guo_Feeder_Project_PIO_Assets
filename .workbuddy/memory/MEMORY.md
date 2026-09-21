@@ -9,8 +9,10 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## 当前阶段（2026-09-21）
 - **LogManager 埋点：Phase 3/4/5-A/B/C/6-A/6-B 全部完成并已提交**（commit 与验证数据见 `2026-09-2x.md`）—— 已接入 **16 模块**：Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·**BLE(MiThermometer)**·**bin_storage**·**workflow_storage**（json/file 走桥接）；零宿主 23（定义 102 · 有宿主 79）
 - **6-A** = `bin_storage` 23 站点桥接上云（仅改 `main.cpp`，零新增 ID）· **6-B** = `workflow_storage` meta 损坏（复用 Storage 段 `0x0303`）+ `workflow.cpp` 加载分配失败（沿用 `0x040B`）
+- **6-C（已编码待审核）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
+  - ⚠️ **待裁决**：`log_events.h:248` 把 0x0306 标注为 **WARN**，而 6-C 指令要求 **ERROR** ⇒ 已按指令实现 ERROR（两者都落 Flash，扰动相同，差异仅在云端严重度显示）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
 - **关键文档**：`Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、`Phase5-ABC执行计划0920.md`、`log模块历史/Phase4-Dispense边界审查0920.md`、`log模块历史/R7-R8-后续评审与系统性能权衡0920.md`
-- **待办（未开工）**：`load_meta()` 另 3 处静默返回（`:931` size 非法 / `:940` read 失败 / `:947` 长度不符；**前两处缺 `stage_cleanup_all()`**，与首尾不对称）· 单 slot `load` 失败 · `recover_internal()` rename 失败 · `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
+- **待办（未开工）**：`load_meta()` 另 3 处静默返回的**不对称**（`:931` size 非法 / `:940` read 失败 **缺 `stage_cleanup_all()`**，与首尾两处不一致）· 单 slot `load` 失败 · `recover_internal()` rename 失败 · `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
 - **非日志待办**：`system_state` 的 `state_table[].type` 死存储 · `test_mqtt` 仍在生产 loop
 - **`R-7`/`R-8` 仍 DEFERRED**（Phase 5 审查未重新升级，优先级/状态/结论均未改动）
 
@@ -82,5 +84,9 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **★ 自写探针必须按行缓冲**：`read(in_waiting)` 会把**半行**当整行 ⇒ 解析 `logt` 输出全部失败（踩过）
 - **★ 等待上限**：编译 `timeout 190` / 烧录 `120` / 串口回归 `185`；超时(124) **不重跑**，grep 结果文件或拆用例
 - **同一文件多个 Edit 必须串行**（并行互相覆盖且仍报成功，改完必须复核）；**★ Bash heredoc 跑 Python 极易被引号搞崩且失败静默无改动** ⇒ **先 Write 成文件再执行**
-- **静态验证三件套**：`nm -S` 看符号级 RAM 增量 · `objdump` 看站点（EventId 常经**字面量池**加载，`0x9xx` 超 `movi` 12 位 ⇒ 需解析 `.flash.text` 字面量池）· `readelf` 看段尺寸
+- **静态验证三件套**：`nm -S` 看符号级 RAM 增量 · `objdump` 看站点 · `readelf`/`size` 看段尺寸
+  - ⚠️ **EventId 载入方式随大小变化**：`0x9xx` 超 `movi` 12 位 ⇒ 经**字面量池**加载（需解析 `.flash.text`）；`0x3xx`/`0x4xx` 直接 `movi a10, 0xNNN`
+  - ★★ **`call8 log_emit` 指令数 ≠ 源码调用数**：**载荷相同的日志块被编译器尾部合并**（多个入口各自 `movi a10,<EventId>` 后 `j <同一条 call>`）⇒ **必须按"逻辑入口"计数**，否则 3 个新增埋点会被误判成 2 个
+  - ★ **RAM +0 的最硬证据** = 两份 ELF 的 `.data/.bss` 符号表 `diff` **逐项一致**（比只看 `pio` 总数强）
+  - ★ **站点数对 ≠ 可区分**：两条独立路径若载荷值全同 ⇒ 云端无法区分（Phase 6-C 点 2/3 实测，根因是"不允许新增枚举值"）
 - **用户偏好**：每阶段独立 commit（**代码 commit 与文档 commit 分离**）；**禁 `git add -A`/`.`**；⚠️ **提交记忆文件必须 `git add -f .workbuddy/memory/<file>`**（`.workbuddy/` 被 gitignore，**即使已 tracked 也报 `paths are ignored`**）；测试资产放受跟踪的 `test/`；编译临时文件可直接删，其他目录删除需用户同意；文档（除 gitignore 内的）都可 commit
