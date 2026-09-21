@@ -12,7 +12,11 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **6-C ✅（`6d40944`）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
   - ⚠️ **待裁决**：`log_events.h:248` 把 0x0306 标注为 **WARN**，而 6-C 指令要求 **ERROR** ⇒ 已按指令实现 ERROR（两者都落 Flash，扰动相同，差异仅在云端严重度显示）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
 - **关键文档**：`Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、`Phase5-ABC执行计划0920.md`、`log模块历史/Phase4-Dispense边界审查0920.md`、`log模块历史/R7-R8-后续评审与系统性能权衡0920.md`
-- **待办（未开工）**：`load_meta()` 三处失败分支的 **`stage_cleanup_all()` 不对称**（`:946` 尺寸非法分支调用，`:971` read 失败 / `:994` 短读分支**不调用**）—— 日志已由 6-C 覆盖，残留为**清理行为不一致**（是否该统一）· 单 slot `load` 失败 · `recover_internal()` rename 失败 · `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
+- **★ 6-D 审计已确认的日志缺口（未开工）**：① `workflow.cpp:1667` 单 slot BIN 加载失败（Serial + `continue` ⇒ **该 Workflow 静默消失**）② `workflow_storage.cpp:751` `stage_process()` rename 失败（**恢复路径 + 保存路径共用** ⇒ **已提交事务未发布、内容静默停旧版本**）③ `workflow_storage.cpp:1525` 保存发布 rename 失败 ④ `:1500` meta commit 失败 ⑤ `:1450/:1464` save readback 失败 / crc mismatch ⑥ `main.cpp:447` LittleFS mount 失败（对应零宿主的 `LOG_SYS_FS_MOUNT_FAILED` 0x0106）
+  - **接入可行性**：候选①②可复用既有 **`LOG_P_SLOT`(0x01)** + `LOG_P_ERR_CODE`(0x0C) + `LOG_P_MODULE`(0x1D)，**零新增 ParamId**；EventId 沿用 `0x0306` 或占用 `0x04xx` 空闲位（**0x040D+**）
+- **★★ DEF-1（P1，Phase 6-A 残留缺陷）**：`main.cpp:499` `bin_storage_set_log_callback()` 注册**晚于** `main.cpp:494` `bin_storage_init()`；而 `bin_storage.cpp:153` 在 init 内 `bin_log("E","init: FileStorage unavailable")`，`bin_log()`（`:38-41`）在回调为 `nullptr` 时**直接 return 且无串口输出** ⇒ **bin_storage 初始化期 ERROR 被静默丢弃**，6-A 的"23 站上云"实为 22 站。**修法：把注册移到 init 之前**（json/file 桥接正是如此，`:476-477` 早于 `:484`）
+- **★ DEF-2（安全，非日志）**：`cloud_manager.cpp:1464-1470` / `:1383-1390` 把 **MQTT username / password 明文打到串口**
+- **其它待开工**：`load_meta()` 三处失败分支的 `stage_cleanup_all()` 不对称（`:946` 调用 / `:971`·`:994` 不调用）· `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
 - **非日志待办**：`system_state` 的 `state_table[].type` 死存储 · `test_mqtt` 仍在生产 loop
 - **`R-7`/`R-8` 仍 DEFERRED**（Phase 5 审查未重新升级，优先级/状态/结论均未改动）
 
