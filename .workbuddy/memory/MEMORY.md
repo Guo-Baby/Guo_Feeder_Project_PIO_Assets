@@ -10,8 +10,8 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **LogManager 埋点：Phase 3/4/5-A/B/C/6-A/6-B 全部完成并已提交**（commit 与验证数据见 `2026-09-2x.md`）—— 已接入 **16 模块**：Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·**BLE(MiThermometer)**·**bin_storage**·**workflow_storage**（json/file 走桥接）；零宿主 23（定义 102 · 有宿主 79）
 - **6-A** = `bin_storage` 23 站点桥接上云（仅改 `main.cpp`，零新增 ID）· **6-B** = `workflow_storage` meta 损坏（复用 Storage 段 `0x0303`）+ `workflow.cpp` 加载分配失败（沿用 `0x040B`）
 - **6-C ✅（`6d40944`）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
-  - ⚠️ **待裁决（已升级）**：`log_events.h:248` 把 0x0306 标注为 **WARN**；6-C 三处按指令实现为 **ERROR**，7-1-A 按标注实现为 **WARN** ⇒ **同一 EventId 出现两种 Level**（都落 Flash，扰动相同，差异仅在云端严重度显示），需统一（改注释 or 改代码）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
-- **7-1（已编码待审核）** = P2 收尾三件：**DEF-1**（`main.cpp` 注册前置，二进制级已证顺序反转）+ 单 Slot BIN 加载失败（`workflow.cpp`，0x0306/**WARN**，MODULE+SLOT+ERR_CODE）+ `stage_process()` rename 失败（`workflow_storage.cpp`，0x0302/ERROR，MODULE+PATH=2+ERR_CODE=9+STAGE）；3 文件 +59/−3；**RAM +0、Flash +120**；`LOG_P_MODULE` 在 `workflow.cpp` 用字面量 `3u`（该常量是 workflow_storage.cpp 私有）
+  - ✅ **已定案（用户裁决 09-22，不扩大 diff）**：**允许同一 EventId 按影响范围使用不同 Level** —— 0x0306 在 6-C（meta 无法加载）用 **ERROR**、在 7-1-A（单 slot 丢失）用 **WARN** 均保留；**不要**改 `log_events.h` 注释或任何一方代码。仅需在 LogManager 文档补充该约定（属 Phase 7-2）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
+- **7-1 ✅（`bb2b3cc`）** = P2 收尾三件：**DEF-1**（`main.cpp` 注册前置，二进制级已证顺序反转）+ 单 Slot BIN 加载失败（`workflow.cpp`，0x0306/**WARN**，MODULE+SLOT+ERR_CODE）+ `stage_process()` rename 失败（`workflow_storage.cpp`，0x0302/ERROR，MODULE+PATH=2+ERR_CODE=9+STAGE）；3 文件 +59/−3；**RAM +0、Flash +120**；`LOG_P_MODULE` 在 `workflow.cpp` 用字面量 `3u`（该常量是 workflow_storage.cpp 私有）
 - **关键文档**：`Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、`Phase5-ABC执行计划0920.md`、`log模块历史/Phase4-Dispense边界审查0920.md`、`log模块历史/R7-R8-后续评审与系统性能权衡0920.md`
 - **★ 6-D 审计确认的日志缺口**：**① `workflow.cpp:1667` 单 slot BIN 加载失败 ✅ 7-1 已接入**（0x0306/WARN）· **② `workflow_storage.cpp:751` `stage_process()` rename 失败 ✅ 7-1 已接入**（0x0302/ERROR；**恢复路径 + 保存路径共用**）· ③ `:1525` 保存发布 rename 失败 ④ `:1500` meta commit 失败 ⑤ `:1450/:1464` save readback 失败 / crc mismatch ⑥ `main.cpp:447` LittleFS mount 失败（对应零宿主的 `LOG_SYS_FS_MOUNT_FAILED` 0x0106）—— ③~⑥ **仍为 P3 候选**
   - **接入可行性**：候选①②可复用既有 **`LOG_P_SLOT`(0x01)** + `LOG_P_ERR_CODE`(0x0C) + `LOG_P_MODULE`(0x1D)，**零新增 ParamId**；EventId 沿用 `0x0306` 或占用 `0x04xx` 空闲位（**0x040D+**）
@@ -57,6 +57,7 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## LogManager 摘要（**细节与铁律 1–32 在 `MEMORY-logmanager.md`**）
 - 冻结：Record 128B v2 / 16 段×31 条 / COW 零原地改 / ACK **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）
 - **INFO 只上云不落 Flash；WARN+ 落 Flash** ⇒ 任何新 WARN 埋点都会扰动 496 条环的绝对计数。回归当前 **168/195**（26 MISS 全属 `R-7` 环境干扰）
+- **★ 三层职责（用户 09-22 定案）**：**`EventId` = 事实分类 · `Level` = 本次发生场景的严重度 · `Param` = 具体上下文** ⇒ **同一 EventId 允许按影响范围用不同 Level**。例 `LOG_STG_READ_FAILED`：**ERROR** = 系统级/核心存储读取失败（meta 无法加载）；**WARN** = 单条业务数据丢失（单个 workflow slot）。`log_events.h` 里的 Level 注释只是**典型值**，不是约束
 - **刻意不埋**：LogManager 自身 5 个 ID ⇒ 走**批次头侧信道计数**，**是设计非缺口**
 - **仍无宿主**：`CFG_FACTORY_RESET`(0208)·`CLOUD_FRAG_FAIL`(0706)·`TIME_NTP_FAIL`(0802)·`OLED_INIT_FAILED`(0E01)；**需新增检测**：`VALVE_OVERFLOW_RISK`(0507)=`P0-4`
 - **★ 跨段复用先例**：Workflow 域的 `workflow_storage` meta 损坏**复用 Storage 段 `0x0303`**（理由：BIN 持久化数据损坏 = 存储完整性失败，非 Workflow 业务错误）—— 后续跨域复用须在文档显式记录理由
