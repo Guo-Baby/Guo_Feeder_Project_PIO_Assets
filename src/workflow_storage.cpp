@@ -1,5 +1,6 @@
 #include "workflow_storage.h"
 #include "workflow.h"   // 仅用于常量一致性 static_assert，不调用其任何函数
+#include "log_manager.h"   // Phase 6-B-1：观测埋点（EventId / ParamId + log_emit）
 
 #include <string.h>
 #include <stdio.h>
@@ -34,6 +35,18 @@ static_assert(WF_STG_MAX_PARAM == WORKFLOW_MAX_PARAM, "WF_STG_MAX_PARAM 与 WORK
 #define WF_STG_META_SIZE_V1 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V1 * WF_STG_MAX_COUNT)
 #define WF_STG_META_SIZE_V2 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V2 * WF_STG_MAX_COUNT)
 #define WF_STG_META_SIZE_V3 (WF_STG_META_HEADER_SIZE + WF_STG_META_ENTRY_SIZE_V3 * WF_STG_MAX_COUNT)
+
+// =====================================================
+// Phase 6-B-1：日志埋点用的模块标识 / 路径标识
+//
+// 与 LOG_P_ERR_CODE 同一约定 —— 取值是**本模块私有枚举**，不扩 LogManager API、
+// 不做字符串参数（P2 已定版：字符串一律哈希/枚举化）。
+//   LOG_P_MODULE：与 main.cpp 的 STG_BRIDGE_MODULE_* 共用同一编号空间
+//                 json=0 / file=1 / bin=2 / workflow_storage=3
+//   LOG_P_PATH  ：本模块内的"路径标识"（字符串路径不参与日志）
+// =====================================================
+static constexpr uint32_t WF_STG_LOG_MODULE    = 3u;
+static constexpr uint32_t WF_STG_LOG_PATH_META = 1u;   // 对应 WF_STG_META_PATH
 
 // 事务暂存文件后缀：stepNN.bin.t<txn_id 十六进制>
 // 见 workflow_storage_save() 事务说明。
@@ -955,6 +968,26 @@ bool workflow_storage_load_meta()
     {
         // 损坏时绝不猜测旧格式，全部保持 Invalid，并清历史暂存
         stage_cleanup_all();
+
+        // ---- Phase 6-B-1 埋点：LOG_STG_CRC_FAILED（CRITICAL）----
+        //
+        // ★ 跨域复用 Storage 段 ID：meta 是 BIN 持久化数据，其损坏属于
+        //   "存储完整性失败"而非 Workflow 业务错误 ⇒ 复用 0x0303，不新增 WF EventId。
+        // ★ 精确原因由 LOG_P_ERR_CODE 携带（deserialize_meta 的返回码原值）：
+        //     10=WF_STG_ERR_CRC_FAILED  11=VERSION_MISMATCH
+        //     12=WF_STG_ERR_FORMAT_INVALID  13=VERSION_TOO_NEW
+        // ★ 此分支此前**连串口都不打**：meta 损坏 ⇒ s_meta_loaded=true + 全部条目
+        //   保持 Invalid ⇒ 上层 workflow_load_from_storage() 失败 ⇒
+        //   main.cpp 静默回退 JSON 路径 ⇒ 全部 Workflow 消失且无任何因果记录。
+        // ★ 只在启动期触发一次 ⇒ 无频率风险、无需门控。
+        // ★ 无 String / 无堆：路径用本模块私有标识（见上方常量区）。
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_MODULE,   WF_STG_LOG_MODULE);
+            p[1] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)r);
+            p[2] = log_arg_u32(LOG_P_PATH,     WF_STG_LOG_PATH_META);
+            log_emit(LOG_STG_CRC_FAILED, LOG_LVL_CRITICAL, p, 3);
+        }
         return false;
     }
 
