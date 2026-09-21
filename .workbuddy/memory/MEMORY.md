@@ -6,16 +6,15 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## 文档索引
 `readme.md`(架构) · `需求文档.md` V2.1 · **`未修复的问题.md`（全项目问题权威清单：`LOG-n`/`VALVE-n`/`R-n`/`T-n`/`EVT-n`/`LV-n`）** · `AI_RULES.md` · Config：`config_manager接口文档.md`+`jsonstorage开发架构.md`+`json_storage接口文档.md`+`bin_storage开发说明0910.md` · `system_command接口文档.md`+`critical_operation接入规范.md` · `cloud_protocol.md`(V2.0) · `workflow_cloud_interface.md` · `docs/LogManager-Integration-Guide.md`+`docs/P2_Log_Integration_Matrix.md` · `log模块历史/`
 
-## 当前阶段（2026-09-20）
-- **LogManager 埋点：Phase 3 ①②③④⑤ + Phase 4 Dispense 安全响应 已完成** —— 已接入 **13 模块**
-- **★ Phase 5 前置审查完成（`5b5b529` + `9d5eae4`；报告 `Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`）** —— 最高优先级接入项 = **`0x01xx` System/Boot 段 12 个 ID 整段零宿主**（`system_command.cpp:222` 已缓存 `esp_reset_reason()`、`:97` 已有名称映射表 ⇒ **有 ID、有判据、有宿主，只差接线**）
-- **★ Phase 5-A/B/C 执行计划已提交（`aeb6708`，零代码改动）** —— 计划书 `log模块历史/Phase5-ABC执行计划0920.md`；**等待 E1–E8 裁决后开工**
-  - **核实推翻 3 条先前判断**：① **5-A 零协议改动**（7 个 ID + 所需 ParamId 全已冻结，`log_events.h` **不需改**）；② **`EVT-1` 断点不是 `event_push`**（它/`event_subscribe`/`init` 都用 `MAX_EVENT_TYPE`(32) ⇒ 阀门事件**发布订阅正常**），真正断点是 `event_from_string()`（表仅 14 项）；③ **`BOOT_INCOMPLETE_PREV` 判据已存在**（`config_manager.cpp:1108` `last_boot_ok`）⇒ 无需新增持久化
-  - **`P0-1` 升级为功能性缺陷**：两张字符串表都多出幻影 `"EVENT_CLOUD_COMMAND"`（index 10）⇒ index ≥10 全错位 ⇒ 声明 `event_weight_error` 的 WF Trigger 被解析成 `EVENT_ERROR`(13) ⇒ **永不触发且静默**；`event_*` 触发器全仓库**零使用者** ⇒ 零回归风险 ⇒ **并入 5-B 同批修**
-  - **新增登记**：`PROTO-2`（`(IMM)` **无实现** ⇒ `RESTART_EXECUTED`(INFO) 在 10 s 窗口内**不保证送达**）· **`LV-3`**（BLE `xQueueSend` 返回值被忽略 ⇒ 队列满静默丢包）
-  - **`logt` 支持 `ring`**（RAM 环）⇒ **INFO 记录可上板自证**（`LV-2` 只影响参数值，不影响记录存在性）
-- **执行顺序（已确认）**：**#1 `0x01xx` System/Boot（7 ID）** → #2 BLE（4 ID）→ #3 `bin_storage` 桥接 → #4 `LV-2` 工具增强 → #5 OLED 不埋 → #6 `workflow_storage` 接口 → #7 Dispense 业务（阻塞 `DSP-1/2/4`）· **5-B（`EVT-1`+`P0-1`）与日志改动严格分离**
-- **待裁决 E1–E8**（计划书 §七）；另 `LV-1` / `LV-2` / `EVT-1` 均 OPEN
+## 当前阶段（2026-09-21）
+- **LogManager 埋点：Phase 3 ①②③④⑤ + Phase 4 Dispense + Phase 5-A/B/C 全部已完成** —— 已接入 **14 模块**（含 **BLE/MiThermometer**）；零宿主 **23**（定义 102 · 有宿主 79）
+- **Phase 5 前置审查（`5b5b529`+`9d5eae4`）与执行计划（`aeb6708`）已入库** —— 报告 `Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、计划书 `Phase5-ABC执行计划0920.md`
+  - **审查推翻 3 条先前判断**：① 5-A **零协议改动**（7 个 ID + 所需 ParamId 全已冻结）；② **`EVT-1` 断点不是 `event_push`**（它/`subscribe`/`init` 都用 `MAX_EVENT_TYPE`(32) ⇒ 阀门事件**发布订阅正常**），真正断点是 `event_from_string()`；③ **`BOOT_INCOMPLETE_PREV` 判据已存在**（`config_manager.cpp:1108` `last_boot_ok`）⇒ 无需新增持久化
+  - **`P0-1`**：两张字符串表都多出幻影 `"EVENT_CLOUD_COMMAND"`（index 10）⇒ index ≥10 全错位；`event_*` 触发器全仓库**零使用者** ⇒ 零回归风险
+  - **`logt` 支持 `ring`**（RAM 环）⇒ **INFO 记录可上板自证**（`LV-2` 只影响参数值读取，不影响记录存在性）
+- **★ Phase 5 执行进度（全部已提交）**：**5-A ✅**（`6194e3b`+`9c32675`+`1186044`，System/Boot 6 个 ID）· **5-B ✅**（`7fb9437`+`016dc96`，`EVT-1`+`P0-1` Registry 一致性；**休眠修复**：`WORKFLOW_EVENT_ENABLED=0` ⇒ 函数与两表被 GC ⇒ **RAM/Flash +0、运行行为不变**）· **5-C ✅**（`70b0c76`，BLE 4 个 ID）
+- **剩余开发顺序**：**#1 `bin_storage` 桥接** → #2 `LV-2` 工具增强 → #3 OLED（需先修判据 `OLED-1`）→ #4 `workflow_storage` 接口 → #5 Dispense 业务（阻塞 `DSP-1/2/4`）
+- **OPEN 项**：`LV-1` / `LV-2` / `LV-3` / `P0-1b` / `PROTO-1` / `PROTO-2` / `OLED-1` / `EVT-1`（Registry 部分已在 5-B 修复）
 - **`R-7`/`R-8` 仍 DEFERRED —— Phase 5 审查明确未重新升级**（优先级/状态/结论均未改动）
 
 ### ★ Dispense 边界（Phase 4 审查定论；**细节全在 `log模块历史/Phase4-Dispense边界审查0920.md`**）
@@ -55,12 +54,12 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **形态约束**：内容必须嵌套在 `p.workflow` 下 —— 平铺会让 `p:{"id":"WF1"}` 被当完整 Workflow 而**静默清空 steps**。**定位字段与内容载荷绝不能共用同一 key**
 
 ## LogManager 摘要（**细节与铁律 22–31 在 `MEMORY-logmanager.md`**）
-- **已接入 13 模块**：Storage(A)·Config(B)·WiFi(C)·Cloud(D)·Time(E)·Workflow(F)·Weight(G)·Valve(H)·Command(J)·ComputerReset(K)·Registry(L)·Event(M)·**DispenseGuard(Phase 4)**
+- **已接入 14 模块**：Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·**BLE(MiThermometer)**
 - 冻结：Record 128B v2 / 16 段×31 条 / COW 零原地改 / ACK **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）
 - **INFO 只上云不落 Flash；WARN+ 落 Flash** ⇒ 任何新 WARN 埋点都会扰动 496 条环的绝对计数。回归当前 **168/195**（26 MISS 全属 `R-7` 环境干扰）
 - **刻意不埋**：LogManager 自身 5 个 ID ⇒ 走**批次头侧信道计数**，**是设计非缺口**
 - **无宿主**：`CFG_FACTORY_RESET`(0208)·`CLOUD_FRAG_FAIL`(0706)·`TIME_NTP_FAIL`(0802)·`OLED_INIT_FAILED`(0E01)；**需新增检测**：`VALVE_OVERFLOW_RISK`(0507)=`P0-4`
-- 剩余待办：**BLE 暂缓** · **`LV-1`** · **`LV-2`** · **`EVT-1`** · `bin_storage` 桥接 · `workflow_storage` 回调接口
+- 剩余待办：**`LV-1`** · **`LV-2`** · **`LV-3`** · `bin_storage` 桥接 · `workflow_storage` 回调接口 · `OLED-1`（先修判据再埋点）
 
 **铁律（完整 1–31 条在 `MEMORY-logmanager.md`）** —— 以下是跨模块通用的 4 条：
 - **★ 精确计数前必须先清零**（`logt fwipe`+`mwipe`+`creset`+`reset`），否则"孤儿增量"易误判成门控失效
