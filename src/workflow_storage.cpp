@@ -945,6 +945,23 @@ bool workflow_storage_load_meta()
     {
         stage_cleanup_all();
         s_meta_loaded = true;
+
+        // ---- Phase 6-C-1 埋点：LOG_STG_READ_FAILED（ERROR）----
+        //
+        // 位置：meta 文件尺寸非法分支（file_size == 0 || > WF_STG_META_BIN_MAX）。
+        // ★ ERR_CODE 复用既有枚举值 WF_STG_ERR_FORMAT_INVALID(12)：
+        //   其定义即"Magic 错误 / 长度非法"，与本分支的"长度非法"语义一致；
+        //   file_size == 0 也落在"0 不在 [1,1536]"这一"长度非法"范围内。
+        //   与同文件 deserialize_step_meta() 的同类检查（尺寸越界 → FORMAT_INVALID）保持同一约定。
+        // ★ 不新增枚举值 / 不新增 ParamId / 无 static / 无 String / 无堆。
+        // ★ 仅启动期触发一次 ⇒ 无频率风险、无需门控。
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_MODULE,   WF_STG_LOG_MODULE);
+            p[1] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)WF_STG_ERR_FORMAT_INVALID);
+            p[2] = log_arg_u32(LOG_P_PATH,     WF_STG_LOG_PATH_META);
+            log_emit(LOG_STG_READ_FAILED, LOG_LVL_ERROR, p, 3);
+        }
         return false;
     }
 
@@ -953,11 +970,46 @@ bool workflow_storage_load_meta()
     if (bin_storage_read(WF_STG_META_PATH, buf, file_size, bytes_read) != BIN_STORAGE_OK)
     {
         s_meta_loaded = true;
+
+        // ---- Phase 6-C-2 埋点：LOG_STG_READ_FAILED（ERROR）----
+        //
+        // 位置：bin_storage_read() 返回非 BIN_STORAGE_OK 的失败分支。
+        // ★ ERR_CODE 复用既有枚举值 WF_STG_ERR_READ_FAILED(6)：
+        //   语义即"meta BIN 读取失败"，为该事实在 WF_STG_ERR_* 中最直接的对应值。
+        // ★ 本分支未捕获 bin_storage_read() 的具体返回码（保持既有 if 语句不变、
+        //   不改变控制流）⇒ ERR_CODE 为通用"读取失败"，不含 BIN_STORAGE_ERR_* 细分。
+        //   若要细分（NOT_INITIALIZED / OPEN_FAILED / …），需捕获返回值并经
+        //   workflow_storage_from_bin_result() 映射 —— 属可选增强，本轮不做。
+        // ★ 无 static / 无 String / 无堆；仅启动期触发一次 ⇒ 无需门控。
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_MODULE,   WF_STG_LOG_MODULE);
+            p[1] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)WF_STG_ERR_READ_FAILED);
+            p[2] = log_arg_u32(LOG_P_PATH,     WF_STG_LOG_PATH_META);
+            log_emit(LOG_STG_READ_FAILED, LOG_LVL_ERROR, p, 3);
+        }
         return false;
     }
     if (bytes_read != file_size)
     {
         s_meta_loaded = true;
+
+        // ---- Phase 6-C-3 埋点：LOG_STG_READ_FAILED（ERROR）----
+        //
+        // 位置：读取长度不足分支（bytes_read != file_size）。
+        // ★ ERR_CODE 复用既有枚举值 WF_STG_ERR_READ_FAILED(6)：
+        //   与同文件 deserialize_step_meta() 中完全相同的检查
+        //   （`bytes_read != file_size` → WF_STG_ERR_READ_FAILED）保持同一约定。
+        // ★ 与 6-C-2 同为 READ_FAILED(6) —— 二者语义同族（meta BIN 未被完整读出），
+        //   仅靠原分支位置区分；如需在云端日志中区分，须细化 ERR_CODE（见交付说明）。
+        // ★ 无 static / 无 String / 无堆；仅启动期触发一次 ⇒ 无需门控。
+        {
+            LogParamIn p[3];
+            p[0] = log_arg_u32(LOG_P_MODULE,   WF_STG_LOG_MODULE);
+            p[1] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)WF_STG_ERR_READ_FAILED);
+            p[2] = log_arg_u32(LOG_P_PATH,     WF_STG_LOG_PATH_META);
+            log_emit(LOG_STG_READ_FAILED, LOG_LVL_ERROR, p, 3);
+        }
         return false;
     }
 
