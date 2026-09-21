@@ -751,6 +751,31 @@ static void stage_process(
             if (bin_storage_rename(full, base) != BIN_STORAGE_OK)
             {
                 Serial.printf("[WorkflowStorage] recover publish rename failed: %s\n", full);
+
+                // ---- Phase 7-1 埋点：LOG_STG_ATOMIC_WRITE_FAILED（ERROR）----
+                //
+                // 位置：stage_process() 中"已提交事务的暂存文件 → 正式文件"的
+                //       rename 失败分支。
+                // ★ 一个埋点覆盖两条路径（stage_process 为二者共用）：
+                //   ① workflow_storage_recover_internal()（启动期自动恢复，本处）
+                //   ② workflow_storage_save() 发布/清理阶段（:1399/:1434/:1452/:1466/:1502/:1535）
+                // ★ 语义：**事务已提交但发布未完成** ⇒ 正式文件保持旧版本
+                //   ⇒ 内容静默停留在上一版（数据可见偏差，非数据丢失）。
+                // ★ Level=ERROR（与 log_events.h:244 对 0x0302 的标注一致）。
+                // ★ ERR_CODE 复用既有 WF_STG_ERR_RENAME_FAILED(9)，不新增错误码。
+                // ★ PATH 沿用本模块 6-B 起的"路径标识"空间（1=meta）；此处为
+                //   step 暂存/正式文件路径 ⇒ 取 2（与 6-B 的 WF_STG_LOG_PATH_META=1 同空间，
+                //   不新增任何常量声明）。
+                // ★ STAGE 携带解析出的 step 序号 st；SLOT 语义已由 wf 承载 ⇒ 用 STAGE。
+                // ★ 无 static / 无 String / 无堆。
+                {
+                    LogParamIn p[4];
+                    p[0] = log_arg_u32(LOG_P_MODULE,   WF_STG_LOG_MODULE);
+                    p[1] = log_arg_u32(LOG_P_PATH,     2u);
+                    p[2] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)WF_STG_ERR_RENAME_FAILED);
+                    p[3] = log_arg_u32(LOG_P_STAGE,    (uint32_t)st);
+                    log_emit(LOG_STG_ATOMIC_WRITE_FAILED, LOG_LVL_ERROR, p, 4);
+                }
             }
             else
             {
