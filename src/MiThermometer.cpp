@@ -1,6 +1,7 @@
 #include "MiThermometer.h"
 #include "config_manager.h"
 #include "system_state.h"
+#include "log_manager.h"        // Phase 5-C：LOG_BLE_* 埋点（只调 log_emit / log_arg_*）
 #include "NimBLEDevice.h"
 #include "workflow.h"
 #include <time.h>
@@ -67,6 +68,11 @@ static bool s_ble_scanning = false; // 当前是否BLE扫描中
 static uint32_t s_next_scan_switch_time = 0;
 static uint32_t s_scan_on_start_time = 0;
 static MiThermoLevel s_thermo_level = MI_THERMO_LEVEL0;
+
+// Phase 5-C：解码失败窗口聚合（每 60 秒最多产生一条 LOG_BLE_DECODE_FAIL）
+static uint32_t s_decode_fail_count = 0;
+static uint32_t s_decode_fail_window_start_ms = 0;
+static constexpr uint32_t MI_THERMO_DECODE_FAIL_WINDOW_MS = 60000UL;
 
 struct RawAdvItem
 {
@@ -312,8 +318,43 @@ static void mi_enter_sleep()
     s_scan_state = MI_THERMO_SLEEP;
 }
 
+// Phase 5-C：解码失败窗口聚合。
+// 只在窗口到期时产生一条 WARN；窗口内只累加计数，不逐包 log_emit。
+static void mi_decode_fail_tick()
+{
+    if (s_decode_fail_count == 0)
+    {
+        s_decode_fail_window_start_ms = 0;
+        return;
+    }
+
+    const uint32_t now = millis();
+
+    if (s_decode_fail_window_start_ms == 0)
+    {
+        s_decode_fail_window_start_ms = now;
+        return;
+    }
+
+    if (now - s_decode_fail_window_start_ms < MI_THERMO_DECODE_FAIL_WINDOW_MS)
+    {
+        return;
+    }
+
+    LogParamIn p[2];
+    p[0] = log_arg_u32(LOG_P_FAIL_COUNT, s_decode_fail_count);
+    p[1] = log_arg_u32(LOG_P_WINDOW_MS, (uint32_t)MI_THERMO_DECODE_FAIL_WINDOW_MS);
+    log_emit(LOG_BLE_DECODE_FAIL, LOG_LVL_WARN, p, 2);
+
+    s_decode_fail_count = 0;
+    s_decode_fail_window_start_ms = 0;
+}
+
 void MiThermometer_task()
 {
+    // Phase 5-C：解码失败窗口节拍器。放在最开头，避免被后续早退吞掉。
+    mi_decode_fail_tick();
+
     if(xRawAdvQueue == nullptr) {
         Serial.println("[MiThermo] ERR xQueueCreate failed, no heap memory");
         return;
@@ -361,6 +402,13 @@ void MiThermometer_task()
                     s_thermo_level = MI_THERMO_LEVEL0;
                 } else {
                     s_scan_fail_count++;
+                    // Phase 5-C：扫描窗口结束且未获得温+湿 ⇒ 传感器丢失（每窗口最多 1 条）
+                    {
+                        LogParamIn p[2];
+                        p[0] = log_arg_u32(LOG_P_FAIL_COUNT, (uint32_t)s_scan_fail_count);
+                        p[1] = log_arg_enum(LOG_P_BLE_LEVEL, (uint32_t)s_thermo_level);
+                        log_emit(LOG_BLE_SENSOR_LOST, LOG_LVL_WARN, p, 2);
+                    }
                     // Phase 2：失败计数与等级提升**保留为常态输出** —— 这是
                     // 判断"温湿度计是否离线 / 是否需要人工介入"的关键业务信号；
                     // 且其频率上限被扫描窗口（15/30 分钟）严格约束，无压力。
@@ -374,6 +422,13 @@ void MiThermometer_task()
                             if(s_ble_scanning) {
                                 pBLEScan->stop();
                                 s_ble_scanning = false;
+                            }
+                            // Phase 5-C：采集永久停用（需云端 / Workflow 重新开启）⇒ 每次生命周期 1 条
+                            {
+                                LogParamIn p[2];
+                                p[0] = log_arg_u32(LOG_P_FAIL_COUNT, (uint32_t)s_scan_fail_count);
+                                p[1] = log_arg_enum(LOG_P_BLE_LEVEL, (uint32_t)s_thermo_level);
+                                log_emit(LOG_BLE_SCAN_DISABLED, LOG_LVL_INFO, p, 2);
                             }
                             state_set_bool(STATE_MI_THERMO_ENABLE, false);
                             s_scan_state = MI_THERMO_DISABLED;
@@ -487,6 +542,17 @@ void MiThermometer_task()
                     state_set_long(STATE_MI_THERMO_BAT_TS, ts);
                     break;
             }
+
+            // Phase 5-C：成功解码一帧（温度 / 湿度 / 电量）—— 该事实的唯一定义点
+            if(data_type >= 1 && data_type <= 3)
+            {
+                LogParamIn p[1];
+                p[0] = log_arg_f32(
+                    data_type == 1 ? LOG_P_TEMP : (data_type == 2 ? LOG_P_HUMID : LOG_P_BATT_V),
+                    value);
+                log_emit(LOG_BLE_DATA_DECODED, LOG_LVL_INFO, p, 1);
+            }
+
             if(s_got_temperature && s_got_humidity) {
                 state_set_bool(STATE_MI_THERMO_VALID, true);
                 // 立即停止BLE扫描，但窗口计时继续
@@ -496,6 +562,14 @@ void MiThermometer_task()
                     Serial.println("[MiThermo] temp + humidity received, BLE scan stopped");
                     s_scan_state = MI_THERMO_SCAN_WINDOW_WAIT;
                 }
+            }
+        }
+        else
+        {
+            // Phase 5-C：解码失败只累加计数，由 mi_decode_fail_tick() 按 60s 窗口聚合上报
+            if(s_decode_fail_count < 0xFFFFFFFFu)
+            {
+                s_decode_fail_count++;
             }
         }
     }
