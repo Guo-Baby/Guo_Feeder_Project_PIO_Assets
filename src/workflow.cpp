@@ -1638,6 +1638,20 @@ bool workflow_load_from_storage()
     if (def_buf == NULL)
     {
         Serial.println("[Workflow] def alloc failed (load_from_storage)");
+
+        // ---- Phase 6-B-2 埋点：LOG_WF_RUNTIME_ALLOC_FAILED（ERROR）----
+        //
+        // 与保存路径（save_transaction，见下方同事件埋点）**同事件、同参数格式**，
+        // 消除"保存方向已埋、加载方向未埋"的覆盖不对称。
+        // ★ 本路径仅在启动期由 main.cpp 调用一次（workflow_load_from_storage()）
+        //   ⇒ 不像保存路径那样每 loop 可达 ⇒ **无需边沿锁**（保存路径必须有）。
+        // ★ WorkflowDefinition ~8.6KB 堆分配失败 = 全部 Workflow 无法装载。
+        {
+            LogParamIn p[1];
+            p[0] = log_arg_u32(LOG_P_NEED_BYTES,
+                               (uint32_t)sizeof(WorkflowDefinition));
+            log_emit(LOG_WF_RUNTIME_ALLOC_FAILED, LOG_LVL_ERROR, p, 1);
+        }
         return false;
     }
 
