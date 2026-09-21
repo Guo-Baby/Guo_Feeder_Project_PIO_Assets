@@ -29,12 +29,6 @@
 #include "log_events.h"
 #include "log_manager.h"
 
-// BinStorage 错误日志 → 串口（模块默认静默，注册后便于上板诊断）
-static void bin_log_serial(const char *level, const char *message)
-{
-    Serial.printf("[Bin][%s] %s\n", level, message);
-}
-
 // CommandManager 日志 / 结果回显 → 串口
 //
 // CommandManager 默认静默（与 BinStorage 一样只留回调接口）。
@@ -57,7 +51,7 @@ static void command_log_serial(const char *level, const char *message)
 // 语义还原的限制（重要）：
 //   回调只给「自由文本」（level + message），无法还原精确事件语义。
 //   ⇒ EventId 由 message 的**前缀 op 词**分类；op 明细写入 LOG_P_ERR_CODE
-//   ⇒ LOG_P_MODULE 区分 json(0) / file(1)
+//   ⇒ LOG_P_MODULE 区分 json(0) / file(1) / bin(2)
 //   ⇒ 不做字符串参数（P2 已定版：字符串一律哈希/枚举化，不扩 LogManager API）
 //   ⇒ 若日后需要精确定位，应把回调改成结构化（level + op + path_hash + err），
 //     属 API 变更，需单独评审（见 docs/LogManager-Integration-Guide.md §Storage）
@@ -71,7 +65,8 @@ static void command_log_serial(const char *level, const char *message)
 
 #define STG_BRIDGE_MODULE_JSON   0u
 #define STG_BRIDGE_MODULE_FILE   1u
-#define STG_BRIDGE_MODULE_COUNT  2u
+#define STG_BRIDGE_MODULE_BIN    2u   // Phase 6-A：bin_storage（Workflow BIN 持久化底座）
+#define STG_BRIDGE_MODULE_COUNT  3u
 
 // op 分类（写入 LOG_P_ERR_CODE；本桥接私有枚举，不是冻结 ParamId）
 enum StgBridgeOp : uint8_t
@@ -108,7 +103,16 @@ static StgBridgeOp stg_bridge_classify(const char *msg)
 
     // 更具体的"原因"优先于"操作名"
     if (strncmp(msg, "LittleFS", 8) == 0)  return STG_OP_FS_UNAVAILABLE;
+    // Phase 6-A：bin_storage 的级联 FS 失败措辞是 "init: FileStorage unavailable"
+    // （json/file_storage 用 "LittleFS unavailable (not mounted)" ⇒ 已被上面命中）
+    // 原因是"FS 不可用"而非"写失败" ⇒ 归类到 FS 不可用，避免落入 UNKNOWN 的严重度兜底
+    if (strstr(msg, "unavailable"))        return STG_OP_FS_UNAVAILABLE;
     if (strstr(msg, "not initialized"))    return STG_OP_NOT_INITIALIZED;
+    // Phase 6-A：显式"校验失败"措辞归到 WRITE_VERIFY_FAILED（对应映射表第 ④ 条）
+    //   受影响消息："write: size verify failed"（bin）、"atomic: final verify failed"（json/file/bin）
+    //   ⚠️ 这会同时把 json_storage 的 "atomic: final verify failed" 从
+    //      兜底的 ATOMIC_WRITE_FAILED 改为更精确的 WRITE_VERIFY_FAILED（Level 不变，仍为 ERROR）
+    if (strstr(msg, "verify failed"))      return STG_OP_VERIFY;
 
     if (strncmp(msg, "mkdir", 5) == 0)     return STG_OP_MKDIR;
     if (strncmp(msg, "remove", 6) == 0)    return STG_OP_REMOVE;
@@ -231,6 +235,24 @@ static void file_storage_log_bridge(const char *level, const char *message)
                   level   ? level   : "?",
                   message ? message : "");
     stg_bridge_emit(STG_BRIDGE_MODULE_FILE, level, message);
+}
+
+// ---- Phase 6-A：BinStorage 桥接（与上两个同构）
+//
+// 背景：bin_storage 的 bin_log() 共 23 个站点（E16 / W6 / I1），此前只注册了
+//       串口回调 ⇒ 其 E/W 从未上云。bin_storage 是 Workflow BIN 持久化的底座
+//       （workflow_storage 的 24 处调用全部经它落盘），其失败此前不可观测。
+//
+// 本桥接不新增任何 EventId：分类复用 P2-A 的 stg_bridge_classify()/stg_bridge_event()，
+// 只用 STG_BRIDGE_MODULE_BIN 这个新的 LOG_P_MODULE 取值区分来源。
+// 与 json/file 的差别是"消息措辞"（如 "atomic:" / "init: … unavailable"），
+// 未识别的前缀按既有 UNKNOWN 兜底（不新增分类、不新增 ID）。
+static void bin_log_bridge(const char *level, const char *message)
+{
+    Serial.printf("[Bin][%s] %s\n",
+                  level   ? level   : "?",
+                  message ? message : "");
+    stg_bridge_emit(STG_BRIDGE_MODULE_BIN, level, message);
 }
 
 // =====================================================
@@ -472,8 +494,9 @@ void setup()
     if (!bin_storage_init()) {
         Serial.println("[System] BinStorage init failed!");
     }
-    // 注册日志回调：BinStorage 默认静默，注册后其 E/W 级错误打串口，便于上板诊断
-    bin_storage_set_log_callback(bin_log_serial);
+    // 注册日志回调：BinStorage 默认静默，注册后其 E/W 级错误"串口 + LogManager"双路
+    // （Phase 6-A：由 bin_log_serial 换为 bin_log_bridge，串口格式不变）
+    bin_storage_set_log_callback(bin_log_bridge);
     // ===== 初始化 Workflow Storage（Workflow 定义持久化，依赖 BinStorage）=====
     //
     // 内部会创建 /workflow 目录并加载 meta.bin。
