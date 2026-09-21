@@ -156,14 +156,15 @@ P1.5 设备侧:    ✅ 不再 BLOCKED（A–E 全部可跑段落已完成）
 | **Capability Registry（`capability_registry.cpp`）** | **单向依赖 `→ log_manager`，无回调、无 EventManager 转发、无 System State**（2 处 / 2 个事件，**纯增量 `+24/−0`**）；★ **宿主选"定义点"而非"触发点"**：重建埋 `registry_sync()` 的 `else` 分支、保存失败埋 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 的 4 处 `rescan()` 调用点（一次 create 连触发 3 次）；**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印，1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）；参数用**栈上局部 `LogParamIn`**（禁 `static`/全局 —— 可能跑在 loopTask 8KB 或 esp-mqtt 任务上，防并发踩踏） | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR) | **P2-L** |
 | **Event（`event_manager.cpp`）** | **无回调接口 ⇒ 直接显式埋点，但只记"自身运行异常"**（2 个事件 / **2 处累加 + 1 个周期上报器 = 2 个 `log_emit` 调用点**，**纯增量 `+110/−0`**）；★ **业务事件一律不记**（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）；★ **周期聚合方案 A**：窗口 **60000 ms**，节拍器 = **`event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；窗口内无异常**完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（信息零丢失、条目数恒定），与 `cloud_manager.cpp` 的 `CLOUD_PUBLISH_FAIL_REPORT_MS` 同构；FORCE 优先级不足分支**不计入**（语义为"被挤占"且零发布方） | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN) | **P2-M** |
 | **Dispense Guard（`dispense_guard.cpp`）** | ★ **纯转发模块 ⇒ 运行期只记 1 条（"决策"）**（1 个事件 / 1 处 `log_emit`，**纯增量 `+65/−0`**）；**4 处候选逐点判重**：q1 调用 `valve_force_close()`（已被 `0x0505` 覆盖，且 `LOG_P_CAUSE=1` 已带出来源）、q2 收到 `EVENT_WEIGHT_ERROR`（已被 `0x050C` 覆盖，且逐条转记会 **N:1 放大**）、q3 `valve_force_close()` 失败（已被 `0x0506` 覆盖）⇒ **均不埋**；仅 q4 决策点新增。**限流走 LogManager 既有合并白名单**（`5000 ms`），埋点块**无 return / 无分支 / 不读改 result** ⇒ 安全动作次数不变；`LOG_P_CAUSE` 与 Valve 侧**同值对齐**（`=1`）便于云端交叉关联 | `LOG_DISPENSE_SAFETY_RESPONSE`(0x0511, WARN) | **Phase 4** (`94912bb`) |
+| **BLE / MiJia Thermometer（`MiThermometer.cpp`）** | ★ **callback 内零埋点**：`onResult()`（**NimBLE host 任务**）只有 MAC 过滤 + 长度过滤 + memcpy + `xQueueSend`，**没有任何"决策"可记录** ⇒ **4 处埋点全部落在 `MiThermometer_task()`（loop 上下文）**；★ `DECODE_FAIL` 走**模块内 60 s 窗口聚合**（`s_decode_fail_count` + `s_decode_fail_window_start_ms`，节拍器 = task **首行** `mi_decode_fail_tick()`，**不新增 Task / 不改 `main.cpp` / 不新建 timer**；`count==0` 时静默且**不推进窗口**）；**纯增量 `+74/−0`**；未新增任何静态大数组 / `malloc` / `String` | `LOG_BLE_DATA_DECODED`(0x0901, INFO) / `LOG_BLE_DECODE_FAIL`(0x0902, **WARN·聚合**) / `LOG_BLE_SENSOR_LOST`(0x0903, WARN) / `LOG_BLE_SCAN_DISABLED`(0x0904, INFO) | **Phase 5-C** (`70b0c76`) |
 
-未接入清单：**BLE 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；**OLED 已判无宿主不埋**；**Dispense Guard 已完成**（Phase 4）；`dispense_guard_init()` 订阅失败仍缺 EventId（登记 `LV-1`）。
+未接入清单：**OLED 已判"有异常、有 ID、但缺判据" ⇒ 维持不埋**（登记 `OLED-1`）；`dispense_guard_init()` 订阅失败仍缺 EventId（`LV-1`）；BLE 队列满丢包无对应 ID（`LV-3`）。**BLE 已于 Phase 5-C 完成接入**（`70b0c76`）。
 
 > **★ 2026-09-20 路线调整**：原顺序 `Dispense → BLE → Command/Event/OLED/Registry`
 > 改为 **`Command → OLED → ComputerReset → Registry → Event`**，理由：
 > ① **前 4 项成本极小、风险极低**（与 P2-B / P2-C 同构，回调已注册或单点埋点），
 > 可低成本批量推进；② **`Event` 需要特殊设计**（聚合 / 统计 / 周期报告 / drop 统计），
-> 放最后做；③ **`BLE` 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）；
+> 放最后做；③ **`BLE` 暂缓**（高频来源，须先设计筛选 / 聚合 / callback 上下文安全）—— **2026-09-21 已由 Phase 5-C 完成**（`70b0c76`）：4 个 ID、callback 零埋点、`DECODE_FAIL` 模块内 60 s 聚合；
 > ④ **`Dispense` 原先移出埋点清单**，归入 Phase 4 业务开发 —— **2026-09-20 已由 Phase 4 完成**：确认 `dispense_guard` 即"Dispense 模块"本体（唯一职责 = 安全响应，**不做出粮控制 / 电机 / 状态机**），埋点仅 **1 条**（`0x0511`，决策点）。
 > ⚠️ `Dispense` **不再等待 regression baseline 稳定**（`R-7` 已 `DEFERRED`）。
 
@@ -541,7 +542,68 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-21（最新）：**Phase 5-B-2 —— SystemEvent Registry 一致性修复完成**
+### ✅ 2026-09-21（最新）：**Phase 5-C —— BLE / MiJia Thermometer 日志接入完成**
+
+> Commit：**`70b0c76`** `feat(log): integrate Mijia thermometer diagnostic events`
+> 改动范围：`src/MiThermometer.cpp` **+74/−0**（**仅此 1 个文件**，`MiThermometer.h` 未改）
+> 纪律：**未新增 EventId / ParamId / 配置项 / 开关** · 未改 `log_events.h` / `log_manager.*` / `event_manager.*` / `cloud_manager.cpp` / `system_state.*` / `workflow.*` / `main.cpp` / `test/`
+
+**接入的 4 个事件（全部为已冻结 ID）**
+
+| EventId | Level | 参数（全部为已冻结 ParamId） | 宿主（精确位置） |
+|---|---|---|---|
+| `LOG_BLE_DATA_DECODED` **0x0901** | INFO | 按 `data_type` 选 `LOG_P_TEMP`(0x3B) / `LOG_P_HUMID`(0x3C) / `LOG_P_BATT_V`(0x3D)，值用 `log_arg_f32` | `MiThermometer_task()` → `if(result)` 内、`switch(data_type)` **之后**（三 case 汇合处） |
+| `LOG_BLE_DECODE_FAIL` **0x0902** | **WARN（聚合）** | `LOG_P_FAIL_COUNT`(0x3F) + `LOG_P_WINDOW_MS`(0x4A) | `mi_decode_fail_tick()`（被内联进 `MiThermometer_task()`）的**窗口到期**分支 |
+| `LOG_BLE_SENSOR_LOST` **0x0903** | WARN | `LOG_P_FAIL_COUNT` + `LOG_P_BLE_LEVEL`(0x51) | `MiThermometer_task()` `SCAN_WINDOW_RUN` → `s_scan_fail_count++;` **之后** |
+| `LOG_BLE_SCAN_DISABLED` **0x0904** | INFO | `LOG_P_FAIL_COUNT` + `LOG_P_BLE_LEVEL` | `LEVEL2` 分支 → **`state_set_bool(STATE_MI_THERMO_ENABLE,false)` 之前**（此时 `s_thermo_level` 已置 LEVEL2） |
+
+**★ 三条边界（对应 Phase 5 前置审查的结论）**
+
+1. **callback 内零埋点** —— `onResult()`（**NimBLE host 任务**）只有 MAC 过滤 / 空包与长度过滤 / memcpy / `xQueueSend`，**没有任何"决策"** ⇒ 4 处埋点**全部落在 `MiThermometer_task()`（loop 上下文）**。**静态证明**：objdump 中 `MiAdvCallback::onResult` 的 `log_emit` 站点数 = **0**；`MiThermometer_task` 内**恰 4 个**站点。
+2. **禁止逐广播包记录** —— 仅 `DECODE_FAIL` 有高频风险，走**模块内 60 s 窗口聚合**；其余 3 个事件为"窗口级 / 生命周期级"天然边沿（`DATA_DECODED` 收到温+湿即停扫 ⇒ ≤1 条/窗口）。
+3. **未新增失败原因分类** —— 未改 `lywsd03_decrypt()`（其 7 个 `false` 出口对外仍是同一语义）；`LOG_P_FAIL_KIND` 的细分留待后续专项。
+
+**聚合逻辑（`mi_decode_fail_tick()`，节拍器 = task 首行）**
+
+```
+count == 0            ⇒ 清零窗口起点并返回（**静默且不推进窗口**）
+window_start == 0     ⇒ 锚定当前 millis()（首个失败）
+now - start < 60 s    ⇒ 返回
+到期                  ⇒ log_emit(0x0902, WARN, {FAIL_COUNT, WINDOW_MS=60000}) → count 与窗口**同时清零**
+```
+
+⇒ **每 60 s 最多 1 条**；失败停止后不再产生；`millis()` 用**无符号差值** ⇒ 回绕安全；节拍器位于 task **第一句**（早于 `xRawAdvQueue == nullptr` 守卫）⇒ 不被早退吞掉。
+
+**Flash 定量（接入前预估 vs 实际）**
+
+| 场景 | 逐帧记录（未采纳） | 窗口聚合（实际） |
+|---|---|---|
+| bindkey 配置错误（CCM 对每包失败） | 20 条/min ⇒ **496 条段环 ≈ 25 min 冲满** | **1 条/min ⇒ 环撑 ≈ 8.3 h（降幅 20×）** |
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 编译（`pio run`） | ✅ **SUCCESS** |
+| 体积 | **RAM 130624 → 130632（+8 B = 2 个 `static uint32_t`，精确吻合）**；**Flash 1370873 → 1371129（+256 B）** |
+| 栈帧 | `MiThermometer_task` `entry a1, 0x100` → **`0x110`（+16 B）** ⇒ 远小于 loopTask 16 KB |
+| **callback 零埋点** | ✅ objdump：`onResult` 中 `log_emit` 站点 **= 0** |
+| 4 个 EventId 编码 | ✅ EventId `0x9xx` 超 `movi` 12 位 ⇒ 经**字面量池**加载，逐值解析 `.flash.text`：`0x42000098=0x0902` / `0xc8=0x0903` / `0xd0=0x0904` / `0xe8=0x0901`，与站点**一一对应**；level `a11` = 2/2/1/1（WARN/WARN/INFO/INFO）；`param_count` = 2/2/2/1 |
+| 参数编码 | ✅ ParamId 打包值 `0x23f`(0x3F+U32)×3 · `0x551`(0x51+**ENUM**)×2 · `0x24a`(0x4A+U32)×1 · `s8i` 0x3B/0x3C/0x3D 各 1（+type 3 = F32）；**params 全在栈**（SP+40…+52） |
+| 资源约束 | ✅ 无新增静态大数组 · 无 `malloc` · 无 `String` · 新增行中 `Serial.` 命中 **0** |
+| `lywsd03_decrypt()` | ✅ **零改动** |
+| **上板验证** | ⏳ **未执行**（无串口设备）。`DATA_DECODED` / `SCAN_DISABLED` 为 INFO ⇒ 可用 `logt ring` 自证；`DECODE_FAIL` / `SENSOR_LOST` 为 WARN ⇒ `logt flash` 跨重启可查 |
+
+**本阶段明确未接入（判定为"不建议"或"无 ID"）**
+
+| 候选 | 判定 |
+|---|---|
+| 扫描开始 / 设备发现 / 状态写入 | ❌ **不建议**：扫描开始每 ~3 s 无业务事实；设备发现在 callback（数十/秒）；状态写入与 `DATA_DECODED` **重复**（定义点唯一原则） |
+| 队列满丢包（`xQueueSend` 返回值被忽略） | ❌ **无对应 ID** ⇒ 不接入，登记 **`LV-3`**（与 `LV-1` 同性质） |
+| `BLE_INIT_FAILED` / `BLE_QUEUE_FULL` | ❌ **需新增 ID（未批准）**；`MiThermometerInit()` `:247` `return false` 但调用方 `main.cpp:508` **忽略返回值** ⇒ 静默不可用 |
+| 失败原因分类（MIC vs 格式） | ⏸ 延期：需把 `lywsd03_decrypt()` 的 `bool` 改为带原因返回（超出"只加观测"） |
+
+### ✅ 2026-09-21：**Phase 5-B-2 —— SystemEvent Registry 一致性修复完成**
 
 > Commit：**`7fb9437`** `fix(event): synchronize event registry and string mapping`
 > 改动范围：`src/event_manager.h` **+1/−1**、`src/event_manager.cpp` **+8/−4**（**仅 Event Registry 相关文件**）
@@ -1359,8 +1421,9 @@ Dispense
 
 ---
 
-*最后更新：2026-09-20（**Phase 4 —— Dispense 安全响应日志接入完成**，commit `94912bb` `feat(log): add dispense safety response logging`；前置审查 `b2493da`）。**改动 3 个源文件（`+91/−1`）+ 1 个用例文件**：`log_events.h` 新增 **`LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（WARN，`0x0500` 段尾从 `0x0510` 自然续号、不扩段不改旧编号）**+ 1 条 `static_assert`；`log_manager.cpp` 的 `s_coalesce_targets[]` **追加 1 项**（复用既有突发合并，**零新机制**）；`dispense_guard.cpp` 加 `#include "log_manager.h"` + 回调内 1 处 `log_emit`。★ **边界定论：DispenseGuard 是"纯转发模块"⇒ 运行期只记 1 条** —— 4 处候选逐点判重：q1 调用 `valve_force_close()`（已被 `0x0505` 覆盖，且 `LOG_P_CAUSE=1` **已带出"来源=dispense_guard"**）、q2 收到 `EVENT_WEIGHT_ERROR`（已被 `0x050C` 覆盖，且逐条转记会 **N:1 放大**：weight 侧是 `error_state` 边沿 1 条/次，而 `weight_record_jump()` 每条跳变都 `event_push` ⇒ 回调可被唤醒 N 次）、q3 `valve_force_close()` 失败（已被 `0x0506` 覆盖）⇒ **均不埋**；仅 q4 决策点（过滤后、调用前）新增。★ **`0x0511` 不是 `0x0505` 的重复**：Valve 侧是"带 5 s 冷却的**执行器动作**记录"（丢次数），本 ID 是"无冷却、**Σ `LOG_P_COUNT` 守恒**的**决策**记录"（Level WARN ⇒ Flash+Cloud，不抢 flush 通道）。**限流只限日志**：埋点块无 return / 无分支 / 不读改 `result` ⇒ 安全动作次数与执行路径逐字不变。验证：**V1** 编译 SUCCESS，RAM 130624→130624（**+0 B**）/ Flash 1370701→1370729（**+28 B**）；**V4 objdump 静态**：埋点编码（`bnei a2,12`=`EVENT_WEIGHT_ERROR`；`movi a8,0x216`=`LOG_P_CAUSE`+`U32` 单条 16 位存储；`movi.n a13,1`=`param_count=1`；`movi.n a11,2`=`WARN`；`addi.n a12,a1,8`=`params 在栈上`；`movi a10,0x511`=`EventId`）+ 白名单（`-1292 ≡ -0x50C` 与 `-1297 ≡ -0x511` 并列于 `log_coalesce_is_target()` 判定处，其后 `bltui a5,8` 为 param_count 守卫）；**V2 / V3 上板未执行**（本机 `getportnames()` 返回空 ⇒ 开发板未连接，**诚实标注"未执行"**），用例已备 `test/p4_dispense_log_tests.txt`（含 V3 三步判据：`queued=10` → 窗口内 `total=1` → 窗口后 `total=2`；ΣCOUNT 精确值路径=云端批次解码，复用 `.pio/p15run/log_decode.py` + `p2i_report.py` 模式）。★ 新沉淀：**"纯转发模块"的埋点数天然为 0**（有可观测自指事实才记 1 条）；**合并器要求埋点至少带 1 个参数**（`log_coalesce_emit_summary()` 在 `base_n==0` 时静默丢弃折叠计数）。遗留 `LV-1`（订阅失败仍缺 EventId）。另修正既有文档 ParamId 笔误：`LOG_P_CAUSE` 是 **0x16**，`0x1F` 是 `LOG_P_REASON`（`37d953d`）。)*
-*最后更新：2026-09-20（**Phase 3 第 ⑤ 项 EventManager 埋点接入完成（P2-M）** —— 仅改 `src/event_manager.cpp`（`+110/−0`），接入 2 个冻结 EventId。**★ 只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。`0x0C01` 埋在 `event_push()` 返回 `EVENT_QUEUE_FULL` 的**唯一出口**（确定丢弃分支；不在调用者、不在入口；FORCE 挤占分支不计入），`0x0C02` 埋在风暴抑制分支。二者**都只累加不逐条发射** ⇒ 采用**周期聚合方案 A**：窗口 60000 ms，**节拍器 = `event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；**无异常完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（零丢失、条目恒定）。验证：**V1** 编译 SUCCESS，RAM 130616→130624（**+8 B**）/ Flash 1370533→1370701（**+168 B**）；**V2** 空闲 25 s `emit +0`、阀门开合只有 valve 自身 2 条 INFO（`flash +0`）；**V5** 40 次 `valve_toggle` 全成功 ⇒ `emit +42` 全部归属 valve 40 条 INFO + wifi 2 条 WARN（`0x0603`/`0x0605`），**逐条核对 Flash 记录 ⇒ `0x0C01`/`0x0C02` 各 0 条**；**V3 队列满 / V4 风暴运行时不可达**（定量论证：队列 32 且每轮 drain ≤4 ⇒ 需单轮 >36 次入队；风暴需同类型 6 次/500 ms，而 valve 同类型间隔 100 ms+ε ⇒ 第 6 次时窗口已刷新）⇒ 以 **objdump 静态证据**（站点 A/B 的 EventId·level·param_count·ParamId 编码 + 窗口常量 59999≡60000 + `event_push` 字面量池含两个累加器）确认埋点正确。**零协议新增**（无新 EventId/ParamId/System State/Config/开关），**事件机制完全冻结**（不改风暴策略/队列大小/dispatch 流程）。提交 `604a892`。**Phase 3 ①②③④⑤ 全部完成** ⇒ 下一步 **Phase 4 Dispense 开发**；`BLE` 埋点暂缓。`EVT-1` 单独开单、不改 EventId 编号。）*
+*最后更新：2026-09-21（**Phase 5-C —— BLE / MiJia Thermometer 日志接入完成**，commit `70b0c76` `feat(log): integrate Mijia thermometer diagnostic events`）。**仅改 1 个源文件 `src/MiThermometer.cpp`（`+74/−0`）**，接入 **4 个已冻结 EventId**（`0x0901` DATA_DECODED / `0x0902` DECODE_FAIL / `0x0903` SENSOR_LOST / `0x0904` SCAN_DISABLED），**零新增协议**（EventId / ParamId / 配置项 / 开关全无）。★ **三条边界**：① **callback（`MiAdvCallback::onResult()`，NimBLE host 任务）内零埋点** —— 该回调只有 MAC 过滤 + 长度过滤 + memcpy + `xQueueSend`，**无"决策"** ⇒ 4 处埋点**全部落在 `MiThermometer_task()`（loop）**，objdump 静态证明 call sit = 0；② **禁止逐广播包记录** —— 仅 `DECODE_FAIL` 有高频风险，走**模块内 60 s 窗口聚合**（`s_decode_fail_count` + `s_decode_fail_window_start_ms`，节拍器 = task **首行** `mi_decode_fail_tick()`，`count==0` 时**静默且不推进窗口**；`millis()` 无符号差值 ⇒ 回绕安全）⇒ bindkey 错误场景 **20 条/min → 1 条/min（Flash 环 25 min → 8.3 h，降幅 20×）**；③ **未新增失败原因分类**（`lywsd03_decrypt()` **零改动**，其 7 个 `false` 出口仍是同一语义）。验证：编译 **SUCCESS**，**RAM 130624 → 130632（+8 B = 2 个 `static uint32_t`，精确吻合）** / **Flash 1370873 → 1371129（+256 B）**；`MiThermometer_task` 栈帧 `0x100 → 0x110`（**+16 B**）；**objdump 4/4 站点逐值核对**（EventId `0x9xx` 超 `movi` 12 位 ⇒ 解析**字面量池**：`0x42000098=0x0902` / `0xc8=0x0903` / `0xd0=0x0904` / `0xe8=0x0901` 与站点一一对应；level `a11`=2/2/1/1；`param_count`=2/2/2/1；ParamId 打包 `0x23f`×3 · `0x551`(ENUM)×2 · `0x24a`×1 · `s8i` 0x3B/0x3C/0x3D 各 1；**params 全在栈** SP+40…+52）；**资源约束全绿**（无新增静态大数组 / 无 `malloc` / 无 `String` / 新增行 `Serial.` 命中 0）。★ **判定为"不建议接入"的 4 项**：扫描开始（每 ~3 s，无业务事实）· 设备发现（callback，数十/秒）· 状态写入（与 `DATA_DECODED` 重复）· 队列满丢包（**无对应 ID**，登记 **`LV-3`**）。**上板验证未执行**（无串口设备）。)*
+*上一版更新：2026-09-20（**Phase 4 —— Dispense 安全响应日志接入完成**，commit `94912bb` `feat(log): add dispense safety response logging`；前置审查 `b2493da`）。**改动 3 个源文件（`+91/−1`）+ 1 个用例文件**：`log_events.h` 新增 **`LOG_DISPENSE_SAFETY_RESPONSE = 0x0511`（WARN，`0x0500` 段尾从 `0x0510` 自然续号、不扩段不改旧编号）**+ 1 条 `static_assert`；`log_manager.cpp` 的 `s_coalesce_targets[]` **追加 1 项**（复用既有突发合并，**零新机制**）；`dispense_guard.cpp` 加 `#include "log_manager.h"` + 回调内 1 处 `log_emit`。★ **边界定论：DispenseGuard 是"纯转发模块"⇒ 运行期只记 1 条** —— 4 处候选逐点判重：q1 调用 `valve_force_close()`（已被 `0x0505` 覆盖，且 `LOG_P_CAUSE=1` **已带出"来源=dispense_guard"**）、q2 收到 `EVENT_WEIGHT_ERROR`（已被 `0x050C` 覆盖，且逐条转记会 **N:1 放大**：weight 侧是 `error_state` 边沿 1 条/次，而 `weight_record_jump()` 每条跳变都 `event_push` ⇒ 回调可被唤醒 N 次）、q3 `valve_force_close()` 失败（已被 `0x0506` 覆盖）⇒ **均不埋**；仅 q4 决策点（过滤后、调用前）新增。★ **`0x0511` 不是 `0x0505` 的重复**：Valve 侧是"带 5 s 冷却的**执行器动作**记录"（丢次数），本 ID 是"无冷却、**Σ `LOG_P_COUNT` 守恒**的**决策**记录"（Level WARN ⇒ Flash+Cloud，不抢 flush 通道）。**限流只限日志**：埋点块无 return / 无分支 / 不读改 `result` ⇒ 安全动作次数与执行路径逐字不变。验证：**V1** 编译 SUCCESS，RAM 130624→130624（**+0 B**）/ Flash 1370701→1370729（**+28 B**）；**V4 objdump 静态**：埋点编码（`bnei a2,12`=`EVENT_WEIGHT_ERROR`；`movi a8,0x216`=`LOG_P_CAUSE`+`U32` 单条 16 位存储；`movi.n a13,1`=`param_count=1`；`movi.n a11,2`=`WARN`；`addi.n a12,a1,8`=`params 在栈上`；`movi a10,0x511`=`EventId`）+ 白名单（`-1292 ≡ -0x50C` 与 `-1297 ≡ -0x511` 并列于 `log_coalesce_is_target()` 判定处，其后 `bltui a5,8` 为 param_count 守卫）；**V2 / V3 上板未执行**（本机 `getportnames()` 返回空 ⇒ 开发板未连接，**诚实标注"未执行"**），用例已备 `test/p4_dispense_log_tests.txt`（含 V3 三步判据：`queued=10` → 窗口内 `total=1` → 窗口后 `total=2`；ΣCOUNT 精确值路径=云端批次解码，复用 `.pio/p15run/log_decode.py` + `p2i_report.py` 模式）。★ 新沉淀：**"纯转发模块"的埋点数天然为 0**（有可观测自指事实才记 1 条）；**合并器要求埋点至少带 1 个参数**（`log_coalesce_emit_summary()` 在 `base_n==0` 时静默丢弃折叠计数）。遗留 `LV-1`（订阅失败仍缺 EventId）。另修正既有文档 ParamId 笔误：`LOG_P_CAUSE` 是 **0x16**，`0x1F` 是 `LOG_P_REASON`（`37d953d`）。)*
+*上一版更新：2026-09-20（**Phase 3 第 ⑤ 项 EventManager 埋点接入完成（P2-M）** —— 仅改 `src/event_manager.cpp`（`+110/−0`），接入 2 个冻结 EventId。**★ 只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。`0x0C01` 埋在 `event_push()` 返回 `EVENT_QUEUE_FULL` 的**唯一出口**（确定丢弃分支；不在调用者、不在入口；FORCE 挤占分支不计入），`0x0C02` 埋在风暴抑制分支。二者**都只累加不逐条发射** ⇒ 采用**周期聚合方案 A**：窗口 60000 ms，**节拍器 = `event_dispatch()` 首行**（loop 每轮无条件调用 ⇒ 不新增 Task / 不改 `main.cpp` / 不新建 timer / 无 delay / 无 while）；**无异常完全静默且不推进窗口**（首次异常立即可见）；**Σ `LOG_P_COUNT` = 真实丢弃数量**（零丢失、条目恒定）。验证：**V1** 编译 SUCCESS，RAM 130616→130624（**+8 B**）/ Flash 1370533→1370701（**+168 B**）；**V2** 空闲 25 s `emit +0`、阀门开合只有 valve 自身 2 条 INFO（`flash +0`）；**V5** 40 次 `valve_toggle` 全成功 ⇒ `emit +42` 全部归属 valve 40 条 INFO + wifi 2 条 WARN（`0x0603`/`0x0605`），**逐条核对 Flash 记录 ⇒ `0x0C01`/`0x0C02` 各 0 条**；**V3 队列满 / V4 风暴运行时不可达**（定量论证：队列 32 且每轮 drain ≤4 ⇒ 需单轮 >36 次入队；风暴需同类型 6 次/500 ms，而 valve 同类型间隔 100 ms+ε ⇒ 第 6 次时窗口已刷新）⇒ 以 **objdump 静态证据**（站点 A/B 的 EventId·level·param_count·ParamId 编码 + 窗口常量 59999≡60000 + `event_push` 字面量池含两个累加器）确认埋点正确。**零协议新增**（无新 EventId/ParamId/System State/Config/开关），**事件机制完全冻结**（不改风暴策略/队列大小/dispatch 流程）。提交 `604a892`。**Phase 3 ①②③④⑤ 全部完成** ⇒ 下一步 **Phase 4 Dispense 开发**；`BLE` 埋点暂缓。`EVT-1` 单独开单、不改 EventId 编号。）*
 *上一版更新：2026-09-20（**Phase 3 第 ⑤ 项前置审查完成 —— `Event` 模块日志接入设计（仅审查，未改代码）**）。结论：**EventManager 是日志宿主，但仅限"自身运行异常"**；业务事件 **76%（13/17）发布方已埋点** ⇒ 逐条记即重复。★ **决定性证据**：17 个 `event_push` 调用点 **100% 忽略返回值** + `event_get_drop_count()`/`duplicate_count()`/`queue_count()` **零消费方** ⇒ **事件丢弃当前 100% 不可观测**，只能由 EventManager 内部记录。`0x0C01`（队列满，`event_push():266`）与 `0x0C02`（风暴，`event_push():220-224`）**均不可逐条记**（后者定义即"超过 5 次/500ms 的持续流"）⇒ 采用**方案 A：计数聚合 + 60 s 周期上报**，复用 P2-D `cloud_manager.cpp:100-156` 模板，**以 `event_dispatch()` 为节拍器**（不新增任务、不改 `main.cpp`、不新增 EventId/ParamId/System State/配置项/开关、不改风暴策略）。⚠️ 陷阱：`EVENT_DROPPED` 返回值在 3 个分支返回（`:206` 越界/`:223` 风暴/`:260` FORCE 失败）⇒ **必须分支内埋点，不能用返回值判据**。重复记录：现状一条物理事实 2~3 条，若逐条记业务事件将达 4~6 条。**新增发现 EVT-1~EVT-5**，其中 **EVT-1**（`SYSTEM_EVENT_COUNT=14` 越界 ⇒ 三阀门事件 14/15/16 无法解析 ⇒ **Workflow 无法订阅阀门事件**，静默失败）建议单独开单。报告 `log模块历史/LogManager-P2M-Event接入审查0920.md`。**待用户确认 E1–E4**。)*
 *上一版更新：2026-09-20（**Phase 3 第 ④ 项 Registry 埋点接入完成（P2-L）** —— 仅改 `src/capability_registry.cpp`（`+24/−0`），接入 2 个冻结 EventId / 2 处 `log_emit`。★ **宿主选"定义点"而非"触发点"**：`REG_REBUILT` 落 `registry_sync()` 的 `else` 分支（checksum 不一致/缺失/损坏，与 `reuse` 互斥 ⇒ 天然边沿无需门控），`REG_SAVE_FAILED` 落该函数内 `save_registry_file()` 返回值判定处；**不埋** `command_manager` 4 处 `rescan()`（一次 create 连触发 3 次）、**不进** `save_registry_file()` 内部 4 个失败出口（各有专属串口打印 1:1 覆盖 ⇒ 不带 `ERR_CODE`、不改签名）。参数用栈上局部 `LogParamIn`（禁 `static`/全局：可能跑在 loopTask 8KB 或 esp-mqtt 任务上）。**WF-4 正式关闭**（`workflow_storage` 与 Registry 零耦合）；矩阵 §7 作用域已更正。验证：**V1** 编译 SUCCESS，RAM 130616 B（±0）/ Flash 1370533 B（+408）；**V2** 三表全 `reuse`、`REG_*` 均 0 条；**V3** create×1+delete×1 → **恰好 2 条** rebuild（若误埋触发点应为 6）；**V4a** 清零后精确计数 emit +3 / cloud +3 / **flash +0**（INFO 不落 Flash）；**V4b** `objdump` 静态确认 2 个调用点参数编码 `(3,INFO)` / `(1,ERROR)`。提交 `4b2e04b`。)*
 *上一版更新：2026-09-20（**Phase 3 第 ③ 项 ComputerReset 埋点接入完成（P2-K）**：仅改 `src/computer_reset.cpp`（`+65/−0`），接入 3 个冻结 EventId / 4 处 `log_emit`；**全部天然边沿、零门控**。★ `PULSE` 上移到 `set_output()` 上升沿以覆盖手动 + Workflow Action 两条路径（V3b 实测 Action 路径 `emit` +1 证明）；`SAFETY_TIMEOUT` 的 `DURATION_MS` 在 `force_idle()` 之前取（LOG-13）。)**
