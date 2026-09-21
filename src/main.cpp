@@ -485,6 +485,18 @@ void setup()
     if (!json_storage_init()) {
         Serial.println("[System] JsonStorage init failed!");
     }
+    // 注册日志回调（Phase 7-1 / DEF-1）：**必须早于 bin_storage_init()**。
+    //
+    // BinStorage 默认静默，注册后其 E/W 级错误为"串口 + LogManager"双路
+    // （Phase 6-A：由 bin_log_serial 换为 bin_log_bridge，串口格式不变）。
+    // ★ 此前本行位于 bin_storage_init() **之后** ⇒ init 内部产生的
+    //   bin_log("E", "init: FileStorage unavailable")（bin_storage.cpp:153）
+    //   因 s_log_cb == nullptr 被 bin_log() 直接 return 丢弃（连串口都不打）
+    //   ⇒ 初始化期 ERROR 完全不可观测（Phase 6-A 的 23 站点实际只达 22 站）。
+    // ★ 与 json_storage / file_storage 的桥接注册顺序保持一致（见上方 P2-A 段）：
+    //   注册先于 init，才能捕获"初始化期"的 Storage 错误。
+    // ★ setter 只做指针赋值，不依赖模块已 init，故前置调用安全。
+    bin_storage_set_log_callback(bin_log_bridge);
     // ===== 初始化 BIN Storage（底层二进制文件存储，Workflow BIN 持久化依赖它）=====
     //
     // 内部会级联初始化 FileStorage。
@@ -494,9 +506,6 @@ void setup()
     if (!bin_storage_init()) {
         Serial.println("[System] BinStorage init failed!");
     }
-    // 注册日志回调：BinStorage 默认静默，注册后其 E/W 级错误"串口 + LogManager"双路
-    // （Phase 6-A：由 bin_log_serial 换为 bin_log_bridge，串口格式不变）
-    bin_storage_set_log_callback(bin_log_bridge);
     // ===== 初始化 Workflow Storage（Workflow 定义持久化，依赖 BinStorage）=====
     //
     // 内部会创建 /workflow 目录并加载 meta.bin。

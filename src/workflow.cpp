@@ -1671,6 +1671,28 @@ bool workflow_load_from_storage()
                 (unsigned)wf,
                 workflow_storage_result_name(r)
             );
+
+            // ---- Phase 7-1 埋点：LOG_STG_READ_FAILED（WARN）----
+            //
+            // 位置：workflow_load_from_storage() 的单 Slot BIN 加载失败分支。
+            // ★ 语义：**单个 Workflow Slot 从 Flash BIN 加载失败** ⇒ 该 Slot 的
+            //   Workflow 不装载（valid 保持 false），用户侧表现为"某条自动化规则消失"。
+            //   此前仅有串口输出 + continue ⇒ 生产环境（无串口）完全不可观测。
+            // ★ 不用 CRITICAL：这是"单个 Slot 数据不可用"，非全盘/存储完整性失效；
+            //   与 6-B/6-C 的 meta 层损坏（0x0303 CRITICAL / 0x0306 ERROR）分级区分。
+            // ★ ERR_CODE 直接携带 workflow_storage_load() 的返回值（WF_STG_ERR_* 原值，
+            //   如 3=NOT_FOUND / 6=READ_FAILED / 10=CRC_FAILED / 12=FORMAT_INVALID）
+            //   ⇒ 无需新增错误码。
+            // ★ 本函数全仓库只在启动期被 main.cpp 调用一次 ⇒ 无频率风险、无需门控。
+            // ★ 无 String / 无堆：MODULE 用字面量 3（= WF_STG_LOG_MODULE，定义在
+            //   workflow_storage.cpp，本文件不可见；勿改）。
+            {
+                LogParamIn p[3];
+                p[0] = log_arg_u32(LOG_P_MODULE,   3u);
+                p[1] = log_arg_u32(LOG_P_SLOT,     (uint32_t)wf);
+                p[2] = log_arg_u32(LOG_P_ERR_CODE, (uint32_t)r);
+                log_emit(LOG_STG_READ_FAILED, LOG_LVL_WARN, p, 3);
+            }
             continue;
         }
 
