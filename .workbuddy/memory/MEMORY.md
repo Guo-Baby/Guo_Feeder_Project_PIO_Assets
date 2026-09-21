@@ -9,10 +9,10 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## 当前阶段（2026-09-21）
 - **LogManager 埋点：Phase 3/4/5-A/B/C/6-A/6-B 全部完成并已提交**（commit 与验证数据见 `2026-09-2x.md`）—— 已接入 **16 模块**：Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·**BLE(MiThermometer)**·**bin_storage**·**workflow_storage**（json/file 走桥接）；零宿主 23（定义 102 · 有宿主 79）
 - **6-A** = `bin_storage` 23 站点桥接上云（仅改 `main.cpp`，零新增 ID）· **6-B** = `workflow_storage` meta 损坏（复用 Storage 段 `0x0303`）+ `workflow.cpp` 加载分配失败（沿用 `0x040B`）
-- **6-C（已编码待审核）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
+- **6-C ✅（`6d40944`）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
   - ⚠️ **待裁决**：`log_events.h:248` 把 0x0306 标注为 **WARN**，而 6-C 指令要求 **ERROR** ⇒ 已按指令实现 ERROR（两者都落 Flash，扰动相同，差异仅在云端严重度显示）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
 - **关键文档**：`Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、`Phase5-ABC执行计划0920.md`、`log模块历史/Phase4-Dispense边界审查0920.md`、`log模块历史/R7-R8-后续评审与系统性能权衡0920.md`
-- **待办（未开工）**：`load_meta()` 另 3 处静默返回的**不对称**（`:931` size 非法 / `:940` read 失败 **缺 `stage_cleanup_all()`**，与首尾两处不一致）· 单 slot `load` 失败 · `recover_internal()` rename 失败 · `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
+- **待办（未开工）**：`load_meta()` 三处失败分支的 **`stage_cleanup_all()` 不对称**（`:946` 尺寸非法分支调用，`:971` read 失败 / `:994` 短读分支**不调用**）—— 日志已由 6-C 覆盖，残留为**清理行为不一致**（是否该统一）· 单 slot `load` 失败 · `recover_internal()` rename 失败 · `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
 - **非日志待办**：`system_state` 的 `state_table[].type` 死存储 · `test_mqtt` 仍在生产 loop
 - **`R-7`/`R-8` 仍 DEFERRED**（Phase 5 审查未重新升级，优先级/状态/结论均未改动）
 
