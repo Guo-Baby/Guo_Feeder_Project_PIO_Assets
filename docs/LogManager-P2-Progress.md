@@ -542,7 +542,43 @@ P2-E 让每个 Boot **多一条 Flash 记录**（`LOG_TIME_RTC_PROBE` 是 **WARN
 
 ## Next
 
-### ✅ 2026-09-21（最新）：**Phase 5-C —— BLE / MiJia Thermometer 日志接入完成**
+### ✅ 2026-09-22（最新）：**LogManager P2 完成 —— Phase 6 / 7-1 收尾 + 状态冻结**
+
+> **本阶段为文档冻结，零代码改动**（`git diff --stat src/ test/` 为空）。最终覆盖明细见 `docs/P2_Log_Integration_Matrix.md` §15。
+
+**★ LogManager P2 完成判定（全部达成）**
+
+| # | 完成条件 | 达成 |
+|---|---|---|
+| 1 | 主要业务模块均具备事件观测能力 | ✅ **16 个模块**已接入（见矩阵 §15 清单） |
+| 2 | Storage 持久化链路可观测 | ✅ json / file / **bin**（桥接）/ **workflow_storage**（埋点）四类全覆盖 |
+| 3 | Workflow BIN 数据完整性失败可观测 | ✅ meta 反序列化 / 尺寸非法 / 读失败 / 短读 / 单 slot 加载失败 / 暂存发布失败 |
+| 4 | 初始化阶段日志链路完整 | ✅ **DEF-1 已修**：`bin_storage_set_log_callback()` 前置到 `bin_storage_init()` 之前 |
+| 5 | 静默失败路径完成第一轮覆盖 | ✅ Phase 6-A/B/C + 7-1 共 4 批 |
+
+**收尾 commit（Phase 6 → 7-1）**
+
+| commit | 内容 | 改动 | RAM / Flash |
+|---|---|---|---|
+| `00314f2` | 6-A：`bin_storage` **23 个 `bin_log` 站点**经 callback bridge 上云（仅 `main.cpp`） | +33/−10 | +96 B / +80 B |
+| `714d009` | 6-B：`workflow_storage` meta 损坏（跨域复用 `0x0303`）+ `workflow.cpp` 加载分配失败（`0x040B`） | +47/−0 | +0 B / +140 B |
+| `6d40944` | 6-C：`load_meta()` 剩余 3 处静默失败 → 全部复用 `0x0306` | +52/−0 | +0 B / +176 B |
+| `bb2b3cc` | 7-1：DEF-1 + 单 Slot 加载失败（`0x0306`/WARN）+ `stage_process()` rename 失败（`0x0302`/ERROR） | +59/−3 | +0 B / +120 B |
+
+> 四批**均未新增 EventId / ParamId**；`log_events.h` / `log_manager.*` 全程零改动。
+
+**P2 明确不包含（转入独立 backlog，不在本阶段处理）**
+
+| 项 | 类型 | 归口 |
+|---|---|---|
+| OLED | 可观测性 | `OLED-1` —— 有异常、有 ID、但缺判据（`U8g2::begin()` 返回值被丢弃） |
+| `test_mqtt` 生产路径清理 | Technical Debt | `未修复的问题.md`「LogManager 后续事项 #1」 |
+| Cloud credential 安全整改 | Security | `未修复的问题.md`「LogManager 后续事项 #2」 |
+| Reliability 专项 | 可靠性 | 含 `R-7` / `R-8`（仍 `DEFERRED`）· `LV-1` / `LV-2` / `LV-3` · `PROTO-1` / `PROTO-2` |
+
+---
+
+### ✅ 2026-09-21：**Phase 5-C —— BLE / MiJia Thermometer 日志接入完成**
 
 > Commit：**`70b0c76`** `feat(log): integrate Mijia thermometer diagnostic events`
 > 改动范围：`src/MiThermometer.cpp` **+74/−0**（**仅此 1 个文件**，`MiThermometer.h` 未改）

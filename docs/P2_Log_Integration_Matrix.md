@@ -644,4 +644,95 @@ now - start < 60s  ⇒ return
 
 ---
 
+## 15. P2 最终覆盖状态（**2026-09-22 冻结 · Phase 7-2**）
+
+> **本节为权威最终状态**，取代 §13「全矩阵速览」的设计期视图（§13 保留作设计演进记录）。
+> 本节**零代码改动**，仅整理已落地事实。`未修复的问题.md` 同步新增「LogManager 后续事项」。
+
+### 15.1 已完成模块（16 个）
+
+| # | 模块 | 接入方式 | 完成阶段 |
+|---|---|---|---|
+| 1 | **SystemCommand** | 显式 `log_emit`（System/Boot 段 `0x01xx`） | Phase 5-A |
+| 2 | **Config Manager** | `cfg_log()` 回调桥接 + 显式埋点 | P2-B |
+| 3 | **Storage — json_storage** | 回调桥接（`json_storage_log_bridge`） | P2-A |
+| 4 | **Storage — file_storage** | 回调桥接（`file_storage_log_bridge`） | P2-A |
+| 5 | **Storage — bin_storage** | 回调桥接（`bin_log_bridge`） | **Phase 6-A** |
+| 6 | **Storage — workflow_storage** | 显式 `log_emit` | **Phase 6-B / 6-C / 7-1** |
+| 7 | **WiFi** | 显式 `log_emit` | P2-C |
+| 8 | **Cloud Manager** | 显式 `log_emit` | P2-D |
+| 9 | **Time Manager** | 显式 `log_emit` | P2-E |
+| 10 | **Workflow Manager** | 显式 `log_emit` | P2-F / **Phase 6-B / 7-1** |
+| 11 | **Weight / HX711** | 显式 `log_emit`（边沿 + 突发合并） | P2-I |
+| 12 | **Valve** | 显式 `log_emit`（含 5 s 门控） | P2-H |
+| 13 | **Command Manager** | 显式 `log_emit`（4 个 ID） | P2-J |
+| 14 | **ComputerReset** | 显式 `log_emit`（3 个 ID） | P2-K |
+| 15 | **Capability Registry** | 显式 `log_emit`（2 个 ID） | P2-L |
+| 16 | **Event Manager** | 周期聚合（60 s，走侧信道计数） | P2-M |
+| — | **DispenseGuard** | 显式 `log_emit`（`0x0511`，只记"决策"） | Phase 4 |
+| — | **BLE / MiThermometer** | 显式 `log_emit`（4 个 ID，callback 零埋点） | Phase 5-C |
+
+> 上表 18 行：16 个"业务模块" + DispenseGuard + BLE（二者在 §13 中单列）。
+
+### 15.2 Phase 6 / 7 新增明细
+
+**Phase 6-A（`00314f2`）—— `bin_storage`**
+
+| 项 | 内容 |
+|---|---|
+| 覆盖 | `bin_storage.cpp` **23 个 `bin_log` 站点**（E=17 / W=5 / I=1） |
+| 机制 | 复用 P2-A 的 callback bridge（`bin_log_serial` → `bin_log_bridge`）⇒ 串口格式不变 + LogManager 双路 |
+| 模块编号 | `STG_BRIDGE_MODULE_BIN` = **2**（json=0 / file=1 / bin=2 / workflow_storage=3，共用 `LOG_P_MODULE` 编号空间） |
+| EventId | **全部复用 Storage 段既有 ID**（`0x0301` FS_UNAVAILABLE / `0x0302` ATOMIC_WRITE_FAILED / `0x0303` CRC_FAILED / `0x0305` WRITE_VERIFY_FAILED / `0x0306` READ_FAILED）⇒ **零新增 EventId** |
+| 改动 | 仅 `src/main.cpp` +33/−10 |
+
+**Phase 6-B / 6-C（`714d009` + `6d40944`）—— `workflow_storage` meta 加载链路**
+
+| 位置 | 语义 | EventId | Level | ERR_CODE |
+|---|---|---|---|---|
+| `deserialize_meta()` 失败 | meta BIN 内容损坏 | **0x0303** `LOG_STG_CRC_FAILED` | **CRITICAL** | `r` 原值（10/11/12/13） |
+| `file_size == 0 \|\| > MAX` | meta 文件尺寸非法 | **0x0306** `LOG_STG_READ_FAILED` | ERROR | **12** `FORMAT_INVALID` |
+| `bin_storage_read()` 失败 | meta BIN 读取失败 | **0x0306** | ERROR | **6** `READ_FAILED` |
+| `bytes_read != file_size` | 读取长度不足 | **0x0306** | ERROR | **6** `READ_FAILED` |
+| `workflow.cpp` 加载 `def_buf == NULL` | WorkflowDefinition 分配失败 | **0x040B** `LOG_WF_RUNTIME_ALLOC_FAILED` | ERROR | —（用 `NEED_BYTES`） |
+
+> ★ **跨域复用先例**：Workflow 域的 meta 损坏复用 **Storage 段 `0x0303`** —— 理由：BIN 持久化数据损坏属"存储完整性失败"，非 Workflow 业务错误。
+> ★ **模块编号** `WF_STG_LOG_MODULE` = **3**；`WF_STG_LOG_PATH_META` = **1**（path 标识空间）。
+
+**Phase 7-1（`bb2b3cc`）**
+
+| 位置 | 语义 | EventId | Level | 参数 |
+|---|---|---|---|---|
+| `main.cpp` DEF-1 修复 | 注册前置 ⇒ 初始化期 ERROR 不再静默丢弃 | —（无新增埋点） | — | — |
+| `workflow.cpp::workflow_load_from_storage()` 单 Slot 加载失败 | 单个 Workflow Slot 不可用 | **0x0306** `LOG_STG_READ_FAILED` | **WARN** | `MODULE` + `SLOT` + `ERR_CODE` |
+| `workflow_storage.cpp::stage_process()` rename 失败 | 已提交事务未发布 ⇒ 内容停旧版本 | **0x0302** `LOG_STG_ATOMIC_WRITE_FAILED` | **ERROR** | `MODULE` + `PATH`(=2) + `ERR_CODE`(=9) + `STAGE` |
+
+> ★ `stage_process()` **一个埋点覆盖两条路径**：`recover_internal()`（掉电恢复）**与** `workflow_storage_save()` 的发布/清理 ⇒ 避免重复埋点。
+> ★ **DEF-1 二进制级证据**：基线 `4201bc19 call8 bin_storage_init` → `4201bc2b call8 set_log_callback`；修复后 `4201bc20 call8 set_log_callback` → `4201bc23 call8 bin_storage_init`。
+
+### 15.3 P2 完成判定
+
+| # | 完成条件 | 状态 |
+|---|---|---|
+| 1 | 主要业务模块均具备事件观测能力 | ✅ |
+| 2 | Storage 持久化链路可观测 | ✅ |
+| 3 | Workflow BIN 数据完整性失败可观测 | ✅ |
+| 4 | 初始化阶段日志链路完整 | ✅（DEF-1 已修） |
+| 5 | 静默失败路径完成第一轮覆盖 | ✅ |
+
+**P2 明确不包含（转入独立 backlog）**
+
+| 项 | 归口 |
+|---|---|
+| **OLED** | `OLED-1` —— 有异常、有 ID、但缺判据（`oled_init()` 丢弃 `U8g2::begin()` 返回值）⇒ 维持不埋 |
+| **`test_mqtt` 清理** | Technical Debt —— 非 LogManager 范畴 |
+| **Cloud credential 安全整改** | Security —— `cloud_manager.cpp` 明文打印 MQTT username/password |
+| **Reliability 专项** | `R-7` / `R-8`（DEFERRED）· `LV-1` / `LV-2` / `LV-3` · `PROTO-1` / `PROTO-2` · `P0-1b` / `P0-4` |
+
+### 15.4 未接入但仍为候选（**P3，本轮不处理**）
+
+`workflow_storage.cpp:1525` 保存发布 rename 失败 · `:1500` meta commit 失败 · `:1450/:1464` save readback 失败 / crc mismatch · `main.cpp:447` LittleFS mount 失败（对应零宿主的 `LOG_SYS_FS_MOUNT_FAILED` `0x0106`）。
+
+---
+
 *文档结束 —— 待人工审核*
