@@ -28,7 +28,7 @@
 
 ### 0.3 硬约束（写代码时必须遵守）
 
-1. `log_emit()` 内部用 `portENTER_CRITICAL()`（**非 `_ISR` 变体**）⇒ **禁止在 ISR 调用**。NimBLE 回调（`MiAdvCallback::onResult`）虽非 ISR，但属 BLE host 任务上下文，**同样禁止**（见 §11 BLE）。
+1. `log_emit()` 内部用 `portENTER_CRITICAL()`（**非 `_ISR` 变体**）⇒ **禁止在 ISR 调用**。NimBLE 回调（`MiAdvCallback::onResult`）虽非 ISR，但属 BLE host 任务上下文，**同样禁止**（见 §11 BLE）。★ **Phase 5-C 已按此执行**：BLE 的 4 处埋点**全部落在 `MiThermometer_task()`（loop）**，callback 内 `log_emit` 站点 **= 0**（objdump 证明）。
 2. 参数 `param_count > LOG_MAX_PARAMS(8)` ⇒ **整体拒绝**，不截断。
 3. `log_emit()` 返回值必须检查的场景：CRITICAL 级。返回 `false` = 未进环（环未就绪 / 参数超限 / DEBUG）。
 4. `log_emit()` **线程安全**（临界区保护），多任务可调用；但仍建议集中在 `*_task()`（loop 上下文）调用。
@@ -496,19 +496,19 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/MiThermometer.cpp`（655）、`src/MiThermometer.h`（26） |
+| 源码文件 | `src/MiThermometer.cpp`（655 → **700**）、`src/MiThermometer.h`（26） |
 
 ### 11.1 当前状态
 
 | 检查项 | 现状 |
 |---|---|
-| 已有日志 | ❌ 无。有已知缺陷：`MiAdvCallback::onResult()` :117-123 **逐字节 `Serial.printf` 打印整个 ADV payload**（每包数十次串口调用） |
+| 已有日志 | ✅ **已于 Phase 5-C 接入 4 个事件（2026-09-21，`70b0c76`）** —— 见 **§11.3**；★ **`onResult()` 内仍为零埋点**（callback 禁埋点，静态证明）。<br>此前已知缺陷 **`P0-3`**：`MiAdvCallback::onResult()` :117-123 **逐字节 `Serial.printf` 打印整个 ADV payload**（每包数十次串口调用）⇒ ✅ **已在 Phase 2 完成**（`edf2566`，编译期开关 `MI_THERMO_DEBUG_VERBOSE` 默认 0，`onResult()` 中 `Print::printf`/`println` 计数 = 0） |
 | 错误处理 | ✅ 三级降级：LEVEL0 → LEVEL1 → LEVEL2（禁用扫描，`MI_THERMO_MAX_FAIL=4`）；解码失败、bindkey/MAC 缺失、队列创建失败均有处理 |
 | 状态机 | ✅ 7 态：`BOOT_DELAY / SLEEP / SCAN_WINDOW_RUN / SCAN_WINDOW_WAIT / SCAN_ON / SCAN_OFF / DISABLED` |
 | 关键状态迁移点 | 扫描窗口结束判定 :316-343（成功/fail_count++/LEVEL 迁移/禁扫）、解码队列消费 :419-457、`mi_thermo_start_scan()` :531 / `stop_scan()` :564 |
 | **高频源** | 🔴 **最高风险 —— 但须区分两个速率**（Phase 5 审查修正）：<br>① **`onResult()` 触发率**：所有在空中的广播设备 ⇒ 密集环境可达**数十/秒** ⇒ **无任何可记录事实**（MAC 不匹配在 `:124-126` 就 `return`）<br>② **通过 MAC + 长度过滤、真正 `xQueueSend` 入队的帧**：**≈ 1 包 / 3 s**（P2-BLE 实测：广播周期 1–2 s × 扫描占空"1 s 开 / 1.8–2.3 s 关"）⇒ **这才是"可记录事实"的速率**<br>③ **窗口级事件**：15 / 30 min<br>⚠️ 队列 16 槽，`xQueueSend` 返回值**被忽略**（`:165`，静默丢包） |
 
-### 11.2 建议接入
+### 11.2 建议接入（**P2 阶段的设计建议；Phase 5-C 实际落地见 §11.3，两者以 §11.3 为准**）
 
 | 位置 | 事件 | EventId | Level | Params | 原因 |
 |---|---|---|---|---|---|
@@ -548,6 +548,58 @@
 > | `BLE_INIT_FAILED`（ERROR） | `MiThermometerInit()` `:247-251`（MAC/bindkey 空）、`:277-281`（`xQueueCreate` 失败） | `:247` 分支 **`return false` 但调用方 `main.cpp:508` 忽略返回值** ⇒ 模块永久不可用却**静默**（与 `LV-1` 同构） |
 > | `BLE_QUEUE_FULL`（WARN） | `onResult()` `:165` `xQueueSend(...,0)` 返回值被忽略，队列 16 槽 | 静默丢帧；**不能在 callback 记录** ⇒ 需回调置计数、task 侧消费上报（同 `EVT_QUEUE_FULL` 做法） |
 
+### 11.3 实际接入（Phase 5-C，2026-09-21 · `70b0c76`）
+
+> 改动：**`src/MiThermometer.cpp` `+74/−0`（仅此 1 个文件）**。**零新增协议**（无新 EventId / ParamId / 配置项 / 开关）；`log_events.h` / `log_manager.*` / `event_manager.*` / `cloud_manager.cpp` / `system_state.*` / `workflow.*` / `main.cpp` / `test/` **全部零改动**。
+
+| EventId | Level | 参数（实际） | 实际宿主 | 与 §11.2 建议的差异 |
+|---|---|---|---|---|
+| `LOG_BLE_DATA_DECODED` 0x0901 | INFO | 按 `data_type` 选 `LOG_P_TEMP`(0x3B) / `LOG_P_HUMID`(0x3C) / `LOG_P_BATT_V`(0x3D)，值 `log_arg_f32` | `MiThermometer_task()` → `if(result)` 内、`switch(data_type)` **之后**（三 case 汇合） | ★ **未用 `LOG_P_MAC_SUFFIX`**（MAC 由配置侧已知，无诊断增量）；★ **无需额外"本窗口已上报"标志** —— 收到温+湿即停扫（`SCAN_WINDOW_WAIT`），代码天然保证 ≤1 条/窗口；★ **未埋 `state_set_*` 处**（同一定义点的第二份副本） |
+| `LOG_BLE_DECODE_FAIL` 0x0902 | **WARN** | `LOG_P_FAIL_COUNT`(0x3F) + `LOG_P_WINDOW_MS`(0x4A) | `mi_decode_fail_tick()`（内联进 task）的**窗口到期**分支 | ★ **改走"模块内 60 s 窗口聚合"而非 LogManager 突发合并**（§11.2 的 `LOG_P_FAIL_KIND` **未使用** —— 那需要把 `lywsd03_decrypt()` 的 `bool` 改成带原因返回，超范围）；★ **`else` 分支为本轮新增**（原代码 `if(result){}` **无 else**） |
+| `LOG_BLE_SENSOR_LOST` 0x0903 | WARN | `LOG_P_FAIL_COUNT` + `LOG_P_BLE_LEVEL`(0x51) | task `SCAN_WINDOW_RUN` → `s_scan_fail_count++;` **之后** | 按建议接入（天然边沿：≤1 条 / 15–30 min） |
+| `LOG_BLE_SCAN_DISABLED` 0x0904 | INFO | `LOG_P_FAIL_COUNT` + `LOG_P_BLE_LEVEL` | `LEVEL2` 分支 → **`state_set_bool(STATE_MI_THERMO_ENABLE,false)` 之前** | 按建议接入（1 次/生命周期） |
+
+**聚合实现（`mi_decode_fail_tick()`，节拍器 = `MiThermometer_task()` 首行）**
+
+```
+count == 0         ⇒ 清零窗口起点并 return（**静默且不推进窗口** ⇒ 失败停止后不再产出）
+window_start == 0  ⇒ 锚定 millis()（首个失败）
+now - start < 60s  ⇒ return
+到期               ⇒ log_emit(0x0902, WARN, {FAIL_COUNT, WINDOW_MS=60000}) → **count 与窗口同时清零**
+```
+
+⇒ **每 60 s 最多 1 条**；`millis()` 用**无符号差值** ⇒ 回绕安全；节拍器位于 task **第一句**（早于 `xRawAdvQueue == nullptr` 守卫）⇒ **不被早退吞掉**（objdump 已证：函数首条逻辑即 `count==0` 判断）。
+
+**Flash 定量**
+
+| 场景 | 逐帧记录（**未采纳**） | 窗口聚合（**实际**） |
+|---|---|---|
+| bindkey 配置错误（CCM 对每包都失败） | 20 条/min ⇒ **496 条段环 ≈ 25 min 冲满** | **1 条/min ⇒ 环撑 ≈ 8.3 h（降幅 20×）** |
+
+**验证**
+
+| 项 | 结果 |
+|---|---|
+| 编译 | ✅ **SUCCESS**；**RAM 130624 → 130632（+8 B = 2 个 `static uint32_t`）** / **Flash 1370873 → 1371129（+256 B）** |
+| 栈 | `MiThermometer_task` `entry a1, 0x100` → **`0x110`（+16 B）**，远小于 loopTask 16 KB |
+| **callback 零埋点** | ✅ objdump：`MiAdvCallback::onResult` 中 `log_emit` 站点 **= 0**；`MiThermometer_task` 内**恰 4 个** |
+| EventId 编码 | ✅ `0x9xx` > 2047 超 `movi` 12 位 ⇒ **经字面量池加载**；逐值解析 `.flash.text`：`0x42000098=0x0902` / `0xc8=0x0903` / `0xd0=0x0904` / `0xe8=0x0901`，与 4 个站点**一一对应** |
+| Level / 参数个数 | ✅ `a11` = **2/2/1/1**（WARN·WARN·INFO·INFO）；`param_count` = **2/2/2/1** |
+| ParamId 编码 | ✅ `0x23f`(0x3F+U32)×3 · `0x551`(0x51+**ENUM**)×2 · `0x24a`(0x4A+U32)×1 · `s8i` **0x3B/0x3C/0x3D 各 1**（+type 3 = F32）；**params 全在栈**（SP+40…+52） |
+| 资源约束 | ✅ 无新增静态大数组 · 无 `malloc` · 无 `String` · 新增行中 `Serial.` 命中 **0** · `lywsd03_decrypt()` **零改动** |
+| **上板验证** | ⏳ **未执行**（无串口设备）。`DATA_DECODED` / `SCAN_DISABLED` 为 INFO ⇒ `logt ring` 可自证；`DECODE_FAIL` / `SENSOR_LOST` 为 WARN ⇒ `logt flash` 跨重启可查 |
+
+**本阶段明确未接入**
+
+| 候选 | 判定 |
+|---|---|
+| 扫描开始 / 设备发现 / 状态写入 | ❌ **不建议**：无业务事实 / callback 内 / 与 `DATA_DECODED` 重复（定义点唯一原则） |
+| `onResult()` `xQueueSend` 失败（队列满） | ❌ **无对应 EventId** ⇒ 不接入，登记 **`LV-3`**（与 `LV-1` 同性质：有宿主候选但无 ID） |
+| `BLE_INIT_FAILED`（`MiThermometerInit()` MAC/bindkey 空、`xQueueCreate` 失败） | ❌ **需新增 ID（未批准）**；`:247` 分支 `return false` 但调用方 `main.cpp:508` **忽略返回值** ⇒ 模块永久不可用却静默 |
+| 失败原因分类（MIC vs 格式） | ⏸ **延期**：需改 `lywsd03_decrypt()` 签名（超出"只加观测"） |
+
+> 📄 审查依据：`log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1；进度记录：`docs/LogManager-P2-Progress.md` §Next「Phase 5-C」。
+
 ---
 
 ## 12. Command / Event / OLED（收尾）
@@ -576,7 +628,7 @@
 | 8 | Weight | 无 | ~8 | 🔴 高频源，必须边沿 | P1 | 中 |
 | 9 | Valve | 无 | ~8 | 缺 NOT_READY；FORCE_CLOSE 无失败分支 | P1 | 中（安全） |
 | 10 | Dispense Guard | 无 | ✅ **1**（`0x0511` WARN） | ✅ **已完成（Phase 4，`94912bb`）**：纯转发模块 ⇒ **只记"决策"**；`0x0511` 与 Valve 的 `0x0505` **互补非冗余**（后者 5 s 门控丢次数，前者 ΣCOUNT 守恒）；已注册进合并白名单 | Phase 4 | **低** |
-| 11 | BLE | 无 | ✅ **4 个已冻结**（不新增） | ✅ **边界已定（Phase 5 审查，2026-09-20）** ⇒ 待裁决后接入：**4 个天然宿主全在 `MiThermometer_task()`（loop）** —— `DATA_DECODED`=`:468 if` / `DECODE_FAIL`=`:468 else` / `SENSOR_LOST`=`:362` / `SCAN_DISABLED`=`:373-382`。★ **callback 禁令根本不会被触发**（`onResult()` 只有 MAC 过滤+memcpy+`xQueueSend`，无可记录事实）。★ **唯一 Flash 风险 = `DECODE_FAIL`(WARN)**：bindkey 错误场景 20 条/min ⇒ 496 条环 ≈**25 min** ⇒ **必须模块内窗口聚合**（复用 `s_scan_fail_count`，零 LogManager 改动） | Phase 5 | **中**（比原判"高"降级，因宿主全在 loop） |
+| 11 | BLE | ✅ **已接入 4 个（Phase 5-C，2026-09-21，`70b0c76`）** | ✅ **4**（`0x0901/0x0902/0x0903/0x0904`，**零新增**） | ✅ **已完成**：4 处埋点**全在 `MiThermometer_task()`（loop）**；★ **callback（`onResult()`）内 `log_emit` 站点 = 0**（objdump 证明）—— 该回调只有 MAC 过滤 + memcpy + `xQueueSend`，无可记录事实；★ `DECODE_FAIL` 走**模块内 60 s 窗口聚合**（task 首行节拍器）⇒ bindkey 错误场景 **20 条/min → 1 条/min**（Flash 环 25 min → 8.3 h）；★ 未接入项：队列满丢包（**无 ID** ⇒ `LV-3`）/ `BLE_INIT_FAILED`+`BLE_QUEUE_FULL`（需新增 ID，未批准）/ 失败原因分类（需改 `lywsd03_decrypt()` 签名，延期）；**仅改 `MiThermometer.cpp` `+74/−0`**，RAM **+8 B** / Flash **+256 B**；**上板验证未执行**（无串口设备） | Phase 5-C | **低**（已完成，宿主全在 loop + 聚合已落地） |
 | 12 | Command/Event/OLED/Registry | ✅ **Command=P2-J / Event=P2-M / Registry=P2-L 完成**；OLED=**判定修正为"缺判据"**（`OLED-1`） | ✅ | 侧信道聚合 | P2 / Phase 5 | 低 |
 | — | **System/Boot `0x01xx`** | **12 个 ID 整段零宿主**（`grep LOG_SYS_` 仅 1 行注释） | ✅ **全部已冻结** | 🔴 **★ Phase 5 判定为最高优先级接入项**：`system_command.cpp:222` **已缓存 `esp_reset_reason()`**、`:97` **已有名称映射表** ⇒ **有 ID、有判据、有宿主，只差接线**；全部为**启动期一次性**记录 ⇒ **零频率风险、零 Flash 压力**。接入前需裁决：`0x0106 FS_MOUNT_FAILED` 与 `LOG_STG_FS_UNAVAILABLE`(0x0301) 去重；`HEAP_LOW` 门控策略 | **Phase 5** | **极低** |
 
