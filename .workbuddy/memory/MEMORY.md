@@ -42,6 +42,9 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - Action/Trigger 生命周期 `reset→start→poll→SUCCESS/FAILED`，状态放 `inst->runtime` 禁 static
 - **内存**：**栈永远在内部 RAM，PSRAM 只能用于堆**；**>1KB 结构禁止上栈**（loopTask 16KB，余量≈6.5KB）；**`MALLOC_CAP_SPIRAM` 优先、失败回退 `MALLOC_CAP_8BIT`**；`-DARDUINO_LOOP_STACK_SIZE=16384` 与 PSRAM 都要保留；ArduinoJson 7.4.3 **无** PSRAM 支持
 - **Config**：业务管参数合法 → ConfigManager → JsonStorage → LittleFS；双版本 Active+Backup（`uint8_t` 递增、**不用时间戳**）；**原子写** tmp→校验→旧 Active 转 Backup→tmp 转 Active；**Boot Validation**；Cloud 改动**一律重启生效**；新增模块改 4 处：`CONFIG_MODULE_COUNT`、`kModuleNames[]`、模块名宏、`data/config/<m>.json`
+- **★ 改设备端配置必须"set + save"两步**：`config_set`（`exec_set_field` `:2341`）**只改 RAM + 置 dirty，不落盘**（回 "restart required"）；**必须**再发 `config_save`（`exec_save` `:2716` → `save_module` 落盘 + 自动安全重启 10 s）。或直接用 `{"cmd":"system","ob":"restart"}`（内部先 save 再重启）
+- **★ `system/wifi_config` 命令有缺陷**：`config_update_wifi()` 只置 dirty、**不 save_module 不安排重启**，却回 `"status":"success"` ⇒ **改 WiFi 看似成功、重启后回退旧值**。改 WiFi 要走 `config_set`+`config_save`。**待修**（统一到 `set_field` 写入入口）
+- **★ 设备端配置可能与仓库 `data/` 不一致**：曾出现设备端 `wifi.json` 残留测试值 `__P2C_NOAP__`（仓库搜不到）⇒ 排障时**先读设备端实值**（串口日志 `Connecting to:<SSID>` 或 `config_query`），**不要默认仓库 `data/` 就是设备端现状**
 
 ## Critical Operation（Safe Restart V2）
 - 全系统**唯一** `ESP.restart()` 在 `system_command.cpp:312`；接入 ConfigManager（Save 成功才 release+request，**失败不 release 不重启**）/ Workflow（每 Workflow、每临时 Action 各 ±1）/ TimeManager（**仅 RTC 写**）；**不接入** ComputerReset
