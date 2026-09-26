@@ -218,6 +218,35 @@ workflow 的增删改查属 WorkflowManager 职责，不在本模块。
 > ① 本命令 ② 5 分钟倒计时到点 ③ 主动 `config_restart`
 > 所以：想立刻落盘就发 save；不发的话重启前也会自动保存，但中途断电会丢。
 
+### 4.5.1 推荐用法：一次性修改多项（UI / 云端）
+
+**设计意图**：`config_set` 只是「暂存到 RAM」，**落盘 + 重启是独立的一步**。
+这样 UI 可以允许用户在一个窗口期内**连续改多项**，最后统一下发一次 `config_save`
+完成落盘与重启 —— 避免「改一项就重启一次」的荒谬体验。
+
+```text
+{"c":"system","i":"u1","p":{"o":"config_set","module":"weight","key":"scale","value":750}}
+{"c":"system","i":"u2","p":{"o":"config_set","module":"weight","key":"filter_samples","value":15}}
+{"c":"system","i":"u3","p":{"o":"config_set","module":"valve","key":"safety_timeout_sec","value":2}}   ← 跨模块也可以
+{"c":"system","i":"u4","p":{"o":"config_save"}}                        ← 全流程只发一次
+```
+
+| 契约 | 说明 |
+|---|---|
+| **窗口期 5 分钟**（`CONFIG_RESTART_TIMEOUT_MS`） | 每次成功的 `config_set` 都会把倒计时**重置为完整 5 分钟** —— 从「最后一次修改」起算，而不是第一次 |
+| **跨模块累积** | 一次 `config_save` 会落盘**所有** dirty 模块，不限于最后改的那个 |
+| **不 save 的兜底** | 5 分钟到点自动 `config_save()` + 重启 ⇒ 不会丢数据；但**中途断电会丢** |
+| **只重启一次** | `config_save` 成功后才统一请求重启（10 s 安全窗口），不是每个 `config_set` 各重启一次 |
+| **幂等** | 无 dirty 时 `config_save` 返回 `{"saved":false,"dirty":false}`，**不算错误** |
+| ⚠️ **写操作互斥** | 修改期间占用 Critical Operation；设备已进入重启流程（10 s 窗口）时，新的 `config_set` 会被拒绝 |
+
+**UI 建议流程**：进入设置页 → 用户逐项修改（每项发 `config_set`，UI 在本地维护「待保存」标记）
+→ 用户点「保存」→ 下发**一次** `config_save` → 设备落盘并重启。
+若用户 5 分钟内未点保存，设备会**自动保存并重启**（UI 应据此提示用户）。
+
+> ⚠️ 所有修改都**需要重启才生效**（配置在启动时加载），
+> 因此 `config_set` 回包里的 `"restart required"` 是**正常语义，不是错误**。
+
 ### 4.6 config_restart —— 重启 / 取消重启
 
 ```json
