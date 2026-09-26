@@ -134,7 +134,7 @@ WiFi 通 → cloud_event_callback(EVENT_WIFI_CONNECTED)
 设备**同时支持**两种下行报文格式，由是否存在 `c` 字段判定：
 
 ```c
-bool compact = !doc["c"].isNull();    // cloud_manager.cpp:1048
+bool compact = !doc["c"].isNull();    // cloud_manager.cpp:1154
 ```
 
 | | **旧格式**（长字段，调试首选） | **新格式**（紧凑字段，正式） |
