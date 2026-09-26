@@ -58,6 +58,8 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **严格 Contract**：Step `type` 必填、`steps>16`、`params>8` 一律**整体拒绝(11)**
 - **四条易踩**：① `stable_id` 按 `runtime_id` 字母序生成，新增/改名会让后续**整体平移**；② `enable` 缺省两路径不一致（JSON `true`/BIN `false`）⇒ 永远显式传；③ `step.id` 写错**不报错**但永不执行；④ `registry_version` 变 ≠ 只有 Workflow 变
 - **形态约束**：内容必须嵌套在 `p.workflow` 下 —— 平铺会让 `p:{"id":"WF1"}` 被当完整 Workflow 而**静默清空 steps**。**定位字段与内容载荷绝不能共用同一 key**
+- **★ 下行紧凑格式由「有无 `c` 字段」判定**（`cloud_manager.cpp:1154`）：**无 `c` = 旧格式**（`cmd`/`ob`/`id`/`pl`，**原样透传、零版本校验，最稳**）；**有 `c` = 新格式** —— 且 `c:"action"` **与** `c:"execute_action"` **都**走 action 分支，**必须带 `v`=registry version、`k`=stable_id 且必须匹配**，否则回 `version mismatch` 且**不执行**（这是"旧命令没响应"的真相：带 `c` 却漏 v/k）
+- **★ ComputerReset 是 Action、不是 system 命令**（runtime_id=`COMPUTER_RESET`，GPIO8 脉冲 800 ms；2026-09-26 实测 `stable_id=0`、`registry version=3`）。正确下发：`{"cmd":"execute_action","ob":"COMPUTER_RESET","id":"<唯一id>"}` 或 `{"c":"action","i":"<唯一id>","v":3,"k":0,"p":{}}`。**`v`/`k` 随 registry 增删漂移**（stable_id 按 runtime_id **字母序**，新增 action 会让后续整体平移）⇒ **APP 绝不可写死定值**，应先 `{"c":"registry","i":"<id>","k":0}` 拉取缓存
 
 ## LogManager 摘要（**细节与铁律 1–32 在 `MEMORY-logmanager.md`**）
 - 冻结：Record 128B v2 / 16 段×31 条 / COW 零原地改 / ACK **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）
