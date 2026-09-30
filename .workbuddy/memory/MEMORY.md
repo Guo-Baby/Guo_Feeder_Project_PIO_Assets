@@ -4,30 +4,41 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 > 专题：**LogManager（含铁律 1–32） → `MEMORY-logmanager.md`** · 每日日志 → `YYYY-MM-DD.md`（append-only，含各阶段 commit 与验证数据）
 
 ## 文档索引
-`readme.md`(架构) · `需求文档.md` V2.1 · **`未修复的问题.md`（全项目问题权威清单：`LOG-n`/`VALVE-n`/`R-n`/`T-n`/`EVT-n`/`LV-n`/`P0-n`/`DSP-n`/`PROTO-n`/`OLED-n`）** · `AI_RULES.md` · Config：`config_manager接口文档.md`+`jsonstorage开发架构.md`+`json_storage接口文档.md`+`bin_storage开发说明0910.md` · `system_command接口文档.md`+`critical_operation接入规范.md` · `cloud_protocol.md`(V2.0) · `workflow_cloud_interface.md` · `docs/LogManager-Integration-Guide.md`+`docs/P2_Log_Integration_Matrix.md` · `log模块历史/`
+`readme.md`(架构) · `需求文档.md` V2.1 · **`未修复的问题.md`（全项目问题权威清单：`LOG-n`/`VALVE-n`/`R-n`/`T-n`/`EVT-n`/`LV-n`/`P0-n`/`DSP-n`/`PROTO-n`/`OLED-n`）** · `AI_RULES.md` · Config：`config_manager接口文档.md`+`jsonstorage开发架构.md`+`json_storage接口文档.md`+`bin_storage开发说明0910.md` · `system_command接口文档.md`+`critical_operation接入规范.md` · `cloud_protocol.md`(V2.0) · `workflow_cloud_interface.md` · **`docs/Cloud-APP-Platform-Plan.md`（云端/安卓端平台选型权威）** · `docs/LogManager-Integration-Guide.md`+`docs/P2_Log_Integration_Matrix.md` · `log模块历史/`
 
-## 当前阶段（2026-09-22 · **LogManager P2 已冻结**）
-- **★ LogManager P2 已完成并冻结**（`196ac28` `docs(progress): freeze LogManager P2 completion`，零代码改动）。**完成判定 5 条全达成**：① 主要业务模块均具备事件观测能力 ② Storage 持久化链路可观测 ③ Workflow BIN 数据完整性失败可观测 ④ 初始化阶段日志链路完整 ⑤ 静默失败路径完成第一轮覆盖。**权威最终覆盖状态 = `docs/P2_Log_Integration_Matrix.md` §15**（§13 降为设计期视图）；后续事项 = `未修复的问题.md`「📌 LogManager 后续事项」
-- **★ P2 明确不包含（转入独立 backlog，不再扩大埋点范围）**：OLED（`OLED-1`，缺判据维持不埋）· `test_mqtt` 生产路径清理 · MQTT 凭据串口泄露整改 · Reliability 专项（含 `R-7`/`R-8`）
-- **LogManager 埋点：Phase 3/4/5-A/B/C/6-A/6-B/6-C/7-1 全部完成并已提交**（commit 与验证数据见 `2026-09-2x.md`）—— 已接入 **16 模块**：Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·**BLE(MiThermometer)**·**bin_storage**·**workflow_storage**（json/file 走桥接）；零宿主 23（定义 102 · 有宿主 79）
-- **6-A** = `bin_storage` 23 站点桥接上云（仅改 `main.cpp`，零新增 ID）· **6-B** = `workflow_storage` meta 损坏（复用 Storage 段 `0x0303`）+ `workflow.cpp` 加载分配失败（沿用 `0x040B`）
-- **6-C ✅（`6d40944`）** = `load_meta()` 剩余 3 处静默失败 → 全部复用 **`LOG_STG_READ_FAILED` 0x0306**（ERR_CODE：尺寸非法=`FORMAT_INVALID(12)`；read 失败/短读均=`READ_FAILED(6)`）；仅改 `workflow_storage.cpp` +52/−0；RAM +0、Flash +176
-  - ✅ **已定案（用户裁决 09-22，不扩大 diff）**：**允许同一 EventId 按影响范围使用不同 Level** —— 0x0306 在 6-C（meta 无法加载）用 **ERROR**、在 7-1-A（单 slot 丢失）用 **WARN** 均保留；**不要**改 `log_events.h` 注释或任何一方代码。✅ 已于 7-2 补入文档（`未修复的问题.md`「LogManager 后续事项 #3」+ Matrix §15）；另 **6-C 点 2/3 载荷完全相同 ⇒ 云端不可区分**，细化需捕获 `bin_storage_read()` 返回码或新增枚举值
-- **7-1 ✅（`bb2b3cc`）** = P2 收尾三件：**DEF-1**（`main.cpp` 注册前置，二进制级已证顺序反转）+ 单 Slot BIN 加载失败（`workflow.cpp`，0x0306/**WARN**，MODULE+SLOT+ERR_CODE）+ `stage_process()` rename 失败（`workflow_storage.cpp`，0x0302/ERROR，MODULE+PATH=2+ERR_CODE=9+STAGE）；3 文件 +59/−3；**RAM +0、Flash +120**；`LOG_P_MODULE` 在 `workflow.cpp` 用字面量 `3u`（该常量是 workflow_storage.cpp 私有）
-- **关键文档**：`Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md`、`Phase5-ABC执行计划0920.md`、`log模块历史/Phase4-Dispense边界审查0920.md`、`log模块历史/R7-R8-后续评审与系统性能权衡0920.md`
-- **★ 6-D 审计确认的日志缺口**：**① `workflow.cpp:1667` 单 slot BIN 加载失败 ✅ 7-1 已接入**（0x0306/WARN）· **② `workflow_storage.cpp:751` `stage_process()` rename 失败 ✅ 7-1 已接入**（0x0302/ERROR；**恢复路径 + 保存路径共用**）· ③ `:1525` 保存发布 rename 失败 ④ `:1500` meta commit 失败 ⑤ `:1450/:1464` save readback 失败 / crc mismatch ⑥ `main.cpp:447` LittleFS mount 失败（对应零宿主的 `LOG_SYS_FS_MOUNT_FAILED` 0x0106）—— ③~⑥ **仍为 P3 候选**
-  - **接入可行性**：候选①②可复用既有 **`LOG_P_SLOT`(0x01)** + `LOG_P_ERR_CODE`(0x0C) + `LOG_P_MODULE`(0x1D)，**零新增 ParamId**；EventId 沿用 `0x0306` 或占用 `0x04xx` 空闲位（**0x040D+**）
-- **★★ DEF-1 ✅ 已修（7-1 / `bb2b3cc`；原为 Phase 6-A 残留缺陷 P1）**：`main.cpp:499` `bin_storage_set_log_callback()` 注册**晚于** `main.cpp:494` `bin_storage_init()`；而 `bin_storage.cpp:153` 在 init 内 `bin_log("E","init: FileStorage unavailable")`，`bin_log()`（`:38-41`）在回调为 `nullptr` 时**直接 return 且无串口输出** ⇒ **bin_storage 初始化期 ERROR 被静默丢弃**，6-A 的"23 站上云"实为 22 站。**已修：把注册移到 init 之前**（与 json/file 桥接同序）；**二进制级已证顺序反转**（`4201bc20 set_cb` → `4201bc23 init`）
-- **★ DEF-2（安全，非日志）✅ 已登记（7-2 → `未修复的问题.md`「LogManager 后续事项 #2」）**：`cloud_manager.cpp:1464-1470` / `:1383-1390` 把 **MQTT username / password 明文打到串口**；建议删除敏感字段或脱敏，**不在 P2 处理**
-- **其它待开工**：`load_meta()` 三处失败分支的 `stage_cleanup_all()` 不对称（`:946` 调用 / `:971`·`:994` 不调用）· `LV-1`/`LV-2`/`LV-3` · `PROTO-1`/`PROTO-2` · `P0-1b` · `P0-4` · `OLED-1`（OLED 全程跳过）
-- **非日志待办**：`system_state` 的 `state_table[].type` 死存储 · **test_mqtt ✅ 已登记（7-2 → `未修复的问题.md`「LogManager 后续事项 #1」）** —— 319 行仍编译进固件、`main.cpp:618` 每 loop `test_mqtt_task()`、`main.cpp:532` 注册测试 workflow action；建议删除生产路径或加 `TEST_MQTT_ENABLED`
-- **`R-7`/`R-8` 仍 DEFERRED**（Phase 5 审查未重新升级，优先级/状态/结论均未改动）
+## ★★ 当前阶段（2026-09-30 · **云端 / 安卓端平台规划起步**）
+> **权威文档：`docs/Cloud-APP-Platform-Plan.md`**（含全部核实来源）；本节只留"铁律"。
+- **目标架构**：设备侧 **Homie 5 自描述（复用 Capability Registry）** + 前端 **MQTT-Tiles**（MIT/Vue/Quasar）托管 **Cloudflare Pages** + **APP 直连 EMQX WSS 8084** + **Worker 仅负责鉴权/绑定/临时凭据** + **D1 经 EMQX 数据集成落历史**
+- **★ 控制平面 / 数据平面分离**（核心决策）：低频控制走 Worker（登录 → `GET /api/device/<id>/credential` → 返回**一次性 MQTT 临时凭据**）；高频数据 **APP 直连 EMQX**，**完全不消耗 Worker 请求额度**；落库由 EMQX 规则引擎异步 `→ HTTP → ingest Worker → D1`
+- **★ 四条联网核实的硬约束**（决定架构，勿凭记忆推翻）：
+  1. **EMQX Serverless 只开 8883(mqtts) + 8084(wss)**，1883/8083 **不支持**；WSS URL **必带 `/mqtt` 路径**（`wss://<域名>:8084/mqtt`）；**必须 SNI**，否则拒连(错误码 `-5`)；强制 TLS 无明文
+  2. **CF Worker 免费 10ms CPU/请求**，但**外部 `fetch()` 等待不计 CPU** ⇒ 可做"IO 为主"转调（EMQX REST / D1）；**禁止**在 Worker 内压缩/解析大 JSON、长循环（报 `Error 1102`）；100k req/天
+  3. **D1 免费 100k rows write/天**；**KV 仅 1,000 write/天** ⇒ **历史数据必须落 D1，绝不能用 KV**
+  4. **EMQX 数据集成（规则引擎 → HTTP）在 Serverless 可用**，Beta 期免费 ⇒ D1 落库**设备侧零改动**
+- **★ Homie 5 要点**：根主题 `homie/5/<device-id>/`；`homie` 域**可自定义**、**版本段 `5` 不可改**；控制器发现订阅 `+/5/+/$state`；`$state` **必须 retained + LWT=`lost`**；生命周期 `init`→**`ready`**（`online` 是 Homie 4 旧值）；`$description` **retained** 且**仅可在 `$state`=`init`/`disconnected`/`lost` 时变更**；写属性走 `<node>/<prop>/set`；空 payload on `$state` = 设备注销
+- **★ 映射复用度极高**：`capability_export_*_registry()` → `$description` JSON；`registry.version`（uint32 递增）→ `$description.version`；`workflow.variant`/`object_version` → 已有；挂 `LOG_REG_REBUILT` 回调重发即可
+- **★ 落地方案**：新增 `homie_bridge`（放 CloudManager 内，**只做序列化/主题映射**），写入方向统一转成现有命令 → 走 **CommandManager**（复用 `cmd_id` 去重 + `v`/`k` 校验）；**不新增 Action/Trigger/EventId/ParamId**
+- **★ Homie domain 选 `homie` 而非 `guofeeder`**：MQTT-Tiles 默认按 `homie` 发现，改自定义域反而要改前端源码；**旧 `guo_feeder/up|down|log` 保留不动**，Homie 树是**并列的面向 UI 的投影** ⇒ 即使 Homie 层出问题主链路不受影响
+- **★ 前端选 MQTT-Tiles**：官方**没有自动发现逻辑**，必须自己补（`subscribe('homie/5/+/$state')` → `ready` → 取 `$description` → 动态生成 tile）；**必做项**：静态 tile 无法生成唯一 `id`，而设备**对重复 `id` 静默丢弃**（`MQTT_DUP_CACHE_SIZE=10`/`TTL 30s`）⇒ button tile 每次发布必须生成唯一 `id`
+- **★ 安卓端**：**Eclipse Paho Android 2018 停更**（需 Jetifier、无 MQTT 5.0）⇒ **弃用**；用 **HiveMQ MQTT Client**（`com.hivemq:hivemq-mqtt-client`，MQTT 5.0、异步非阻塞、内置指数退避重连）；先 **WebView 壳**（一套代码两端）→ 需要后台常驻/蓝牙配网再上原生
+- **★ 本地工具全落 D 盘**（脚本 `docs/scripts/setup-cloud-app-env.ps1`，默认 dry-run）：npm 全局包+缓存 → `D:\Guo_Feeder_Project\tools\{node-global,npm-cache}`；Android Studio/SDK/JDK17/`GRADLE_USER_HOME`/AVD → `D:\Android\*`。**已具备**：Node 22.22.2、Git、Python 3.13.12、PlatformIO 6.2.0、**MQTTX（已装）**、VS Code、Wireshark；**待装**：Wrangler、pnpm、Android Studio、JDK17
+- **⚠️ `.ps1` 脚本必须纯 ASCII**：PowerShell 5.1 读无 BOM 的 `.ps1` 按 ANSI 解码 ⇒ **中文注释直接 `ParserError`**，首版实际踩到
+- **★★ 量产阻塞项（写 APP 前必须先解决）**：**6.1 Topic 无 `device_id`**（`cloud_protocol.md` §1.1 明确"Topic 是完整字符串，设备不会替换 `{uid}`"）⇒ **两台设备会都订阅同一 `down`，一条命令两台都执行**；**Homie 5 强制 `<device-id>` 唯一 ⇒ 不通则 Homie 树立不起来**；建议模板化 `guo_feeder/<device_id>/down` · **6.2 EMQX ACL 必须按 device_id 隔离**（否则 APP 复用设备账号即可控制任意设备）· **BT-1** 云端**从不返回 `log_ack`** ⇒ Flash 日志段**永不回收** · **DEF-2** 明文打印 MQTT 账号密码到串口 · **9.7** `platformio.ini` 未固定版本
+- **分阶段**：P0 Topic 模板化+`device_id` → P1 EMQX ACL+临时凭据接口 → P2 `homie_bridge` → P3 EMQX 数据集成→ingest Worker→D1 → P4 MQTT-Tiles 改版 → P5 Pages 部署+WebView 壳 → P6（可选）原生 Kotlin
+- **用户待确认**：① Homie domain（建议 `homie`）② 前端（建议 MQTT-Tiles）③ 安卓路线（建议先壳）④ `device_id` 来源 ⑤ 是否现在装 Android Studio（约 25–30 GB）
+
+### LogManager P2（2026-09-22 **已冻结**，细节见 `2026-09-2x.md` 与 `MEMORY-logmanager.md`）
+- **P2 完成判定 5 条全达成**；权威覆盖状态 = `docs/P2_Log_Integration_Matrix.md` **§15**。**已接入 16 模块**（Storage·Config·WiFi·Cloud·Time·Workflow·Weight·Valve·Command·ComputerReset·Registry·Event·DispenseGuard·BLE·bin_storage·workflow_storage；零宿主 23）
+- **P2 明确不包含**（转独立 backlog，不再扩大埋点）：OLED(`OLED-1`)·`test_mqtt` 生产路径清理·MQTT 凭据串口泄露整改·Reliability 专项(`R-7`/`R-8` DEFERRED)
+- **★ 已定案（用户裁决 09-22）**：**允许同一 EventId 按影响范围使用不同 Level** —— `0x0306` 在 6-C 用 **ERROR**、在 7-1-A 用 **WARN** 均保留；**不要**改 `log_events.h` 注释
+- **★ P3 候选日志缺口**（`workflow_storage.cpp`）：`:1525` rename 失败 · `:1500` meta commit 失败 · `:1450/:1464` save readback/CRC 失败 · `main.cpp:447` LittleFS mount 失败（`0x0106` 仍零宿主）
+- **其它待开工**：`load_meta()` 三处失败分支的 `stage_cleanup_all()` 不对称 · `LV-1..3` · `PROTO-1/2` · `P0-1b` · `P0-4` · `state_table[].type` 死存储
 
 ### ★ Dispense 边界（Phase 4 审查定论；细节见报告文件）
-- **Dispense 本体不存在**：只有 `dispense_guard.cpp/.h`；**无电机/步进/出粮状态机**；重量反馈闭环属 **Water 域**（Workflow：`VALVE_OPEN` → `weight_decrease` Trigger → `VALVE_CLOSE`）
+- **Dispense 本体不存在**：只有 `dispense_guard.cpp/.h`；**无电机/步进/出粮状态机**；重量反馈闭环属 **Water 域**（`VALVE_OPEN` → `weight_decrease` Trigger → `VALVE_CLOSE`）
 - **★ 命名冲突**：代码里 "Dispense" = **供水**（`0x05xx`）；**出粮已叫 "Motor"**（`0x0Fxx` 已预留）⇒ 推荐 `DispenseManager`（编排）+ `Motor`（驱动）
 - **三硬约束**：① 重量反馈必用 `weight_get_gram()`（读 System State 会得 30 s 陈值）② `timeout_ms` 必填并钳位 ≤60 s（Temp Action FIFO 队头阻塞）③ **DispenseGuard 不能守护出粮**（只关水阀）；`DSP-1..10` 未决（P0 = 命名 / 日志段 / 队头阻塞）
-- **Phase 4 落地**：`0x0511` 埋在 `dispense_guard_event_callback()`（过滤后、`valve_force_close()` **前**）⇒ 记"**决策**"，与 Valve 侧"**动作**"（`0x0505`）互补：后者丢次数，前者 **Σ `LOG_P_COUNT` = 真实响应次数**；`DISPENSE_CAUSE_*` 与 `VALVE_CAUSE_*` 同值对齐。**`0x0501–0x0504` 未占用**（语义=一次供水过程生命周期，安全响应是**终止**供水 ⇒ 复用 `START` 会伪造事实）
+- **`0x0511`** 埋在 `dispense_guard_event_callback()`（过滤后、`valve_force_close()` **前**）⇒ 记"**决策**"，与 Valve 侧"**动作**"（`0x0505`）互补：后者丢次数，前者 **Σ `LOG_P_COUNT` = 真实响应次数**。**`0x0501–0x0504` 未占用**（安全响应是**终止**供水 ⇒ 复用 `START` 会伪造事实）
 
 ### ★★ 铁律 29–32（**完整论述在 `MEMORY-logmanager.md`**）
 - **29 纯转发模块的埋点数天然为 0**：列全部数据流 → 逐个问"**定义点**在哪"（在别的模块 ⇒ 别人记）→ 只剩"自己失效"这类自指事实时才记。**"总线类模块记几条"没有统一答案**
@@ -42,11 +53,10 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - Action/Trigger 生命周期 `reset→start→poll→SUCCESS/FAILED`，状态放 `inst->runtime` 禁 static
 - **内存**：**栈永远在内部 RAM，PSRAM 只能用于堆**；**>1KB 结构禁止上栈**（loopTask 16KB，余量≈6.5KB）；**`MALLOC_CAP_SPIRAM` 优先、失败回退 `MALLOC_CAP_8BIT`**；`-DARDUINO_LOOP_STACK_SIZE=16384` 与 PSRAM 都要保留；ArduinoJson 7.4.3 **无** PSRAM 支持
 - **Config**：业务管参数合法 → ConfigManager → JsonStorage → LittleFS；双版本 Active+Backup（`uint8_t` 递增、**不用时间戳**）；**原子写** tmp→校验→旧 Active 转 Backup→tmp 转 Active；**Boot Validation**；Cloud 改动**一律重启生效**；新增模块改 4 处：`CONFIG_MODULE_COUNT`、`kModuleNames[]`、模块名宏、`data/config/<m>.json`
-- **★ 改设备端配置建议"set + save"两步**：`config_set`（`exec_set_field` `:2341`）**本身只改 RAM + 置 dirty + 安排 5 分钟重启**（回 "restart required"），**不立即落盘**；`config_save`（`exec_save` `:2716` → `save_module` 原子写 + `version++` + 清 dirty）才立即落盘并触发安全重启（10 s）。**兜底**：即使漏发 save，5 分钟后 `restart_timer_check()` 会自动 save 再重启 ⇒ **不会丢数据**。也可用 `{"cmd":"system","ob":"restart"}`（内部先 save 再重启）
-- **`system/wifi_config`（`config_update_wifi()`）经实测**无缺陷**：它调 `set_begin(...,true,...)`（`:1596-1668`）⇒ 置 dirty + **`restart_timer_start()` 启动 5 分钟倒计时**；`restart_timer_check()`（`:1020`）到点**先 `config_save()` 落盘再请求重启**（失败则重置倒计时重试、保持 critical op）⇒ **会自动落盘，仅延迟 ≤5 分钟**（要立即生效才用 `config_set`+`config_save`）。⚠️ 2026-09-26 曾误判为"只置 dirty 不落盘"，**09-27 实测纠正**
-- **★★ config 落盘链路已实测验证正确（2026-09-27，纯 MQTT 全链路）**：新增→修改→删除 weight 字段 + `config_save`，**每次真实重启后查询均持久**；`version.json` 版本号逐次 +1；`config_save` 回 `{"saved":true,"dirty":false}` —— **`dirty=false` 是落盘成功的标志**（`save_module` 原子写成功后才清），不是"只清了 dirty"。**无需修复**。另：设备重启后发上线通告 `{"cmd":"system","id":"online","src":"device"}`（**未压缩**，用 `cmd`/`id` 而非 `c`/`i`）
-- **★ 设备端配置可能与仓库 `data/` 不一致（已遇 4 例，2026-09-27 全量对比）**：`wifi.ssid=__P2C_NOAP__`（仓库搜不到）· **`weight.zero_offset=-1`（应 `-800750`，否则称重不准）** · **`valve.safety_timeout_sec=2`（应 `300`；2 秒会让阀门开 2 s 就被强制关 + 推 `EVENT_VALVE_ERROR`，连累 DispenseGuard）** · **`rtc.enable`：板子未焊 RTC 芯片（2026-09-28 用户确认）⇒ `false` 才是正确值，仓库 `data/config/rtc.json` 已同步改 `false`**（未来焊上 PCF8563@0x51 后须改回 `true`，否则每次 uploadfs 都会把它改错）⇒ 排障/点检**先读设备端实值**（`config_query`），**不要默认仓库 `data/` 就是设备端现状**
-- **★ 修正设备端配置用"精确 `config_set`+`config_save`"，不要 `uploadfs`**：uploadfs = **整区重建 littlefs** ⇒ ① 设备端独有文件**全部丢失**（`/factory/*.json` 备份、`/config/.commit`、**设备上配置的 workflow BIN**）② `version.json` 被仓库值（全 1）覆盖 ⇒ **版本号重置**（version 仅用于云端乐观锁与新旧判断，模块文件不含 version ⇒ 功能无碍，但云端/APP 缓存的旧版本号需重新 query 同步；首次带 `expect_version` 的修改会被拒一次）
+- **★ 改设备端配置 = "set + save" 两步**：`config_set`（`:2341`）**只改 RAM + 置 dirty + 排 5 分钟重启**（回 "restart required"），**不立即落盘**；`config_save`（`:2716` → `save_module` 原子写 + `version++` + 清 dirty，回 `{"saved":true,"dirty":false}`）才立即落盘并安全重启（10 s）。**兜底**：漏发 save 也会在 5 分钟后由 `restart_timer_check()` 自动 save+重启 ⇒ **不丢数据**。`system/wifi_config` 走 `set_begin(...,true,...)` 同样自动落盘（**实测无缺陷**；09-26 曾误判为"只置 dirty"，09-27 纠正）。也可用 `{"cmd":"system","ob":"restart"}`（内部先 save）
+- **★★ config 落盘链路已实测验证正确（09-27 纯 MQTT 全链路）**：新增→修改→删除字段，**每次真实重启后查询均持久**，`version.json` 逐次 +1。**无需修复**。设备重启后发上线通告 `{"cmd":"system","id":"online","src":"device"}`（**未压缩**，用 `cmd`/`id` 而非 `c`/`i`）
+- **★ 设备端配置可能与仓库 `data/` 不一致（已遇 4 例）**：`wifi.ssid=__P2C_NOAP__` · **`weight.zero_offset=-1`（应 `-800750`，否则称重不准）** · **`valve.safety_timeout_sec=2`（应 `300`；2 秒会让阀开 2s 就被强关 + 推 `EVENT_VALVE_ERROR`，连累 DispenseGuard）** · **`rtc.enable=false`（板子未焊 RTC 芯片，09-28 用户确认；仓库 `data/config/rtc.json` 已同步为 `false`）** ⇒ 排障/点检**先读设备端实值**（`config_query`），**不要默认仓库 `data/` 就是设备端现状**。未来焊上 PCF8563@0x51 后须改回 `true`，否则每次 uploadfs 都改错
+- **★ 修正设备端配置用"精确 `config_set`+`config_save`"，不要 `uploadfs`**：uploadfs = **整区重建 littlefs** ⇒ ① 设备端独有文件**全丢**（`/factory/*.json`、`/config/.commit`、**设备上配的 workflow BIN**）② `version.json` 被仓库值（全 1）覆盖 ⇒ **版本号重置**（version 仅用于云端乐观锁，模块文件不含它 ⇒ 功能无碍；云端/APP 缓存的旧版本号需重新 query 同步）
 
 ## Critical Operation（Safe Restart V2）
 - 全系统**唯一** `ESP.restart()` 在 `system_command.cpp:312`；接入 ConfigManager（Save 成功才 release+request，**失败不 release 不重启**）/ Workflow（每 Workflow、每临时 Action 各 ±1）/ TimeManager（**仅 RTC 写**）；**不接入** ComputerReset
@@ -67,15 +77,15 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 ## LogManager 摘要（**细节与铁律 1–32 在 `MEMORY-logmanager.md`**）
 - 冻结：Record 128B v2 / 16 段×31 条 / COW 零原地改 / ACK **at-least-once ⇒ 云端幂等** / 无独立 Task（`log_task()` 在 loop）
 - **INFO 只上云不落 Flash；WARN+ 落 Flash** ⇒ 任何新 WARN 埋点都会扰动 496 条环的绝对计数。回归当前 **168/195**（26 MISS 全属 `R-7` 环境干扰）
-- **★ 三层职责（用户 09-22 定案）**：**`EventId` = 事实分类 · `Level` = 本次发生场景的严重度 · `Param` = 具体上下文** ⇒ **同一 EventId 允许按影响范围用不同 Level**。例 `LOG_STG_READ_FAILED`：**ERROR** = 系统级/核心存储读取失败（meta 无法加载）；**WARN** = 单条业务数据丢失（单个 workflow slot）。`log_events.h` 里的 Level 注释只是**典型值**，不是约束
-- **刻意不埋**：LogManager 自身 5 个 ID ⇒ 走**批次头侧信道计数**，**是设计非缺口**
+- **★ 三层职责（用户 09-22 定案）**：**`EventId` = 事实分类 · `Level` = 本次场景的严重度 · `Param` = 具体上下文** ⇒ **同一 EventId 允许按影响范围用不同 Level**。`log_events.h` 的 Level 注释只是**典型值**，不是约束
+- **刻意不埋**：LogManager 自身 5 个 ID ⇒ 走**批次头侧信道计数**（**是设计非缺口**）
 - **仍无宿主**：`CFG_FACTORY_RESET`(0208)·`CLOUD_FRAG_FAIL`(0706)·`TIME_NTP_FAIL`(0802)·`OLED_INIT_FAILED`(0E01)；**需新增检测**：`VALVE_OVERFLOW_RISK`(0507)=`P0-4`
-- **★ 跨段复用先例**：Workflow 域的 `workflow_storage` meta 损坏**复用 Storage 段 `0x0303`**（理由：BIN 持久化数据损坏 = 存储完整性失败，非 Workflow 业务错误）—— 后续跨域复用须在文档显式记录理由
-- **★ 新增 WARN+ 埋点前先判宿主频率**：`workflow_storage` meta 路径仅启动期一次 ⇒ 无需门控；`workflow.cpp` 保存路径每 loop 可达 ⇒ **必须有边沿锁**
+- **★ 跨段复用先例**：Workflow 域 meta 损坏**复用 Storage 段 `0x0303`**（BIN 持久化损坏 = 存储完整性失败，非业务错误）——后续跨域复用须在文档显式记理由
+- **★ 新增 WARN+ 埋点前先判宿主频率**：仅启动期一次 ⇒ 无需门控；每 loop 可达 ⇒ **必须有边沿锁**
 
-**铁律（完整 1–32 条在 `MEMORY-logmanager.md`）** —— 以下是跨模块通用的 4 条：
+**铁律（完整 1–32 在 `MEMORY-logmanager.md`）**，跨模块通用的 4 条：
 - **★ 精确计数前必须先清零**（`logt fwipe`+`mwipe`+`creset`+`reset`），否则"孤儿增量"易误判成门控失效
-- **★ 断言不能隐含"执行期间只有本用例在写日志"** ⇒ "改判据"＝删记账本体时就是降断言 ⇒ 正解是**测试隔离**
+- **★ 断言不能隐含"执行期间只有本用例在写日志"** ⇒ "改判据"（＝删记账本体）就是降断言 ⇒ 正解是**测试隔离**
 - **★ 门控只能加在"全部执行完成之后"**：纯事件型函数去重**绝不提前 return**；**"取值用于日志"的变量须在源头清零前取**
 - **★★ 折叠/去重/门控类验证用"定向注入"**：`logt fill <lv> <n> <EventId(hex)>`；**记录级核对须 ACK 前置**（与"跑回归禁注入 ACK"相反，区别只在**是否在跑回归**）
 
@@ -84,11 +94,11 @@ ESP32-S3 N16R8 宠物投喂/饮水 v0.7；主攻自动猫咪饮水（水箱+重�
 - **后果升级**：假跳变经 `EVENT_WEIGHT_ERROR` → DispenseGuard → **`valve_force_close()`** ⇒ **`R-3` 与 `R-8` 同根因**（污染安全功能）
 - **`R-8-A` 已修（`129606f`）**：`HX711::read()` 内 `wait_ready()` 无超时 ⇒ 掉线时 loop 永久挂起；修法＝`read()` 前二次 `is_ready()` 确认。**`R-8-B` 顺带解决**；**`R-8-C`** OPEN
 - **`SYS-1`** LogManager **无需新增性能限制**；**`SYS-2`** BLE 与 LogManager **无并发**（共用 loopTask）
-- **执行顺序铁律**：先修"会卡死/误动作的"，**再**修"让测试失准的"。⚠️ 修 `BT-1` 会使上行频次 `~1/15s → 2Hz`（**30×**）
+- **执行顺序铁律**：先修"会卡死/误动作的"，**再**修"让测试失准的"
 
 ## 其它模块要点（详见对应文档）
 - **TimeManager V2**：`time_init()` 必须晚于 `oled_init()`；RTC(PCF8563T,0x51) **复用 OLED 的 Wire，绝不 `Wire.begin()`**；**SNTP 陷阱**：IDF v4.4 COMPLETED **瞬时**并自动回落 RESET ⇒ **禁用 `status != IN_PROGRESS` 判成功**
-- **CloudManager**：两种下发格式（`compact = !doc["c"].isNull()`）—— 旧 `{"cmd":...,"ob":"<RUNTIME_ID>"}`（调试首选）/ 新 `{"c":"action",i,v,k}`；命令 `id` **每条唯一**；**协议级消息旁路 CommandManager**；**无应用层 TX 队列**、**离线直接返回 false 不排队**；`retry_interval` 是**死配置**
+- **CloudManager**：**无应用层 TX 队列**、**离线直接返回 false 不排队**；`retry_interval` 是**死配置**（声明未读）；**协议级消息旁路 CommandManager**
 - **烧录基线**：**`uploadfs` 整分区擦除**；`esptool write_flash 0x10000` **不碰** LittleFS；`data/` 被 gitignore ⇒ 用 `tools/gen_config_version.py`+`gen_workflow_bin.py` 重建（⚠️ `WF_STG_META_VERSION` 升级必须同步脚本）；**`bootstrap_version_file()` 必须在模块加载之后**
 
 ## 环境操作铁律（Windows + PlatformIO）
