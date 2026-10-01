@@ -2,7 +2,11 @@
 
 > 本目录存放 Guo Feeder 项目的**说明文档 / 接口文档 / 规范 / 归档**。
 > 源码在 `../src/`，工程总览见 `../readme.md`。
-> 整理日期：**2026-10-01**（根目录文档分类归位 + 历史归档）。
+>
+> ★ **新会话请先读 `../HANDOFF.md`** —— 项目当前状态 / 必读文档清单 / 下一步计划。
+>
+> 整理日期：**2026-10-01**（根目录文档分类归位 + 历史归档）；
+> **2026-10-02** 复核并修正过时内容、移出重复章节。
 
 ---
 
@@ -90,7 +94,7 @@
 |---|---|---|
 | `archive/log/` | LogManager 开发全过程：审计报告、详细设计规划、P1.1–P1.5 / P2F–P2N 各阶段报告与审查、Phase4/Phase5 边界审查、R7/R8 性能分析、板级测试报告 | 37 |
 | `archive/workflow/` | Workflow 改造历程：需求文档、架构适配 CommandManager 报告、storage 改造进度、cloud_sync 进度与测试报告、critical_operation 接入与自查 | 17 |
-| `archive/legacy/` | 其他一次性文档：`AI_TASK.md`（TimeManager V2 需求，已完成）、`computer_reset接入报告.md`、`config_version与workflow初始bin-进度.md`、`bin_storage开发需求.md`、`整理方案-文档与源码目录重构.md`（本次整理方案） | 5 |
+| `archive/legacy/` | 其他一次性文档：`AI_TASK.md`（TimeManager V2 需求，已完成）、`computer_reset接入报告.md`、`config_version与workflow初始bin-进度.md`、`bin_storage开发需求.md`、`整理方案-文档与源码目录重构.md`（2026-10-01 整理方案）、`readme-旧版云端协议速查.md`（2026-10-02 自 readme 移出的重复章节） | 6 |
 
 ---
 
@@ -115,4 +119,7 @@
 1. **新增模块说明 / 接口文档** → 放入对应分类目录，并回来更新本索引。
 2. **阶段报告 / 进度台账 / 一次性需求** → 完成后移入 `archive/<模块>/`，**不要留在根目录或分类目录**。
 3. **接口 / 协议变更** → 必须同步更新 `interfaces/` 下的权威文档。
-4. 根目录只保留：构建配置、AI 工程文档（`readme.md` / `AGENTS.md` / `AI_CONTEXT.md` / `AI_RULES.md`）。
+4. 根目录只保留：构建配置、AI 工程文档（`readme.md` / `AGENTS.md` / `AI_CONTEXT.md` / `AI_RULES.md`）
+   与**会话交接文档 `HANDOFF.md`**。
+5. **`readme.md` 只做「总说明」**：协议细节、示例、错误码表一律放 `interfaces/`，
+   避免同一内容两处维护后产生分歧（2026-10-02 已据此移出 1251 行重复内容）。
