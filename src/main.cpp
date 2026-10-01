@@ -8,6 +8,7 @@
 #include "storage/bin_storage.h"
 #include "automation/workflow_storage.h"
 #include "services/config_manager.h"
+#include "services/device_identity.h"
 #include "services/event_manager.h"
 #include "app/oled.h"
 #include "services/command_manager.h"
@@ -515,6 +516,8 @@ void setup()
     }
     system_state_init();
     config_init();
+    // P0-1：设备身份（必须在 wifi_init() / cloud_init() 之前；身份不依赖网络）
+    device_identity_init();
     event_manager_init();
     // =====================================================
     // 第二层：通信（依赖基础系统）
