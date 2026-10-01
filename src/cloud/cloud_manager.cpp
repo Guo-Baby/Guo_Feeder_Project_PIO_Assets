@@ -14,6 +14,8 @@
 #include "automation/capability_registry.h"
 #include "log/log_events.h"   // P1.4/P1.5：Log Topic 与 log_ack 常量（冻结契约）
 #include "log/log_manager.h"  // P2-D：Cloud/MQTT 日志埋点（只调 log_emit / log_arg_*）
+#include "services/topic_renderer.h"  // P0-3：Topic / client_id 模板渲染（渲染点唯一）
+#include "services/device_identity.h" // P0-3：device_id()（判定 client_id 是否与设备身份相关）
 // =====================================================
 // MQTT QoS 测试开关
 //
@@ -1448,6 +1450,101 @@ static bool cloud_connect()
 // =====================================================
 // 初始化入口
 // =====================================================
+// =====================================================
+// P0-3：Topic / client_id 渲染（渲染点全工程唯一 —— topic_render()）
+//
+// 契约见 docs/architecture/P0-设备身份与Topic隔离设计.md §3.3：
+//   · 渲染成功、模板含 <device_id>   -> 直接使用
+//   · 渲染成功、模板不含 <device_id> -> 仍使用（配置级回滚通路），但打**一次** WARN
+//   · 渲染失败（空 / 超长 / 残留 <> / device_id 不可用）
+//                                   -> ERROR + 回落**内建 V3 模板**
+//   · 内建模板亦失败（device_id 不可用）-> 返回空串，交由调用方判为配置错误
+//     ★ 设计原则：宁可连不上，也不要用共享 Topic 静默跑起来
+// =====================================================
+static bool s_warned_shared_topic = false;
+
+static String cloud_render_topic(const String& tpl, const char* fallback_tpl, const char* what)
+{
+    String out;
+
+    if(topic_render(tpl, out))
+    {
+        if(tpl.indexOf(GF_DEVICE_ID_PLACEHOLDER) < 0 && !s_warned_shared_topic)
+        {
+            s_warned_shared_topic = true;
+            Serial.printf("[Identity] WARN %s has no <device_id>, shared-topic mode\n", what);
+        }
+
+        return out;
+    }
+
+    Serial.printf("[Identity] ERROR invalid %s, using built-in V3 default\n", what);
+
+    String fb;
+
+    if(topic_render(String(fallback_tpl), fb))
+    {
+        return fb;
+    }
+
+    return String();
+}
+
+// client_id 的字符集比 topic 更严（设计 §1.4.1 ID-4）：
+//   仅 [0-9a-zA-Z_-]，长度 <= 128；**超限判配置错误，不静默截断**
+static bool is_valid_client_id(const String& s)
+{
+    if(s.length() == 0 || s.length() > 128)
+    {
+        return false;
+    }
+
+    for(size_t i = 0; i < s.length(); i++)
+    {
+        const char ch = s[i];
+
+        const bool ok = (ch >= '0' && ch <= '9')
+                     || (ch >= 'a' && ch <= 'z')
+                     || (ch >= 'A' && ch <= 'Z')
+                     || ch == '_' || ch == '-';
+
+        if(!ok)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static String cloud_render_client_id(const String& tpl)
+{
+    String out;
+
+    if(topic_render(tpl, out) && is_valid_client_id(out))
+    {
+        // 可见性（设计 §3.3「允许必须可见」）：client_id 与 device_id 无关
+        // 会让多台设备共享同一 MQTT session => 互相踢下线（§1.4.1 ID-2）
+        if(out.indexOf(device_id()) < 0)
+        {
+            Serial.println("[Identity] WARN client_id has no device_id, may collide across devices");
+        }
+
+        return out;
+    }
+
+    Serial.println("[Identity] ERROR invalid client_id, using built-in default");
+
+    String fb;
+
+    if(topic_render(String(GF_CLIENT_ID_TPL), fb) && is_valid_client_id(fb))
+    {
+        return fb;
+    }
+
+    return String();
+}
+
 void cloud_init()
 {
     Serial.println();
@@ -1459,7 +1556,8 @@ void cloud_init()
     mqtt_port = config_get_mqtt_port();
     Serial.print("MQTT port=");
     Serial.println(mqtt_port);
-    mqtt_client_id = config_get_mqtt_client_id();
+    // P0-3：读模板 -> 渲染（失败回落内建 dev_<device_id>）
+    mqtt_client_id = cloud_render_client_id(config_get_mqtt_client_id());
     Serial.print("MQTT client_id=");
     Serial.println(mqtt_client_id);
     mqtt_username = config_get_mqtt_username();
@@ -1468,13 +1566,16 @@ void cloud_init()
     mqtt_password = config_get_mqtt_password();
     Serial.print("MQTT password=");
     Serial.println(mqtt_password);
-    mqtt_sub_topic = config_get_mqtt_subscribe_topic();
+    mqtt_sub_topic = cloud_render_topic(config_get_mqtt_subscribe_topic(),
+                                        GF_TOPIC_TPL_DOWN, "subscribe_topic");
     Serial.print("MQTT subscribe=");
     Serial.println(mqtt_sub_topic);
-    mqtt_pub_topic = config_get_mqtt_publish_topic();
+    mqtt_pub_topic = cloud_render_topic(config_get_mqtt_publish_topic(),
+                                        GF_TOPIC_TPL_UP, "publish_topic");
     Serial.print("MQTT publish=");
     Serial.println(mqtt_pub_topic);
-    mqtt_log_topic = config_get_mqtt_log_topic();
+    mqtt_log_topic = cloud_render_topic(config_get_mqtt_log_topic(),
+                                        GF_TOPIC_TPL_LOG, "log_topic");
     Serial.print("MQTT log=");
     Serial.println(mqtt_log_topic);
     mqtt_ca_file = config_get_mqtt_ca_path();
@@ -1801,7 +1902,15 @@ bool cloud_send_log(const uint8_t* data, size_t length)
 
     if(mqtt_log_topic.length() == 0)
     {
-        mqtt_log_topic = "guo_feeder/log";   // 配置缺失时的兜底
+        // P0-3：兜底改为**渲染后的 V3 模板**（与 cloud_init() 同源）
+        mqtt_log_topic = cloud_render_topic(String(GF_TOPIC_TPL_LOG),
+                                            GF_TOPIC_TPL_LOG, "log_topic");
+
+        if(mqtt_log_topic.length() == 0)
+        {
+            Serial.println("[Cloud LOG] no valid log topic, drop");
+            return false;
+        }
     }
 
     if(mqtt_client == nullptr || !mqtt_connected)
