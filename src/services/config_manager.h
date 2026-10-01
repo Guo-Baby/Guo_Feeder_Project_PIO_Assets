@@ -624,14 +624,18 @@ bool config_set_weight_zero_offset(long offset);
 // ==========================
 // Bemfa_Cloud MQTT 配置
 // ==========================
+// ★ 契约（P0-2）：下面 client_id / subscribe_topic / publish_topic / log_topic
+//    四个 getter **只返回模板，不做任何渲染**（模板可含 <device_id> 占位符）。
+//    渲染点全工程唯一：topic_render()（services/topic_renderer.h）。
+//    调用方必须先渲染再使用；缺省值即 V3 模板（见 topic_renderer.h 的 GF_* 宏）。
 String config_get_mqtt_server();
 int config_get_mqtt_port();
-String config_get_mqtt_client_id();
-String config_get_mqtt_subscribe_topic();
+String config_get_mqtt_client_id();      // 模板：GF_CLIENT_ID_TPL（未渲染）
+String config_get_mqtt_subscribe_topic();// 模板：GF_TOPIC_TPL_DOWN（未渲染）
 String config_get_mqtt_username();
 String config_get_mqtt_password();
-String config_get_mqtt_publish_topic();
-String config_get_mqtt_log_topic();   // P1.4：LogManager 专用上行 Topic
+String config_get_mqtt_publish_topic();  // 模板：GF_TOPIC_TPL_UP（未渲染）
+String config_get_mqtt_log_topic();      // 模板：GF_TOPIC_TPL_LOG（未渲染）；P1.4：LogManager 专用上行 Topic
 String config_get_mqtt_ca_path();
 unsigned long config_get_mqtt_retry_interval(); // MQTT 重连间隔(ms)
 int config_get_mqtt_retry_max();                // 最大快速重试次数
