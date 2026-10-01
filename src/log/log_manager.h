@@ -1,0 +1,473 @@
+// =====================================================
+// LogManager —— P1.2：Log Core / RAM Queue
+//
+// 冻结契约见 log_events.h（P1.1，不得重新设计）。
+//
+// 本阶段（P1.2）实现：
+//   log_emit()  → RAM Ring → log_task()（在 loop() 中消费）
+//   Level → (Flash, Cloud) routing **决策与计数**
+//
+// 本阶段**不**实现（后续阶段）：
+//   P1.3 Flash Segment Ring（真正落盘）+ meta.bin / seq reserve
+//   P1.4 Cloud Log Topic（真正上传 MQTT）
+//   P1.5 ACK / Retry / Offline
+//
+// 冻结铁律：
+//   · 不创建独立 FreeRTOS Task（LittleFS 为单写者模型）
+//   · 不要求调用方构造动态 String 作为正式 Log
+//   · 不允许递归 Logging（自身故障只走侧信道计数）
+//   · DEBUG 不入 Log 系统（不占 RAM 环、不落盘、不上云）
+//   · Record 不含 uploaded / persist（零原地修改）
+// =====================================================
+
+#ifndef LOG_MANAGER_H
+#define LOG_MANAGER_H
+
+#include <stdint.h>
+#include "log/log_events.h"
+
+// =====================================================
+// P1.2 常量
+// =====================================================
+
+// RAM 环槽数（冻结设计：64 槽 × 128 B = 8 KB，PSRAM 优先）
+#define LOG_RAM_QUEUE_SLOTS       64u
+
+// log_task() 每轮最多消费条数（对齐 LOG_FLUSH_RECORDS，避免长时间占用 loop）
+#define LOG_DRAIN_MAX_PER_TASK    8u
+
+// DEBUG 编译期总开关：0 时 log_emit() 对 DEBUG 立即返回
+#define LOG_DEBUG_ENABLE          1
+
+// =====================================================
+// 突发合并（Burst Coalescing）—— 写入压力控制
+//
+// 背景：某些"高频但非安全关键响应"的记录（例如重量异常进入事件）
+//       可能在短时间内连续产生。安全响应必须实时（EventManager →
+//       DispenseGuard → valve），但**历史记录**不需要每条都独立
+//       占用 Flash 段环（496 条）与云队列（128 槽）。
+//
+// 规则：对白名单内的 EventId（见 log_manager.cpp 的 s_coalesce_targets[]）
+//   · 窗口内重复发生 → 只累计计数，不产生记录（不占 seq / 不进 RAM 环）
+//   · 窗口到期，或下一条"被接受"的记录到来之前 → 汇总一条
+//   · 每条记录携带 LOG_P_COUNT = 本条所代表的真实发生次数（>= 1）
+//
+// 不变式（可上板核对）：Σ LOG_P_COUNT == 该事件真实发生次数
+//
+// 边界：只影响 LogManager 的**存储行为**；不改变事件推送 / 分发 /
+//       安全路径 / System State；不新增 EventId / ParamId。
+// =====================================================
+#define LOG_COALESCE_WINDOW_MS    5000u
+
+// =====================================================
+// P1.3 常量（Flash Segment Ring）
+//
+// 尺寸常量在 log_events.h 已冻结，此处**不重复定义**，只补路径与段头约定：
+//   LOG_SEGMENT_HEADER_SIZE / LOG_RECORDS_PER_SEGMENT / LOG_SEGMENT_SIZE
+//   LOG_SEGMENT_COUNT / LOG_SEGMENT_CAPACITY
+// =====================================================
+
+// =====================================================
+// P1.4 常量（Cloud Log Topic）
+// =====================================================
+
+// 云待发队列槽数（128 × 128 B = 16 KB，PSRAM 优先 / DRAM 回退）
+//
+// 为什么需要这条独立队列：
+//   · INFO 是 Cloud YES / Flash NO —— 不落盘，无法从 Flash 补发
+//   · WARN+ 是 Cloud YES / Flash YES —— 离线时靠 Flash 保命，
+//     重启后可从段环回填（见 log_cloud_seed_from_flash()）
+// 队列满 → FIFO 淘汰最旧并累计 drop_overflow（§27）
+#define LOG_CLOUD_QUEUE_SLOTS     128u
+
+// P1.5：发送失败（离线）后的重试间隔。
+// 不做指数退避 —— MQTT 自身有重连节奏，Log 只需"别空转刷串口"。
+#define LOG_TX_OFFLINE_BACKOFF_MS 5000u
+
+// DIR-1：单次 cloud_poll() 内补发扫描最多读取的 record 条数（Flash I/O 上限）。
+//
+// 为什么需要上限：补发改为"按 slot 遍历"后，一个"全空洞段"需要逐条读过去才能
+// 确认它没有可补发内容。若不设上限，16 段 × 31 条 = 496 次读会在一次 loop 里
+// 完成（≈10–20 ms），违反"每轮只有一个 append 单元"的时间预算。
+// 32 条 = 4 KB 读，与一个 append 单元同量级。
+#define LOG_REPLAY_SCAN_MAX_PER_CALL 32u
+
+#define LOG_DIR_PATH        "/log"
+#define LOG_META_PATH       "/log/meta.bin"
+#define LOG_SEG_PATH_FMT    "/log/s%07u.log"   // s0000000.log .. s0000015.log
+
+// 段头 magic（uint32，"SEGS"）
+#define LOG_SEG_MAGIC       0x53454753u
+
+// 段头布局（固定 16 B，不得增删字段）
+//   0   magic      uint32
+//   4   seg_index  uint32
+//   8   first_seq  uint32
+//   12  crc32      uint32（覆盖 [0..11]）
+#define LOG_SEG_OFF_MAGIC      0u
+#define LOG_SEG_OFF_INDEX      4u
+#define LOG_SEG_OFF_FIRST_SEQ  8u
+#define LOG_SEG_OFF_CRC32      12u
+#define LOG_SEG_CRC_SPAN       12u   // 头 CRC 覆盖字节数
+
+// meta.bin 布局（固定 32 B，不得增删字段；§12）
+//   0   magic         uint32  0x474C4F47 ("GLOG")
+//   4   fmt_version   uint32  = 2
+//   8   boot_seq      uint32  每次 log_init() +1
+//   12  seq_reserved  uint32  已预留出去的 seq 高水位
+//   16  corrupt_count uint32  损坏段 / meta 丢失累计
+//   20  reserved      8 B
+//   28  crc32         uint32（覆盖 [0..27]）
+//
+// 注：log_events.h 中同一区域写作 "fmt_version(1) + reserved(1) +
+//     reserved16(2)"，产生的字节序列与 uint32 fmt_version 完全一致
+//     （均为 02 00 00 00），故两者不冲突。
+#define LOG_META_OFF_MAGIC          0u
+#define LOG_META_OFF_FMT            4u
+#define LOG_META_OFF_BOOT_SEQ       8u
+#define LOG_META_OFF_SEQ_RESERVED   12u
+#define LOG_META_OFF_CORRUPT        16u
+#define LOG_META_OFF_CRC32          28u
+#define LOG_META_CRC_SPAN           28u
+
+// =====================================================
+// 统计（侧信道：LogManager 自身状态，不产生 Log，避免递归）
+// =====================================================
+
+struct LogStats
+{
+    uint32_t emit_total;      // 成功进入 RAM 环的记录数
+    uint32_t debug_dropped;   // DEBUG 被策略丢弃数（不入环）
+    uint32_t ring_drop;       // RAM 环满 → 淘汰最旧记录数
+    uint32_t consumed;        // log_task() 已消费条数
+    uint32_t flash_routed;    // routing 决策 = 需落 Flash 的条数
+    uint32_t cloud_routed;    // routing 决策 = 需上云的条数
+    uint32_t critical_seen;   // CRITICAL 记录数
+    uint32_t flush_requests;  // CRITICAL 触发的立即 flush 请求数
+    uint8_t  ring_used;       // 当前占用槽数
+    uint8_t  ring_high_water; // 历史最高占用（自上次 reset）
+    uint32_t boot_seq;        // 本次开机序号（P1.3 改为 meta.bin 持久化）
+    uint32_t last_seq;        // 最近一条记录的 seq
+    uint8_t  ring_ready;      // log_init() 是否成功（0/1）
+    uint8_t  ring_in_psram;   // 环缓冲是否落在 PSRAM（0/1）
+    uint32_t ring_bytes;      // 环缓冲字节数
+
+    // ---- P1.3 Flash Segment Ring（有界计数，无动态字符串）----
+    uint32_t flash_append_ok;       // 成功写入 Flash 的 record 条数
+    uint32_t flash_append_fail;     // 写入失败的 record 条数
+    uint32_t flash_segment_created; // 新建 segment 次数
+    uint32_t flash_segment_deleted; // 删除 segment 次数（ring 淘汰 / 损坏重建）
+    uint32_t flash_crc_error;       // 扫描时发现的 record CRC 错误数
+    uint32_t flash_corrupt_segment; // Header 损坏被废弃的 segment 数
+
+    // ---- Commit 5：RAM→Flash 安全交接（§22 / §23 / §39）----
+    uint32_t flash_retry;           // 因落盘失败而"保留记录 + 下一轮重试"的轮数
+    uint32_t flash_blocked_rounds;  // 队首记录无法被接收（Flash 未就绪）的轮数
+    uint32_t flush_honored;         // 被真正兑现的 CRITICAL flush 请求数
+
+    // ---- P1.4 Cloud Log Topic ----
+    uint32_t cloud_batch_sent;      // 批次发送次数（含重发）
+    uint32_t cloud_records_sent;    // 累计首次发出的 record 条数
+    uint32_t cloud_retx;            // ACK 超时后的重发次数
+    uint32_t cloud_ack_ok;          // 成功确认的批次数
+    uint32_t cloud_ack_timeout;     // ACK 超时次数
+    uint32_t cloud_ack_lost;        // 重试耗尽（放弃推进）次数
+    uint32_t cloud_q_drop;          // 云队列溢出淘汰条数（→ drop_overflow）
+    uint32_t cloud_flash_drop;      // Flash 段淘汰 / give-up 中"未被 ACK"条数（→ drop_unacked）
+    uint32_t self_degraded;         // LogManager 自降级次数（§29 / §39）
+    uint8_t  cloud_q_used;          // 当前云队列占用（≤ LOG_CLOUD_QUEUE_SLOTS）
+    uint32_t cloud_q_evict_inflight; // 淘汰落在**在途批次窗口**内的条数（FIX-1，仅观测：
+                                     // 这些条已在批次副本内、仍可能被 ACK，故不计 drop_overflow）
+    uint32_t flash_seg_evict_unacked; // 段环压力淘汰中被销毁的**未确认**记录数
+                                      // （FIX-3，与 cloud_flash_drop 同步累加，此处单列以便区分来源）
+    uint32_t cloud_hole_from_evict;   // FIX-H2：因"在途窗口内淘汰且未被 ACK 覆盖"
+                                      // 而补登记空洞的**记录条数**（观测用；
+                                      // 修复前该值恒为 0）
+
+    // ---- P1.5 ACK / Retry / Offline ----
+    uint32_t cloud_ack_ignored;     // 被忽略的 ACK 数（boot 不匹配 / 回退 / 区间非法）
+    uint32_t cloud_ack_partial;     // 部分覆盖的 ACK 数（仅推进被覆盖前缀）
+    uint32_t cloud_seg_acked_del;   // 因整段被 ACK 覆盖而删除的段数
+    uint32_t cloud_replay_records;  // 从 Flash 补发（replay）出的 record 条数
+    uint32_t cloud_offline_skip;    // 因 MQTT 离线而跳过发送的轮数
+    uint32_t cloud_give_up;         // 重试耗尽而放弃发送的批次数
+};
+
+// =====================================================
+// 生命周期
+// =====================================================
+
+// 分配 RAM 环（PSRAM 优先，失败回退 DRAM）。幂等，可重复调用。
+bool log_init();
+
+// 在 loop() 中调用：消费 RAM 环 → routing 决策 → 一个 Flash append 单元。
+//
+// 不阻塞、无 delay / while 等待、不创建 FreeRTOS Task（§29）。
+// **安全交接（§22/§23）**：只有 Flash 持久化成功，对应 RAM record 才
+// 被认为已消费；失败则保留在环内、下一轮重试，绝不静默丢弃 WARN+。
+void log_task();
+
+// =====================================================
+// 正式 API（结构化：EventId + Level + Typed Params）
+//
+// 返回 true = 已进入 RAM 环；false = 未进入
+//   （DEBUG 被策略丢弃 / 环未就绪 / 参数超限被拒以外的情况）
+// param_count > LOG_MAX_PARAMS 时按契约整体拒绝（不截断）。
+//
+// ★ 突发合并：若 event_id 属于合并白名单（见 LOG_COALESCE_WINDOW_MS 说明），
+//   窗口内的重复发生会被折叠、不产生记录；被接受的记录自动携带
+//   LOG_P_COUNT（>=1，表示本条代表的真实发生次数）。
+//   调用方无需感知——语义、参数与调用方式均不变。
+// =====================================================
+
+bool log_emit(LogEventId event_id, LogLevel level,
+              const LogParamIn *params, uint8_t param_count);
+
+inline bool log_emit0(LogEventId event_id, LogLevel level)
+{
+    return log_emit(event_id, level, nullptr, 0);
+}
+
+// =====================================================
+// 参数构造 helper（避免调用方误用 union 成员）
+// =====================================================
+
+inline LogParamIn log_arg_i32(uint8_t pid, int32_t v)
+{
+    LogParamIn p;
+    p.id = pid;
+    p.type = LOG_PTYPE_I32;
+    p.v.i = v;
+    return p;
+}
+
+inline LogParamIn log_arg_u32(uint8_t pid, uint32_t v)
+{
+    LogParamIn p;
+    p.id = pid;
+    p.type = LOG_PTYPE_U32;
+    p.v.u = v;
+    return p;
+}
+
+inline LogParamIn log_arg_f32(uint8_t pid, float v)
+{
+    LogParamIn p;
+    p.id = pid;
+    p.type = LOG_PTYPE_F32;
+    p.v.f = v;
+    return p;
+}
+
+inline LogParamIn log_arg_bool(uint8_t pid, bool v)
+{
+    LogParamIn p;
+    p.id = pid;
+    p.type = LOG_PTYPE_BOOL;
+    p.v.b = v ? (uint8_t)1 : (uint8_t)0;
+    return p;
+}
+
+inline LogParamIn log_arg_enum(uint8_t pid, uint32_t v)
+{
+    LogParamIn p;
+    p.id = pid;
+    p.type = LOG_PTYPE_ENUM;
+    p.v.u = v;
+    return p;
+}
+
+// =====================================================
+// 观测（上板测试 / 后续阶段使用）
+// =====================================================
+
+void log_get_stats(LogStats &out);
+
+// 仅清零统计计数，不动 RAM 环内容
+void log_stats_reset();
+
+// CRITICAL 触发的"立即 flush + 提升 Cloud 优先级"请求（P1.3 / P1.4 消费）
+bool log_flush_requested();
+void log_clear_flush_request();
+
+// =====================================================
+// P1.3 Flash 观测 / 测试钩子（仅上板自测，不属于正式 API）
+//
+// 与 workflow_storage_test_* 同一惯例：只由串口控制台调用。
+// P1.4 / P1.5 若确需正式 API，再单独提升。
+// =====================================================
+
+struct LogFlashInfo
+{
+    uint8_t  flash_ready;       // /log 初始化是否成功（0/1）
+    uint8_t  valid_segments;    // 当前有效 segment 数
+    uint32_t oldest_segment;    // 最老 segment 索引
+    uint32_t newest_segment;    // 最新 segment 索引
+    uint32_t append_segment;    // 当前追加目标 segment
+    uint8_t  append_index;      // 该 segment 内下一条 record 槽位（0..31）
+    uint16_t total_records;     // 全部有效 record 条数
+    uint32_t first_seq_oldest;  // 最老 segment 的 first_seq
+    uint32_t first_seq_newest;  // 最新 segment 的 first_seq
+    uint32_t batch_bytes;       // Flash 批量工作缓冲字节数
+    uint8_t  batch_in_psram;    // 该缓冲是否落在 PSRAM（0/1）
+
+    // ---- meta.bin / sequence（§12 / §13 / §15 / §16）----
+    uint8_t  seq_reliable;      // 0 = sequence 可能重复（meta 写入失败，§15）
+    uint32_t boot_seq;          // 本次开机序号（每次 log_init() +1）
+    uint32_t seq_reserved;      // meta.seq_reserved 高水位
+    uint32_t corrupt_count;     // meta.corrupt_count
+    uint32_t seq_base;          // 本区间首号
+    uint32_t seq_limit;         // 本区间末号（seq_base + LOG_SEQ_RESERVE - 1）
+    uint32_t seq_last;          // 最近一次分配出去的 seq
+};
+
+void log_flash_get_info(LogFlashInfo &out);
+
+// 读某 segment 头部（ok=0 表示不存在 / magic 或 CRC 非法）
+struct LogSegmentHead
+{
+    uint8_t  ok;
+    uint8_t  records;      // 该段已验证的有效 record 数
+    uint32_t magic;
+    uint32_t index;
+    uint32_t first_seq;
+    uint32_t crc32;
+    uint32_t last_seq;     // 末槽记录的 seq（**直接从 Flash 读取**，用于断言
+                           // "缓存 == 真相"；与 `first_seq + records - 1` 的
+                           //  差值 = 段内 INFO 空洞数，暴露 seq 稀疏性）
+};
+
+bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out);
+
+// 读某 segment 的第 rec 条 record（crc_ok=0 表示内容存在但校验失败）
+bool log_flash_peek_record(uint32_t seg, uint8_t rec, LogRecord &out, uint8_t &crc_ok);
+
+// 删除 /log 下全部文件（测试基线复位）
+bool log_flash_wipe();
+
+// 删除 /log/meta.bin（测试 §16 的"meta 丢失 → 扫描重建"路径）
+bool log_meta_wipe();
+
+// 破坏 /log/meta.bin 的 CRC（测试 §16 的"meta 损坏 → 扫描重建"路径）
+bool log_meta_corrupt();
+
+// 一次性故障注入：令下一次 meta 写入失败（测试 §15 / §41-4 的
+// "reservation 写失败 → s_seq_reliable = false"）
+void log_meta_test_fail_next(bool enable);
+
+// ---- Commit 4：损坏注入（仅上板自测）----
+
+// 破坏某 segment 头部（翻转 seg_index → CRC 失败），用于 §18
+bool log_seg_corrupt_head(uint32_t seg);
+
+// 破坏某 segment 的第 rec 条 record（翻转首字节 → CRC 失败），用于 §19
+bool log_seg_corrupt_record(uint32_t seg, uint8_t rec);
+
+// 把某 segment 截断到 bytes 字节（模拟部分写入）并立即重扫描，用于 §19
+bool log_seg_truncate(uint32_t seg, uint32_t bytes);
+
+// ---- Commit 5：落盘失败注入（仅上板自测）----
+
+// 令接下来 count 次 Flash append **整批失败**（不写入任何 record），
+// 用于验证 §22/§23 的 RAM→Flash 安全交接与 F10 重试路径。
+void log_flash_test_fail_next(uint8_t count);
+
+// =====================================================
+// P1.4 / P1.5 观测与测试钩子（仅上板自测）
+// =====================================================
+
+struct LogCloudInfo
+{
+    uint8_t  queue_ready;       // 云队列是否分配成功（0/1）
+    uint8_t  queue_in_psram;    // 是否落在 PSRAM（0/1）
+    uint32_t queue_bytes;       // 队列字节数
+    uint8_t  queue_used;        // 当前占用条数
+    uint32_t acked_seq;         // 已确认 seq 高水位（RAM；重启归 0 ⇒ 重放）
+    uint8_t  inflight;          // 是否有在途未确认批次（0/1）
+    uint32_t tx_boot_seq;       // 在途批次的 boot_seq
+    uint32_t tx_from;           // 在途批次 seq_from
+    uint32_t tx_to;             // 在途批次 seq_to
+    uint8_t  tx_count;          // 在途批次条数
+    uint8_t  retry;             // 当前重试计数（0..LOG_ACK_MAX_RETRY）
+    uint8_t  gave_up;           // 重试耗尽（GIVE_UP_NOT_ADVANCE）标志
+    uint8_t  connected;         // CloudManager 报告的 MQTT 在线状态
+    uint32_t last_batch_bytes;  // 最近一次 CBOR 批次字节数
+
+    // ---- P1.5 ACK / Retry / Offline ----
+    uint32_t give_up_seq;       // 本 boot 已放弃重发的水位（0 = 未放弃过）
+    uint32_t replay_seq;        // 最近一次补发扫描到的 record seq（诊断）
+    uint8_t  replay_done;       // 旧字段（保留兼容）：1 = 本轮补发已无内容
+    uint32_t next_tx_in_ms;     // 距离下次可发送还需等待的毫秒数（0 = 现在就可发）
+    uint8_t  force_online;      // 上板自测旁路是否置位（正式固件恒 0）
+    uint32_t ack_timeout_ms;    // 当前 ACK 超时（默认 = LOG_ACK_TIMEOUT_MS）
+    uint32_t backoff_base_ms;   // 当前退避基数（默认 = LOG_ACK_BACKOFF_BASE_MS）
+
+    // ---- FIX-1 / FIX-2 / FIX-3 / DIR-1 新增观测 ----
+    uint8_t  tx_valid;          // 最近一次成功发送的批次描述符是否仍可被 ACK 匹配（FIX-5）
+    uint32_t tx_rd_base;        // 该批次的队首绝对基准（FIX-1）
+    uint8_t  hole_count;        // 空洞表条目数（FIX-2）
+    uint8_t  hole_overflow;     // 空洞表溢出 ⇒ 停止回收（FIX-2）
+    uint8_t  replay_seg;        // 补发游标：段索引（0xFF = 未开始）（DIR-1）
+    uint8_t  replay_idx;        // 补发游标：段内 slot 下标（DIR-1）
+    uint8_t  replay_armed;      // 补发游标是否处于"待扫描"状态（DIR-1）
+
+    // ---- FIX-BT9：水位语义分离（观测；只增字段，不改既有字段含义）----
+    //
+    //   gc_seq    连续可回收水位 —— **所有放行判定用的就是它**
+    //             （补发跳过 / 段回收 / ACK 重复检测 / 淘汰记账）
+    //   gc_floor  钳制下界（尚未确认的 Flash backlog 最低 seq 下界；0 = 无钳制）
+    //
+    // 关系：gc_seq = (gc_floor == 0) ? acked_seq : min(acked_seq, gc_floor - 1)
+    // 判别：gc_seq < acked_seq ⟺ 存在"已被更新 ACK 越过、但仍未确认"的旧记录
+    uint32_t gc_seq;
+    uint32_t gc_floor;
+};
+
+void log_cloud_get_info(LogCloudInfo &out);
+
+// 直接向云队列注入一条记录（仅上板自测：不经过 RAM 环，
+// 便于在没有 MQTT 的条件下验证队列/CBOR/ACK 逻辑）
+bool log_cloud_test_push(LogEventId event_id, LogLevel level);
+
+// 复位云侧状态（acked 高水位 / 在途批次 / 重试计数 / gave_up），
+// 并清空云队列 —— 测试基线复位用
+void log_cloud_test_reset();
+
+// 直接对 LogManager 注入一条 log_ack（不经过 MQTT），
+// 用于在没有 MQTT 对端的条件下验证 ACK / 部分覆盖 / 段删除 / 重试复位。
+void log_cloud_test_ack(uint32_t boot_seq, uint32_t seq_from, uint32_t seq_to);
+
+// 令接下来 count 次 cloud_send_log() **失败**（模拟离线），用于验证
+// "离线不丢、不推进、重连后继续"的 P1.5 行为。
+void log_cloud_test_fail_next(uint8_t count);
+
+// 上板自测：强制"在线"并跳过真实 cloud_send_log()。
+//
+// 为什么需要它：ACK 的 ACCEPT / PARTIAL / 超时重试分支都要求先存在
+// 一个"在途批次"，而没有 MQTT 对端时永远走不到。置位后整条
+// ACK / 超时 / 退避 / 放弃 / 段回收链路都能在纯串口下跑通。
+// **正式固件不得置位**（log_init 与 log_cloud_test_reset 均复位为 false）。
+void log_cloud_test_set_online(bool on);
+
+// 上板自测：按**当前在途批次**自动构造一条 log_ack。
+//
+// 为什么需要：seq 由 Boot 区间预留分配，测试脚本无法预知具体数值，
+// 因此 ACK 必须能"自描述"。走的是与真实回调**完全相同**的注入路径。
+//
+//   mode 0 = 完整覆盖 [tx_from, tx_to]            → 期望 ACCEPT
+//   mode 1 = 只覆盖前 k 条（k 视为 1..tx_count）   → 期望 PARTIAL
+//   mode 2 = 回退（to = 已确认水位）               → 期望 DUPLICATE（需先前 ACK 过）
+//   mode 3 = 错误 boot_seq（tx_boot + 1）          → 期望 IGNORE
+//
+// 返回 false = 当前没有在途批次（无法构造）。
+bool log_cloud_test_ack_inflight(uint8_t mode, uint8_t k);
+
+// 上板自测：临时缩短 ACK 超时 / 退避基数（0 = 恢复冻结默认值）。
+//
+// 默认参数下走完"重试耗尽"需要 ≈152 s（6×15 s 超时 + 2/4/8/16/32 s 退避），
+// 超出单条命令 200 s 的预算。缩短后该路径可在秒级内验证。
+// 正式固件不得调用（log_cloud_test_reset 会复位）。
+void log_cloud_test_set_ack_timeout(uint32_t ms);
+void log_cloud_test_set_backoff_base(uint32_t ms);
+
+#endif // LOG_MANAGER_H
