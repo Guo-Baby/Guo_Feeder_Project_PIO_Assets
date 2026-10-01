@@ -1,4 +1,5 @@
 #include "services/config_manager.h"
+#include "services/topic_renderer.h"
 
 #include "storage/json_storage.h"
 
@@ -3680,12 +3681,15 @@ int config_get_mqtt_port()
 
 String config_get_mqtt_client_id()
 {
-    return module_ro(CONFIG_MODULE_MQTT)["client_id"] | String("");
+    // 注意：本 getter 只返回**模板**（可能含 <device_id> 占位符），**不做渲染**。
+    // 渲染点全工程唯一：topic_render()（services/topic_renderer.h）。
+    return module_ro(CONFIG_MODULE_MQTT)["client_id"] | String(GF_CLIENT_ID_TPL);
 }
 
 String config_get_mqtt_subscribe_topic()
 {
-    return module_ro(CONFIG_MODULE_MQTT)["subscribe_topic"] | String("");
+    // 只返回**模板**，不渲染（渲染点唯一：topic_render()）。
+    return module_ro(CONFIG_MODULE_MQTT)["subscribe_topic"] | String(GF_TOPIC_TPL_DOWN);
 }
 
 String config_get_mqtt_username()
@@ -3700,15 +3704,17 @@ String config_get_mqtt_password()
 
 String config_get_mqtt_publish_topic()
 {
+    // 只返回**模板**，不渲染（渲染点唯一：topic_render()）。
     return module_ro(CONFIG_MODULE_MQTT)["publish_topic"]
-           | String("guo_feeder/up");
+           | String(GF_TOPIC_TPL_UP);
 }
 
 // P1.4：LogManager 专用上行 Topic（独立于 up / down）
 String config_get_mqtt_log_topic()
 {
+    // 只返回**模板**，不渲染（渲染点唯一：topic_render()）。
     return module_ro(CONFIG_MODULE_MQTT)["log_topic"]
-           | String("guo_feeder/log");
+           | String(GF_TOPIC_TPL_LOG);
 }
 
 String config_get_mqtt_ca_path()
