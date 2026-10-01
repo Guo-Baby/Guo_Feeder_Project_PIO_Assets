@@ -1,7 +1,0 @@
-{
-    "sda": 4,
-    "scl": 5,
-    "i2c_speed": 100000,
-    "frame_delay": 50,
-    "rotation": 2
-}
