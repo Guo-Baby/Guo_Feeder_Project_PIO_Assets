@@ -78,6 +78,10 @@
 > ✅ **2026-10-02 已推送**：`328d44f..84d8ff6  wb -> wb`（一次性推上 53 个提交，
 > 含 10-01 目录重构与本轮 readme/HANDOFF 改动）。remote 已由旧 URL
 > `Guo_Feeder_Project` 更名为 `Guo_Feeder_Project_PIO_Assets`（旧名仍可访问，自动重定向）。
+>
+> ✅ **同日 `wb` 已快进合并进 `main`**：`8c51a32..c6a68c4  wb -> main`。
+> 现在 **`main` / `wb` / `origin/main` / `origin/wb` 四个引用全部指向 `c6a68c4`**，
+> 远程默认分支 `main` 即最新代码。
 
 ### 4.2 云端侧（`Cloudflare_Assets`）
 
@@ -171,10 +175,11 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 
 ## 7. 待决事项（本轮结束时挂起）
 
-1. **固件仓库的默认分支问题** —— 已推到 `wb`（保持本地分支不变），但**远程默认分支仍是 `main`**
-   （内容较旧，停在 `8c51a32`）。若希望 GitHub 首页展示最新代码，需二选一：
-   ① 把 `wb` 合并到 `main` 后推送；② 在仓库 Settings → Branches 把默认分支改为 `wb`。
-   **待你决定。**
+1. ~~固件仓库的默认分支问题~~ ✅ **已解决（2026-10-02）** —— `wb` 已**快进**合并进 `main` 并推送
+   （`8c51a32..c6a68c4`）。因 `origin/main` 本就是 `wb` 的祖先，为**纯快进**：
+   无冲突、无 merge commit、历史线性。GitHub 首页（默认分支 `main`）现为最新代码。
+   > 顺带确认：其余本地分支 `emqx` / `emqx_text` / `deepseek_dev` **也都是 `wb` 的祖先**
+   > （独有 0 提交），即全部内容都已被 `wb` 包含。
 2. **P0 的五项设计确认**（D1 / D2 / D3 / D5 / D7，见 §5）。
 3. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
 
@@ -194,6 +199,8 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - ✅ **固件仓库首次推送**（`wb` 分支 53 个提交 → GitHub），remote 更名为真实仓库名
 - ⚠️ 踩坑：`GH_TOKEN=...` **未加 `export`** ⇒ git 内联凭据 helper 取不到变量 ⇒
   `Invalid username or token`。**必须 `export GH_TOKEN=...`**
+- ✅ **`wb` 快进合并进 `main`**（`8c51a32..c6a68c4  wb -> main`），四个引用统一；
+  采用「推送 + `git branch -f main wb`」而非切分支 merge，**避免工作区在 164 个提交间来回切换**
 
 **关联提交**：
 - `EMQX_Assets`：`3415211`（API 边界实测 + 修正探针 + ACL 套用脚本）
