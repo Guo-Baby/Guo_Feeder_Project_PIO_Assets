@@ -83,7 +83,9 @@ ESP32-S3 N16R8
 │   └── UP / DOWN                             │
 └─────────────────────────────────────────────┘
 
-注：以上为逻辑分层，不要求每一层对应一个实际文件夹。当前所有代码仍统一位于 src 目录。
+注：以上为**逻辑分层**。自 **2026-10-01** 起，`src/` 已按此分层改为**物理子目录**
+（`app/` `automation/` `services/` `storage/` `log/` `cloud/` `test/`），
+使"逻辑层"与"代码目录"一一对应，详见 §三「当前工程目录结构」。
 
 # 2.1 应用 / 能力层
 
@@ -249,7 +251,7 @@ MQTT
 - 云端可在不中断业务的前提下单独停掉日志订阅。
 
 > **完整协议（连接参数 / 报文外壳 / 字段缩写 / 命令翻译 / ACK / 分片 / 错误码 /
-> Log Topic 预留规范）见 `cloud_protocol.md`，本节不重复展开。**
+> Log Topic 预留规范）见 `docs/interfaces/cloud_protocol.md`，本节不重复展开。**
 
 # 2.6 Log Manager
 
@@ -278,7 +280,7 @@ LogManager  ──(注入的 upload_callback)──►  CloudManager  ──► 
 - **安全路径不经过 LogManager**：重量异常等安全事件由
   `EventManager → DispenseGuard → 执行机构` 直接完成，日志只是旁路消费者。
 - **写入压力控制**：Level Policy（INFO 不落 Flash）+ 突发合并，详见 §4.15.1。
-- 详细设计见 `log模块历史/LogManager详细设计规划0915.md`。
+- 详细设计见 `docs/archive/log/LogManager详细设计规划0915.md`。
 
 # 2.7 系统整体数据流
 
@@ -334,23 +336,103 @@ Event Manager
 
 ---
 ## 三、当前工程目录结构
+
+> **2026-10-01 源码分层归位**：`src/` 由平铺 49 个文件改为 **7 个分层子目录**；
+> 全部模块间 `#include` 改为相对 `src/` 的**显式路径**（如 `#include "services/config_manager.h"`）。
+
+```
 Guo_Feeder_Project
-├── platformio.ini        // 工程编译配置
-├── README.md             // 项目文档
-├── src
-│   ├── main.cpp          // 总入口、模块初始化、任务调度
-│   ├── oled.cpp/.h       // OLED显示驱动与界面
-│   ├── oled_animation.h  // 动画点阵资源
-│   ├── wifi_module.cpp/.h    // WiFi非阻塞状态机
-│   ├── config_manager.cpp/.h // 配置文件管理
-│   ├── system_state.cpp/.h   // 全局运行状态中心
-│   └── time_manager.cpp/.h   // SNTP + PCF8563T RTC 时间管理
-├── data                  // LittleFS配置文件目录
-│   └── config            // 模块级配置（按模块拆分）
-│       ├── time.json     // 时区 / NTP 服务器 / 校时周期
-│       ├── rtc.json      // RTC 使能 / SDA / SCL / I2C 地址 / 校准阈值
-│       └── oled.json     // OLED I2C 引脚（RTC 复用同一总线）
-└── backup                // 历史测试代码备份
+├── platformio.ini              // 工程编译配置
+├── partitions.csv              // Flash 分区表
+├── fix_compiledb.py            // extra_scripts：编译数据库补工具链 include
+├── .clangd                     // clangd 配置（指向 compile_commands.json）
+├── .gitignore
+├── readme.md                   // 本文档（项目总说明）
+├── AGENTS.md                   // AI 助手工程速览
+├── AI_CONTEXT.md               // 系统架构（AI 用）
+├── AI_RULES.md                 // AI 编码规则（含凭据，已 gitignore，本地保留）
+│
+├── src                         // 源码（按系统层级分层）
+│   ├── main.cpp                // 总入口：初始化 + 主循环调度
+│   │
+│   ├── app/                    // 应用 / 能力层
+│   │   ├── valve.cpp/.h            // 电磁阀控制（VALVE_OPEN / VALVE_CLOSE）
+│   │   ├── weight.cpp/.h           // HX711 称重
+│   │   ├── dispense_guard.cpp/.h   // 定量供水安全保护（高优先级独立模块）
+│   │   ├── MiThermometer.cpp/.h    // 米家蓝牙温湿度计
+│   │   ├── oled.cpp/.h             // OLED 显示驱动与界面
+│   │   ├── oled_animation.h        // 动画点阵资源
+│   │   └── computer_reset.cpp/.h   // Computer Reset（COMPUTER_RESET）
+│   │
+│   ├── automation/             // 自动化 / 中间层
+│   │   ├── workflow.cpp/.h             // 工作流引擎（Trigger / Action / Workflow / Temp Action）
+│   │   ├── workflow_storage.cpp/.h     // Workflow BIN 持久化
+│   │   └── capability_registry.cpp/.h  // 能力登记 + Stable ID
+│   │
+│   ├── services/               // 服务层
+│   │   ├── system_state.cpp/.h     // 全局运行时状态中心
+│   │   ├── config_manager.cpp/.h   // 配置持久化（唯一可写配置者）
+│   │   ├── event_manager.cpp/.h    // 一次性事件通信中心
+│   │   ├── time_manager.cpp/.h     // SNTP + PCF8563T RTC
+│   │   ├── wifi_module.cpp/.h      // WiFi 非阻塞状态机
+│   │   ├── command_manager.cpp/.h  // 统一命令路由中心
+│   │   └── system_command.cpp/.h   // 系统级命令（restart 等）
+│   │
+│   ├── storage/                // 存储基础设施层
+│   │   ├── file_storage.cpp/.h     // 文件存储抽象（LittleFS 原子写）
+│   │   ├── json_storage.cpp/.h     // JSON 存储（ConfigManager 底层）
+│   │   └── bin_storage.cpp/.h      // 二进制存储（Workflow / Log 底层）
+│   │
+│   ├── log/                    // 日志子系统
+│   │   ├── log_manager.cpp/.h      // LogManager 主体
+│   │   ├── log_events.h            // 事件 ID 表（0x01xx–0x0Fxx）
+│   │   ├── log_cbor.h              // CBOR 编码
+│   │   └── log_ack.h               // ACK 处理
+│   │
+│   ├── cloud/                  // 云通信层
+│   │   └── cloud_manager.cpp/.h    // MQTT / 云协议 / JSON+CBOR / ACK
+│   │
+│   └── test/                   // 测试桩
+│       └── test_mqtt.cpp/.h        // MQTT 测试 Action
+│
+├── data                        // LittleFS 配置源目录（⚠️ 已 gitignore，含真实 MQTT 凭据）
+│   ├── config-tempalte.json
+│   ├── workflow.json
+│   ├── emqxsl-ca.crt           // EMQX CA 证书
+│   └── config/                 // 模块级配置（按模块拆分）
+│       ├── mqtt.json  wifi.json  time.json  rtc.json  oled.json
+│       └── valve.json  weight.json  mi_thermo.json
+│
+├── docs                        // 项目文档（索引见 docs/README.md）
+│   ├── requirements/           // 产品需求
+│   ├── architecture/           // 架构设计
+│   ├── interfaces/             // ★ 接口 / 协议文档
+│   ├── modules/                // 模块设计说明
+│   ├── specs/                  // 规范 / 模板 / 集成指南
+│   ├── issues/                 // 问题清单
+│   ├── scripts/                // 部署脚本
+│   └── archive/                // 历史归档（log / workflow / legacy）
+│
+├── test                        // 测试用例与脚本（受版本控制）
+├── tools                       // 开发工具（生成 BIN / version / MQTT 测试脚本）
+├── include/  lib/              // PlatformIO 占位目录
+└── .codegraph/  .workbuddy/    // 本地工具目录（已 gitignore）
+```
+
+### 3.1 include 约定（重要）
+
+所有模块间的 `#include` 一律写成**相对 `src/` 的显式路径**：
+
+```cpp
+#include "services/config_manager.h"   // ✅ 显式路径（当前约定）
+#include "log/log_manager.h"
+#include "app/valve.h"
+
+#include "config_manager.h"            // ❌ 已废弃的裸文件名写法
+```
+
+PlatformIO 默认已把 `-Isrc` 加入头文件搜索路径，**因此 `platformio.ini` 无需为每个
+子目录单独添加 `-I`**。这样做的好处：路径唯一、无同名歧义、新增文件时意图自明。
 
 ---
 ## 四、核心模块说明
@@ -588,7 +670,7 @@ workflow.save         全 Dirty 落盘（逐 Workflow 事务），成功后请�
 
 > **完整协议（请求 / 参数 / 返回 / 错误码 / variant 与 dirty 行为 /
 > 同步流程 / 可用 Action·Trigger 清单 / UI 对接注意事项）见
-> `workflow_cloud_interface.md`，README 不重复展开。**
+> `docs/interfaces/workflow_cloud_interface.md`，README 不重复展开。**
 
 所有耗时任务采用：
 
@@ -801,7 +883,7 @@ Registry 查询（Action / Trigger / Workflow）
 - 新增协议级消息（照 `change_msg_limit` 的落点，旁路 CommandManager）
 - 新增 Topic（如 `log`），但必须配置化、纯新增，且既有函数签名不变
 
-> **完整协议规范见 `cloud_protocol.md`。**
+> **完整协议规范见 `docs/interfaces/cloud_protocol.md`。**
 
 # 4.13 Mijia Temperature / Humidity
 
@@ -835,7 +917,7 @@ System State显示
 # 4.15 Log Manager
 
 **已实现**（P1 基础设施 + P2 逐模块接入，当前 11 个模块）。
-进度：`docs/LogManager-P2-Progress.md`；接入规范：`docs/LogManager-Integration-Guide.md`。
+进度：`docs/archive/log/LogManager-P2-Progress.md`；接入规范：`docs/specs/LogManager-Integration-Guide.md`。
 
 负责记录：
 
@@ -1526,7 +1608,7 @@ Descriptor 只读共享；Instance 唯一归属；状态存入 runtime；禁用 
 | `guo_feeder/up` | Device → Cloud | ✅ 已实现 | ACK / Result / Registry / 上线通知 |
 | `guo_feeder/log` | Device → Cloud | 🔒 **预留** | **仅日志批次**（Log 模块，尚未实现） |
 
-> Log 独立成 Topic 的原因与接入规范见 §2.5.1 与 `cloud_protocol.md` §8。
+> Log 独立成 Topic 的原因与接入规范见 §2.5.1 与 `docs/interfaces/cloud_protocol.md` §8。
 
 ### 1.2 两种报文格式并存
 
@@ -1539,7 +1621,7 @@ bool compact = !doc["c"].isNull();    // cloud_manager.cpp:1048
 - **旧格式**（长字段）：`cmd` / `ob` 原样透传，无需版本与 Stable ID，**调试首选**。
 - **新格式**（紧凑字段）：经 `cloud_translate_command()` 翻译，`v` / `k` 校验。
 
-> ⚠️ **本章为概述。权威规范见 `cloud_protocol.md`（V2.0，按代码实读重写）。**
+> ⚠️ **本章为概述。权威规范见 `docs/interfaces/cloud_protocol.md`（V2.0，按代码实读重写）。**
 
 ---
 
@@ -2135,7 +2217,7 @@ CloudManager ──► MQTT guo_feeder/log
 - **LogManager 不直接调用 MQTT Client**（`AI_RULES` §1 分层要求）。
 - Log 使用 `store=0`（耐久性由设备自身的 Flash 段环保证，避免双重持久化）。
 - 云端对日志批次需按 `(device_id, boot_seq, seq)` 幂等去重。
-- 完整规范见 `cloud_protocol.md` §8.2。
+- 完整规范见 `docs/interfaces/cloud_protocol.md` §8.2。
 
 
 ---
@@ -2180,7 +2262,7 @@ Topic（如 log），但必须配置化且既有函数签名不变
 - 命令 ID 唯一性与 10 条 / 30 s 去重语义已冻结。
 - 错误码取值（协议层 0–7、业务层 1–13）已冻结。
 
-> 权威规范见 `cloud_protocol.md`。
+> 权威规范见 `docs/interfaces/cloud_protocol.md`。
 
 
 

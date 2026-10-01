@@ -149,7 +149,7 @@ logt reset ||| reset ok
 #      logt fwipe
 #      logt mwipe
 #      logt reset
-# 2) 拔掉 HX711 的 DOUT 线（最极端掉线；见 未修复的问题.md 的 R-8-A V3 记录）
+# 2) 拔掉 HX711 的 DOUT 线（最极端掉线；见 docs/issues/未修复的问题.md 的 R-8-A V3 记录）
 # 3) 5 s 内串口应依次出现（这三行是"三段式记录"的串口侧证据）：
 #      [Weight] STATE_WEIGHT_ERROR -> 1            ← ① 重量异常事实（weight 定义点）
 #      [DispenseGuard] Weight error received       ← ② 安全响应决策（本次新增埋点所在）
