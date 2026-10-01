@@ -1,33 +1,33 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <NimBLEDevice.h>
-#include "system_state.h"
-#include "system_command.h"
-#include "json_storage.h"
-#include "file_storage.h"
-#include "bin_storage.h"
-#include "workflow_storage.h"
-#include "config_manager.h"
-#include "event_manager.h"
-#include "oled.h"
-#include "command_manager.h"
-#include "wifi_module.h"
-#include "time_manager.h"
-#include "cloud_manager.h"
-#include "weight.h"
-#include "valve.h"
-#include "computer_reset.h"
-#include "workflow.h"
-#include "dispense_guard.h"
-#include "test_mqtt.h"
-#include "capability_registry.h"
-#include "MiThermometer.h"
+#include "services/system_state.h"
+#include "services/system_command.h"
+#include "storage/json_storage.h"
+#include "storage/file_storage.h"
+#include "storage/bin_storage.h"
+#include "automation/workflow_storage.h"
+#include "services/config_manager.h"
+#include "services/event_manager.h"
+#include "app/oled.h"
+#include "services/command_manager.h"
+#include "services/wifi_module.h"
+#include "services/time_manager.h"
+#include "cloud/cloud_manager.h"
+#include "app/weight.h"
+#include "app/valve.h"
+#include "app/computer_reset.h"
+#include "automation/workflow.h"
+#include "app/dispense_guard.h"
+#include "test/test_mqtt.h"
+#include "automation/capability_registry.h"
+#include "app/MiThermometer.h"
 // LogManager P1.1 冻结契约（仅契约 + 编译期 static_assert，不含实现）
 //
 // 必须被某个编译单元包含，否则 log_events.h 里的 static_assert 不会被求值。
 // 此处包含即完成 P1.1 的 Contract Test（编译期校验）。
-#include "log_events.h"
-#include "log_manager.h"
+#include "log/log_events.h"
+#include "log/log_manager.h"
 
 // CommandManager 日志 / 结果回显 → 串口
 //
@@ -54,7 +54,7 @@ static void command_log_serial(const char *level, const char *message)
 //   ⇒ LOG_P_MODULE 区分 json(0) / file(1) / bin(2)
 //   ⇒ 不做字符串参数（P2 已定版：字符串一律哈希/枚举化，不扩 LogManager API）
 //   ⇒ 若日后需要精确定位，应把回调改成结构化（level + op + path_hash + err），
-//     属 API 变更，需单独评审（见 docs/LogManager-Integration-Guide.md §Storage）
+//     属 API 变更，需单独评审（见 docs/specs/LogManager-Integration-Guide.md §Storage）
 //
 // 高频抑制：
 //   同一 (module, op) 在 STG_BRIDGE_DEDUP_MS 窗口内只上报 1 条，其余累加计数，
