@@ -75,7 +75,9 @@
 | Cloud Protocol CBOR | ⏳ 已验证，待正式整合进协议 |
 | **编译状态** | ✅ 通过；RAM 39.9%（130,736 B）/ Flash 65.4% |
 
-> ⚠️ **本轮（10-02）实测：固件仓库本地领先远程 `wb` 分支 52 个提交**（含 10-01 目录重构）。**尚未推送**。
+> ✅ **2026-10-02 已推送**：`328d44f..84d8ff6  wb -> wb`（一次性推上 53 个提交，
+> 含 10-01 目录重构与本轮 readme/HANDOFF 改动）。remote 已由旧 URL
+> `Guo_Feeder_Project` 更名为 `Guo_Feeder_Project_PIO_Assets`（旧名仍可访问，自动重定向）。
 
 ### 4.2 云端侧（`Cloudflare_Assets`）
 
@@ -169,8 +171,10 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 
 ## 7. 待决事项（本轮结束时挂起）
 
-1. **固件仓库推送到哪个分支？** —— 本地 `wb` 领先远程 52 提交；远程默认分支是 `main`。
-   本轮的处理见 §8「本轮完成清单」。
+1. **固件仓库的默认分支问题** —— 已推到 `wb`（保持本地分支不变），但**远程默认分支仍是 `main`**
+   （内容较旧，停在 `8c51a32`）。若希望 GitHub 首页展示最新代码，需二选一：
+   ① 把 `wb` 合并到 `main` 后推送；② 在仓库 Settings → Branches 把默认分支改为 `wb`。
+   **待你决定。**
 2. **P0 的五项设计确认**（D1 / D2 / D3 / D5 / D7，见 §5）。
 3. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
 
@@ -187,6 +191,9 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - ✅ 实测 EMQX Serverless API 边界（认证/ACL 路径可用，`/authentication` 列表 403）
 - ✅ 修正 **`readme.md`** 9 处过时点 + 移出 1251 行重复协议章节（→ `docs/archive/legacy/`）
 - ✅ 记忆维护：拆出 **`MEMORY-cloud.md`**，`MEMORY.md` 由 40 KB 降至 29 KB
+- ✅ **固件仓库首次推送**（`wb` 分支 53 个提交 → GitHub），remote 更名为真实仓库名
+- ⚠️ 踩坑：`GH_TOKEN=...` **未加 `export`** ⇒ git 内联凭据 helper 取不到变量 ⇒
+  `Invalid username or token`。**必须 `export GH_TOKEN=...`**
 
 **关联提交**：
 - `EMQX_Assets`：`3415211`（API 边界实测 + 修正探针 + ACL 套用脚本）
