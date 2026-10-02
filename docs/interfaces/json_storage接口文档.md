@@ -3,7 +3,7 @@
 > 项目：Guo Feeder Project（ESP32-S3 N16R8）
 > 版本：定版（含 mkdir 收口，编译通过 EXIT=0）
 > 面向：AI 辅助开发 / 后续维护
-> 关联源码：`src/json_storage.h`、`src/json_storage.cpp`
+> 关联源码：`src/storage/json_storage.h`、`src/storage/json_storage.cpp`
 > 关联文档：`jsonstorage开发架构.md`、`config_manager接口文档.md`
 
 ---

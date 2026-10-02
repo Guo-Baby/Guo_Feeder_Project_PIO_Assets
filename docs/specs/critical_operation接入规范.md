@@ -2,7 +2,7 @@
 
 > 适用范围：所有需要「不可被重启中断」操作的业务模块（Config / Workflow / WOF / RTC 等）。
 > 本规范依据 `AI_TASK.md`（System Command — Safe Restart 需求文档）§10 / §11 / §18 编写。
-> 代码基线：`src/system_command.h` / `src/system_command.cpp`（V2）。
+> 代码基线：`src/services/system_command.h` / `src/services/system_command.cpp`（V2）。
 
 ---
 
@@ -15,7 +15,7 @@ System Command 收到 Restart 请求后，会一直等待所有 Critical Operati
 
 ---
 
-## 2. 对外 API（全部定义在 `src/system_command.h`）
+## 2. 对外 API（全部定义在 `src/services/system_command.h`）
 
 | 接口 | 签名 | 说明 |
 |---|---|---|

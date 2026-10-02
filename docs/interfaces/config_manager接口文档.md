@@ -3,7 +3,7 @@
 > 项目：Guo Feeder Project（ESP32-S3 N16R8）
 > 版本：配置模块定版（含 P0 + P1）
 > 面向：AI 辅助开发 / 云端对接 / 后续维护
-> 关联源码：`src/config_manager.h`、`src/config_manager.cpp`、`src/command_manager.cpp`
+> 关联源码：`src/services/config_manager.h`、`src/services/config_manager.cpp`、`src/services/command_manager.cpp`
 > 关联文档：`config manager开发架构.md`、`jsonstorage开发架构.md`、`cloud_protocol.md`
 
 ---

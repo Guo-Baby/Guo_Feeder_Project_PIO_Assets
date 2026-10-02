@@ -25,8 +25,8 @@
 
 | 文件 | 层级 | 职责 |
 |---|---|---|
-| `src/file_storage.h` / `.cpp` | 最底层 | 通用文件操作，只认识 `path + raw bytes + length` |
-| `src/bin_storage.h` / `.cpp` | BIN 层 | 通用 BIN 存储，提供错误码语义 |
+| `src/storage/file_storage.h` / `.cpp` | 最底层 | 通用文件操作，只认识 `path + raw bytes + length` |
+| `src/storage/bin_storage.h` / `.cpp` | BIN 层 | 通用 BIN 存储，提供错误码语义 |
 
 修改的既有文件：
 

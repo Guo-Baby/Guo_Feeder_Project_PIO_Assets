@@ -1,7 +1,7 @@
 # SystemCommand 接口文档（V1）
 
-> **源码**：`src/system_command.h` / `src/system_command.cpp`
-> **接入点**：`src/command_manager.cpp`（仅路由与 handler，未改其它模块）
+> **源码**：`src/services/system_command.h` / `src/services/system_command.cpp`
+> **接入点**：`src/services/command_manager.cpp`（仅路由与 handler，未改其它模块）
 > **状态**：V1 已定版，已在真实硬件（ESP32-S3 N16R8）+ EMQX MQTT 上端到端验证
 > **最后验证**：2026-08-31，git tag `feat/system_command_v1`
 > **本文档一切内容取自源码通读与实测回包，无推测**
@@ -109,13 +109,13 @@ SystemCommand 是**设备自身基础系统控制与资源查询**的执行层�
 
 | 文件 | 改动 |
 |---|---|
-| `src/system_command.h` | **新建**。模块说明 + 3 个声明 |
-| `src/system_command.cpp` | **新建**。`fill_ram_block()`、`files_collect()`（递归、只读）、两个查询实现 |
-| `src/command_manager.cpp:12` | `#include "system_command.h"` |
-| `src/command_manager.cpp:171-173` | 3 个 handler 前向声明 |
-| `src/command_manager.cpp:1282-1291` | `system_router` 增 `memory` / `flash` / `restart` 分支 |
-| `src/command_manager.cpp:389` | `command_manager_init()` 中调用 `system_command_init()` |
-| `src/command_manager.cpp:2034-2140` | 3 个 handler 实现 |
+| `src/services/system_command.h` | **新建**。模块说明 + 3 个声明 |
+| `src/services/system_command.cpp` | **新建**。`fill_ram_block()`、`files_collect()`（递归、只读）、两个查询实现 |
+| `src/services/command_manager.cpp:12` | `#include "system_command.h"` |
+| `src/services/command_manager.cpp:171-173` | 3 个 handler 前向声明 |
+| `src/services/command_manager.cpp:1282-1291` | `system_router` 增 `memory` / `flash` / `restart` 分支 |
+| `src/services/command_manager.cpp:389` | `command_manager_init()` 中调用 `system_command_init()` |
+| `src/services/command_manager.cpp:2034-2140` | 3 个 handler 实现 |
 
 **未改动**：ConfigManager、SystemState、WorkflowManager、Action/Trigger、CloudManager 协议、
 WiFi、MQTT、TimeManager、JsonStorage、`main.cpp`、`partitions.csv`。
