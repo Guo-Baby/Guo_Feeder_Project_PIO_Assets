@@ -273,16 +273,131 @@ Part 2（已连接客户端）
 
 ---
 
+## Design Impact Freeze
+
+> **本节为 P1-0 结论的冻结区。** 数据来源：§A-1c（3 轮复测 + 已连接客户端行为；**以该节为准**）。
+> **本节内容是 P1-2 / P1-3 / P1-5 的设计约束，不可被后续实现覆盖** —— 若要偏离，须先在本文更新本节并说明理由。
+
+### ACL propagation behavior
+
+**实测**（`workbuddy` 账号，规则改回并在 `finally` 复验）：
+
+- ACL 修改后，**新连接**约 **1.2~1.4 秒**后受到新规则影响
+  （收紧 **1.36 / 1.35 / 1.35 s**，avg 1.35；恢复 **1.40 / 1.32 / 1.38 s**，avg 1.37；极差 ≤ 0.08 s，**无长尾**）。
+- **已建立 MQTT session 不立即重新评估 ACL。**
+- **已连接客户端继续拥有旧 session 权限** —— 实测中收紧后，同一长连接即使发起**新的 `subscribe`** 仍 `granted=1`，
+  而同时刻的新连接已在 1.23 s 被拒 ⇒ **变更确已全局生效，只是不作用于既有会话**。
+
+**因此：**
+
+> **ACL 修改不是完整 revoke。**
+
+完整 revoke **必须**：
+
+```
+update ACL
++
+terminate existing session        # DELETE /clients/{clientid}，P0 期间实测返回 204
+```
+
+两者缺一不可：只改 ACL ⇒ 已连接设备继续可用（最长直到自然断线）；
+只踢连接 ⇒ 设备会带原凭据立即重连并成功。
+
+**⇒ 本条写入 P1 凭据生命周期定义：revoke = ACL change + session termination（两个动作均需可观测、可重试、可对账）。**
+
+### 对 P1-2 影响
+
+credential issuance 流程**不得只依赖**：
+
+```
+EMQX API success
+```
+
+`POST /users` 与 `PUT .../rules/users/{u}` 返回 2xx **只代表规则已写入配置**，
+**不代表规则已生效** —— 中间存在 §A-1c 实测的传播窗口。
+
+必须考虑 **ACL propagation window**。签发流程必须具备：
+
+| 要求 | 说明 |
+|---|---|
+| **ACL ready check** | 不能以"API 返回成功"作为 ready 判据；需有独立的**就绪判定**（判定方式在 P1-2 实施时定，**不在本文冻结**） |
+| **retry / wait** | 未 ready ⇒ 等待后重试，而非直接判定失败。**等待余量实测 ≥2 s 足够（max 1.40 s），保守取 3 s** |
+| **可检测失败状态** | 必须能区分 `OK` / `PENDING` / `FAILED`，且状态**可被查询与告警**；禁止出现"签发成功却静默不可用"的中间态 |
+
+> ⚠️ **半成品状态必须可检测**：账号创建成功但 ACL 未就绪（或写入失败）的设备不得被标记为可用。
+> P1-2 的 D1 凭据记录需能表达该中间态（字段设计见 P1-1 的 `device_credential`）。
+
+### 对 P1-3 影响
+
+credential rotation（固件侧双 slot 模型 `ACTIVE / TESTING / INVALID`）：
+
+**不得直接：**
+
+```
+new credential active
+old credential revoke
+```
+
+⇒ 这条路径在新凭据**尚未验证连通**时就废弃了旧的，一旦失败设备即失联。
+
+**必须：**
+
+```
+new credential TESTING
+        ↓
+connection verification      # CONNACK 成功才算通过；网络失败（超时/DNS/TLS）不得误判为凭据失败
+        ↓
+ACTIVE
+        ↓
+old credential revoke        # 改 ACL
+        ↓
+terminate old sessions       # ← 本节点引入：否则旧会话按 §ACL propagation behavior 继续存活
+```
+
+**⇒ "terminate old sessions" 是本次 A-1c 新增的强制步骤**，原 P1-3 定义中缺失。
+轮换完成后必须显式重连 / 踢线，不能假定"改了 ACL 就等于旧凭据失效"。
+
+### 对 P1-5 影响
+
+owner transfer / revoke（绑定与解绑语义）：
+
+必须**同时**考虑三个层面（缺一即出现"数据已解绑但设备仍被控"或反之）：
+
+| 层面 | 位置 | 说明 |
+|---|---|---|
+| **database binding state** | D1 `device_binding` | 归属关系的**唯一权威**（active 绑定唯一约束） |
+| **MQTT authorization** | EMQX ACL | 决定能否收发 `guo_feeder/<device_id>/{down,up,log}` |
+| **existing MQTT sessions** | EMQX 连接 | **本小节新增**：已连接会话不随 ACL 变更重鉴权 |
+
+转让完成后需要：
+
+```
+update binding
++
+update ACL
++
+terminate old control sessions     # ← 本节点引入
+```
+
+> **不变的既有冻结项**：`BOUND → UNBOUND`（解绑）**不吊销 credential** —— 归属关系 ≠ MQTT 身份；
+> 仅 `UNBOUND → REVOKED`（退役）才触发上述三步组合。
+
+---
+
 ## 汇总：对 P1 设计的影响
 
 | # | 结论 | 对 P1 的影响 | 是否阻塞 |
 |---|---|---|---|
 | **A-4** | `client_id` 上限 8K~16K；字符集近乎不限；空 `client_id` 被接受 | P0 的 ≤128 + `[0-9a-zA-Z_-]` **保守安全，无需调整**；固件侧字符集校验是**唯一防线**，保留 | ✅ 不阻塞 |
 | **A-5** | 账号可程序化创建/删除；上限约 2000 | **"一机一账号"可行** ⇒ 凭据模型成立；**P1 不需要 slot 池**（APP 授权已延后） | ✅ **支撑** |
-| **A-1** | 授权变更**秒级生效**（≈1.3 s） | 签发流程只需**等 ≥2 s**（或连接失败重试）；**R-2 风险大幅降级** | ✅ **解除阻塞** |
+| **A-1** | 授权变更**秒级生效**（≈1.3 s）；**但仅作用于新连接**（§A-1c：既有会话不重鉴权） | 签发流程需**等 ≥2 s**（或连接失败重试）；**R-2 风险大幅降级**；⚠️ **吊销类操作另见 §Design Impact Freeze** | ✅ **解除阻塞**（但**不覆盖** revoke 语义） |
 | **A-6** | **不支持 `$SYS`**；**支持** `$events/client_connected/disconnected` 经数据集成 | 在线状态**零设备开销**方案确认；落地 = 数据集成规则 → HTTP Action → Worker | ✅ **支撑** |
 
 **⇒ P1-0 的四项均未发现"设计不可行"结论；A-1 的秒级延迟反而解除了此前最大的时序顾虑。**
+
+> ⚠️ **但 A-1c 限定了该结论的适用范围**：秒级生效是对**新连接**而言。
+> 凡涉及**让某个已在线身份失效**的操作（P1-2 失败回滚 / P1-3 轮换 / P1-5 转让与退役），
+> **统一受 §Design Impact Freeze 约束**：`ACL change` 必须与 `session termination` 成对执行。
 
 ---
 
