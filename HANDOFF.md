@@ -24,10 +24,12 @@
    D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\.workbuddy\memory\2026-10-02.md
                                                                              ← 长期笔记 + 最近工作日志
 
-【按需查阅】
-8. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\cloud_protocol.md      ← MQTT 协议唯一权威
-9. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\workflow_cloud_interface.md
-10. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\AI_CONTEXT.md / AI_RULES.md
+【按需查阅】★ P0 施工时必看第 8 项
+8. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\architecture\P0-设备身份与Topic隔离设计.md
+                                                                             ← ★ **P0 实施级设计**（D1/D2/D3/D5/D7 已定案 + 改造清单 + 上线顺序 + 验收）
+9. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\cloud_protocol.md      ← MQTT 协议唯一权威
+10. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\workflow_cloud_interface.md
+11. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\AI_CONTEXT.md / AI_RULES.md
 
 【背景】当前处于「云端/APP 架构落地」阶段，下一步是 P0–P6（详见 HANDOFF.md §4）。
 我（用户）是 ESP32 固件开发者，习惯先看文档再动手；改动前请先说明方案。
@@ -71,9 +73,10 @@
 | LogManager | ✅ **P2 已完成**（16 模块接入，冻结）；细节见 `docs/specs/LogManager-Integration-Guide.md` |
 | TimeManager V2 | ✅ 完成；⚠️ **板子未焊 PCF8563T，`rtc.json` 的 `enable=false`**（焊上后改 `true`） |
 | Workflow / Config / Command / Cloud | ✅ 可用（含云端 Workflow 编辑协议） |
+| **P0（身份 + Topic V3）** | ✅ **已完成、已上板、已端到端验证** —— `9825b09` DeviceIdentity · `5c4ffb6` TopicRenderer · `607b16d` client_id + 渲染接入 · `17e459c` ACL（`EMQX_Assets`，**已 apply 到线上**）· `9e07d6d` 用例集 + 工具适配。累计 **RAM +88 B / Flash +7,040 B**。**端到端实测**：经 MQTT 向 `guo_feeder/<device_id>/down` 下发 memory / flash / config_query 三条只读命令，设备均正确执行并回包 |
 | Mijia BLE 温湿度计 | ⏳ 解码算法已分析，待正式集成 |
 | Cloud Protocol CBOR | ⏳ 已验证，待正式整合进协议 |
-| **编译状态** | ✅ 通过；RAM 39.9%（130,736 B）/ Flash 65.4% |
+| **编译状态** | ✅ 通过；**RAM 39.9%（130,824 B，P0 后 +88 B）/ Flash 65.8%（1,379,568 B，P0 后 +7,040 B）** |
 
 > ✅ **2026-10-02 已推送**：`328d44f..84d8ff6  wb -> wb`（一次性推上 53 个提交，
 > 含 10-01 目录重构与本轮 readme/HANDOFF 改动）。remote 已由旧 URL
@@ -101,14 +104,14 @@
 | 项 | 值 |
 |---|---|
 | 部署 | `n302933b.ala.cn-hangzhou.emqxsl.cn`（Serverless，仅 8883 mqtts / 8084 wss） |
-| ACL | ✅ **已修复**：5 用户 / 9 条规则 + `全部用户 → # → deny` 兜底 ⇒ **白名单语义成立** |
+| ACL | ✅ **已升级到 Topic V3**：新增 `config/acl-rules.v3.json` + `apply-acl.mjs --device-ids`（**已 apply**）；设备账号规则 3 → 6 条（3 条 V3 + 3 条 legacy 过渡）；兜底 `全部用户 → # → deny` 不变 |
 | 脚本 | `scripts/{emqx-api,check-connection,diagnose-api,apply-acl}.mjs` |
 
 **ACL 现状**：
 
 | 账号 | 允许 |
 |---|---|
-| `GuoFeederDevice` · `GuoFeederDevice001` | sub `guo_feeder/down` · pub `guo_feeder/up` · pub `guo_feeder/log` |
+| `GuoFeederDevice` · `GuoFeederDevice001` | sub/pub `guo_feeder/<device_id>/{down,up,log}`（**逐设备枚举，禁通配**）+ legacy 三条（过渡期，**仅 dev/test**） |
 | `workbuddy` · `test001` · `shouji` | all `guo_feeder/#`（调试用，未来收窄） |
 
 > ⚠️ EMQX Serverless **不支持外部 HTTP 认证 / 扩展授权 / 白名单开关** ⇒ P1 的凭据模型只能是
@@ -122,7 +125,7 @@
 
 | 阶段 | 内容 |
 |---|---|
-| **P0** | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离设计 |
+| **P0** ✅ | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离 —— **已完成** |
 | **P1** | EMQX 认证 + 用户/设备绑定 + 凭据签发（slot 池） |
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
 | **P3** | 历史/D1（多设备数据模型 + 遥测降频策略） |
@@ -130,20 +133,32 @@
 | **P5** | Cloudflare Pages 部署 + 安卓 WebView 壳 |
 | **P6** | 原生 Android（**【后续可选】**，现在不装 Android Studio） |
 
-### ★ P0 开工前尚缺的设计确认（8 项）
+### ★ P0 开工前的设计确认 —— **已定案（2026-10-02）**
 
-| # | 待确认 | 影响 |
-|---|---|---|
-| **D1** | `device_id` 格式（`aabbccddeeff` 还是 `gf-...`） | 决定 Topic/ACL/D1 全部字符串，改了全线返工 |
-| **D2** | 存储位置（NVS 独立分区 / Config 只读字段） | 决定实现路径 |
-| 3 | `client_id` 是否同步改为 `dev_<device_id>` | 现为 `guo_feeder_001`，与 MAC 无关（身份漂移残留） |
-| **D3** | Topic 实现方式（模板渲染 / 代码拼接） | 决定 `config_manager` 是否新增 `topic_render()` |
-| **D5** | EMQX API 能否按 `username` 改写 ACL（**需实测**） | **P1 根本前提** |
-| 6 | APP 凭据槽位数 N 与租约模型 | 决定 D1 `Credential` 表结构 |
-| **D7** | 遥测落库频率策略 | 设备侧降频需 P0 一起设计配置项 |
-| 8 | legacy Topic 过渡期长度 | 决定双发实现与 ACL 过渡规则 |
+> **★ 施工依据 = `docs/architecture/P0-设备身份与Topic隔离设计.md`**
+> （含**精确到行号**的改造清单 · device_id 派生与 NVS 决策表 · 渲染契约与失败语义 ·
+> EMQX ACL（V3 兼容版）规则集 · 上线顺序与回滚 · 验收标准 DoD · 风险登记）
 
-> **建议先定 D1 / D2 / D3 / D5 / D7 五项，即可开工 P0。**
+| # | 决策 | 取值 | 状态 |
+|---|---|---|---|
+| **D1** | `device_id` 格式 | **`aabbccddeeff`**（12 位小写 hex，无分隔、无前缀） | ✅ 已定 |
+| **D2** | 持久化位置 | **NVS：复用现有 `nvs` 分区 + 独立 namespace `gfid`**（⚠️ 偏离 Plan 建议的"独立分区"——实测 flash 已 100% 分配；且 `device_id` 是 MAC 的**幂等派生值**（**仅在未迁移、未绑定时**可重建）⇒ 无独立分区必要） | ✅ 已定 |
+| **D3** | Topic 实现方式 | **方案 A：配置留模板 + `device_topic_render()` 渲染**（最大价值：**回滚只改配置，不回退固件**） | ✅ 已定 |
+| **D5** | EMQX 按 `username` 改写 ACL | **可通**：`PUT /authorization/sources/built_in_database/rules/users/{username}` **实测 200**，`emqx-api.mjs` 已封装 `replaceUserAclRules()`；⚠️ **授权缓存生效延迟待实测**（P1 签发时序必须"先改 ACL 再让 APP 连"） | ✅ 已定 |
+| **D7** | 遥测落库策略 | **分层策略表已冻结**（目标 <1200 行/设备/天）；**P0 不引入任何遥测配置项**（上报功能本身仍在 `readme.md` §六 待开发 ⇒ 随"Device State Heartbeat"一起落地，落点预登记为 `mqtt.json.telemetry`，**不新增 Config 模块**） | ✅ 已定 |
+| — | `client_id` 改 `dev_<device_id>` | ✅ 已定 —— **性质是缺陷修复**：固定 `guo_feeder_001` ⇒ 第二台设备上电触发 **MQTT session takeover 把第一台踢下线**（表现为"莫名重连"，极难排查） | ✅ 已定 |
+| C-3 | `platformio.ini` 固定版本（`DD-5` / `9.7`） | 建议并入 P0（4 行，独立 commit） | ⏳ **仍未做**（待点头） |
+| C-4 | 测试工具适配 V3（`tools/mqtt_*.py` · `test/mqtt_log_probe.py` 等**硬编码 legacy topic**） | ✅ **已完成** —— 并入 **P0-5** `9e07d6d`（4 个工具加 `--device-id`，**不提供通配回退**） | ✅ 已完成 |
+| 6 | APP 凭据槽位数 N 与租约模型 | P1 开工前定 | ⏳ P1 |
+| 8 | legacy Topic 过渡期长度 | 以"P1 凭据 + P3 落库"完成度为终点（现在定天数无依据） | ⏳ 待定 |
+
+> **⇒ P0 已完成**（P0-1..P0-5 全部提交，并完成上板与 MQTT 端到端验证）；
+> 仅 **C-3（`platformio.ini` 固定版本）** 未做 —— 不影响主链路，可随时补。
+>
+> **★ 排障铁律（P0 期间实测）**：`[Cloud] MQTT subscribed` 日志 **≠** 订阅被授权。
+> EMQX 白名单模式下，未被显式 allow 的 topic 会落到兜底 `# deny` ⇒ EMQX clients 里
+> `subscriptions=0`（设备收不到任何下行），但固件照样打 `subscribed`。**必须以 `subscriptions` 为准**。
+> 且 ACL 改完**不会**让已建立的连接自动重订阅 ⇒ 需重连（无串口时可用 `DELETE /clients/{clientid}` 踢连接）。
 
 ---
 

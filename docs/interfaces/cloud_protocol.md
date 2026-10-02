@@ -4,7 +4,7 @@
 > 版本：**V2.0**
 > 日期：2026-09-15
 > 代码基线：git `ce9ba37`
-> 事实来源：**`src/cloud_manager.cpp` / `.h` 的实际实现**
+> 事实来源：**`src/cloud/cloud_manager.cpp` / `.h` 的实际实现**
 > 配套文档：`workflow_cloud_interface.md`（Workflow 云端同步契约）、`config_manager接口文档.md`
 
 ---
@@ -32,7 +32,7 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 | `t` 字段含义 | `type`（消息类型） | 实际 `t` = **timestamp**；消息类型由 `c`（command）承载 |
 | 编码 | "正式用 CBOR" | **上行目前全部是 JSON 文本**。虽然开了 `ARDUINOJSON_USE_CBOR=1`，但 `cloud_send_up()` 走的是 `cloud_compress_uplink()`（文本级字段缩写）+ `cloud_mqtt_publish_text()` |
 | 二进制接口 | — | `cloud_send_up_cbor` / `cloud_send_set_cbor` / `cloud_send_up_binary` **头文件有声明、无实现**（无调用点，故链接不报错） |
-| 枚举存放 | `cloud_protocol_enum.h` | 该文件**不存在**；枚举实际定义在 `src/cloud_manager.h` |
+| 枚举存放 | `cloud_protocol_enum.h` | 该文件**不存在**；枚举实际定义在 `src/cloud/cloud_manager.h` |
 
 ### 0.3 与相关文档的分工
 
@@ -55,19 +55,32 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 |---|---|---|---|
 | Broker 主机 | `mqtt_server` | `n302933b.ala.cn-hangzhou.emqxsl.cn` | |
 | 端口 | `mqtt_port` | `8883` | **8883 → `MQTT_TRANSPORT_OVER_SSL`**；否则 TCP |
-| Client ID | `client_id` | `guo_feeder_001` | |
-| 用户名 | `username` | `GuoFeederDevice` | |
+| Client ID | `client_id` | `guo_feeder_001` | ⚠️ **必须全局唯一**：固定值会让第二台设备触发 session takeover 把第一台踢下线 ⇒ **P0 改为 `dev_<device_id>`** |
+| 用户名 | `username` | `GuoFeederDevice` | P1 改为 `dev_<device_id>`（一机一账号） |
 | 密码 | `password` | *（敏感）* | **不写入文档**；⚠️ 见 §9.1 |
-| 订阅 Topic | `subscribe_topic` | `guo_feeder/down` | 下行 |
-| 发布 Topic | `publish_topic` | `guo_feeder/up` | 上行 |
+| 订阅 Topic | `subscribe_topic` | `guo_feeder/down` | 下行；**P0 起为模板** `guo_feeder/<device_id>/down`（见下方说明） |
+| 发布 Topic | `publish_topic` | `guo_feeder/up` | 上行；**P0 起为模板** `guo_feeder/<device_id>/up` |
 | CA 证书路径 | `ca_path` | `/emqxsl-ca.crt` | LittleFS 路径；缺失时打日志但继续（不校验） |
 | 最大重试次数 | `retry_max` | `30` | ≤0 时用内置 `MQTT_RETRY_MAX = 10` |
 | 休眠重试间隔 | `sleep_retry_interval` | `1800000`（30 min） | ≤0 时用内置 `MQTT_FAIL_SLEEP_TIME = 3600000` |
 | Keep Alive | `mqtt_keep_alive` | `60` | 由 esp-mqtt 底层保活，**应用层无心跳** |
 | ~~重试间隔~~ | `retry_interval` | `10000` | ⚠️ **死配置**：代码中声明了该变量但从未读取（见 §9.2） |
 
-> **Topic 是完整字符串，不是模板。** 设备不会把 `{uid}` 替换成任何值；
-> `subscribe_topic` / `publish_topic` 原样使用。
+> **V2.0 语义：Topic 原样使用，设备不会替换 `{uid}`。** 三个 Topic 配置项都是**完整字符串**，
+> `cloud_init()` 读入后直接使用（`cloud_manager.cpp:1462–1479`）。
+>
+> **★ V3 变更（P0）** —— 见 `docs/architecture/P0-设备身份与Topic隔离设计.md`：
+> 引入**唯一一种**占位符 `<device_id>`（如 `guo_feeder/<device_id>/down`），由固件新增的
+> `device_topic_render()` **显式替换**后使用。**与上面这句不冲突**，因为：
+>
+> | 写法 | 谁替换 | 固件是否处理 |
+> |---|---|---|
+> | `{uid}` | — | ❌ **永远不替换**（V1.0 遗留写法，已废弃） |
+> | `${username}` / `${clientid}` | **EMQX ACL** 侧 | ❌ 固件**不处理**（属云侧占位符，故意用不同写法区分） |
+> | `<device_id>` | **固件 `device_topic_render()`** | ✅ 显式替换（P0 新增能力） |
+>
+> 且 **"不含 `<device_id>` 的模板原样放行"** —— 这是 P0 的 legacy 兼容与**配置级回滚通路**
+> （把 Topic 改回 `guo_feeder/down` 即回到 V2.0 行为，**无需回退固件**）。
 
 ### 1.2 编译期常量（`cloud_manager.cpp`）
 
@@ -467,7 +480,7 @@ MQTT
 ### 8.2 🔒 预留：`log` Topic（规划中，**尚未实现**）
 
 > 本节为**前瞻性规范**，代码当前**未实现**。
-> 完整设计见 `log模块历史/LogManager详细设计规划0915.md`。
+> 完整设计见 `docs/archive/log/LogManager详细设计规划0915.md`。
 
 **目标形态**：
 
