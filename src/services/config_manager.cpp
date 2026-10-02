@@ -3611,6 +3611,15 @@ int config_get_rtc_calibrate_threshold_sec()
 }
 
 // ---------------- HX711 称重 ----------------
+// 模块使能：默认 true（向后兼容既有部署，其 weight.json 无 enable 字段）。
+// 未安装 HX711 的开发板应显式置 false，否则悬空 DOUT 会让
+// is_ready() 恒 false ⇒ 每 5s 触发 EVENT_WEIGHT_ERROR ⇒ DispenseGuard 反复强关阀。
+// 同构先例：config_get_valve_enable() / config_get_rtc_enable()
+bool config_get_weight_enable()
+{
+    return module_ro(CONFIG_MODULE_WEIGHT)["enable"] | true;
+}
+
 int config_get_weight_dt()
 {
     return module_ro(CONFIG_MODULE_WEIGHT)["dt"] | 4;

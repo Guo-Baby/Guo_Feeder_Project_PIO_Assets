@@ -190,6 +190,34 @@
 
 ## 6. 环境要点（省得重新摸索）
 
+### ★ 当前开发板硬件状态（2026-10-02）
+
+| 硬件 | 状态 | 对应配置 |
+|---|---|---|
+| 电子秤 **HX711** | **未安装** | `data/config/weight.json` → `"enable": false` |
+| **PCF8563T RTC** | **未焊接** | `data/config/rtc.json` → `"enable": false` |
+
+**★ `weight.enable` 的由来（实际踩过的坑）**：
+HX711 未接入时 DOUT 悬空 ⇒ `scale.is_ready()` 恒 false ⇒ `weight_task()` 每 5s 发一次
+`event_push(EVENT_WEIGHT_ERROR, "HX711 not ready")` ⇒ `DispenseGuard` 反复
+`valve_force_close()`，串口每 5s 刷三行日志、阀门被反复强关。
+
+**装秤后**改回 `"enable": true` 并重做零点校准（`WEIGHT_ZERO` action / `config_set` + `config_save`）。
+
+> **为什么不做"自动检测传感器是否存在"**：固件无法区分「压根没装 HX711」与
+> 「装了但 DOUT 断线 / 芯片损坏」—— 两者都表现为"从未就绪"。对"从未就绪"一律静默
+> = **秤坏了也不报警**（安全降级）。故必须由使用者显式声明。
+>
+> **置 false 的连带效果**：不注册 `weight_decrease` Trigger 与 `WEIGHT_ZERO` Action
+> （与 `valve_init()` 的 `!enable` 处理同构）⇒ `registry_version` 会变化，
+> 云端 / APP 应**重新拉取 registry 缓存**，切勿写死 `stable_id`。
+
+> ⚠️ **`data/` 已被 gitignore** ⇒ 上述配置是**设备端 / 本机**配置，**不在版本控制内**。
+> 改设备端需走 MQTT：`{"c":"system","i":"<唯一id>","p":{"o":"config_set","module":"weight","key":"enable","value":true}}`
+> 然后 `{"c":"system","i":"<唯一id>","p":{"o":"config_save"}}`
+> （见 `docs/interfaces/config_manager接口文档.md` §4.2 / §4.5）；
+> 或 `pio run -t uploadfs`（**会整区重建 LittleFS**，设备端独有文件会丢，慎用）。
+
 ### GitHub / 代理（**最重要**）
 ```bash
 # 本机 GitHub 出口必须是这个！沙箱注入的 3386 代理会覆盖系统代理并导致 502
