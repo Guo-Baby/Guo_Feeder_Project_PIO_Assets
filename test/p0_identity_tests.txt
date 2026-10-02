@@ -71,10 +71,11 @@ cm {"cmd":"system","ob":"memory","id":"pq05","p":{}} ||| internal
 #     期望：'[Identity] new device_id=<12hex> (nvs written)'
 #     说明：**只出现一次**；日常回归时该串必须为 0（即 S-3 的前提）
 #
-#   S-4 NVS 损坏 / 丢失
-#     前置：擦除 gfid namespace 后重启（未发生身份迁移、云端绑定未变）
-#     期望：重建出**同一** device_id
-#     注意：若设备已做过身份迁移或云端绑定变化，**不得**据此判定可重建（设计 §2.3）
+#   S-4 NVS 丢失 → **未迁移设备条件下**重新派生同一 device_id
+#     前置：擦除 gfid namespace 后重启（**未发生身份迁移、云端绑定未变化**）
+#     期望：**重新派生**出同一 device_id
+#     ⚠️ 措辞要点：这里的"同值"**不是无条件成立** —— 它只在"未迁移设备"条件下成立；
+#        若设备已做过 identity migration 或云端绑定已变化，**不得**据此判定可重建（设计 §2.3/I-4）。
 #
 #   S-5 MAC 不一致（保留 NVS 值，不覆盖）
 #     前置：用 NVS 预写一个与当前 MAC 不同的 did（真机制造 MAC 差异不可行）
@@ -103,10 +104,19 @@ cm {"cmd":"system","ob":"memory","id":"pq05","p":{}} ||| internal
 #        ⇒ P0-3 的「超限 ⇒ ERROR + 回落、不截断」分支由**编译期自检**覆盖：
 #           `topic_renderer_selftest()` 的 `too_long` 用例（GF_TOPIC_RENDER_SELFTEST=1 构建，实测 PASS）。
 #
-#   S-11 OTA 身份持久性（DV-3）
-#     步骤：① 记录升级前 device_id ② 执行 OTA ③ 重启
-#     期望：device_id 与升级前**完全一致**，且**不得**出现 'new device_id='
-#     依据：普通 OTA 不得改变 device_id（设计 §2.3.1 DV-3）
+#   S-11 固件替换后的身份持久性（Firmware replacement identity persistence · DV-3）
+#     ⚠️ 命名说明：**本固件当前不含任何 OTA 模块**（无 ArduinoOTA / Update.h / esp_ota_*）
+#        ⇒ 不存在"设备自升级"通道，故本用例按"**固件替换**"表述，验证手段为
+#          **重烧 app 分区**（`write_flash 0x10000 firmware.bin`，不碰 nvs）—— 等价于 OTA 写 app。
+#     步骤：① 记录替换前 device_id ② 重烧 app 分区 ③ 重启
+#     期望：device_id 与替换前**完全一致**，且**不得**出现 'new device_id='
+#     依据：普通固件升级 / 替换不得改变 device_id（设计 §2.3.1 DV-3）
+#     ✅ 2026-10-02 实测：替换前后均为同一 device_id，且无 'new device_id='
+#
+#   S-12 OTA 身份持久性（**未来项：待 OTA 模块落地后再启用**）
+#     届时验证：设备经 **OTA 通道自升级**（app 分区 + otadata 变更、可能含回滚）后，
+#               device_id 必须保持不变。
+#     现状：无 OTA 通道 ⇒ **本用例不执行**，仅在此登记，避免"以为已覆盖"。
 #
 # -----------------------------------------------------
 # §D MQTT 端到端（不属串口批次；用 tools/ 工具执行）
