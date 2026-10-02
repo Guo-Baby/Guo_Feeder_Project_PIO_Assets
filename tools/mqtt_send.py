@@ -28,8 +28,48 @@ PORT = 8883
 CA = r"D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\data\emqxsl-ca.crt"
 USER = "workbuddy"
 PASS = "workbuddy"
-SUB = "guo_feeder/up"
-PUB = "guo_feeder/down"
+# --- P0-5：Topic V3 参数化（topic 含 device_id；**刻意不提供通配回退**）---
+def _strip_device_id_args(argv):
+    """剔除 --device-id <id> / --device-id=<id>，返回其余位置参数。"""
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--device-id":
+            i += 2
+            continue
+        if a.startswith("--device-id="):
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def _require_device_id():
+    """设备 ID：--device-id <id> > 环境变量 GF_DEVICE_ID；缺失则退出。
+
+    Topic V3 的 topic 形如 guo_feeder/<device_id>/...，必须显式指定。
+    **不提供 guo_feeder/+/up 通配回退**：那会造成多设备混流假象，
+    而且 `+` 占整整一级，并不能匹配 legacy 的 guo_feeder/up。
+    """
+    argv = sys.argv[1:]
+    did = ""
+    for i, a in enumerate(argv):
+        if a == "--device-id" and i + 1 < len(argv):
+            did = argv[i + 1]
+        elif a.startswith("--device-id="):
+            did = a.split("=", 1)[1]
+    did = (did or os.environ.get("GF_DEVICE_ID", "")).strip()
+    if not did:
+        print("[ERR] 缺少设备 ID：请用 --device-id <id> 或环境变量 GF_DEVICE_ID")
+        print("      原因：Topic V3 的 topic 含 device_id，必须显式指定。")
+        sys.exit(2)
+    return did
+
+
+DEVICE_ID = _require_device_id()
+SUB = "guo_feeder/%s/up" % DEVICE_ID
+PUB = "guo_feeder/%s/down" % DEVICE_ID
 CLIENT_ID = "workbuddy_send_%d" % int(time.time())
 
 WAIT_CONNECT = int(os.environ.get("WAIT_CONNECT", "3"))
@@ -81,7 +121,7 @@ def on_message(client, userdata, msg):
 
 
 def main():
-    cmds = sys.argv[1:]
+    cmds = _strip_device_id_args(sys.argv[1:])
     if not cmds:
         print(__doc__)
         sys.exit(1)

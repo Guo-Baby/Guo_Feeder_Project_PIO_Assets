@@ -1,0 +1,108 @@
+# =====================================================
+# P0 设备身份 + Topic V3 —— 上板用例集（P0-5）
+#
+# 运行：
+#   python test/serial_batch.py COM8 .pio/p0_identity.log test/p0_identity_tests.txt 3.0 0.35
+#
+# 自动覆盖：S-1 探活 · S-6a topic 模板 · S-8 client_id 实值 · S-10 时间回归
+# 人工覆盖（boot 日志 / 需人为前置状态）：S-2 · S-3 · S-4 · S-5 · S-6b · S-7 · S-9 · S-11
+#
+# ⚠️ 三条前提（本文件受其影响）：
+#   ① **开串口即复位** ⇒ 启动类日志出现在日志文件**开头**；
+#   ② serial_batch 每条命令前 `reset_input_buffer()` ⇒ **boot 日志不参与 EXPECT 匹配**，
+#      故启动类断言只能用 grep 人工核对（见 §B）；
+#   ③ 设备端配置与仓库 `data/` 不一致是常态 ⇒ 先读实值再判（本文件 §A 就是在读实值）。
+#
+# ⚠️ 本文件**不含真实 device_id**：配置里存的是**模板**，故期望串写 `<device_id>` 字面量。
+# =====================================================
+
+# -----------------------------------------------------
+# §A 自动断言（每次执行都应全 OK）
+# -----------------------------------------------------
+
+# S-1 探活：被动观测不可靠（项目铁律）⇒ 先确认会话活着
+logt stats ||| emit
+
+# S-6a 三个 topic 已配置为 V3 **模板**（渲染的输入；渲染发生在 cloud_init）
+config_query mqtt ||| guo_feeder/<device_id>/down
+config_query mqtt ||| guo_feeder/<device_id>/up
+config_query mqtt ||| guo_feeder/<device_id>/log
+
+# S-8 client_id 已唯一化为 dev_<device_id>（P0-3；不再是固定 guo_feeder_001）
+config_query mqtt ||| dev_
+
+# S-10 时间链路回归（P0 未触碰该模块）
+system.time ||| source
+
+# -----------------------------------------------------
+# §B 启动类断言（boot 日志，**人工 grep 核对**）
+# -----------------------------------------------------
+# 日志文件开头含本次复位的 boot 段，用下列命令核对：
+#
+#   S-3 重复启动（NVS 已有 did）
+#     grep -c '\[Identity\] device_id='      .pio/p0_identity.log   # ≥ 1
+#     grep -c '\[Identity\] new device_id='  .pio/p0_identity.log   # 应为 0
+#
+#   S-6b 渲染结果（核心判据）
+#     grep -E 'MQTT (client_id|subscribe|publish|log)=' .pio/p0_identity.log
+#       期望：client_id=dev_<id>
+#             subscribe=guo_feeder/<id>/down
+#             publish=guo_feeder/<id>/up
+#             log=guo_feeder/<id>/log
+#     且 **不得**出现 'shared-topic mode'（legacy 回滚 WARN）与 'invalid'（渲染失败 ERROR）
+#
+#   S-1b 零回归
+#     grep -E 'MQTT (connected|subscribed)' .pio/p0_identity.log    # 均应出现
+#
+#   S-8b 负向：身份不得进 Config
+#     grep -c 'device_id' .pio/p0_identity.log   # 只应出现在 [Identity] 行与 MQTT 日志行，
+#                                                # **不得**出现在 config_query 的 JSON 回包里
+#
+# -----------------------------------------------------
+# §C 需人为前置状态的一次性用例（**勿进日常回归**）
+# -----------------------------------------------------
+#   S-2 首次启动（genesis）
+#     前置：擦除 gfid namespace（或首次烧录）
+#     期望：'[Identity] new device_id=<12hex> (nvs written)'
+#     说明：**只出现一次**；日常回归时该串必须为 0（即 S-3 的前提）
+#
+#   S-4 NVS 损坏 / 丢失
+#     前置：擦除 gfid namespace 后重启（未发生身份迁移、云端绑定未变）
+#     期望：重建出**同一** device_id
+#     注意：若设备已做过身份迁移或云端绑定变化，**不得**据此判定可重建（设计 §2.3）
+#
+#   S-5 MAC 不一致（保留 NVS 值，不覆盖）
+#     前置：用 NVS 预写一个与当前 MAC 不同的 did（真机制造 MAC 差异不可行）
+#     期望：串口出现 'mac mismatch, keep nvs id' 类 WARN，且 did **未被覆盖**（重启后仍是预写值）
+#
+#   S-7 回滚通路（**仅 dev/test**）
+#     前置：把 subscribe_topic 改回 `guo_feeder/down`（config_set + config_save）
+#     期望：出现一次 'WARN subscribe_topic has no <device_id>, shared-topic mode'，链路仍正常
+#     ⚠️ 生产禁止长期运行共享 Topic（设计 §3.3.1）；验证后**必须改回** V3 模板
+#
+#   S-9 client_id 超长
+#     前置：client_id 设为 200 字符（config_set + config_save）
+#     期望：'ERROR invalid client_id, using built-in default'，且回落 dev_<id>、**不截断**
+#     说明：'indexOf(device_id)' 判据 —— 回落值必须含真实 device_id
+#
+#   S-11 OTA 身份持久性（DV-3）
+#     步骤：① 记录升级前 device_id ② 执行 OTA ③ 重启
+#     期望：device_id 与升级前**完全一致**，且**不得**出现 'new device_id='
+#     依据：普通 OTA 不得改变 device_id（设计 §2.3.1 DV-3）
+#
+# -----------------------------------------------------
+# §D MQTT 端到端（不属串口批次；用 tools/ 工具执行）
+# -----------------------------------------------------
+#   M-1 单设备上线 + 下行命令
+#     python tools/mqtt_send.py --device-id <id> '{"c":"system","i":"<新id>","p":{"o":"memory"}}'
+#       期望：收到设备回包（本机订阅 guo_feeder/<id>/up）
+#     ⚠️ cmd_id 去重缓存 10 项 / 30 s ⇒ **每次必须换新 id**（重复 id 被静默丢弃，连 ack 都不回）
+#
+#   M-2 双设备（需第二台设备）
+#     期望：client_id 不同；无互相踢线；向 A 的 down 发文只有 A 执行
+#
+#   M-3 Topic 隔离（越权被拒）
+#     以设备账号订阅 guo_feeder/<其它设备>/down ⇒ 应被 EMQX 拒（SUBACK 失败 / 订阅数不增）
+#     说明：**两台设备共享账号** ⇒ P0 阶段 ACL 无法隔离它们（属 P1 一机一凭据）
+#     另注：legacy guo_feeder/up 在切换后**应为空**（设备只发 V3）
+# =====================================================
