@@ -688,6 +688,44 @@ void weight_init()
 {
     Serial.println("[Weight] Init...");
 
+    // =====================================================
+    // 0. 模块使能开关（config: weight.enable）
+    //
+    // 背景（本开关的由来）：
+    //   HX711 未接入时 DOUT 悬空 ⇒ scale.is_ready() 恒为 false
+    //     ⇒ weight_task() 持续不走采样分支，而是每 5s 发一次
+    //       event_push(EVENT_WEIGHT_ERROR, "HX711 not ready")
+    //     ⇒ DispenseGuard 订阅到后调用 valve_force_close()
+    //     ⇒ 串口每 5s 刷 "Weight error received / FORCE CLOSE /
+    //       Valve force closed"，阀门被反复强关。
+    //
+    // 为何不做"自动检测未安装"：
+    //   固件无法区分「压根没装 HX711」与「装了但 DOUT 断线 / 芯片损坏」——
+    //   两者都表现为"从未就绪"。若对"从未就绪"一律静默，就等于
+    //   **秤坏了也不报警**（安全降级）。故必须由使用者显式声明。
+    //
+    // ★ 本分支与 valve_init() 的 !enable 处理保持同构：
+    //   提前 return ⇒ initialized 保持 false ⇒ weight_task() 首行
+    //   `if(!initialized) return;` 自动挡住后续全部逻辑，
+    //   不会采样、不会发事件、不会置 STATE_WEIGHT_ERROR。
+    //   Trigger / Action 亦不注册（与 valve 一致）⇒
+    //   registry_version 会变化，APP/云端应重新拉取 registry 缓存，
+    //   **切勿写死 stable_id**。
+    // =====================================================
+    bool enable = config_get_weight_enable();
+    if(!enable)
+    {
+        // 把两个对外状态显式钉在"无异常 / 零值"，
+        // 避免云端查询到未初始化的残留值造成误判。
+        state_set_bool(STATE_WEIGHT_ERROR, false);
+        state_set_float(STATE_WEIGHT_VALUE, 0.0f);
+
+        Serial.println("[Weight] Disabled by config "
+                       "(HX711 not installed) -> weight_decrease / "
+                       "WEIGHT_ZERO NOT registered, no weight events emitted");
+        return;
+    }
+
     // 1. 读取配置
     weight_dt = config_get_weight_dt();
     weight_sck = config_get_weight_sck();

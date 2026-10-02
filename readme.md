@@ -579,6 +579,12 @@ Weight Event
 Weight Trigger
 重量数据统一进入 System State。
 
+★ **模块使能**：`data/config/weight.json` 的 `"enable"`（默认 `true`，与 `valve.enable` / `rtc.enable` 同构）。
+**未安装 HX711 的开发板必须置 `false`** —— 否则 DOUT 悬空会让 `scale.is_ready()` 恒为 false，
+每 5s 触发一次 `EVENT_WEIGHT_ERROR("HX711 not ready")`，导致 DispenseGuard 反复强制关阀。
+置 `false` 时：不注册 `weight_decrease` Trigger 与 `WEIGHT_ZERO` Action，不产生任何重量事件，
+`STATE_WEIGHT_ERROR` 恒为 `false`（registry 版本会变化，云端 / APP 需重新拉取能力表）。
+
 # 4.8 Dispense Guard
 负责定量供水过程中的高优先级安全保护。
 

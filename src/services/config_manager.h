@@ -608,6 +608,7 @@ int config_get_ntp_sync_interval_sec(); // SNTP 校时周期，单位秒，默�
 // ==========================
 // HX711 称重模块配置
 // ==========================
+bool config_get_weight_enable();          // 是否启用称重模块（未安装 HX711 时置 false）
 int config_get_weight_dt();               // HX711 DT 数据引脚
 int config_get_weight_sck();              // HX711 SCK 时钟引脚
 int config_get_weight_sample_interval();  // HX711 采样间隔，单位 ms
