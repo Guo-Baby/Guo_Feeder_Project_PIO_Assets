@@ -2,15 +2,15 @@
 
 > **文档性质**：设计 / 规范文档。**本阶段不修改任何生产代码、不进入模块接入开发。**
 > **代码基线**：`65b4523`（P1.5 修复）+ `1d0b47c`（仓库整理）
-> **依据**：`src/log_manager.h`、`src/log_manager.cpp`、`src/log_events.h`、`src/log_ack.h`、`src/log_cbor.h` 的**实读结果**
-> **冻结来源**：`log模块历史/LogManager-P1契约冻结0915.md`（P1.1 已冻结，不得重新设计）
+> **依据**：`src/log/log_manager.h`、`src/log/log_manager.cpp`、`src/log/log_events.h`、`src/log/log_ack.h`、`src/log/log_cbor.h` 的**实读结果**
+> **冻结来源**：`docs/archive/log/LogManager-P1契约冻结0915.md`（P1.1 已冻结，不得重新设计）
 
 ---
 
 ## 0. 阅读前必读（本文档的三条硬约束）
 
 **① 本文档所有接口均来自实读代码，不是设计假设。**
-已核对文件：`src/log_manager.h`(437 行) / `src/log_manager.cpp`(3260 行) / `src/log_events.h`(642 行) / `src/log_ack.h`(461 行) / `src/log_cbor.h`(171 行)。
+已核对文件：`src/log/log_manager.h`(437 行) / `src/log/log_manager.cpp`(3260 行) / `src/log/log_events.h`(642 行) / `src/log/log_ack.h`(461 行) / `src/log/log_cbor.h`(171 行)。
 
 **② ⚠️ 当前代码里不存在 `LOG_INFO()` / `LOG_WARN()` 这类宏。**
 grep 结果：`src/` 下只有 `#define LOG_DEBUG_ENABLE 1`，**没有任何 `LOG_INFO` / `LOG_WARN` / `LOG_ERROR` 宏定义**。
@@ -273,7 +273,7 @@ grep 结果：`src/` 下只有 `#define LOG_DEBUG_ENABLE 1`，**没有任何 `LO
 
 ### 3.5 如何避免冲突
 
-- 单一真相源：`src/log_events.h` 的 `enum LogEventId`。**模块不得自带私有事件号**。
+- 单一真相源：`src/log/log_events.h` 的 `enum LogEventId`。**模块不得自带私有事件号**。
 - `log_events.h` 内含 `static_assert` 与契约测试（`test/log_contract/probe_ok.cpp`）**编译期**校验 ID 值；新增后须跑：
   ```bash
   python test/log_contract/run_contract_test.py
@@ -290,7 +290,7 @@ grep 结果：`src/` 下只有 `#define LOG_DEBUG_ENABLE 1`，**没有任何 `LO
 
 ## 4. Log API 使用方式（**按实际代码**）
 
-### 4.1 实际公开 API（`src/log_manager.h`）
+### 4.1 实际公开 API（`src/log/log_manager.h`）
 
 **正式记录接口（模块唯一可用）：**
 
@@ -696,7 +696,7 @@ System State → Event Manager → LogManager → …
 ## 9. Storage 回调桥接（**P2-A 已落地，首个接入模块**）
 
 > 状态：已实现并上板验证（`src/main.cpp` 桥接段 + `setup()` 注册）。
-> 验证记录：`docs/LogManager-P1.5-Board-Test-Report0918.md` §Storage bridge
+> 验证记录：`docs/archive/log/LogManager-P1.5-Board-Test-Report0918.md` §Storage bridge
 > 提交：`feat(log): connect storage callbacks to LogManager`
 
 ### 9.1 背景：为什么需要"桥接"而不是"直接改模块"
@@ -822,7 +822,7 @@ static uint16_t      s_stg_suppressed[2][STG_OP_COUNT];
 
 ---
 
-## 附录 A：EventId 全表（按段，来自 `src/log_events.h:212-346`）
+## 附录 A：EventId 全表（按段，来自 `src/log/log_events.h:212-346`）
 
 ```
 0x0101 SYS_BOOT_COMPLETE        INFO      0x0102 SYS_BOOT_INCOMPLETE_PREV  CRITICAL
@@ -1061,7 +1061,7 @@ s_cloud_gc_floor    // 尚未确认的 Flash backlog 最低 seq 下界（0 = 无
 不变量：gc_seq <= acked_seq   （钳制只会更保守，永不抬高）
 ```
 
-判定函数（纯逻辑，在 `src/log_ack.h`，可主机穷举）：
+判定函数（纯逻辑，在 `src/log/log_ack.h`，可主机穷举）：
 
 ```c
 static inline uint32_t log_ack_gc_watermark(uint32_t acked_max, uint32_t gc_floor);
@@ -1162,7 +1162,7 @@ logt cloud ||| rarmed=0
 ## 12. WiFi 接入（**P2-C 已落地**）
 
 > 状态：已实现并上板验证。提交：`feat(log): integrate wifi module logging`
-> 源码：`src/wifi_module.cpp`（**唯一改动文件**）
+> 源码：`src/services/wifi_module.cpp`（**唯一改动文件**）
 
 ### 12.1 与 Storage / Config 的关键差异：**没有回调接口，只能显式埋点**
 
@@ -1318,7 +1318,7 @@ pc=4  level=WARN  RETRY_N=1         ATTEMPT_N=1  WAS=3(DISCONNECTED) STATE=1(CON
 ## 13. Cloud / MQTT 接入（**P2-D 已落地**）
 
 > 状态：已实现并上板验证。提交：`feat(log): integrate cloud manager logging`
-> 源码：`src/cloud_manager.cpp`（**唯一改动文件**，纯增量 +233 / −0 —— 没有任何既有行被修改）
+> 源码：`src/cloud/cloud_manager.cpp`（**唯一改动文件**，纯增量 +233 / −0 —— 没有任何既有行被修改）
 
 ### 13.1 与 Storage / Config / WiFi 的差异
 
@@ -1826,7 +1826,7 @@ if (n > 0 && s_cloud_q[slot].boot_seq != s_cloud_batch[0].boot_seq) break;
 ## 15. Workflow 接入（**P2-F 已落地**）
 
 > 状态：已实现并上板验证。提交：`cc7c3d0`（审查）+ `feat(log): integrate workflow manager logging`
-> 前置阅读：`log模块历史/LogManager-P2F-Workflow接入审查0918.md`（Critical Op 审计全文）。
+> 前置阅读：`docs/archive/log/LogManager-P2F-Workflow接入审查0918.md`（Critical Op 审计全文）。
 > **本模块的规则与前面几个都不同** —— 先读 §15.1 再看埋点表。
 
 ### 15.1 与 Storage / Config / WiFi / Cloud / Time 的四处关键差异
@@ -1929,7 +1929,7 @@ T2   emit=12  flash=3        ← 再跑 48 s ⇒ 84 s 内 3399 次失败事务�
 
 ### 15.6 Critical Op 审查结论（先审后用，未改动任何 release 逻辑）
 
-完整审计见 `log模块历史/LogManager-P2F-Workflow接入审查0918.md`。结论摘要：
+完整审计见 `docs/archive/log/LogManager-P2F-Workflow接入审查0918.md`。结论摘要：
 
 | 检查项 | 结论 |
 |---|---|
@@ -1981,7 +1981,7 @@ boot=9  seq=2568 INFO LOG_WF_CRUD     SLOT=0 OP=2(update) VARIANT=1
 ## 16. Weight / HX711 接入（**P2-G 已落地**）
 
 > 状态：已实现并上板验证。提交：`640f409`（审查）+ `feat(log): integrate weight manager logging`
-> 前置阅读：`log模块历史/LogManager-P2G-Weight接入审查0918.md`。
+> 前置阅读：`docs/archive/log/LogManager-P2G-Weight接入审查0918.md`。
 > **本模块是全部模块里"频率压力最大、可用状态最少"的一个** —— 先读 §16.1 再看埋点表。
 
 ### 16.1 与前面模块的差异（决定了整个方案）
@@ -2143,11 +2143,11 @@ MQTT：  seq=521  boot=1  INFO  LOG_WEIGHT_ZERO_DONE
 
 ## 17. Valve / DispenseGuard 接入（**P2-H 已落地**）
 
-> 决策依据：`log模块历史/LogManager-P2H-Valve接入审查0919.md`（7 项拍板 D1~D7 **全部 A**）
-> 生产代码改动：**仅 `src/valve.cpp`，净增量 `+125 / −1`**（唯一的 −1 是把 `if(valve_pin<0){return false;}`
+> 决策依据：`docs/archive/log/LogManager-P2H-Valve接入审查0919.md`（7 项拍板 D1~D7 **全部 A**）
+> 生产代码改动：**仅 `src/app/valve.cpp`，净增量 `+125 / −1`**（唯一的 −1 是把 `if(valve_pin<0){return false;}`
 > 单行守卫展开为块；**条件、返回值、控制流完全不变**）。
-> `src/dispense_guard.cpp` **未改**（决策：Guard 是策略层，不是 Valve Capability 状态拥有者，不加 LOG）。
-> `src/log_events.h` / `src/event_manager.cpp` **零改动**；**未新增任何 EventId / ParamId**。
+> `src/app/dispense_guard.cpp` **未改**（决策：Guard 是策略层，不是 Valve Capability 状态拥有者，不加 LOG）。
+> `src/log/log_events.h` / `src/services/event_manager.cpp` **零改动**；**未新增任何 EventId / ParamId**。
 
 ### 17.1 为什么 Valve 段不能照矩阵直接埋点
 
@@ -2240,7 +2240,7 @@ if (cause != last_force_close_cause ||
 
 实际**只有 1 个二值状态变量**：`static bool current_state`（+ `STATE_VALVE_STATUS` 镜像）。
 **OPENING / CLOSING / ERROR / FORCE_CLOSE 四个状态在代码中并不存在**（阀门切换是瞬时的，无过渡态）。
-`EVENT_VALVE_ERROR` 只是**事件**，没有状态变量。详见 `docs/P2_Log_Integration_Matrix.md` §9。
+`EVENT_VALVE_ERROR` 只是**事件**，没有状态变量。详见 `docs/specs/P2_Log_Integration_Matrix.md` §9。
 
 ### 17.6 未埋清单（无宿主 / 无 EventId ⇒ 不埋，登记缺口）
 
@@ -2349,9 +2349,9 @@ crit 增量点与前置 FORCE_CLOSE 的时间差        = 1.03 / 0.66 / 0.66 / 0
 
 ## 18. Weight Error 日志写入压力优化（**P2-I 已落地**）
 
-> 生产代码改动：**仅 `src/log_manager.h`（`+25/−0`）与 `src/log_manager.cpp`（`+248/−5`）**。
-> `src/weight.cpp` / `src/dispense_guard.cpp` / `src/event_manager.cpp` / `src/event_manager.h` /
-> `src/log_events.h` / `test/` **全部零改动**；**未新增 EventId / ParamId**。
+> 生产代码改动：**仅 `src/log/log_manager.h`（`+25/−0`）与 `src/log/log_manager.cpp`（`+248/−5`）**。
+> `src/app/weight.cpp` / `src/app/dispense_guard.cpp` / `src/services/event_manager.cpp` / `src/services/event_manager.h` /
+> `src/log/log_events.h` / `test/` **全部零改动**；**未新增 EventId / ParamId**。
 
 ### 18.1 问题与边界
 

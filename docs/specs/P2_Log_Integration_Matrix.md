@@ -3,8 +3,8 @@
 > 版本：v1.0（P2 前置准备）
 > 基线 commit：`65b4523 fix(log): complete P1.5 ack hole and replay cursor fixes`（其后 `1d0b47c` 为仓库整理，不含代码）
 > 性质：**分析文档**。未修改任何 `src/` 生产代码、未新增 EventId、未新增 ParamId、未修改 LogManager API。
-> 配套文档：`log模块历史/LogManager-P2接入准备审查0918.md`（EventId / ParamId / 高频风险 / 初始化顺序 / 风险清单）
-> 接口细节见：`docs/LogManager-Integration-Guide.md`
+> 配套文档：`docs/archive/log/LogManager-P2接入准备审查0918.md`（EventId / ParamId / 高频风险 / 初始化顺序 / 风险清单）
+> 接口细节见：`docs/specs/LogManager-Integration-Guide.md`
 
 ---
 
@@ -40,7 +40,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/main.cpp`（1748 行）、`src/system_command.cpp`（624）、`src/system_state.cpp`（464）、`src/computer_reset.cpp`（475） |
+| 源码文件 | `src/main.cpp`（1748 行）、`src/services/system_command.cpp`（624）、`src/services/system_state.cpp`（464）、`src/app/computer_reset.cpp`（475） |
 
 ### 1.1 当前状态
 
@@ -119,7 +119,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/config_manager.cpp`（3695）、`src/config_manager.h`（684） |
+| 源码文件 | `src/services/config_manager.cpp`（3695）、`src/services/config_manager.h`（684） |
 
 ### 2.1 当前状态
 
@@ -155,7 +155,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/file_storage.cpp`（782）、`src/json_storage.cpp`（994）、`src/bin_storage.cpp`（733）、`src/workflow_storage.cpp`（1583） |
+| 源码文件 | `src/storage/file_storage.cpp`（782）、`src/storage/json_storage.cpp`（994）、`src/storage/bin_storage.cpp`（733）、`src/automation/workflow_storage.cpp`（1583） |
 
 ### 3.1 当前状态
 
@@ -186,7 +186,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/wifi_module.cpp`（347）、`src/wifi_module.h`（19） |
+| 源码文件 | `src/services/wifi_module.cpp`（347）、`src/services/wifi_module.h`（19） |
 
 ### 4.1 当前状态
 
@@ -217,7 +217,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/cloud_manager.cpp`（1656）、`src/cloud_manager.h`（125）、`src/test_mqtt.cpp`（319，**测试代码，待删**） |
+| 源码文件 | `src/cloud/cloud_manager.cpp`（1656）、`src/cloud/cloud_manager.h`（125）、`src/test/test_mqtt.cpp`（319，**测试代码，待删**） |
 
 ### 5.1 当前状态
 
@@ -250,7 +250,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/time_manager.cpp`（879）、`src/time_manager.h`（195） |
+| 源码文件 | `src/services/time_manager.cpp`（879）、`src/services/time_manager.h`（195） |
 
 ### 6.1 当前状态
 
@@ -282,7 +282,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/workflow.cpp`（4465）、`src/workflow.h`（827）、`src/workflow_storage.cpp`（1583） |
+| 源码文件 | `src/automation/workflow.cpp`（4465）、`src/automation/workflow.h`（827）、`src/automation/workflow_storage.cpp`（1583） |
 
 > ⚠️ **作用域更正（2026-09-20 / WF-4 审查结论）**：
 > 本节的 Registry 相关条目（§7.2 末行）**已移出 Workflow 作用域**，归入 §12 的
@@ -292,7 +292,7 @@
 > `workflow_storage.cpp/.h` 中唯一提及 Registry 之处是 `workflow_storage.h:268`
 > 的一条**注释**（描述下游后果，非调用关系）。两者是**平行关系**：
 > Workflow 本体 → `/workflow/*.bin`；Registry → `/registry/*.bin`。
-> 报告：`log模块历史/WF4-Registry范围审查0920.md`
+> 报告：`docs/archive/log/WF4-Registry范围审查0920.md`
 
 ### 7.1 当前状态
 
@@ -330,7 +330,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/dispense_guard.cpp`（原 73 → 现 138）、`src/dispense_guard.h`（3） |
+| 源码文件 | `src/app/dispense_guard.cpp`（原 73 → 现 138）、`src/app/dispense_guard.h`（3） |
 | 状态 | ✅ **已接入（Phase 4，2026-09-20，`94912bb`）** |
 
 ### 8.1 当前状态（接入后）
@@ -388,11 +388,11 @@
 > **⚠️ 本节已由 P2-H（2026-09-19）按真实代码模型重写**（依据 P2-H 决策 **D3=A**）。
 > 原矩阵假定阀门有 6 个状态（OPEN / CLOSE / OPENING / CLOSING / ERROR / FORCE_CLOSE），
 > **实测代码中 OPENING / CLOSING / ERROR / FORCE_CLOSE 四个状态并不存在**。
-> 审查报告：`log模块历史/LogManager-P2H-Valve接入审查0919.md`。
+> 审查报告：`docs/archive/log/LogManager-P2H-Valve接入审查0919.md`。
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/valve.cpp`（475）、`src/valve.h`（42）、`src/dispense_guard.cpp`（73） |
+| 源码文件 | `src/app/valve.cpp`（475）、`src/app/valve.h`（42）、`src/app/dispense_guard.cpp`（73） |
 | 本质 | 阀门是**二值设备**，且切换是**瞬时**的（`gpio_set_level()` 后即完成）⇒ **不存在 OPENING / CLOSING 过渡态** |
 
 ### 9.1 真实模型（取代原"6 状态"假设）
@@ -463,7 +463,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/weight.cpp`（645）、`src/weight.h`（41） |
+| 源码文件 | `src/app/weight.cpp`（645）、`src/app/weight.h`（41） |
 
 ### 10.1 当前状态
 
@@ -496,7 +496,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 源码文件 | `src/MiThermometer.cpp`（655 → **700**）、`src/MiThermometer.h`（26） |
+| 源码文件 | `src/app/MiThermometer.cpp`（655 → **700**）、`src/app/MiThermometer.h`（26） |
 
 ### 11.1 当前状态
 
@@ -540,7 +540,7 @@
 >
 > **技术补充（为什么"技术上可以但工程上不应该"）**：`log_emit_internal()` **无 I/O / 无 malloc / 无 delay**，临界区仅 128 B memcpy（µs 级），栈开销 ≈200 B vs **NimBLE host task 栈 4096 B**（`nimconfig.h:217`）⇒ 可行；但 NimBLE host task 优先级**高于 loopTask** ⇒ 在 `s_mux` 上引入**优先级反转**（唯一被拖慢的是 loop 的 `log_task()`，µs 级、可忽略，**但方向是错的**）。
 >
-> 📄 详见 `log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1
+> 📄 详见 `docs/archive/log/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1
 >
 > **尚未覆盖的 BLE 自身异常（候选，需新增 ID —— 未批准）**：
 > | 候选 | 位置 | 为何是真实缺口 |
@@ -550,7 +550,7 @@
 
 ### 11.3 实际接入（Phase 5-C，2026-09-21 · `70b0c76`）
 
-> 改动：**`src/MiThermometer.cpp` `+74/−0`（仅此 1 个文件）**。**零新增协议**（无新 EventId / ParamId / 配置项 / 开关）；`log_events.h` / `log_manager.*` / `event_manager.*` / `cloud_manager.cpp` / `system_state.*` / `workflow.*` / `main.cpp` / `test/` **全部零改动**。
+> 改动：**`src/app/MiThermometer.cpp` `+74/−0`（仅此 1 个文件）**。**零新增协议**（无新 EventId / ParamId / 配置项 / 开关）；`log_events.h` / `log_manager.*` / `event_manager.*` / `cloud_manager.cpp` / `system_state.*` / `workflow.*` / `main.cpp` / `test/` **全部零改动**。
 
 | EventId | Level | 参数（实际） | 实际宿主 | 与 §11.2 建议的差异 |
 |---|---|---|---|---|
@@ -598,7 +598,7 @@ now - start < 60s  ⇒ return
 | `BLE_INIT_FAILED`（`MiThermometerInit()` MAC/bindkey 空、`xQueueCreate` 失败） | ❌ **需新增 ID（未批准）**；`:247` 分支 `return false` 但调用方 `main.cpp:508` **忽略返回值** ⇒ 模块永久不可用却静默 |
 | 失败原因分类（MIC vs 格式） | ⏸ **延期**：需改 `lywsd03_decrypt()` 签名（超出"只加观测"） |
 
-> 📄 审查依据：`log模块历史/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1；进度记录：`docs/LogManager-P2-Progress.md` §Next「Phase 5-C」。
+> 📄 审查依据：`docs/archive/log/Phase5-BLE-OLED-Dispense边界与LogManager完整性审查0920.md` §1；进度记录：`docs/archive/log/LogManager-P2-Progress.md` §Next「Phase 5-C」。
 
 ---
 
@@ -607,7 +607,7 @@ now - start < 60s  ⇒ return
 | 模块 | 源码 | 现状 | 建议接入 |
 |---|---|---|---|
 | Command | `command_manager.cpp`（3204） | 有 `command_manager_set_log_callback()` 且**已在 `main.cpp:135` 注册**（打到串口） | `LOG_CMD_APPLIED`(INFO) / `LOG_CMD_REJECTED`(WARN) / `LOG_CMD_RUNTIME_QUEUE_FULL`(WARN) / `LOG_CMD_RUNTIME_TIMEOUT`(WARN) + `LOG_P_CMD_ID`⚠️ / `LOG_P_QUEUE_SIZE`。建议把已注册的 bridge 改为"串口 + LogManager"双路 |
-| Event | `event_manager.cpp` | ✅ **已接入（P2-M，2026-09-20）** —— 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。**按契约"走侧信道计数上报"实现**：**不为每条丢弃事件发日志**，改为**周期聚合 1 条**（窗口 60000 ms，节拍器 = `event_dispatch()` 首行）。★ **只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。宿主 = **确定丢弃的分支**（`0x0C01` 埋返回 `EVENT_QUEUE_FULL` 的唯一出口；`0x0C02` 埋风暴抑制分支），**不在调用者、不在入口**；**Σ `LOG_P_COUNT` = 真实丢弃数量**。详见 `log模块历史/LogManager-P2M-Event接入审查0920.md` |
+| Event | `event_manager.cpp` | ✅ **已接入（P2-M，2026-09-20）** —— 有风暴抑制（`EVENT_STORM_MAX_PER_EVENT=5` / `500ms`）+ `drop_count` | `LOG_EVT_QUEUE_FULL`(WARN) / `LOG_EVT_STORM_DROPPED`(WARN)。**按契约"走侧信道计数上报"实现**：**不为每条丢弃事件发日志**，改为**周期聚合 1 条**（窗口 60000 ms，节拍器 = `event_dispatch()` 首行）。★ **只记自身运行异常**：业务事件一律不记（17 个 `event_push` 中 13 个发布方已埋 `log_emit` ⇒ 转发即重复）。宿主 = **确定丢弃的分支**（`0x0C01` 埋返回 `EVENT_QUEUE_FULL` 的唯一出口；`0x0C02` 埋风暴抑制分支），**不在调用者、不在入口**；**Σ `LOG_P_COUNT` = 真实丢弃数量**。详见 `docs/archive/log/LogManager-P2M-Event接入审查0920.md` |
 | OLED | `oled.cpp`（301）+ `oled_animation.h`（1367） | ⚠️ **判定已修正（Phase 5 审查，2026-09-20）**：**不是"无宿主"，而是"有异常、有 ID、但缺判据"** | `LOG_OLED_INIT_FAILED`(0x0E01, WARN)。★ **缺判据的根因**：`oled_init()` `:103` `oled.begin();` **丢弃了 `U8g2::begin()` 的 `bool` 返回值**（对照 `U8g2lib.h:144` `bool begin(void)`），并在 `:110` **无条件**打印 `"OLED init OK"` ⇒ **假成功**（OLED 未接 / I2C NACK / 地址错误时串口仍显示 OK）⇒ 登记 **`OLED-1`**。⇒ **当前维持"不埋点"**（埋点无可依附判据；修 `begin()` 检查属**生产代码改动**，须单独批准）。<br>★ **分层澄清**："占位"只适用于**事件响应层**（`oled_event_handler()` 仅 2 个有效 case 且都只 `Serial.println`；注册 4 个事件、3 个落 `default`）；**显示层已实现**。附带缺陷：`oled_restart()`（`:251`）**零调用者 = 死代码**；`oled.h:16` 的 `void oled_event_handler(SystemEvent)` **永不定义 = 死声明**；`oled_event_init()` **4 次 `event_subscribe()` 返回值全被忽略**（与 `LV-1` 同构） |
 | ComputerReset | `computer_reset.cpp`（475） | 见 §1 | `LOG_CRESET_*` 三个 |
 | Registry | `capability_registry.cpp`（1029） | ✅ **已接入（P2-L，2026-09-20）** | `LOG_REG_REBUILT`(INFO) / `LOG_REG_SAVE_FAILED`(ERROR)，均落在 `registry_sync()` 内（**2 处 `log_emit`**）。宿主 = 定义点而非触发点：重建 → `else` 分支（checksum 不一致/缺失/损坏）；保存失败 → `save_registry_file()` 返回值判定处。**不得**埋 `command_manager` 的 4 个 rescan 调用点（一次 create 连触发 3 次）与 `save_registry_file()` 内部 4 个失败出口 |
@@ -638,7 +638,7 @@ now - start < 60s  ⇒ return
 
 - ❌ 未新增任何 EventId（§2.2 / §4.2 / §5.2 / §7.2 / §9.2 / §10.2 / §11.2 中的"建议新增"仅为提案）
 - ❌ 未新增任何 ParamId
-- ❌ 未修改 `src/log_events.h`
+- ❌ 未修改 `src/log/log_events.h`
 - ❌ 未修改 LogManager API
 - ❌ 未修改任何 `src/` 生产代码
 
