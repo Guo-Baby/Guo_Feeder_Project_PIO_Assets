@@ -257,11 +257,11 @@
 
 | # | 文件 / 行 | 内容 | 改动 |
 |---|---|---|---|
-| 1 | `src/config_manager.cpp:3686` | `config_get_mqtt_subscribe_topic()` | 返回值改为携带 `device_id` 的模板渲染结果 |
-| 2 | `src/config_manager.cpp:3701` | `config_get_mqtt_publish_topic()`（有 fallback） | 同上 |
-| 3 | `src/config_manager.cpp:3708` | `config_get_mqtt_log_topic()`（有 fallback） | 同上 |
-| 4 | `src/config_manager.h:630/633/634` | 三个 getter 声明 | 可能新增一个"渲染后 Topic"接口 |
-| 5 | `src/cloud_manager.cpp:65/66/68` | `static String mqtt_sub_topic / mqtt_pub_topic / mqtt_log_topic` | **不改**（仍缓存渲染结果） |
+| 1 | `src/services/config_manager.cpp:3686` | `config_get_mqtt_subscribe_topic()` | 返回值改为携带 `device_id` 的模板渲染结果 |
+| 2 | `src/services/config_manager.cpp:3701` | `config_get_mqtt_publish_topic()`（有 fallback） | 同上 |
+| 3 | `src/services/config_manager.cpp:3708` | `config_get_mqtt_log_topic()`（有 fallback） | 同上 |
+| 4 | `src/services/config_manager.h:630/633/634` | 三个 getter 声明 | 可能新增一个"渲染后 Topic"接口 |
+| 5 | `src/cloud/cloud_manager.cpp:65/66/68` | `static String mqtt_sub_topic / mqtt_pub_topic / mqtt_log_topic` | **不改**（仍缓存渲染结果） |
 
 使用点（**无需改**，因为用的是缓存值）：
 
@@ -278,6 +278,12 @@
 - **方案 A（建议）：保留配置项为"模板"，运行时渲染。**
   `data/config/mqtt.json` 里仍写 `guo_feeder/<device_id>/down`，由新增的 `topic_render()` 把 `<device_id>` 替换成运行时 `device_id`。
   优点：配置可读、可回滚、可单测；旧 `data/config/mqtt.json` 迁移容易。
+  > **★ 2026-10-02 补充（价值最高的一条）**：方案 A 让「回滚 Topic V3」变成
+  > **改配置而不是回退固件** —— 渲染器对**不含 `<device_id>` 的模板原样放行**（并打一次 WARN）
+  > ⇒ 把 topic 改回 `guo_feeder/down` 即立刻回到 V2.0 行为。
+  > **⇒ 「是否启用 Topic V3」完全由配置决定，灰度与回滚都不碰固件。**
+  > 且 P0 **刻意不做「双订阅 legacy + V3」**（双订阅 ⇒ 共享 `down` 仍能控制设备，违反 §9.4 第 4 条）。
+  > 详见 `P0-设备身份与Topic隔离设计.md` §1.3 / §3.3 / §8.2。
 - **方案 B：不复用模板，直接由代码拼接** `"guo_feeder/" + device_id + "/down"`。
   优点：零解析开销；缺点：失去可配置性，EMQX 侧改主题需改固件。
 
@@ -348,17 +354,17 @@
 
 | Homie 需要的字段 | 现成来源 | 位置 |
 |---|---|---|
-| Node 名 | `WorkflowActionDescriptor.module` | `src/workflow.h:241` |
+| Node 名 | `WorkflowActionDescriptor.module` | `src/automation/workflow.h:241` |
 | Property 名（人类可读） | `WorkflowActionDescriptor.name` | 同上 |
 | Property 说明 | `WorkflowActionDescriptor.description` | 同上 |
 | 参数列表 | `WorkflowActionDescriptor.params[]` + `param_count` | 同上 |
-| 参数名 | `WorkflowParam.name` | `src/workflow.h:157` |
+| 参数名 | `WorkflowParam.name` | `src/automation/workflow.h:157` |
 | **参数类型 → `datatype`** | `WorkflowParam.type`（`PARAM_INT`/`PARAM_FLOAT`/`PARAM_BOOL`/`PARAM_STRING`，`workflow.h:91`） | 同上 |
 | **单位 → `unit`** | `WorkflowParam.unit` | 同上 |
 | 参数说明 | `WorkflowParam.description` | 同上 |
-| 能力清单 + 稳定 ID | `capability_registry` 的 `action/trigger/workflow.bin` | `src/capability_registry.h` |
+| 能力清单 + 稳定 ID | `capability_registry` 的 `action/trigger/workflow.bin` | `src/automation/capability_registry.h` |
 | 版本号 | `registry.version`（uint32 递增） | 同上 |
-| Workflow 内容版本 | `CapabilityMapping.object_version`（= `workflow.variant`） | `src/capability_registry.h:127` |
+| Workflow 内容版本 | `CapabilityMapping.object_version`（= `workflow.variant`） | `src/automation/capability_registry.h:127` |
 
 > **⇒ Homie Bridge 的工作 = "序列化 + 主题映射"，不是"新建业务模型"。**
 > `PARAM_INT/FLOAT/BOOL/STRING` → `integer/float/boolean/string` 是**一对一映射**，无需设计。
@@ -839,6 +845,11 @@ device_id  ──┬──► Homie device-id
 
 **已知风险点**：现有 `client_id = guo_feeder_001`（`data/config/mqtt.json`）与 MAC 无关。**P0 必须统一**：`client_id` 也应改为 `dev_<device_id>`（或至少保证与 `device_id` 一一对应）。
 
+> ⚠️ **2026-10-02 严重度上调（不只是「漂移」）**：`client_id` 是 MQTT 的**全局会话标识** ——
+> 两台设备用同一个 `client_id` 连同一 broker ⇒ **后连者触发 session takeover，把先连者踢下线**。
+> 现象为「莫名重连 / 命令时好时坏」，**极难排查**。
+> ⇒ 该项属 **P0 必需缺陷修复**（不是美化），见 `P0-设备身份与Topic隔离设计.md` §1.6。
+
 ---
 
 ## 14. 架构关键原则（10 条）
@@ -859,6 +870,19 @@ device_id  ──┬──► Homie device-id
 ---
 
 ## 15. 待确认决策点（**P0 开工前必须回答**）
+
+> ### ✅ **本节 5 项已于 2026-10-02 定案** —— 详见 **`P0-设备身份与Topic隔离设计.md`**
+>
+> | 项 | 定案值 |
+> |---|---|
+> | **D1** `device_id` 格式 | **`aabbccddeeff`**（12 位小写 hex，无分隔、无前缀） |
+> | **D2** 存储位置 | **NVS：复用现有 `nvs` 分区 + 独立 namespace `gfid`** ⚠️ **偏离下方"独立分区"建议** —— 实测 `partitions.csv` 的 flash **已 100% 分配**（无空闲空间），且 `device_id` 是 MAC 的**幂等派生值**（NVS 丢失**可重建**，**前提：未发生身份迁移、且云端绑定未变化** —— 见 P0 设计 §2.3 / §2.3.1）⇒ 独立分区无实际收益，代价却是"重排分区表 + 全片重烧" |
+> | **D3** Topic 实现 | 方案 A（配置留模板 + `device_topic_render()`）；**回滚只改配置，不回退固件**（见 §3.1 补充） |
+> | **D5** APP 凭据模型 | **slot 池 + API 改写 ACL**；`PUT /authorization/sources/built_in_database/rules/users/{username}` **已实测 200**（脚本 `emqx-api.mjs:211` 已封装）；⚠️ **授权缓存生效延迟仍待实测**（P1 时序须"先改 ACL 再让 APP 连"） |
+> | **D7** 遥测策略 | **分层策略表已冻结**（§7.3）；**P0 不引入任何遥测配置项**（上报功能本身仍在 `readme.md` §六 待开发 ⇒ 随心跳功能落地，落点预登记 `mqtt.json.telemetry`，不新增 Config 模块） |
+> | （附加）`client_id` | `dev_<device_id>` —— **性质为缺陷修复**（见 §13.3 的严重度上调注） |
+>
+> **下方原表保留**，作为决策时的**选项与权衡记录**（不再作为待办）。
 
 | # | 决策项 | 选项 | 建议 |
 |---|---|---|---|
@@ -916,7 +940,7 @@ device_id  ──┬──► Homie device-id
 |---|---|---|
 | Cloud Protocol V2.0 | `cloud_protocol.md` | 旧链路契约，Homie 树**并存不替代**；§1.1 需补"模板渲染由固件实现"说明 |
 | Capability Registry | `src/capability_registry.{h,cpp}` | **直接复用**为 `$description` 数据源；已有 PSRAM 优先分配模式（`:510-513`） |
-| Action/Param 描述符 | `src/workflow.h:91/145/157/241` | **Homie 元数据全部现成** |
+| Action/Param 描述符 | `src/automation/workflow.h:91/145/157/241` | **Homie 元数据全部现成** |
 | Workflow 云端契约 | `workflow_cloud_interface.md` | `variant` → `object_version` → `$description.version` |
 | MQTT 配置 | `data/config/mqtt.json` | 需改 `subscribe/publish/log_topic` 为模板 + `client_id` 统一 |
 | 已知问题 | `未修复的问题.md`、`cloud_protocol.md` §9 | BT-1（`log_ack`）/ DEF-2（凭据泄露）/ 9.7（版本未固定） |
@@ -931,7 +955,7 @@ device_id  ──┬──► Homie device-id
 
 | 文件 | 动作 |
 |---|---|
-| `docs/Cloud-APP-Platform-Plan.md` | **整体重写为 v2 正式架构规划**（本文） |
+| `docs/architecture/Cloud-APP-Platform-Plan.md` | **整体重写为 v2 正式架构规划**（本文） |
 | （未改动任何 ESP32 源码；未执行 git commit） | — |
 
 ### 相比 v1 的主要变化

@@ -35,7 +35,9 @@
 
 | 文档 | 说明 |
 |---|---|
-| `Cloud-APP-Platform-Plan.md` | **云端 + 安卓端正式架构规划 v2** —— EMQX Serverless + Cloudflare Worker/Pages/D1 + Homie 5 + MQTT-Tiles；含 P0–P6 实施路线、容量核算、设备身份与 ACL 模型。**P0–P6 的实施依据** |
+| `docs/architecture/Cloud-APP-Platform-Plan.md` | **云端 + 安卓端正式架构规划 v2** —— EMQX Serverless + Cloudflare Worker/Pages/D1 + Homie 5 + MQTT-Tiles；含 P0–P6 实施路线、容量核算、设备身份与 ACL 模型。**P0–P6 的实施依据** |
+| `P0-设备身份与Topic隔离设计.md` | **★ P0 实施级设计（FROZEN · v1.1）** —— D1/D2/D3/D5/D7 定案 · `device_id` **三层身份来源**与生命周期（5 场景）· `dver` 迁移硬约束 · 身份边界 · Topic V3 + `topic_render()` · **legacy 回退的生产环境边界** · EMQX ACL 模型 · APP `client_id` 约束 · DEF-2 修复 · 上线顺序与回滚 · 验收 DoD |
+| `P0-实现清单.md` | **★ P0 施工工单** —— 冻结基线（含 **P0 不包含**范围清单）· **P0-1…P0-5** 逐项（目标 / 修改文件 / 修改函数 / 修改内容 / 禁止 / 风险 / 验证方法）· 串口用例 S-1…S-10 · MQTT 用例 M-1…M-3 · 静态验证 A-1…A-4 |
 | `jsonstorage开发架构.md` | JsonStorage 存储层架构设计 |
 
 ## interfaces/ 接口 / 协议
@@ -95,6 +97,20 @@
 | `archive/log/` | LogManager 开发全过程：审计报告、详细设计规划、P1.1–P1.5 / P2F–P2N 各阶段报告与审查、Phase4/Phase5 边界审查、R7/R8 性能分析、板级测试报告 | 37 |
 | `archive/workflow/` | Workflow 改造历程：需求文档、架构适配 CommandManager 报告、storage 改造进度、cloud_sync 进度与测试报告、critical_operation 接入与自查 | 17 |
 | `archive/legacy/` | 其他一次性文档：`AI_TASK.md`（TimeManager V2 需求，已完成）、`computer_reset接入报告.md`、`config_version与workflow初始bin-进度.md`、`bin_storage开发需求.md`、`整理方案-文档与源码目录重构.md`（2026-10-01 整理方案）、`readme-旧版云端协议速查.md`（2026-10-02 自 readme 移出的重复章节） | 6 |
+
+> **★ 历史路径映射（2026-10-02 补）**：归位时**未改写归档文档内部**的相互引用（史料保持原样），
+> 因此在 `archive/` 里读到旧路径属正常，按下表换算：
+
+| 文档内写的旧路径 | 现在的真实位置 |
+|---|---|
+| `log模块历史/<file>.md` | `docs/archive/log/<file>.md` |
+| `workflow修改历史需求/<file>.md` | `docs/archive/workflow/<file>.md` |
+| `docs/LogManager-P2-Progress.md` | `docs/archive/log/LogManager-P2-Progress.md` |
+| `docs/LogManager-Integration-Guide.md` | `docs/specs/LogManager-Integration-Guide.md` |
+| `docs/P2_Log_Integration_Matrix.md` | `docs/specs/P2_Log_Integration_Matrix.md` |
+
+> **现行文档**（`requirements/` `architecture/` `interfaces/` `modules/` `specs/` `issues/`）中的同类引用
+> 已于 **2026-10-02 全部更正为真实路径**（42 处）；只有 `archive/` 内部保留旧写法。
 
 ---
 
