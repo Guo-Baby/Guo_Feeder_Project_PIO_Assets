@@ -36,8 +36,11 @@
 | 文档 | 说明 |
 |---|---|
 | `docs/architecture/Cloud-APP-Platform-Plan.md` | **云端 + 安卓端正式架构规划 v2** —— EMQX Serverless + Cloudflare Worker/Pages/D1 + Homie 5 + MQTT-Tiles；含 P0–P6 实施路线、容量核算、设备身份与 ACL 模型。**P0–P6 的实施依据** |
-| `P0-设备身份与Topic隔离设计.md` | **★ P0 实施级设计（FROZEN · v1.1）** —— D1/D2/D3/D5/D7 定案 · `device_id` **三层身份来源**与生命周期（5 场景）· `dver` 迁移硬约束 · 身份边界 · Topic V3 + `topic_render()` · **legacy 回退的生产环境边界** · EMQX ACL 模型 · APP `client_id` 约束 · DEF-2 修复 · 上线顺序与回滚 · 验收 DoD |
+| `P0-设备身份与Topic隔离设计.md` | **★ P0 实施级设计（FROZEN · v1.2）** —— D1/D2/D3/D5/D7 定案 · `device_id` **三层身份来源**与生命周期（5 场景）· `dver` 迁移硬约束 · 身份边界 · Topic V3 + `topic_render()` · **legacy 回退的生产环境边界** · EMQX ACL 模型 · APP `client_id` 约束 · DEF-2 修复 · 上线顺序与回滚 · 验收 DoD |
 | `P0-实现清单.md` | **★ P0 施工工单** —— 冻结基线（含 **P0 不包含**范围清单）· **P0-1…P0-5** 逐项（目标 / 修改文件 / 修改函数 / 修改内容 / 禁止 / 风险 / 验证方法）· 串口用例 S-1…S-10 · MQTT 用例 M-1…M-3 · 静态验证 A-1…A-4 |
+| `P0-Final-Review.md` | **★ P0 验收快照（Final Baseline）** —— 冻结基线（Identity / MQTT / ACL / 构建环境）· 已知限制 **L-1…L-7（有意保留，非缺陷）** · P0-1…P0-5 提交与资源增量 · 上板验收（S-1…S-11 / M-1…M-3）· **排障铁律**（`subscribed` ≠ 授权等）· 遗留事项 |
+| `P1-Cloud-Device-Lifecycle-Plan.md` | **★ P1 架构规划（待审核）** —— 从「设备身份隔离」升级到「**设备生命周期管理**」：注册状态机（NEW/REGISTERED/BOUND/UNBOUND/REVOKED）· **一机一凭据**（create/rotate/revoke）· **ACL 动态授权时序** · APP 绑定模型 · D1 **表结构草案** · 在线状态同步 · **P1 范围冻结** + 前置实测项 + 审核问题清单 |
+| `P1-实现清单.md` | **★ P1 施工工单（仅规划，不编码）** —— **P1-0 前置实测（A-1/A-4/A-5/A-6，阻塞项）** · P1-1…P1-8 逐项（目标 / 预期修改 / 依赖 / 禁止 / 风险 / 验证方法）· 云端 / 设备侧 / 越权用例表 · 验收 DoD · 实施顺序 · 审核清单 |
 | `jsonstorage开发架构.md` | JsonStorage 存储层架构设计 |
 
 ## interfaces/ 接口 / 协议
