@@ -85,9 +85,20 @@ def expect_hit(expect, line):
         for i in range(len(parts))
     )
     try:
-        return re.search(pat, line) is not None
+        if re.search(pat, line) is not None:
+            return True
     except re.error:
-        return False
+        pass
+
+    # ⚠️ 退回**子串匹配**（2026-10-02 修复）：
+    #    `/re/` 语法与"含**字面斜杠**的普通期望"存在**固有歧义** ——
+    #    `guo_feeder/<device_id>/down` 与 `replay=/[1-9][0-9]*/` 都是 2 个斜杠，
+    #    split 后 parts 数同为奇数，**无法用奇偶区分**；而拼接 pat 时字面斜杠会**丢失**。
+    #    ⇒ 若只走正则，含 "/" 的普通期望**必然 MISS**
+    #      （实测：Topic V3 用例的 `guo_feeder/<device_id>/down` 全 MISS，
+    #       而不含斜杠的 `dev_` / `internal` 却 OK —— 这就是真因）。
+    #    因此：**正则优先**（保留 `/re/` 语义），不命中则按子串再判一次。
+    return expect in line
 
 
 cmds = []
