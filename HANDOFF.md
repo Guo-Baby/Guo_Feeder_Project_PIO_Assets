@@ -74,6 +74,32 @@
 | TimeManager V2 | ✅ 完成；⚠️ **板子未焊 PCF8563T，`rtc.json` 的 `enable=false`**（焊上后改 `true`） |
 | Workflow / Config / Command / Cloud | ✅ 可用（含云端 Workflow 编辑协议） |
 | **P0（身份 + Topic V3）** | ✅ **已完成、已上板、已端到端验证** —— `9825b09` DeviceIdentity · `5c4ffb6` TopicRenderer · `607b16d` client_id + 渲染接入 · `17e459c` ACL（`EMQX_Assets`，**已 apply 到线上**）· `9e07d6d` 用例集 + 工具适配。累计 **RAM +88 B / Flash +7,040 B**。**端到端实测**：经 MQTT 向 `guo_feeder/<device_id>/down` 下发 memory / flash / config_query 三条只读命令，设备均正确执行并回包 |
+
+>
+> **P0 验收结果（COM8 实机 · 2026-10-02）**
+>
+> | 用例 | 结果 |
+> |---|---|
+> | S-1 探活 · S-2 首次启动 · S-3 重复启动 | ✅ |
+> | S-4 NVS 丢失 → **重建同一 device_id** | ✅ |
+> | S-6 topic 渲染（client_id + 三 topic 全 V3，零 WARN） | ✅ |
+> | S-7 回滚通路（legacy 模板 ⇒ 原样放行 + 一次 WARN，仅 dev/test） | ✅ |
+> | S-8 client_id 实值（`dev_<id>`；配置回包**不含** device_id 字段） | ✅ |
+> | S-10 命令链路回归 · S-11 升级（重烧 app 分区）后身份不变 | ✅ |
+> | M-1 单设备上线 + MQTT 下发（memory / flash / config_query） | ✅ |
+> | M-3 越权被拒（设备账号 SUBACK = `(1,128,1)`：自己 down ALLOW / 他人 down DENY） | ✅ |
+> | **S-5 did 与 MAC 不一致 · S-9 client_id 超长** | ⛔ 实测**不可构造**（见下） |
+> | M-2 双设备互踢 | ⏳ 无第二台设备 |
+>
+> **S-5 不可构造**：等长篡改 NVS 镜像中的 `did` 后写回 ⇒ 设备报 `nvs_get_str fail: did NOT_FOUND`
+> （**NVS 自带完整性校验**）；且固件不提供任何改 `did` 的接口 ⇒ 该场景在正常运维路径下不可达。
+> **S-9 不可构造**：配置命令链路**先行拒绝**超长值（`CONFIG_ENQUEUE_INVALID` → `e:6`，
+> 随后 `config_save` 报 `no dirty module`）⇒ 该分支由编译期自检 `topic_renderer_selftest` 的
+> `too_long` 用例覆盖。
+>
+> **仍未做**：**C-3**（`platformio.ini` 固定版本）· M-2（需第二台设备）·
+> P1 前置实测（授权缓存生效延迟 `A-1`、`client_id` broker 长度上限 `A-4`、一机一凭据）
+
 | Mijia BLE 温湿度计 | ⏳ 解码算法已分析，待正式集成 |
 | Cloud Protocol CBOR | ⏳ 已验证，待正式整合进协议 |
 | **编译状态** | ✅ 通过；**RAM 39.9%（130,824 B，P0 后 +88 B）/ Flash 65.8%（1,379,568 B，P0 后 +7,040 B）** |
