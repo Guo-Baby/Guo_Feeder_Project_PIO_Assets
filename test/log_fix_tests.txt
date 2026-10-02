@@ -428,12 +428,14 @@ logt cloud ||| tx_valid=0
 #
 # 步骤（PC 端，设备在线）：
 #   1) 下发命令 id=DUPX 两次 → 第 2 次设备串口必须出现 "[Cloud] duplicate command"
-#      python test/mqtt_log_probe.py raw guo_feeder/down '{"c":"system","i":"DUPX","p":{"o":"memory"}}'
+#      ⚠️ Topic V3（P0 起）：topic 含 device_id ⇒ 必须带 `--device-id <id>`（或环境变量 `GF_DEVICE_ID`）；
+#         探针固定订阅/发布 `guo_feeder/<device_id>/{up,log,down}`。
+#      python test/mqtt_log_probe.py --device-id <id> raw guo_feeder/<device_id>/down '{"c":"system","i":"DUPX","p":{"o":"memory"}}'
 #      （连发两次；注意两次间隔要 < 30 s）
 #   2) 连发 15 条 log_ack（**各不相同的 i**，b/f/t 用任意值即可 —— 会被判 IGNORE，
 #      但关键是它们**不得进入去重缓存**）：
 #      for i in $(seq 1 15); do
-#        python test/mqtt_log_probe.py raw guo_feeder/down \
+#        python test/mqtt_log_probe.py --device-id <id> raw guo_feeder/<device_id>/down \
 #          '{"c":"log_ack","i":"AK'$i'","p":{"b":1,"f":1,"t":1}}'
 #      done
 #   3) 再下发 id=DUPX 一次 → 设备**仍须**打印 "[Cloud] duplicate command"
@@ -446,7 +448,7 @@ logt cloud ||| tx_valid=0
 #   [Cloud] Command duplicate                    ← rx 分支的兜底日志
 #
 # ⚠️ 另需验证：**不带 i** 的 log_ack 必须被正常处理（不得打印 "Missing id"）。
-#      python test/mqtt_log_probe.py raw guo_feeder/down '{"c":"log_ack","p":{"b":1,"f":1,"t":1}}'
+#      python test/mqtt_log_probe.py --device-id <id> raw guo_feeder/<device_id>/down '{"c":"log_ack","p":{"b":1,"f":1,"t":1}}'
 # =====================================================
 # （本段无串口命令；执行方式见上方注释）
 

@@ -24,6 +24,51 @@ import paho.mqtt.client as mqtt
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+# --- P0-5：Topic V3 参数化（topic 含 device_id；**刻意不提供通配回退**）---
+def _strip_device_id_args(argv):
+    """剔除 --device-id <id> / --device-id=<id>，返回其余位置参数。"""
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--device-id":
+            i += 2
+            continue
+        if a.startswith("--device-id="):
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def _require_device_id():
+    """设备 ID：--device-id <id> > 环境变量 GF_DEVICE_ID；缺失则退出。
+
+    Topic V3 的 topic 形如 guo_feeder/<device_id>/...，必须显式指定。
+    **不提供 guo_feeder/+/up 通配回退**：那会造成多设备混流假象，
+    而且 `+` 占整整一级，并不能匹配 legacy 的 guo_feeder/up。
+    """
+    argv = sys.argv[1:]
+    did = ""
+    for i, a in enumerate(argv):
+        if a == "--device-id" and i + 1 < len(argv):
+            did = argv[i + 1]
+        elif a.startswith("--device-id="):
+            did = a.split("=", 1)[1]
+    did = (did or os.environ.get("GF_DEVICE_ID", "")).strip()
+    if not did:
+        print("[ERR] 缺少设备 ID：请用 --device-id <id> 或环境变量 GF_DEVICE_ID")
+        print("      原因：Topic V3 的 topic 含 device_id，必须显式指定。")
+        sys.exit(2)
+    return did
+
+
+DEVICE_ID = _require_device_id()
+TOPIC_UP   = "guo_feeder/%s/up" % DEVICE_ID
+TOPIC_DOWN = "guo_feeder/%s/down" % DEVICE_ID
+TOPIC_LOG  = "guo_feeder/%s/log" % DEVICE_ID
+_ARGV = _strip_device_id_args(sys.argv[1:])
+
 
 def load_conf():
     with open(os.path.join(ROOT, "data", "config", "mqtt.json"), "r", encoding="utf-8") as f:
@@ -81,8 +126,8 @@ def cmd_probe(cfg, ca):
     c, rc = connect(cfg, ca, "wb_probe_sub")
     got = []
     c.on_message = lambda cl, ud, msg: got.append((msg.topic, msg.payload))
-    c.subscribe("guo_feeder/log", qos=1)
-    c.subscribe("guo_feeder/down", qos=1)
+    c.subscribe(TOPIC_LOG, qos=1)
+    c.subscribe(TOPIC_DOWN, qos=1)
     t0 = time.time()
     while len(rc["sub"]) < 2 and time.time() - t0 < 8:
         time.sleep(0.05)
@@ -91,11 +136,11 @@ def cmd_probe(cfg, ca):
 
     # ② 尝试发布 guo_feeder/log（验证 publish ACL）
     payload = b"\xa1\x00\x02"  # 极小 CBOR map {0:2}
-    info = c.publish("guo_feeder/log", payload, qos=1)
+    info = c.publish(TOPIC_LOG, payload, qos=1)
     info.wait_for_publish(timeout=5)
-    print("[probe] PUBLISH guo_feeder/log rc =", info.rc, "(0 = 已受理)")
+    print("[probe] PUBLISH %s rc =" % TOPIC_LOG, info.rc, "(0 = 已受理)")
     time.sleep(1.0)
-    print("[probe] 自发自收 =", "OK" if any(t == "guo_feeder/log" for t, _ in got) else "未收到")
+    print("[probe] 自发自收 =", "OK" if any(t == TOPIC_LOG for t, _ in got) else "未收到")
     c.disconnect()
     c.loop_stop()
 
@@ -108,16 +153,16 @@ def cmd_listen(cfg, ca, secs=30):
         n[0] += 1
         print("[log #%d] topic=%s len=%d" % (n[0], msg.topic, len(msg.payload)))
         print("  hex:", msg.payload.hex())
-        if msg.topic == "guo_feeder/log":
+        if msg.topic == TOPIC_LOG:
             print("  " + repr(cbor_decode_batch(msg.payload)))
         sys.stdout.flush()
 
     c.on_message = on_message
-    c.subscribe("guo_feeder/log", qos=1)
+    c.subscribe(TOPIC_LOG, qos=1)
     t0 = time.time()
     while len(rc["sub"]) < 1 and time.time() - t0 < 8:
         time.sleep(0.05)
-    print("[probe] 已订阅 guo_feeder/log, SUBACK =", rc["sub"], "监听", secs, "秒 ...")
+    print("[probe] 已订阅 %s, SUBACK =" % TOPIC_LOG, rc["sub"], "监听", secs, "秒 ...")
     time.sleep(secs)
     print("[probe] 共收到", n[0], "条")
     c.disconnect()
@@ -190,7 +235,7 @@ def cmd_ack(cfg, ca, boot, frm, to):
     c, rc = connect(cfg, ca, "wb_probe_ack")
     msg = json.dumps({"c": "log_ack", "i": "ack%d" % int(time.time()),
                       "p": {"b": int(boot), "f": int(frm), "t": int(to)}})
-    info = c.publish("guo_feeder/down", msg, qos=1)
+    info = c.publish(TOPIC_DOWN, msg, qos=1)
     info.wait_for_publish(timeout=5)
     print("[probe] PUBLISH down rc =", info.rc, "msg =", msg)
     time.sleep(1.0)
@@ -209,21 +254,21 @@ def cmd_raw(cfg, ca, topic, text):
 
 
 def main():
-    if len(sys.argv) < 2:
+    if len(_ARGV) < 1:
         print(__doc__)
         return
     cfg, ca = load_conf()
-    op = sys.argv[1]
+    op = _ARGV[0]
     if op == "probe":
         cmd_probe(cfg, ca)
     elif op == "listen":
-        cmd_listen(cfg, ca, int(sys.argv[2]) if len(sys.argv) > 2 else 30)
+        cmd_listen(cfg, ca, int(_ARGV[1]) if len(_ARGV) > 1 else 30)
     elif op == "ack":
-        cmd_ack(cfg, ca, sys.argv[2], sys.argv[3], sys.argv[4])
+        cmd_ack(cfg, ca, _ARGV[1], _ARGV[2], _ARGV[3])
     elif op == "raw":
-        cmd_raw(cfg, ca, sys.argv[2], sys.argv[3])
+        cmd_raw(cfg, ca, _ARGV[1], _ARGV[2])
     elif op == "decode":
-        cmd_decode(sys.argv[2])
+        cmd_decode(_ARGV[1])
     else:
         print(__doc__)
 

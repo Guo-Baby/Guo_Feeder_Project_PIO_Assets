@@ -89,7 +89,7 @@ logt reset ||| reset ok
 #
 #   步骤 6（需 MQTT，可复用 P2-I 既有工具链）：
 #     a) python test/mqtt_log_probe.py listen 30 > .pio/p4d_probe.log
-#        （或直接用 .pio/p15run/p2i_probe*.py 同款探针捕获 `guo_feeder/log`）
+#        （或直接用 .pio/p15run/p2i_probe*.py 同款探针捕获 `guo_feeder/<device_id>/log`）
 #     b) 复用 `.pio/p15run/log_decode.py`（CBOR 批次 → 记录级解码，
 #        输出 `event_name` 与**每个 ParamId 的真值**，含 LOG_P_COUNT）
 #     c) 复用 `.pio/p15run/p2i_report.py` 的三项不变量框架，仅需改 2 处字面量：
