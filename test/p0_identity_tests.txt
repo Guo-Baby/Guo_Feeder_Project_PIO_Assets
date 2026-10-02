@@ -18,21 +18,26 @@
 
 # -----------------------------------------------------
 # §A 自动断言（每次执行都应全 OK）
+#
+# ⚠️ 串口命令必须是 `cm {JSON}` 包装（`<命令> ||| <期望>` 的左半部分）；
+#    裸写 `config_query mqtt` / `system.time` 会被设备判为 `unknown command`（实测踩过）。
+#    `cm` 内 JSON 用 cmd/ob/id/p 四键（注意与 MQTT 下行的 c/i/p 形式不同）。
+# ⚠️ cmd_id 去重缓存 10 项 / 30 s ⇒ 每条用例**必须用不同的 id**（重复 id 被静默丢弃）。
 # -----------------------------------------------------
 
 # S-1 探活：被动观测不可靠（项目铁律）⇒ 先确认会话活着
 logt stats ||| emit
 
 # S-6a 三个 topic 已配置为 V3 **模板**（渲染的输入；渲染发生在 cloud_init）
-config_query mqtt ||| guo_feeder/<device_id>/down
-config_query mqtt ||| guo_feeder/<device_id>/up
-config_query mqtt ||| guo_feeder/<device_id>/log
+cm {"cmd":"system","ob":"config_query","id":"pq01","p":{"module":"mqtt"}} ||| guo_feeder/<device_id>/down
+cm {"cmd":"system","ob":"config_query","id":"pq02","p":{"module":"mqtt"}} ||| guo_feeder/<device_id>/up
+cm {"cmd":"system","ob":"config_query","id":"pq03","p":{"module":"mqtt"}} ||| guo_feeder/<device_id>/log
 
 # S-8 client_id 已唯一化为 dev_<device_id>（P0-3；不再是固定 guo_feeder_001）
-config_query mqtt ||| dev_
+cm {"cmd":"system","ob":"config_query","id":"pq04","p":{"module":"mqtt"}} ||| dev_
 
-# S-10 时间链路回归（P0 未触碰该模块）
-system.time ||| source
+# S-10 system 命令链路回归（P0 未触碰；用 memory 查询作稳定判据）
+cm {"cmd":"system","ob":"memory","id":"pq05","p":{}} ||| internal
 
 # -----------------------------------------------------
 # §B 启动类断言（boot 日志，**人工 grep 核对**）
@@ -74,6 +79,13 @@ system.time ||| source
 #   S-5 MAC 不一致（保留 NVS 值，不覆盖）
 #     前置：用 NVS 预写一个与当前 MAC 不同的 did（真机制造 MAC 差异不可行）
 #     期望：串口出现 'mac mismatch, keep nvs id' 类 WARN，且 did **未被覆盖**（重启后仍是预写值）
+#     ✅ 2026-10-02 实测结论：**该场景不可构造** ——
+#        · 篡改 NVS 镜像里的 did data（等长替换为另一合法 12-hex）后写回，设备报
+#          `[E][Preferences.cpp] getString(): nvs_get_str fail: did NOT_FOUND`
+#          ⇒ NVS 有**完整性校验**，篡改 data 会被判为条目无效（读不到 did）
+#        · 固件**不提供任何修改 did 的接口**（设计禁 device_identity_reset）
+#        ⇒ 「did 存在但与 MAC 派生不一致」在正常运维路径下**不可达**；
+#          该分支仅剩代码审查 + ELF 中 WARN 字符串存在性作为证据（真机双 MAC 需 P1 一机一凭据期补）
 #
 #   S-7 回滚通路（**仅 dev/test**）
 #     前置：把 subscribe_topic 改回 `guo_feeder/down`（config_set + config_save）
@@ -84,6 +96,12 @@ system.time ||| source
 #     前置：client_id 设为 200 字符（config_set + config_save）
 #     期望：'ERROR invalid client_id, using built-in default'，且回落 dev_<id>、**不截断**
 #     说明：'indexOf(device_id)' 判据 —— 回落值必须含真实 device_id
+#     ✅ 2026-10-02 实测结论：**无法用配置构造** —— 配置命令链路**先行拒绝**超长值：
+#        `{"s":4,...,"m":"invalid config param or unsupported value type","e":6}`
+#        → `[CMD][ERROR] invalid config param`，随后 `config_save` 报 `no dirty module`
+#        ⇒ 值根本没写进设备（ConfigManager/CommandManager 的 `CONFIG_ENQUEUE_INVALID` 挡在前面）。
+#        ⇒ P0-3 的「超限 ⇒ ERROR + 回落、不截断」分支由**编译期自检**覆盖：
+#           `topic_renderer_selftest()` 的 `too_long` 用例（GF_TOPIC_RENDER_SELFTEST=1 构建，实测 PASS）。
 #
 #   S-11 OTA 身份持久性（DV-3）
 #     步骤：① 记录升级前 device_id ② 执行 OTA ③ 重启
