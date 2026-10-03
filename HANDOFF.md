@@ -110,11 +110,37 @@
 
 | 工作包 | 状态 |
 |---|---|
-| **P1-0** 平台能力实测 | ✅ 完成（`288cd95`；补测 `a0e7164`）——`client_id` 上限 **15323**；ACL 生效 **≈1.3 s，但只作用于新连接**；账号可程序化增删（上限 ≈2000 ⇒ **一机一账号可行，不需要 slot 池**）；不支持 `$SYS`，支持 `$events/client_connected / disconnected`（经数据集成） |
-| **P1-0 结论冻结** | ✅ `0255791` —— `docs/architecture/P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze**：**ACL 修改 ≠ 完整 revoke**，必须 `update ACL` **+** `DELETE /clients/{clientid}` |
-| **P1-1** D1 Schema | ✅ `75f84ab`，**已 apply 到远端 D1**（`--local` + `--remote` 均 ✅）——`device` / `device_credential` / `device_binding` / `device_event` |
-| **Phase C 设计**（P1-2 + P1-4） | ✅ `01f27bf` —— `docs/architecture/P1-2-P1-4-注册与凭据签发设计.md`（**设计稿；7 项待裁决，裁决后才编码**） |
-| P1-3 / P1-5 / P1-6 / P1-7 | ⏳ 未开始 |
+| **P1-0** 平台能力实测 | ✅ **完成** —— **A-4 / A-4b / A-5 / A-1 / A-1c / A-6 / A-7 全部实测完毕**（`288cd95` · `a0e7164` · **`fece474`**） |
+| **P1-0** 结论冻结 | ✅ `0255791` —— `P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze** 与 **§A-7 Design Impact** |
+| **P1-1** D1 Schema | ✅ **完成**（`75f84ab`），**已 apply 到远端 D1**（`--local` + `--remote` 各 `15 commands` 成功）——`device` / `device_credential` / `device_binding` / `device_event` |
+| **Phase C**（P1-2 + P1-4） | ✅ **完成：设计冻结**（`01f27bf` 设计 · **`10b6a57` 冻结 Q1–Q8**）—— `P1-2-P1-4-注册与凭据签发设计.md` 文末 **§Architecture Freeze Decision** |
+| **下一阶段** | ▶ **Phase D（P1-3 设备侧 `gfcred`）—— 进入实现阶段**（先出实施计划，人工审核通过后编码） |
+| P1-5 / P1-6 / P1-7 | ⏳ 未开始 |
+
+#### ★ P1 关键冻结事项（改代码前必读）
+
+**① EMQX `create user`（P1-0 §A-7 实测）**
+
+| 行为 | 值 |
+|---|---|
+| 首次创建 | **`201`** + `{user_id, is_superuser}` |
+| 已存在 | **`409`** `{"code":"ALREADY_EXISTS"}` ——**不覆盖密码**、不改 ACL、不重复建号 |
+| 结论 | **无需"先 GET 再 CREATE"**（`409` 即判别号）；**可 at-least-once retry**（崩溃 + 原样重试安全，上限 5 次指数退避） |
+| 回收重签 | `DELETE` 用户后可**同名重建**（`201`）；`DELETE .../rules/users/{u}` 返回 `204` |
+
+**② ACL propagation（P1-0 §A-1 / §A-1c 实测）**
+
+- **新连接**约 **1.35 s** 后受新规则影响（收紧 1.35 / 恢复 1.37 s，无长尾）。
+- **已连接 session 不自动撤销** —— 既有会话既不重鉴权、连新的 `subscribe` 也仍放行。
+- ⇒ **revoke 必须 = `update ACL` + `session termination`（`DELETE /clients/{clientid}`）**，缺一不成立。
+
+**③ credential provisioning（Phase C Q1–Q8 冻结）**
+
+- **ACL readiness 的唯一硬证据 = 设备真实 CONNACK 成功**（设备用该凭据建连成功）。
+- **`HTTP 2xx` / `GET` 查规则 / 固定等待时间 均不能作为 `ACTIVE` 条件**；
+  3 s 等待只能用作 retry/backoff 节奏，**不能改变状态**。
+- 附带：`system.credential_set` 只允许 cloud provisioning path；password 只能 `cloud → device`；
+  `confirm timeout = 300 s` / `retry = 5`，四态 `PENDING / CONFIRMED / FAILED / TIMEOUT`。
 
 > ✅ **2026-10-02 已推送**：`328d44f..84d8ff6  wb -> wb`（一次性推上 53 个提交，
 > 含 10-01 目录重构与本轮 readme/HANDOFF 改动）。remote 已由旧 URL
@@ -166,7 +192,7 @@
 | 阶段 | 内容 |
 |---|---|
 | **P0** ✅ | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离 —— **已完成** |
-| **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0）✅、Phase B（P1-1 D1）✅、Phase C 设计 ✅；待裁决 7 项后编码** |
+| **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0 含 A-7）✅ · Phase B（P1-1 D1 已 apply）✅ · Phase C（P1-2/P1-4 设计冻结 Q1–Q8）✅；下一阶段 Phase D 进入实现** |
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
 | **P3** | 历史/D1（多设备数据模型 + 遥测降频策略） |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） |
@@ -264,13 +290,13 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
    > 顺带确认：其余本地分支 `emqx` / `emqx_text` / `deepseek_dev` **也都是 `wb` 的祖先**
    > （独有 0 提交），即全部内容都已被 `wb` 包含。
 2. ✅ ~~**P0 的五项设计确认**（D1 / D2 / D3 / D5 / D7）~~ —— 已定案，见 §5。
-3. **★ P1 Phase C 的 7 项待裁决**（准入形态 / 就绪证据 / 下发通道 / 管理端鉴权 /
-   EMQX 建账号幂等返回码**需实测** / P0 遗留共享凭据吊销时机 / confirm 超时与重试上限）
-   ⇒ 见 `docs/architecture/P1-2-P1-4-注册与凭据签发设计.md` **§15**。
-   **裁决前 Phase C 不编码。**
+3. ✅ ~~**P1 Phase C 的 7 项待裁决**~~ —— **已全部裁决并冻结（2026-10-03，Q1–Q8）**，
+   见 `docs/architecture/P1-2-P1-4-注册与凭据签发设计.md` 文末 **§Architecture Freeze Decision**
+   （配套结论摘要见 §4.1「★ P1 关键冻结事项」）。
+   ▶ **当前下一步**：Phase D（P1-3 设备侧 `gfcred`）—— 先出实施计划，**人工审核通过后才编码**。
 4. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
 5. 未跟踪的 **`docs/review/`**（三篇送审文档）仍未提交 —— 待决定入库或删除。
-6. ⚠️ 固件仓库 **`wb` 领先 `origin/wb` 与 `origin/main` 各 17 个提交**（截至 2026-10-03 未推送）。
+6. ⚠️ 固件仓库 **`wb` 领先 `origin/wb` 与 `origin/main` 各 20 个提交**（截至 2026-10-03 未推送）。
 
 ---
 
@@ -307,6 +333,10 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - ✅ **Cloudflare `main` 已推送**（`1d6fe00..75f84ab`）
 - ✅ **Phase C 设计**（固件仓 `01f27bf`）—— `P1-2-P1-4-注册与凭据签发设计.md`：
   **ACL 就绪的唯一硬证据 = 设备 CONNACK 自证**（⇒ 这正是 P1-3 双 slot 存在的理由）
+- ✅ **P1-0 A-7 实测**（固件仓 `fece474`）—— create user **幂等且不可变**（`201` / `409 ALREADY_EXISTS`，
+  不覆盖密码 · 不改 ACL · 不重复建号；MQTT 建连反证）⇒ **无需 GET+CREATE**、**可 at-least-once retry**
+- ✅ **Phase C 架构冻结 Q1–Q8**（固件仓 `10b6a57`）—— 文末 **§Architecture Freeze Decision**；
+  **Phase C 文档闭环完成**（含 §4.2 三态→四态、§5.4/§6.3/§6.4/§10.1 冻结标记、§15 改"已全部裁决"）
 - ✅ 文档索引同步：`docs/README.md`、`P1-实现清单.md`（含状态名 `NEW` → `CLAIM_PENDING` 修正）
 - ✅ **weight 模块暂停**：`weight.enable=false` 已落盘生效（设备 `288485896ce4`，v:13），
   离线刷屏 `STATE_WEIGHT_ERROR` 已消除（根因是**固件旧版不读该字段**，非命令失败）
@@ -316,5 +346,6 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
   `export GH_TOKEN=$(gh auth token)` + 内联 credential helper 推送
 
 **关联提交**：
-- 固件仓库：`0255791`（P1-0 冻结）· `01f27bf`（Phase C 设计）· `23cd731`（weight.enable）
+- 固件仓库：`0255791`（P1-0 冻结）· `01f27bf`（Phase C 设计）· **`fece474`（A-7 实测）** ·
+  **`10b6a57`（Phase C 冻结 Q1–Q8）** · `23cd731`（weight.enable）
 - `Cloudflare_Assets`：`75f84ab`（P1-1 D1 Schema，**已推送**）
