@@ -45,6 +45,7 @@
 | `P1-2-P1-4-注册与凭据签发设计.md` | **★ Phase C 设计（已冻结 · 2026-10-03）** —— P1-2+P1-4 **合并闭环**：发现建档 → 准入 → 建账号 → 写 ACL → **就绪判定（设备 CONNACK 自证）** → 落库 → 下发 → 升级 ACTIVE；含状态/四态映射、失败矩阵、对账、API 契约草案、给 Phase D 的接口冻结，**文末 §Architecture Freeze Decision（Q1–Q13）为不可擅改基线** |
 | `P1-3-PhaseD-实施计划.md` | **★ Phase D 实施计划 + §7 结果（D-1/D-2/D-3 已完成）** —— **D-1 云端基础能力**（EMQX API wrapper / admin auth / credential generator / device registry）· **D-2 固件**（`gfcred` 双 slot / `CredentialManager` / `credential_set` / `credential_confirm`）· **D-3 联调**；含冻结边界、文件修改总表、风险登记、接口与验收判据 |
 | `PhaseD-Final-Review.md` | **★ Phase D 最终评审（已通过 · 2026-10-04）** —— 范围 / **Q1–Q13 与 P0 边界逐条核对** / 交付物 / **真机 51-51 验收明细** / **三处缺陷与修复**（outbox 排空 · 帧分类 · 切主索引）/ **验收 DoD 对照** / 遗留与风险 / **数据集成端点迁移步骤** / **给 P1-5 的接口与前置** |
+| `P1-5-Device-Binding-Design.md` | **★ P1-5 绑定设计（Phase P1-5-A 设计稿 · 待裁决 Q14–Q20）** —— ownership 模型 · **binding 状态机**（含与凭据流程的相容性核对）· **claim flow**（三种 claim 的区分）· **transfer 原子事务** · API contract · event model · **failure matrix F-1…F-20** · **INV-1…INV-7 不变量** · 必须修改的既有代码（`revokeDevice` 补退役配对）· 测试用例 T-1…T-19 |
 | `jsonstorage开发架构.md` | JsonStorage 存储层架构设计 |
 
 ## interfaces/ 接口 / 协议
