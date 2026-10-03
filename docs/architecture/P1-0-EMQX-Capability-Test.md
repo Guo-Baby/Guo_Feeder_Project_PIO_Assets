@@ -1,13 +1,13 @@
 # P1-0 EMQX 平台能力实测（Capability Test）
 
-> **状态**：**已完成（2026-10-02）· 待人工审核**
+> **状态**：**已完成 · 待人工审核**（A-4/A-5/A-1/A-6 = 2026-10-02；**A-7 = 2026-10-03**）
 > **上游**：`P1-Cloud-Device-Lifecycle-Plan.md`（§5.1 冻结的实测顺序）
-> **顺序**：**A-4 → A-5 → A-1 → A-6**（A-4 决定 credential 格式 → A-5 决定账号模型 → A-1 决定授权生效流程 → A-6 只影响在线状态实现）
+> **顺序**：**A-4 → A-5 → A-1 → A-6**（A-4 决定 credential 格式 → A-5 决定账号模型 → A-1 决定授权生效流程 → A-6 只影响在线状态实现）；**A-7（create user 幂等性）为 P1-2 编码前的补测，不改变上述顺序**
 > **本文性质**：**实测记录**，不含任何实现代码。所有测试脚本位于 `.pio/p0run/`（不入库）。
 
 ---
 
-## 0. 测试环境（四项共用）
+## 0. 测试环境（各项共用）
 
 | 项 | 值 |
 |---|---|
@@ -18,7 +18,10 @@
 | 凭据来源 | API 凭据来自 `EMQX_Assets/.env`（不入库）；MQTT 测试账号用 **`workbuddy`**（**非设备账号** ⇒ 不会踢掉在线设备） |
 | 在线设备 | 1 台（`username=GuoFeederDevice`，`client_id=dev_<device_id>`）—— 测试全程未触碰其凭据 |
 
-> **安全声明**：除 A-1 外均为只读或"连接尝试"；A-1 对 `workbuddy` 的规则做了**临时收紧并已在 finally 中恢复**（恢复亦经实测确认生效）。**未改动设备账号凭据、未改动兜底规则、未创建任何长期对象**。
+> **安全声明**：除 A-1 与 A-7 外均为只读或"连接尝试"。A-1 对 `workbuddy` 的规则做了**临时收紧并已在 finally 中恢复**（恢复亦经实测确认生效）。
+> **A-7** 创建了一个**临时测试账号**（`a7test_*`，非设备账号），全程结束**删用户 + 删其 ACL 规则**，
+> 并**前后对比全量用户级 ACL 快照**确认生产规则**逐条零改动**（快照已写入报告 JSON）。
+> 全程**未改动设备账号凭据、未改动兜底规则、未创建任何长期对象、未写 D1**。
 
 ---
 
@@ -273,6 +276,106 @@ Part 2（已连接客户端）
 
 ---
 
+## A-7 EMQX User Creation Idempotency
+
+### 测试目的
+
+P1-2 的签发链路第一步是"建账号"。若该接口**不幂等**，Worker 任何一次重试/崩溃恢复都可能造成
+"账号被改坏"或"重复建号"，进而让 `device_credential` 与 EMQX 真实状态**不一致**。
+本项用于确定：**create user 的幂等语义**、**是否需要先 GET 再 CREATE**、**重试策略**，
+以及能否采用 **at-least-once provisioning** 模型。
+
+### 测试步骤
+
+- **A-7.1 首次创建**：`POST /authentication/password_based:built_in_database/users`
+  （body `{user_id, password, is_superuser:false}`）⇒ 记录 HTTP code / response body；
+  再 `GET .../users/{user_id}` 确认存在性；**并用该凭据真实 MQTT CONNECT** 证明可用。
+- **A-7.2 重复创建同名账号**：
+  - **(a) 同名 + 同密码**：原样重发 ⇒ 记录 code/body；回读账号是否仍在、条数是否仍为 1；
+    并在**重复创建前后各取一次全量 ACL 快照**，判定是否被改动。
+  - **(b) 同名 + 不同密码**：改密码重发 ⇒ 记录 code/body；
+    再用 **MQTT 建连反证**密码到底哪一个生效（无法从响应体判断）。
+- **A-7.3 异常恢复**：模拟"create 请求已发出、Worker 崩溃/未消费响应"，随后**用同一 payload 原样重试**，
+  检查：账号条数、凭据是否仍可用。
+- **安全纪律**：只用**临时账号**（`a7test_*`），结束时**删用户 + 删其 ACL 规则**，
+  并在**前后对比全量用户级 ACL 快照**，证明生产规则零改动。
+
+### 实测结果
+
+测试账号 `a7test_5n7w6cxz`（临时，已删除）；`AUTH_ID = password_based:built_in_database`；
+ACL 基线 = 5 个用户（`GuoFeederDevice` 6 条 / `GuoFeederDevice001` 6 条 / `workbuddy` 1 / `test001` 1 / `shouji` 1）。
+
+```
+A-7.1  首次创建
+  POST  users                     -> 201  {"is_superuser": false, "user_id": "a7test_5n7w6cxz"}
+  GET   users/{u}                 -> 200  {"is_superuser": false, "user_id": "a7test_5n7w6cxz"}
+  MQTT  CONNECT(密码 P1)           -> 成功（rc = Success）        ← 新账号立即可用
+  PUT   rules/users/{u}           -> 204                        ← 写 1 条测试规则（预备 A-7.2）
+
+A-7.2a 重复创建（同名 + 同密码）
+  POST  users                     -> 409  {"code": "ALREADY_EXISTS", "message": "User already exists"}
+  GET   users/{u}                 -> 200  （账号仍在）
+  同名账号条数                     = 1                          ← 未重复建号
+  ACL 快照                        = 与重复创建前**逐条一致**      ← 未改动 ACL
+
+A-7.2b 重复创建（同名 + **不同**密码）
+  POST  users                     -> 409  {"code": "ALREADY_EXISTS", "message": "User already exists"}
+  MQTT  CONNECT(密码 P2, 新)       -> **失败**（Bad user name or password）
+  MQTT  CONNECT(密码 P1, 原)       -> 成功
+  ⇒ **密码未被覆盖**（创建接口对已存在账号是"整体拒绝"，不是 upsert）
+
+A-7.3 异常恢复（模拟 Worker 崩溃后重试）
+  POST  users（响应被丢弃）         -> 409 ALREADY_EXISTS
+  POST  users（原样重试）           -> 409 ALREADY_EXISTS
+  同名账号条数（重试后）             = 1
+  MQTT  CONNECT(当前生效的 P1)      -> 成功                      ← 重试**未破坏**已有凭据
+  ⇒ at-least-once provisioning **可行**
+
+附加（供 P1-2 回收后重签参考）
+  DELETE rules/users/{u}          -> 204
+  DELETE users/{u}                -> 204
+  GET    users/{u}                -> 404  {"code": "NOT_FOUND", "message": "User not found"}
+  POST   users（删除后同名重建）    -> 201                        ← 回收后可重签
+  MQTT   CONNECT(重建后的新密码)    -> 成功
+  ⇒ 生产 ACL 与基线**逐条一致**（5 用户，规则数不变）
+```
+
+### 结论
+
+1. **create user 不是 upsert，而是"首次成功 / 之后一律 409"**：
+   `201` + body `{user_id, is_superuser}`；已存在 ⇒ `409` + `{"code":"ALREADY_EXISTS"}`。
+2. **已存在账号不受任何影响**：密码**不覆盖**、`is_superuser` 不变、**ACL 规则不动**、**不重复建号**。
+   ⇒ 对 Worker 而言，`409 ALREADY_EXISTS` 是**可安全当成功处理**的确定性信号。
+3. **无需 "先 GET 再 CREATE"**：`409` 本身就是判别号；多一次 `GET` 只增加往返与"check-then-act"竞态窗口。
+4. **回收后可同名重建**（`DELETE` 后 `POST` 仍 `201`）⇒ 轮换/退役后的重签路径成立。
+5. `DELETE .../rules/users/{username}` **存在且返回 204**（此前 `emqx-api.mjs` 未封装）⇒ 回收路径可直接删规则。
+
+### A-7.4 输出 Design Impact
+
+见紧随其后的 **§A-7 Design Impact**。
+
+---
+
+## A-7 Design Impact
+
+> **本节与 §Design Impact Freeze 同为冻结区**，专门约束 P1-2 的"建账号"一步。
+
+| # | 问题 | 冻结结论 |
+|---|---|---|
+| 1 | **create user 是否天然幂等？** | **是（幂等且不可变）** —— 重复创建返回 `409 ALREADY_EXISTS`，且**不覆盖密码 / 不改 ACL / 不重复建号**。语义上等价于 "INSERT ... ON CONFLICT DO NOTHING"。 |
+| 2 | **Worker 是否需要先 GET 再 CREATE？** | **不需要**。直接 `POST`；把 **`409 ALREADY_EXISTS` 视为成功**（`201` 同样视为成功）。避免 check-then-act 竞态。 |
+| 3 | **重试策略** | **可盲重试（blinded retry）**：`201` / `409` 均判成功；网络异常（超时、连接中断）**按可重试处理**。建议上限 **5 次**、指数退避（1s/2s/4s/8s/16s）；超出后落 `provision_error`（`emqx_create_user_timeout`）并进入 §对账。 |
+| 4 | **对 credential generation 的影响** | **无影响** —— 账号名 `dev_<device_id>` 与 generation **解耦**：回收旧凭据走 `DELETE`，重建同名账号仍 `201`（本项附加实测已验证）。⇒ **同一 device 的轮换可以复用同一个 `username`**，`generation` 只用于**设备侧与 D1 的对账/防重放**，不需要把 generation 编进账号名。 |
+| 5 | **对 `PROVISIONING` 状态的影响** | "建账号"这一步**不再是不可恢复的失败点**（可盲重试）⇒ `PROVISIONING` 的失败原因将主要来自 **ACL 侧**（§Design Impact Freeze 的传播窗口）与**设备未自证**，而不是账号创建。 |
+| 6 | **是否可采用 at-least-once provisioning？** | **可以采用**（A-7.3 实测：崩溃 + 原样重试后账号条数仍为 1、凭据仍可用）。⚠️ 前提：**ACL 写入（`PUT`）本身也是幂等全量覆盖**（P0 已验证），且**下发命令每次换新 `i`**（避免被 30 s 去重缓存丢弃）。 |
+
+**⚠️ 一条必须写清的边界**：A-7 只证明 **authn（账号）** 侧幂等。
+**authz（ACL）** 侧是另一条链路（`PUT` 全量覆盖 + **约 1.3 s 传播窗口**），
+两者**不可互推** —— 账号已建 ≠ 凭据可用。完整判据见 §Design Impact Freeze 与
+`P1-2-P1-4-注册与凭据签发设计.md` §6.3。
+
+---
+
 ## Design Impact Freeze
 
 > **本节为 P1-0 结论的冻结区。** 数据来源：§A-1c（3 轮复测 + 已连接客户端行为；**以该节为准**）。
@@ -392,8 +495,9 @@ terminate old control sessions     # ← 本节点引入
 | **A-5** | 账号可程序化创建/删除；上限约 2000 | **"一机一账号"可行** ⇒ 凭据模型成立；**P1 不需要 slot 池**（APP 授权已延后） | ✅ **支撑** |
 | **A-1** | 授权变更**秒级生效**（≈1.3 s）；**但仅作用于新连接**（§A-1c：既有会话不重鉴权） | 签发流程需**等 ≥2 s**（或连接失败重试）；**R-2 风险大幅降级**；⚠️ **吊销类操作另见 §Design Impact Freeze** | ✅ **解除阻塞**（但**不覆盖** revoke 语义） |
 | **A-6** | **不支持 `$SYS`**；**支持** `$events/client_connected/disconnected` 经数据集成 | 在线状态**零设备开销**方案确认；落地 = 数据集成规则 → HTTP Action → Worker | ✅ **支撑** |
+| **A-7** | create user **幂等且不可变**（重复 ⇒ `409 ALREADY_EXISTS`，不覆盖密码 / 不改 ACL / 不重复建号）；删除后可同名重建 | P1-2 **无需 GET+CREATE**，`409` 直接当成功；**可盲重试**（上限 5 次）⇒ **at-least-once provisioning 成立**；`username` 不必带 generation | ✅ **支撑** |
 
-**⇒ P1-0 的四项均未发现"设计不可行"结论；A-1 的秒级延迟反而解除了此前最大的时序顾虑。**
+**⇒ P1-0 的五项均未发现"设计不可行"结论；A-1 的秒级延迟与 A-7 的幂等性共同解除了签发链路的时序与重试顾虑。**
 
 > ⚠️ **但 A-1c 限定了该结论的适用范围**：秒级生效是对**新连接**而言。
 > 凡涉及**让某个已在线身份失效**的操作（P1-2 失败回滚 / P1-3 轮换 / P1-5 转让与退役），
@@ -410,6 +514,8 @@ terminate old control sessions     # ← 本节点引入
 | ~~3~~ | ~~A-1 多次重复测量~~ ✅ **已补测**（§A-1c 3 轮，无长尾） | — |
 | 4 | **实际创建数据集成规则**并验证端到端投递（含 `reason` 字段） | Phase F（Online State） |
 | 5 | `$events/client_connected` vs `$events/client/connected` **主题名差异**（两版文档写法不同） | Phase F 实施时以控制台为准 |
+| ~~6~~ | ~~create user 的幂等语义~~ ✅ **已补测**（§A-7） | — |
+| 7 | **`POST /users` 是否有速率限制**（连续创建时的 `429` 行为） | P1-2 实施前（若批量注册） |
 
 ---
 
@@ -420,8 +526,7 @@ terminate old control sessions     # ← 本节点引入
 | `.pio/p0run/p1_0_a4.py` | A-4（连接级边界） |
 | `.pio/p0run/p1_0_a4b.py` | A-4b（上限二分 + 失败形态判定） |
 | `.pio/p0run/p1_0_a56.py` | A-5 / A-6（账号与事件 API 探测） |
-| `.pio/p0run/p1_0_a1.py` | A-1（首次延迟测量） |
-| `.pio/p0run/p1_0_a1c.py` | A-1c（3 轮复测 + 已连接客户端；**结论以此为准**） |
-| `.pio/p0run/p1_0_a1b.py` | ⚠️ **已作废**（`granted` 元组比较错误，结论不可采信） |
-| `.pio/p0run/p1_0_a56.py` | A-5 + A-6（API 探测） |
 | `.pio/p0run/p1_0_a1.py` | A-1（授权生效延迟，含规则恢复） |
+| `.pio/p0run/p1_0_a1c.py` | A-1c（3 轮复测 + 已连接客户端；**结论以此为准**） |
+| `.pio/p0run/p1_0_a7.py` | **A-7**（create user 幂等性 / 密码是否被覆盖 / 崩溃重试 / 回收后重签）—— 报告落 `.pio/p0run/p1_0_a7_report.json` |
+| `.pio/p0run/p1_0_a1b.py` | ⚠️ **已作废**（`granted` 元组比较错误，结论不可采信） |
