@@ -42,7 +42,8 @@
 | `P1-Cloud-Device-Lifecycle-Plan.md` | **★ P1 架构规划（已冻结 · 2026-10-02 审核通过）** —— 从「设备身份隔离」升级到「**设备生命周期管理**」：注册状态机（**FACTORY / CLAIM_PENDING / REGISTERED / BOUND / UNBOUND / REVOKED**）· **一机一凭据**（create/rotate/revoke）· **ACL 动态授权时序** · APP 绑定模型 · D1 表结构草案 · 在线状态同步 · **P1 范围冻结** + 前置实测项 + **P1 Architecture Freeze Decision（9 条）** |
 | `P1-实现清单.md` | **★ P1 施工工单（仅规划，不编码）** —— **P1-0 前置实测（A-1/A-4/A-5/A-6，阻塞项）** · P1-1…P1-8 逐项（目标 / 预期修改 / 依赖 / 禁止 / 风险 / 验证方法）· 云端 / 设备侧 / 越权用例表 · 验收 DoD · 实施顺序 · 审核清单 |
 | `P1-0-EMQX-Capability-Test.md` | **★ P1-0 平台能力实测（已完成）** —— A-4/A-4b（`client_id` 上限 15323）· A-5（账号可程序化增删，上限≈2000）· A-1/A-1c（**ACL 生效 ≈1.3 s，且只作用于新连接**）· A-6（无 `$SYS`，有 `$events/*`）· **A-7（create user 幂等：`201` / `409 ALREADY_EXISTS`、不覆盖密码、可 at-least-once retry）** + **§Design Impact Freeze**（revoke = ACL change + session termination）与 **§A-7 Design Impact** |
-| `P1-2-P1-4-注册与凭据签发设计.md` | **★ Phase C 设计（已冻结 · 2026-10-03）** —— P1-2+P1-4 **合并闭环**：发现建档 → 准入 → 建账号 → 写 ACL → **就绪判定（设备 CONNACK 自证）** → 落库 → 下发 → 升级 ACTIVE；含状态/四态映射、失败矩阵、对账、API 契约草案、给 Phase D 的接口冻结，**文末 §Architecture Freeze Decision（Q1–Q8）为不可擅改基线** |
+| `P1-2-P1-4-注册与凭据签发设计.md` | **★ Phase C 设计（已冻结 · 2026-10-03）** —— P1-2+P1-4 **合并闭环**：发现建档 → 准入 → 建账号 → 写 ACL → **就绪判定（设备 CONNACK 自证）** → 落库 → 下发 → 升级 ACTIVE；含状态/四态映射、失败矩阵、对账、API 契约草案、给 Phase D 的接口冻结，**文末 §Architecture Freeze Decision（Q1–Q13）为不可擅改基线** |
+| `P1-3-PhaseD-实施计划.md` | **★ Phase D 实施拆分计划（待审核后编码）** —— **D-1 云端基础能力**（EMQX API wrapper / admin auth / credential generator / device registry）· **D-2 固件**（`gfcred` 双 slot / `CredentialManager` / `credential_set` / `credential_confirm`）· **D-3 联调**；含冻结边界、文件修改总表、风险登记、接口与验收判据 |
 | `jsonstorage开发架构.md` | JsonStorage 存储层架构设计 |
 
 ## interfaces/ 接口 / 协议
