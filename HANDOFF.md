@@ -106,18 +106,27 @@
 | Cloud Protocol CBOR | ⏳ 已验证，待正式整合进协议 |
 | **编译状态** | ✅ 通过；**RAM 39.9%（130,824 B，P0 后 +88 B）/ Flash 65.8%（1,379,568 B，P0 后 +7,040 B）** |
 
-### ★ P1 进度（2026-10-03 更新）
+### ★ P1 进度（2026-10-04 更新）
 
 | 工作包 | 状态 |
 |---|---|
-| **P1-0** 平台能力实测 | ✅ **完成** —— **A-4 / A-4b / A-5 / A-1 / A-1c / A-6 / A-7 全部实测完毕**（`288cd95` · `a0e7164` · **`fece474`**） |
-| **P1-0** 结论冻结 | ✅ `0255791` —— `P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze** 与 **§A-7 Design Impact** |
+| **P1-0** 平台能力实测 | ✅ **完成** —— **A-4 / A-4b / A-5 / A-1 / A-1c / A-6 / A-7 / A-8 全部实测完毕**（`288cd95` · `a0e7164` · **`fece474`**） |
+| **P1-0** 结论冻结 | ✅ `0255791` —— `P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze** · **§A-7** · **§A-8（PUT 改密 + body schema）** |
 | **P1-1** D1 Schema | ✅ **完成**（`75f84ab`），**已 apply 到远端 D1**（`--local` + `--remote` 各 `15 commands` 成功）——`device` / `device_credential` / `device_binding` / `device_event` |
-| **Phase C**（P1-2 + P1-4） | ✅ **完成：设计冻结**（`01f27bf` 设计 · **`10b6a57` 冻结 Q1–Q8**）—— `P1-2-P1-4-注册与凭据签发设计.md` 文末 **§Architecture Freeze Decision** |
-| **下一阶段** | ▶ **Phase D（P1-3 设备侧 `gfcred`）—— 进入实现阶段**（先出实施计划，人工审核通过后编码） |
+| **Phase C**（P1-2 + P1-4） | ✅ **完成：设计冻结**（`01f27bf` · **`10b6a57`（Q1–Q8）** · `4a5449a`（Q9–Q13））—— `P1-2-P1-4-注册与凭据签发设计.md` 文末 **§Architecture Freeze Decision** |
+| **Phase D-1** 云端基础能力 | ✅ 完成（Cloudflare 仓 `21de1c8`）—— `emqx-admin` / `admin-auth` / `credential-gen` / `device-registry` |
+| **Phase D-2** 固件凭据管理 | ✅ 完成（`004ebf0`）—— `cred_store` + `credential_manager` + `credential_set` + Q13 source 门控 |
+| **Phase D-3** 真机联调 | ✅ **完成（2026-10-04）** —— **51/51 全绿**；云端签发闭环 + 管理端点 + ingest 建档/确认；固件修 **2 处真实缺陷**（见下） |
 | P1-5 / P1-6 / P1-7 | ⏳ 未开始 |
 
 #### ★ P1 关键冻结事项（改代码前必读）
+
+#### ★ D-3 联调暴露并修复的两处**真实缺陷**（改代码前必读）
+
+| # | 层 | 缺陷 | 现象 | 修法 |
+|---|---|---|---|---|
+| **1** | 固件 `cloud_manager.cpp` | **换连前未等 outbox 排空** | promote 后立即 `stop+destroy` 重建客户端 ⇒ 刚 `enqueue` 的 `credential_confirm`（QoS1）**被一起销毁**；串口有 `[Cloud UP] OK`，云端**永远收不到** ⇒ 凭据停在 `PROVISIONING`、300 s 后 `timeout:confirm` | 身份变化时先进入「等 outbox 排空」状态（**非阻塞**：`outbox==0 && ≥400ms` 或 `≥2500ms` 上界）再重建；串口标志 `[Cloud] credential switch: outbox=N -> rebuild` |
+| **2** | 云端 `credential.js` | **把「信息帧」误判为失败帧** | 设备的 `ack` / 受理帧也带 `o:"credential_set"` 但**无 `confirmed`**；旧实现一律写 `provision_error='device:unknown'` ⇒ 真正确认帧到达时被**硬失败守卫**拒绝（`acl_ready_at` 永远为 NULL） | 新增 `classifyCredentialFrame()`：`confirmed:true` ⇒ confirm；`confirmed:false` / `s>=3` / `status∈{failed,error,timeout}` ⇒ failure；**其余一律 info（不动状态）** |
 
 **① EMQX `create user`（P1-0 §A-7 实测）**
 
