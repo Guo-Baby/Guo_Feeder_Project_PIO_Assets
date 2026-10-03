@@ -343,6 +343,19 @@ cloud_task()（loopTask）
 5. **网络类失败**（TLS/DNS/超时）⇒ **不判凭据失败**，计次重试，超时（45 s / 5 次）后才回退
 6. 全程**不打印凭据明文**（串口、日志、上行载荷）
 
+> **★ 确认帧的投递保证（Phase D-3 上板实测补丁）**
+>
+> 确认帧（以及回滚失败帧）走 `esp_mqtt_client_enqueue`（QoS 1 + store）⇒
+> **"入队成功" ≠ "已投递"**。而 promote 会立即促使 CloudManager 重建客户端
+> （`stop + destroy`），若紧接着重建，**队列里的确认帧会被一起销毁**
+> —— 实测现象：串口出现 `enqueue OK` + `[Cloud UP] OK`，但云端**永远收不到 confirm**
+> （凭据停在 `PROVISIONING`，300 s 后被对账标为 `timeout:confirm`）。
+>
+> **因此 CloudManager 在凭据驱动的换连前，必须先等待 outbox 排空**：
+> 非阻塞地在 `cloud_task()` 里轮询 `esp_mqtt_client_get_outbox_size()`，
+> 满足「outbox == 0 且已过最短宽限 400 ms」或「超过上界 2500 ms」才执行重建。
+> 串口标志行：`[Cloud] credential switch: outbox=N -> rebuild`（超时则带 `(drain timeout)`）。
+
 **禁用与保护**：
 - `username` / `password` **不得**出现在任何上行载荷、日志或 D1 中（密码只允许 `cloud → device` 单向）
 - 凭据类命令的**下行原始报文不打印**（CloudManager 只打印命令名与 id）

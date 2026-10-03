@@ -376,6 +376,69 @@ A-7.3 异常恢复（模拟 Worker 崩溃后重试）
 
 ---
 
+## A-8 EMQX User Update / Rotation 语义（✅ 已实测 2026-10-04）
+
+### 测试目的
+
+A-7 证明 `POST users` 对**已存在**账号返回 `409` 且 **`不覆盖密码`**。
+但 P1 的 `username` 被 D1 CHECK **冻结为 `dev_<device_id>`（不可变）**，
+而**轮换 / 复发**必须换密码 ⇒ 必须确认 EMQX 是否提供"改密码"接口，
+否则 D-3 的轮换链路在**第二次**签发时必然失败（设备试连报 `Bad user name or password`）。
+
+### 测试步骤（脚本：`.pio/p0run/p1_0_a8.py`，不入库）
+
+| 步 | 动作 |
+|---|---|
+| A-8.1 | `POST users` 建临时账号 `a8test_*`（PW1）→ 用 PW1 真实 MQTT CONNECT |
+| A-8.2 | `PUT users/{u}` body `{password: PW2, is_superuser:false}` |
+| A-8.3 | 改密后分别用 **PW2** / **PW1** 真实 CONNECT（**响应体无法判断密码真值**） |
+| A-8.4 | `GET users/{u}` / `GET users`（读接口是否存在） |
+| A-8.5 | `PUT rules/users/{u}` 后 `GET` 回读 |
+| A-8.6 | `DELETE users/{u}` 后 PW2 CONNECT |
+| A-8.7 | `DELETE` 后同名 `POST` 重建 |
+| A-8.8 | 清理 + **全量 ACL 快照前后比对** |
+
+### 实测结果
+
+| 步 | 结果 |
+|---|---|
+| A-8.1 `POST users` | **201**；PW1 CONNECT **成功** |
+| A-8.2 `PUT users/{u}` | **200** `{"is_superuser":false,"user_id":"..."}` ⇒ **存在改密码接口** |
+| A-8.3a CONNECT (PW2) | **成功** ⇒ 密码**真的被换掉** |
+| A-8.3b CONNECT (PW1) | **失败** `Bad user name or password` ⇒ **旧密码立即失效** |
+| A-8.4 `GET users/{u}` | **200**（**响应不含密码**）；`GET users` 列表 **200** |
+| A-8.5 ACL PUT/GET | **204** / **200** 回读一致 |
+| A-8.6 `DELETE users/{u}` | **204**；删后 CONNECT 返回 **`Not authorized`**（**注意**：与"密码错"的返回码不同） |
+| A-8.7 `DELETE` → 同名 `POST` | **201**；PW1 恢复可用 ⇒ **回收后可同名重签** |
+| A-8.8 ACL 快照 | **前后逐条一致**（零改动）✅ |
+
+### A-8b 补测：`PUT` 的 body schema（✅ 已实测）
+
+| body | 结果 |
+|---|---|
+| `{"user_id":u,"password":...}` | **400** `{"code":"BAD_REQUEST","reason":"unknown_fields","unknown":"user_id"}` |
+| `{"password":...,"is_superuser":false}` | **200** ✅ |
+| `{"password":...}` | **200** ✅ |
+
+⇒ **`PUT users/{id}` 的 body 不得带 `user_id`**（`user_id` 只在路径里）。
+
+### A-8 Design Impact
+
+| # | 问题 | 冻结结论 |
+|---|---|---|
+| 1 | **`create user` 是否足以完成"轮换"？** | **不足**。同用户名再次 `POST` ⇒ `409` 且**密码不变**（A-7）⇒ 若直接下发新密码，设备试连必失败。 |
+| 2 | **正确的密码对齐原语** | **`ensureUserPassword` = `POST`（`201` 新建）／`409` ⇒ `PUT` 强制对齐**。两者都判成功，**每次签发都保证 EMQX 侧密码 == 本次下发值**。 |
+| 3 | **是否需要 `GET` 预检？** | **不需要**（沿用 A-7 的"避免 check-then-act 竞态"）。 |
+| 4 | **对 `device_credential` 语义的影响** | 同一 `username` 上，**旧世代的密码在 `PUT` 瞬间对新连接失效** ⇒ **轮换存在"服务端已换密、设备尚未切主"的窗口**。缓解：轮换只在设备**在线**时发起；设备侧 `rollback` 仅针对**认证类**失败，且在**网络类**失败时不得误弃 ACTIVE（见 Q7）。 |
+| 5 | **退役是否应删账号？** | **不应**。`DELETE users` 实测返回 `Not authorized`，且 `username` 是**复用**的 ⇒ 退役只做 **ACL 收紧 + 踢会话**（§Design Impact Freeze），**不删账号、不改密码** ⇒ 退役**可逆**（恢复 ACL 即可重连，D-3 联调已实测）。 |
+
+> **本节的第 4 条是 P1 已知限制**：由于 `username` 被冻结为 `dev_<device_id>` 且 EMQX
+> 单账号只允许一个密码，**轮换必然存在服务端/设备端的密码窗口**。P1 通过
+> 「只在设备在线时轮换」+「网络类失败不弃 ACTIVE」把风险压到最低；
+> 若要彻底消除，需要在账号名维度引入 generation（会破坏 D1 CHECK + P0 身份冻结），**P1 不做**。
+
+---
+
 ## Design Impact Freeze
 
 > **本节为 P1-0 结论的冻结区。** 数据来源：§A-1c（3 轮复测 + 已连接客户端行为；**以该节为准**）。

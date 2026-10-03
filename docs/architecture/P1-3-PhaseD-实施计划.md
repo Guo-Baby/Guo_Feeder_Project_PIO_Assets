@@ -191,3 +191,62 @@ Secret ADMIN_API_TOKEN                          (人工设置)
 
 > **审核通过后**：按 D-1 → D-2 → D-3 顺序实施，**每个子阶段独立 commit**；
 > 任一子阶段完成即回报（改动文件清单 + 验证证据 + commit hash），再进入下一子阶段。
+
+
+---
+
+## 7. Phase D-3 实施结果（2026-10-04 · **已完成**）
+
+> 状态：**D-1 / D-2 / D-3 全部完成**，真机端到端联调 **51 / 51 PASS**。
+> 本节是**结果记录**（原计划 §1–§3 保持不动）。
+
+### 7.1 交付物
+
+**`Cloudflare_Assets`（云端）**
+
+| 文件 | 内容 |
+|---|---|
+| `guo-feeder-api/src/credential.js` **新增** | 签发编排 ①–⑧（Q11 首次/轮换同构）· `handleCredentialConfirm`（Q10 唯一 ACTIVE 入口）· `revokeDevice`（§7.2 成对）· `reclaimCredential`（§7.1）· `reconcileTimeouts` · `classifyCredentialFrame` |
+| `guo-feeder-api/src/device-registry.js` **扩展** | `upsertDeviceOnIngest` / `appendEvent` / `claimAuthorized` / 凭据读写 / **四态派生** `deriveProvisionState` |
+| `guo-feeder-api/src/emqx-admin.js` **扩展** | `ensureUserPassword`（POST 201 / 409 ⇒ PUT 对齐，§A-8）· `updateUser` / `getUser` / `listUsers` / `deleteUser` / `listClients` |
+| `guo-feeder-api/src/index.js` **扩展** | 管理端点全套（`claim` / `credential` / `credential/rotate` / `revoke` / `reconcile` / 状态查询）+ ingest 建档与 confirm 显式分支 |
+| `README.md` | 路由 / 模块 / **8 条不变量** / 待办 / `wrangler dev` 僵尸进程坑 |
+
+**`PIO_Assets/Guo_Feeder_Project`（固件）**
+
+| 文件 | 内容 |
+|---|---|
+| `src/cloud/cloud_manager.cpp` **修复** | **换连前等 outbox 排空**（非阻塞，`cloud_apply_credential_switch()` + 有界等待） |
+| `src/services/cred_store.{h,cpp}` · `credential_manager.{h,cpp}` · `command_manager.cpp` · `main.cpp` | D-2 交付（本阶段未改架构边界） |
+| `docs/interfaces/cloud_protocol.md` | §3.3.1 + **确认帧投递保证**（outbox 排空） |
+| `docs/architecture/P1-0-EMQX-Capability-Test.md` | **§A-8**（`PUT` 改密 + body schema + 5 条 Design Impact） |
+| `HANDOFF.md` · `P1-实现清单.md` | 进度与两处缺陷记录 |
+
+### 7.2 端到端验收结果（真机 `288485896ce4` · 部署版 Worker）
+
+| 用例 | 结论 |
+|---|---|
+| **D3-1** 首次签发 | ✅ 未知设备上行 ⇒ `CLAIM_PENDING`；未准入签发 ⇒ **403**；准入后签发 ⇒ 设备试连 `_t<gen>` ⇒ **CONNACK 自证** ⇒ 云端 `ACTIVE` + `acl_ready_at` 非空 + `device.state=REGISTERED` |
+| **D3-2** 认证失败回滚 | ✅ （原始下发 + 错误密码）设备 `rollback (auth_failed)` ⇒ 恢复原 ACTIVE 并重新上线；**D1 原 ACTIVE 未被误判** |
+| **D3-3** ACL 延迟处理 | ✅ 正向：`acl_wait_ms ≥ 3000`（实测 3000–3012 ms）；负向：只建账号不写 ACL ⇒ 能连（CONNACK ok）但 `subscriptions_cnt=0`（**可检测**），补 ACL 后恢复为 1 |
+| **D3-4** confirm 超时 | ✅ 合成设备（下行无订阅者）⇒ t+0 不误标；**真实 300 s** 后 `reconcile` 标 `timeout:confirm` ⇒ 四态 `TIMEOUT`，**不产生 ACTIVE 行**；另留真机 gen3 的 `timeout:confirm` 证据（固件缺陷 #1 的现场） |
+| **D3-5** rotate | ✅ gen7 ⇒ 设备 promote ⇒ `ACTIVE`，旧世代 gen6 ⇒ `REVOKED`（**切主**）；同一时刻至多 1 条 ACTIVE |
+| **D3-6** revoke | ✅ ACL 收紧为 `deny #` + 踢会话（含 `dev_<id>` 与试连会话扫描）⇒ 设备侧 `MQTT disconnected`；`device.state=REVOKED`、全部凭据 `REVOKED`；审计 `acl_update` + `session_terminate` **成对** |
+| **D3-7** old session terminate | ✅ 真实会话验证：**ACL 收紧后会话仍在**（→ ACL ≠ 完整 revoke）；`DELETE /clients/{id}` 后客户端观察到断开 |
+| **D3-8** D1 状态一致性 | ✅ `device=REGISTERED` ↔ `credential gen7=ACTIVE(acl_ready_at 非空)` ↔ 设备 `gfcred ACTIVE`；历史世代全部 `REVOKED`；合成实体已清理；管理响应 / 事件 **无 `password`** |
+
+### 7.3 实施过程中的偏差（已按实际执行）
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| `PUT` 对齐密码 | 计划未细化 | **新增 `ensureUserPassword`** | A-8 实测：`POST` 对已存在账号 409 **且不覆盖密码** ⇒ 不 PUT 则设备试连必失败 |
+| 行占位 | §6.1 把 `INSERT` 排在 ④ | **提前**为并发软锁（在 ① 之前） | §6.6 要求 + 失败矩阵 F-1 需要"有行可记错" |
+| 退役 | — | **不删账号、不改密码** → 退役**可逆** | A-8：`DELETE` 后立即 `Not authorized`，而 `username` 是复用的 |
+| 轮换窗口 | — | **已知限制**：服务端换密与设备切主之间存在窗口 | `username` 冻结 + EMQX 单账号单密码；缓解 = 仅设备在线时轮换 + 网络类失败不弃 ACTIVE |
+
+### 7.4 仍需人工/后续处理
+
+1. **EMQX 数据集成规则改指 `/api/ingest` + `X-Webhook-Key`**（**仅控制台可改**；当前仍走根路径 `/`，故根路径保持兼容并同样执行注册/确认副作用）。
+2. **根路径 `/` 的无鉴权 `cloud_api` 通路**待收敛（P0 遗留，P4 处理）。
+3. **轮换窗口**（§7.3 第 4 条）建议在 P1 后续或 APP 阶段设计"双账号并存"方案。
+4. 固件凭据链路尚未跑 `test/` 受跟踪用例集（当前证据在 `.pio/p0run/`，不入库）。
