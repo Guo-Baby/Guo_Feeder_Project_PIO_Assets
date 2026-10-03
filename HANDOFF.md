@@ -97,12 +97,24 @@
 > 随后 `config_save` 报 `no dirty module`）⇒ 该分支由编译期自检 `topic_renderer_selftest` 的
 > `too_long` 用例覆盖。
 >
-> **仍未做**：**C-3**（`platformio.ini` 固定版本）· M-2（需第二台设备）·
-> P1 前置实测（授权缓存生效延迟 `A-1`、`client_id` broker 长度上限 `A-4`、一机一凭据）
+> **仍未做**：M-2（需第二台设备）。
+> ✅ **C-3 已完成**（`9ec321d`）：`platformio.ini` 锁定 `platform=espressif32@7.0.1` + 8 个
+> `platform_packages` + 4 个库精确版本，`firmware.bin` 逐字节等长（零漂移）。
+> ✅ **P1 前置实测已完成** —— 见下方「★ P1 进度」。
 
 | Mijia BLE 温湿度计 | ⏳ 解码算法已分析，待正式集成 |
 | Cloud Protocol CBOR | ⏳ 已验证，待正式整合进协议 |
 | **编译状态** | ✅ 通过；**RAM 39.9%（130,824 B，P0 后 +88 B）/ Flash 65.8%（1,379,568 B，P0 后 +7,040 B）** |
+
+### ★ P1 进度（2026-10-03 更新）
+
+| 工作包 | 状态 |
+|---|---|
+| **P1-0** 平台能力实测 | ✅ 完成（`288cd95`；补测 `a0e7164`）——`client_id` 上限 **15323**；ACL 生效 **≈1.3 s，但只作用于新连接**；账号可程序化增删（上限 ≈2000 ⇒ **一机一账号可行，不需要 slot 池**）；不支持 `$SYS`，支持 `$events/client_connected / disconnected`（经数据集成） |
+| **P1-0 结论冻结** | ✅ `0255791` —— `docs/architecture/P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze**：**ACL 修改 ≠ 完整 revoke**，必须 `update ACL` **+** `DELETE /clients/{clientid}` |
+| **P1-1** D1 Schema | ✅ `75f84ab`，**已 apply 到远端 D1**（`--local` + `--remote` 均 ✅）——`device` / `device_credential` / `device_binding` / `device_event` |
+| **Phase C 设计**（P1-2 + P1-4） | ✅ `01f27bf` —— `docs/architecture/P1-2-P1-4-注册与凭据签发设计.md`（**设计稿；7 项待裁决，裁决后才编码**） |
+| P1-3 / P1-5 / P1-6 / P1-7 | ⏳ 未开始 |
 
 > ✅ **2026-10-02 已推送**：`328d44f..84d8ff6  wb -> wb`（一次性推上 53 个提交，
 > 含 10-01 目录重构与本轮 readme/HANDOFF 改动）。remote 已由旧 URL
@@ -118,7 +130,7 @@
 |---|---|
 | Worker | `guo-feeder-api` → `https://guo-feeder-api.guobaby.workers.dev/` |
 | Pages | `guo-feeder-pagesdev` |
-| D1 | `guofeeder`（`0d8385ba-a1a6-4fcc-8e43-ae61c014c43d`），绑定名 `guofeeder_DB`，现有表 `mqtt_messages` |
+| D1 | `guofeeder`（`0d8385ba-a1a6-4fcc-8e43-ae61c014c43d`），绑定名 `guofeeder_DB`。表：`mqtt_messages`（P0 遗留）+ **`device` / `device_credential` / `device_binding` / `device_event`（P1-1，2026-10-03 已 apply 到远端）** |
 | CF 账号 | `9e72d201efec6925b3a468a0e3fb4928` |
 | Secrets | `EMQX_APP_ID` / `EMQX_APP_SECRET`（**已同步为新 Key**）/ `WEBHOOK_SECRET`（代码里仍是注释） |
 | 工具链 | `wrangler 4.145.0`（装在项目内 `node_modules`，未污染全局） |
@@ -141,7 +153,9 @@
 | `workbuddy` · `test001` · `shouji` | all `guo_feeder/#`（调试用，未来收窄） |
 
 > ⚠️ EMQX Serverless **不支持外部 HTTP 认证 / 扩展授权 / 白名单开关** ⇒ P1 的凭据模型只能是
-> **「预置账号 + Worker 用 EMQX API 改写该账号 ACL」的 slot 池**。详见 `MEMORY-cloud.md`。
+> **「程序化建账号 + Worker 用 EMQX API 改写该账号 ACL」**。
+> ✅ **P1-0 A-5 实测已推翻旧的「slot 池」方案**：账号可程序化创建/删除（上限 ≈2000）
+> ⇒ 采用 **「一机一账号」**（`dev_<device_id>`），**不需要 slot 池**。详见 `MEMORY-cloud.md`。
 
 ---
 
@@ -152,7 +166,7 @@
 | 阶段 | 内容 |
 |---|---|
 | **P0** ✅ | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离 —— **已完成** |
-| **P1** | EMQX 认证 + 用户/设备绑定 + 凭据签发（slot 池） |
+| **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0）✅、Phase B（P1-1 D1）✅、Phase C 设计 ✅；待裁决 7 项后编码** |
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
 | **P3** | 历史/D1（多设备数据模型 + 遥测降频策略） |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） |
@@ -249,8 +263,14 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
    无冲突、无 merge commit、历史线性。GitHub 首页（默认分支 `main`）现为最新代码。
    > 顺带确认：其余本地分支 `emqx` / `emqx_text` / `deepseek_dev` **也都是 `wb` 的祖先**
    > （独有 0 提交），即全部内容都已被 `wb` 包含。
-2. **P0 的五项设计确认**（D1 / D2 / D3 / D5 / D7，见 §5）。
-3. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
+2. ✅ ~~**P0 的五项设计确认**（D1 / D2 / D3 / D5 / D7）~~ —— 已定案，见 §5。
+3. **★ P1 Phase C 的 7 项待裁决**（准入形态 / 就绪证据 / 下发通道 / 管理端鉴权 /
+   EMQX 建账号幂等返回码**需实测** / P0 遗留共享凭据吊销时机 / confirm 超时与重试上限）
+   ⇒ 见 `docs/architecture/P1-2-P1-4-注册与凭据签发设计.md` **§15**。
+   **裁决前 Phase C 不编码。**
+4. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
+5. 未跟踪的 **`docs/review/`**（三篇送审文档）仍未提交 —— 待决定入库或删除。
+6. ⚠️ 固件仓库 **`wb` 领先 `origin/wb` 与 `origin/main` 各 17 个提交**（截至 2026-10-03 未推送）。
 
 ---
 
@@ -275,3 +295,26 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - `EMQX_Assets`：`3415211`（API 边界实测 + 修正探针 + ACL 套用脚本）
 - `Cloudflare_Assets`：`1d6fe00`（凭据同步脚本）、`4751bc9`（建立 git 追踪）
 - 固件仓库：`d9c8cdd`（文档归位）· `ca89176`（gitignore 治理）· `f5b5414`（src 分层）+ 本轮 readme/HANDOFF 提交
+
+---
+
+## 9. 本轮（2026-10-03）完成清单
+
+- ✅ **P1-0 结论冻结**（固件仓 `0255791`）—— `P1-0-EMQX-Capability-Test.md` 新增 **§Design Impact Freeze**：
+  ACL 修改**不等于**完整 revoke（已连接 session 不重鉴权）⇒ revoke = `update ACL` + `terminate session`
+- ✅ **P1-1 D1 Schema**（`Cloudflare_Assets` `75f84ab`）—— 4 张表 + 11 个索引，**已 apply 到远端 D1**
+  （local + remote 均 ✅，`15 commands` 成功；`mqtt_messages` 未受影响；远端实测 CHECK 约束生效）
+- ✅ **Cloudflare `main` 已推送**（`1d6fe00..75f84ab`）
+- ✅ **Phase C 设计**（固件仓 `01f27bf`）—— `P1-2-P1-4-注册与凭据签发设计.md`：
+  **ACL 就绪的唯一硬证据 = 设备 CONNACK 自证**（⇒ 这正是 P1-3 双 slot 存在的理由）
+- ✅ 文档索引同步：`docs/README.md`、`P1-实现清单.md`（含状态名 `NEW` → `CLAIM_PENDING` 修正）
+- ✅ **weight 模块暂停**：`weight.enable=false` 已落盘生效（设备 `288485896ce4`，v:13），
+  离线刷屏 `STATE_WEIGHT_ERROR` 已消除（根因是**固件旧版不读该字段**，非命令失败）
+- ⚠️ 踩坑（已入 `MEMORY.md`）：**SQLite `GLOB '[0-9a-f]*'` 挡不住大写** ⇒ 必须补 `= lower(x)`；
+  **table-constraint 必须写在所有 column-def 之后**
+- ⚠️ 踩坑：`git push` 走 GCM 会**静默挂起**（沙箱内 120 s 超时）⇒ 用
+  `export GH_TOKEN=$(gh auth token)` + 内联 credential helper 推送
+
+**关联提交**：
+- 固件仓库：`0255791`（P1-0 冻结）· `01f27bf`（Phase C 设计）· `23cd731`（weight.enable）
+- `Cloudflare_Assets`：`75f84ab`（P1-1 D1 Schema，**已推送**）
