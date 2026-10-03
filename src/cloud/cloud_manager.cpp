@@ -71,6 +71,18 @@ static bool mqtt_disconnect_pending = false;
 static uint32_t s_cred_epoch_applied = 0;   // 已应用的凭据身份版本
 static bool     s_swapping_credentials = false;  // 换连窗口（抑制"离线"误报）
 
+// ★ D-3 上板实测修复（**消息丢失缺陷**）：
+//   凭据 promote 后立刻重建客户端（stop+destroy），会把**刚刚入队、尚未发出**的上行
+//   一起丢掉 —— 实测正是 `credential_confirm`（`enqueue OK` 后无投递，云端永远收不到）。
+//   修法：身份变化时**先进入"等待 outbox 排空"状态**，排空（或有界超时）后再重建。
+//   全程**非阻塞**（不 delay、不 while 死等），每轮 loop 推进一次。
+#define CRED_SWITCH_DRAIN_MIN_MS   400UL    // 最短宽限：给 esp-mqtt 任务一次发送机会
+#define CRED_SWITCH_DRAIN_MAX_MS   2500UL   // 上界：网络异常时不得长期挂着旧连接
+
+static bool     s_cred_switch_waiting = false;
+static uint32_t s_cred_switch_armed_ms = 0;
+static uint32_t s_cred_switch_deadline = 0;
+
 static bool     s_conn_result_pending = false;
 static bool     s_conn_result_ok = false;
 static int      s_conn_result_reason = 0;
@@ -1884,6 +1896,30 @@ static void cloud_process_mqtt_events()
 // ⚠️ 本函数**不判断** ok/reason 的语义、**不认识** generation / TESTING / ACTIVE，
 //    也不推断"当前是不是在试连" —— 全部语义归 CredentialManager。
 // =====================================================
+// =====================================================
+// ★ 凭据换连：先等 outbox 排空，再重建客户端
+//
+// 为什么需要「排空」：上行结果（含 `credential_confirm`）走
+// `esp_mqtt_client_enqueue`（QoS1 + store）⇒ **入队成功 ≠ 已投递**。
+// 若紧接着 stop+destroy，队列里那条确认帧会被一起销毁（D-3 上板实测）。
+// =====================================================
+static void cloud_apply_credential_switch()
+{
+    if (mqtt_client != nullptr)
+    {
+        esp_mqtt_client_stop(mqtt_client);
+        esp_mqtt_client_destroy(mqtt_client);
+
+        mqtt_client = nullptr;
+        mqtt_client_active = false;
+        mqtt_connected = false;
+        mqtt_connect_pending = false;
+        mqtt_disconnect_pending = false;
+
+        state_set_bool(STATE_MQTT_STATUS, false);
+    }
+}
+
 static void cloud_sync_credentials()
 {
     // ---- A. 转交连接结果（在 loop 上下文做，允许对端写 NVS）----
@@ -1900,6 +1936,26 @@ static void cloud_sync_credentials()
 
         // 换连窗口结束（结果已消费 ⇒ 后续断开按正常语义处理）
         s_swapping_credentials = false;
+    }
+
+    // ---- B0. 等待 outbox 排空（非阻塞，有界）----
+    if (s_cred_switch_waiting)
+    {
+        const unsigned long now = millis();
+        const int outbox = (mqtt_client != nullptr)
+                               ? esp_mqtt_client_get_outbox_size(mqtt_client)
+                               : 0;
+        const bool min_ok = (now - s_cred_switch_armed_ms) >= CRED_SWITCH_DRAIN_MIN_MS;
+        const bool expire = (int32_t)(now - s_cred_switch_deadline) >= 0;
+
+        if ((outbox == 0 && min_ok) || expire)
+        {
+            Serial.printf("[Cloud] credential switch: outbox=%d%s -> rebuild\n",
+                          outbox, expire ? " (drain timeout)" : "");
+            s_cred_switch_waiting = false;
+            cloud_apply_credential_switch();
+        }
+        return;   // 等待期间不做其它换连决策
     }
 
     // ---- B. 期望身份变化 ⇒ 换连 ----
@@ -1940,16 +1996,11 @@ static void cloud_sync_credentials()
     {
         s_swapping_credentials = true;
 
-        esp_mqtt_client_stop(mqtt_client);
-        esp_mqtt_client_destroy(mqtt_client);
-
-        mqtt_client = nullptr;
-        mqtt_client_active = false;
-        mqtt_connected = false;
-        mqtt_connect_pending = false;
-        mqtt_disconnect_pending = false;
-
-        state_set_bool(STATE_MQTT_STATUS, false);
+        // ★ 先排空 outbox（避免丢弃刚入队的上行，如 credential_confirm）
+        const unsigned long now = millis();
+        s_cred_switch_armed_ms = now;
+        s_cred_switch_deadline = now + CRED_SWITCH_DRAIN_MAX_MS;
+        s_cred_switch_waiting = true;
     }
 }
 
