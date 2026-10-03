@@ -261,6 +261,92 @@ cloud_task()（loopTask）
 {"c":"result","i":"<cmd_id>","s":5,"e":<error>,"m":"<原因>"}
 ```
 
+### 3.3.1 凭据类命令：`system.credential_set`（Phase D-2 新增）
+
+**用途**：云端 provisioning 下发一台设备**专属**的 MQTT 凭据（一机一密）。
+
+下行：
+
+```json
+{
+  "c": "system",
+  "i": "cred_288485896ce4_g2",
+  "t": 1785514668,
+  "p": {
+    "o": "credential_set",
+    "action": "install",
+    "username": "dev_288485896ce4",
+    "password": "<32 字符 base62>",
+    "generation": 2,
+    "slot": 1
+  }
+}
+```
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `o` | ✅ | 固定 `credential_set` |
+| `action` | 可选 | 目前仅 `install`（缺省即 `install`） |
+| `username` | ✅ | 必须为 `dev_<device_id>` |
+| `password` | ✅ | 32 字符 base62 |
+| `generation` | ✅ | **必须严格递增**（小于等于已生效值 ⇒ `e:16` 拒绝，防重放） |
+| `slot` | 可选 | 0/1（建议槽位；设备在"不覆盖当前生效槽"的前提下采纳） |
+
+**★ 来源安全门控（冻结：Phase C Q13 —— `CommandMessage.source` 是 security context）**
+
+| `source` | 是否允许 `credential_set` |
+|---|---|
+| `cloud`（CloudManager 下行） | ✅ **唯一合法来源** |
+| `serial`（串口 `cm {}`） | ❌ 拒绝（`e:13`），**不写 NVS** |
+| 空 / 内部构造 | ❌ 拒绝（`e:13`） |
+
+⇒ `credential_set` **不进入普通业务命令通路**：`system_router` 以 allow-list 方式
+**最先**拦截该对象，走独立分支（解析 → 门控 → 转交 CredentialManager），
+不与其他 `system` 对象共用通路，也不触发任何业务副作用（不注册 Action/Trigger、不改 Workflow/config）。
+
+**受理帧（`status=accepted`，★ 不含 `confirmed`）**：
+
+```json
+{"cmd":"result","id":"cred_288485896ce4_g2","command":"system",
+ "object":"credential_set","status":"accepted","stage":"installing","generation":2}
+```
+
+**确认帧（`credential_confirm`，★ 唯一可触发云端 `PROVISIONING → ACTIVE`）**：
+
+由设备在**用新凭据真实连上（CONNACK 成功）并完成 promote** 后上报：
+
+```json
+{"cmd":"result","id":"cred_288485896ce4_g2","command":"result",
+ "object":"credential_set","status":"success","confirmed":true,
+ "generation":2,"message":"connack_ok"}
+```
+
+失败帧（不回 `confirmed`）：
+
+```json
+{"cmd":"result","id":"...","object":"credential_set","status":"error",
+ "generation":2,"message":"auth_failed"   // 或 timeout / net_error
+}
+```
+
+> **★ 冻结语义（Phase C Q10）**：**只有** `object=="credential_set"` **且** `confirmed==true`
+> 才允许云端把凭据从 `PROVISIONING` 升为 `ACTIVE`。
+> **普通命令 ACK / 受理帧一律不得改变凭据状态** —— 这也是受理帧刻意不带 `confirmed` 的原因。
+
+**设备侧行为（Phase D-2）**：
+
+1. 写入**非当前生效**的 slot，状态 `TESTING`（不覆盖 `ACTIVE` ⇒ 失败即回退，不影响现有连接）
+2. 用该凭据试连，`client_id` 使用**试连专用**值 `dev_<device_id>_t<generation>`
+   （与正式 `client_id` 不同 ⇒ 不踢掉既有会话，冻结：方案 B）
+3. CONNACK 成功 ⇒ promote（置 `ACTIVE`、旧槽置 `INVALID`、记录 `generation`）⇒ 上报确认帧
+4. **认证类失败**（CONNACK 4/5）⇒ 丢弃候选槽，回退原凭据
+5. **网络类失败**（TLS/DNS/超时）⇒ **不判凭据失败**，计次重试，超时（45 s / 5 次）后才回退
+6. 全程**不打印凭据明文**（串口、日志、上行载荷）
+
+**禁用与保护**：
+- `username` / `password` **不得**出现在任何上行载荷、日志或 D1 中（密码只允许 `cloud → device` 单向）
+- 凭据类命令的**下行原始报文不打印**（CloudManager 只打印命令名与 id）
+
 ### 3.4 协议级消息：`change_msg_limit`（旁路 CommandManager）
 
 ```
@@ -433,9 +519,13 @@ on_command_result(json) ──► cloud_send_up(json)
 | 10 | `CMD_ERROR_EXECUTION` | 执行失败（含 `workflow.save` 落盘失败） |
 | 11 | `CMD_ERROR_INVALID_PAYLOAD` | 载荷非法：`type` 缺失 / `steps>16` / `params>8` |
 | 12 | `CMD_ERROR_NO_FREE_SLOT` | Workflow 槽位已满（16）且无可回收 |
-| 13 | `CMD_ERROR_REJECTED` | 修改被拒（运行中 / Critical acquire 失败） |
+| 13 | `CMD_ERROR_REJECTED` | 修改被拒（运行中 / Critical acquire 失败 / **凭据命令来源不合法**） |
+| 14 | `CMD_ERROR_CRED_INVALID_PAYLOAD` | 凭据载荷非法（缺 `username`/`password`/`generation`、超长、`action` 不支持） |
+| 15 | `CMD_ERROR_CRED_STORE_FAIL` | 凭据写入 NVS（`gfcred`）失败 |
+| 16 | `CMD_ERROR_CRED_GENERATION_STALE` | `generation` 非递增 ⇒ 判为陈旧/重放 |
 
 > **Workflow 相关错误的完整语义见 `workflow_cloud_interface.md` §10。**
+> **凭据类命令（14–16）语义见 §3.3.1。**
 
 ---
 

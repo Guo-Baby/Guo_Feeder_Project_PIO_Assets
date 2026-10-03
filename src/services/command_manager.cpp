@@ -11,6 +11,7 @@
 #include "app/weight.h"
 #include "services/system_command.h"
 #include "log/log_manager.h"   // P2-J：观测埋点（EventId / ParamId + log_emit）
+#include "services/credential_manager.h"   // Phase D-2：凭据生命周期（Q8/Q9/Q13）
 
 // =====================================================
 // P2-J：Command 埋点 —— 本地字符串哈希（FNV-1a 32）
@@ -52,6 +53,11 @@ static uint32_t cmd_hash32(const char *s)
 #define CMD_ERROR_INVALID_PAYLOAD     11   // payload 不是合法 JSON
 #define CMD_ERROR_NO_FREE_SLOT        12   // Workflow 槽位已满（16）
 #define CMD_ERROR_REJECTED            13   // 修改被拒（运行中 / Critical acquire 失败）
+
+// ---- Phase D-2：凭据类命令专用（cloud_protocol.md §6.2 增补）----
+#define CMD_ERROR_CRED_INVALID_PAYLOAD  14   // 凭据载荷非法（缺字段 / 超长 / action 不支持）
+#define CMD_ERROR_CRED_STORE_FAIL       15   // 凭据写入 NVS（gfcred）失败
+#define CMD_ERROR_CRED_GENERATION_STALE 16   // generation 非递增 ⇒ 判为陈旧/重放
 // =====================================================
 // Command Runtime（命令生命周期管理）
 //
@@ -225,6 +231,9 @@ static bool command_workflow_set(const CommandMessage &cmd, JsonDocument &respon
 static bool command_workflow_delete(const CommandMessage &cmd, JsonDocument &response);
 static bool command_workflow_save(const CommandMessage &cmd, JsonDocument &response);
 static bool workflow_router(const CommandMessage &cmd, JsonDocument &response);
+
+// Phase D-2：凭据类命令（独立分支；**payload 由本层解析为 C++ 结构**）
+static bool command_credential_set(const CommandMessage &cmd, JsonDocument &response);
 
 static bool command_config_query(const CommandMessage &cmd, JsonDocument &response);
 static bool command_config_set(const CommandMessage &cmd, JsonDocument &response);
@@ -549,6 +558,58 @@ void command_manager_task()
     if (now - last_scan_ms >= COMMAND_RUNTIME_SCAN_INTERVAL_MS) {
         last_scan_ms = now;
         command_runtime_scan_timeouts();
+    }
+
+    // =====================================================
+    // Phase D-2：凭据生命周期事件上报
+    //
+    // ★ 这是 `credential_confirm` 的**唯一出口**（冻结：Phase C Q10）：
+    //   - 只有本路径生成的帧携带 `confirmed=true`
+    //   - 普通命令 ACK / 受理帧**一律不含** `confirmed`
+    //   ⇒ 云端只有收到 `confirmed=true && o=="credential_set"` 才允许
+    //      `PROVISIONING → ACTIVE`。
+    //
+    // 事件由 CredentialManager 在其状态机推进时产生（试连成功/失败/超时）。
+    // 放在 task 里上报：命令结果通道归 CommandManager 所有（架构分工）。
+    // =====================================================
+    CredentialEvent cred_ev;
+    while (credential_manager_take_event(cred_ev))
+    {
+        JsonDocument doc;
+        doc["cmd"]      = "result";
+        doc["id"]       = cred_ev.cmd_id;
+        doc["type"]     = "command";
+        doc["object"]   = CRED_OBJECT_CREDENTIAL_SET;
+        doc["status"]   = cred_ev.ok ? "success" : "error";
+        doc["generation"] = cred_ev.generation;
+
+        if (cred_ev.confirmed)
+        {
+            doc["confirmed"] = true;   // ★ 仅此帧
+        }
+
+        if (cred_ev.reason[0] != '\0')
+        {
+            doc["message"] = cred_ev.reason;
+        }
+
+        time_t ts = get_unix_timestamp();
+        if (ts > 0)
+        {
+            doc["timestamp"] = ts;
+        }
+
+        String out;
+        serializeJson(doc, out);
+        command_report_result(out);
+
+        command_log(
+            "INFO",
+            cred_ev.ok
+                ? "credential confirm reported"
+                : "credential failure reported"
+        );
+        // ⚠️ 不上报任何凭据内容（username / password 均不出现在结果帧）
     }
 }
 
@@ -2218,12 +2279,154 @@ static bool query_router(
 }
 
 // =====================================================
+// Phase D-2：凭据类命令（`system.credential_set`）
+//
+// 边界（冻结：Phase C Q3 / Q8 / Q9 / Q10 / Q13）：
+//   1. payload 由**本层**解析为 C++ 结构（架构铁律：内部模块不处理 JSON）
+//   2. 来源门控：**仅 `source == "cloud"`** 允许；serial / 空 一律拒绝
+//   3. 凭据状态机全部在 CredentialManager；本层只做"解析 + 门控 + 转交"
+//   4. 受理帧**不含** `confirmed`；`confirmed=true` 只由 task 的事件上报产生
+//   5. 本函数**不打印** username / password（明文纪律）
+// =====================================================
+static bool command_credential_set(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    // ---- ① 来源安全门控（allow-list：默认拒绝）----
+    if (!(cmd.source == "cloud"))
+    {
+        Serial.printf(
+            "[Cred] credential_set REJECTED: source='%s' (only 'cloud' allowed)\n",
+            cmd.source.c_str());
+
+        command_send_error(
+            cmd,
+            CMD_ERROR_REJECTED,
+            "credential_set rejected: source not allowed");
+
+        return false;
+    }
+
+    // ---- ② 解析 payload（本层解析，不外传 JSON）----
+    JsonDocument doc;
+
+    if (deserializeJson(doc, cmd.payload) != DeserializationError::Ok ||
+        !doc.is<JsonObject>())
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_CRED_INVALID_PAYLOAD,
+            "credential_set: payload is not a JSON object");
+        return false;
+    }
+
+    const char *action = doc["action"] | CRED_ACTION_INSTALL;
+
+    if (strcmp(action, CRED_ACTION_INSTALL) != 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_CRED_INVALID_PAYLOAD,
+            "credential_set: unsupported action");
+        return false;
+    }
+
+    const char *user = doc["username"] | "";
+    const char *pass = doc["password"] | "";
+    const uint32_t gen = doc["generation"] | 0u;
+    const int slot_raw = doc["slot"] | -1;
+
+    if (user[0] == '\0' || pass[0] == '\0' || gen == 0)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_CRED_INVALID_PAYLOAD,
+            "credential_set: missing username/password/generation");
+        return false;
+    }
+
+    if (strlen(user) >= CRED_USERNAME_MAX || strlen(pass) >= CRED_PASSWORD_MAX)
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_CRED_INVALID_PAYLOAD,
+            "credential_set: username/password too long");
+        return false;
+    }
+
+    // ---- ③ 组装 C++ 结构（此后不再触碰 JSON 文档）----
+    CredentialSetRequest req = {};
+    strncpy(req.username, user, sizeof(req.username) - 1);
+    strncpy(req.password, pass, sizeof(req.password) - 1);
+    strncpy(req.action,   action, sizeof(req.action) - 1);
+    req.generation = gen;
+    req.slot = (slot_raw >= 0 && slot_raw < CRED_SLOT_COUNT) ? (uint8_t)slot_raw : 0;
+
+    // ⚠️ 立刻释放 JSON 文档，缩短明文在堆上的驻留时间
+    doc.clear();
+
+    // ---- ④ 转交 CredentialManager（状态机唯一所有者）----
+    uint8_t err = CRED_ERR_NONE;
+
+    if (!credential_manager_install(req, &err))
+    {
+        int code = CMD_ERROR_EXECUTION;
+        const char *msg = "credential_set failed";
+
+        switch (err)
+        {
+            case CRED_ERR_INVALID_PAYLOAD:
+                code = CMD_ERROR_CRED_INVALID_PAYLOAD;
+                msg  = "credential_set: invalid payload";
+                break;
+
+            case CRED_ERR_STORE_FAIL:
+                code = CMD_ERROR_CRED_STORE_FAIL;
+                msg  = "credential_set: credential store write failed";
+                break;
+
+            case CRED_ERR_GENERATION_STALE:
+                code = CMD_ERROR_CRED_GENERATION_STALE;
+                msg  = "credential_set: generation not increasing";
+                break;
+
+            case CRED_ERR_BUSY:
+                code = CMD_ERROR_REJECTED;
+                msg  = "credential_set: another install in progress";
+                break;
+
+            default:
+                break;
+        }
+
+        // 清空本地副本（不残留在栈上）
+        memset(&req, 0, sizeof(req));
+
+        command_send_error(cmd, code, msg);
+        return false;
+    }
+
+    credential_manager_set_pending_cmd_id(cmd.cmd_id.c_str());
+
+    memset(&req, 0, sizeof(req));   // 清空本地明文副本（不残留在栈上）
+
+    // ---- ⑤ 受理帧（**不含 confirmed**）----
+    response["object"]     = CRED_OBJECT_CREDENTIAL_SET;
+    response["status"]     = "accepted";
+    response["stage"]      = "installing";
+    response["generation"] = gen;
+
+    return true;
+}
+
+// =====================================================
 // 一级路由: system
 //
 // 消息格式:
 // {
 //   "cmd":"system",
-//   "ob":"reboot|set_time|time|weight_zero|wifi_config|wifi_ap|memory|flash|restart|restart_status|config_*",
+//   "ob":"reboot|set_time|time|weight_zero|wifi_config|wifi_ap|memory|flash|restart|restart_status|config_*|credential_set",
 //   "pl":{}
 // }
 // =====================================================
@@ -2233,6 +2436,23 @@ static bool system_router(
 )
 {
     const String &object = cmd.object;
+
+    // =====================================================
+    // Phase D-2：凭据类命令 —— **allow-list 独立分支**
+    //
+    // 冻结（Phase C Q8 / Q13）：
+    //   - `credential_set` 只能由 **cloud provisioning 路径** 触发
+    //   - **必须**与普通业务命令**分离识别**（故在 system_router 最前拦截，
+    //     不进入下面按 object 平铺的通用分支）
+    //   - 来源不合法 ⇒ 拒绝 + 记录（不得静默丢弃），**绝不写 NVS**
+    //
+    // 注：本项目命令入口只有两处 —— CloudManager（source="cloud"）
+    //     与串口 `cm {}`（source="serial"），故 source 判定是完备的。
+    // =====================================================
+    if (credential_manager_is_credential_object(object.c_str()))
+    {
+        return command_credential_set(cmd, response);
+    }
 
     if (object == "reboot") {
         // reboot（legacy 别名）：内部自行上报 result 并请求
