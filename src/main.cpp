@@ -13,6 +13,7 @@
 #include "services/event_manager.h"
 #include "app/oled.h"
 #include "services/command_manager.h"
+#include "services/credential_manager.h"   // Phase D-2：凭据生命周期（gfcred 双 slot）
 #include "services/wifi_module.h"
 #include "services/time_manager.h"
 #include "cloud/cloud_manager.h"
@@ -551,6 +552,9 @@ void setup()
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
+    // Phase D-2：凭据管理必须在 cloud_init() **之前**初始化 ——
+    // cloud_init() 首次连接要按"凭据存储优先、配置兜底"取身份。
+    credential_manager_init();
     command_manager_init();
     // 注册日志回调：CommandManager 默认静默，注册后可看到路由/错误/结果
     command_manager_set_log_callback(command_log_serial);
@@ -623,6 +627,8 @@ void loop()
     time_task();
     cloud_task();
 
+    // Phase D-2：凭据状态机（试连超时 / promote / rollback，非阻塞）
+    credential_manager_task();
     command_manager_task();
     config_task();            // 配置修改后的自动重启倒计时
     // ---- 新增：Workflow 任务 ----
@@ -2167,11 +2173,20 @@ void cm_console(const String &cmd)
         serializeJson(pv, msg.payload);
     }
 
+    // ★ Phase D-2（安全边界 D-5）：凭据类命令的 payload **不得回显**
+    //   本行是串口控制台的输入回显，会打印 payload 原文 ⇒ 对 credential_set
+    //   等于把明文 password 写进串口日志。
+    //   （注：串口来源的 credential_set 本身会被 CommandManager 的门控拒绝，
+    //     但"拒绝"发生在**回显之后**，故必须在回显处先脱敏。）
+    const bool cred_cmd =
+        credential_manager_is_credential_object(msg.object.c_str());
+
     Serial.printf("cm: cmd=%s ob=%s id=%s payload=%s\n",
                   msg.command.c_str(),
                   msg.object.c_str(),
                   msg.cmd_id.c_str(),
-                  msg.payload.length() ? msg.payload.c_str() : "(empty)");
+                  cred_cmd ? "(redacted: credential)"
+                           : (msg.payload.length() ? msg.payload.c_str() : "(empty)"));
 
     command_manager_set_result_echo(true);
     bool ok = command_manager_execute(msg);

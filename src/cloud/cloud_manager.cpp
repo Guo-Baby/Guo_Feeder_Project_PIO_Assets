@@ -16,6 +16,7 @@
 #include "log/log_manager.h"  // P2-D：Cloud/MQTT 日志埋点（只调 log_emit / log_arg_*）
 #include "services/topic_renderer.h"  // P0-3：Topic / client_id 模板渲染（渲染点唯一）
 #include "services/device_identity.h" // P0-3：device_id()（判定 client_id 是否与设备身份相关）
+#include "services/credential_manager.h"  // Phase D-2：凭据身份获取 + 连接结果回报（Q9）
 // =====================================================
 // MQTT QoS 测试开关
 //
@@ -53,6 +54,26 @@ static bool wifi_connected = false;
 // MQTT 事件（回调线程）-> 主循环（cloud_task）同步标记
 static bool mqtt_connect_pending = false;
 static bool mqtt_disconnect_pending = false;
+
+// =====================================================
+// Phase D-2：与 CredentialManager 的唯一交界
+//
+// ★ 冻结（Phase C Q9）：CloudManager **只**做两件事
+//     A. 取"当前要用的 MQTT 身份"（不透明三元组）
+//     B. 回报连接结果
+//   **不得感知** ACTIVE / TESTING / generation / phase / state。
+//   `client_id_template` 对这里只是**不透明字符串**：本模块只做渲染，
+//   不理解（也不得判断）其是否含测试后缀。
+//
+// 连接结果**只在任务回调里记录**，由 cloud_task()（loop 上下文）转发，
+// 避免在 esp-mqtt 任务里做 NVS 写入。
+// =====================================================
+static uint32_t s_cred_epoch_applied = 0;   // 已应用的凭据身份版本
+static bool     s_swapping_credentials = false;  // 换连窗口（抑制"离线"误报）
+
+static bool     s_conn_result_pending = false;
+static bool     s_conn_result_ok = false;
+static int      s_conn_result_reason = 0;
 
 // =====================================================
 // MQTT 参数（从 config 读取）
@@ -329,6 +350,10 @@ static void mqtt_event_handler(
             Serial.println("[Cloud] MQTT connected");
             mqtt_connected = true;
             mqtt_connect_pending = true;
+            // Phase D-2：记录"连接成功"（由 cloud_task 转发给 CredentialManager）
+            s_conn_result_pending = true;
+            s_conn_result_ok      = true;
+            s_conn_result_reason  = 0;
             {
                 int msg_id = esp_mqtt_client_subscribe(
                     mqtt_client,
@@ -354,8 +379,28 @@ static void mqtt_event_handler(
             Serial.printf(
                 "[Cloud] MQTT disconnected outbox=%d\n",
                 esp_mqtt_client_get_outbox_size(mqtt_client));
+
             mqtt_connected = false;
-            mqtt_disconnect_pending = true;
+
+            // 凭据换连窗口内的断开是本模块自身动作，**不算离线**（避免误报）
+            if (!s_swapping_credentials)
+            {
+                mqtt_disconnect_pending = true;
+            }
+
+            // Phase D-2：记录"未连上"。⚠️ reason 采用**保留更具体者**的策略：
+            //   认证类失败由 MQTT_EVENT_ERROR 给出（CONNACK 4/5），
+            //   若随后 DISCONNECTED 用 0 覆盖，会把"认证失败"误判为"网络失败"。
+            if (!s_conn_result_ok)
+            {
+                s_conn_result_pending = true;
+            }
+            else
+            {
+                s_conn_result_pending = true;
+                s_conn_result_ok      = false;
+                s_conn_result_reason  = 0;
+            }
             break;
 
         case MQTT_EVENT_PUBLISHED:
@@ -408,6 +453,30 @@ static void mqtt_event_handler(
 
         case MQTT_EVENT_ERROR:
             Serial.println("[Cloud] MQTT error event");
+            {
+                // Phase D-2：把 CONNACK 返回码提取出来交给 CredentialManager 判定
+                //   （4 = bad user name or password，5 = not authorized）
+                //   仅 MQTT_ERROR_TYPE_CONNECTION_REFUSED 才带 connect_return_code；
+                //   其余（TLS / DNS / 超时）保持 0 ⇒ 属"网络类"，不得判凭据失败。
+                int reason = 0;
+
+                if (event->error_handle != nullptr &&
+                    event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED)
+                {
+                    reason = (int)event->error_handle->connect_return_code;
+                }
+
+                s_conn_result_pending = true;
+                s_conn_result_ok      = false;
+
+                // 保留更具体的失败原因（非 0 不被 0 覆盖）
+                if (reason != 0)
+                {
+                    s_conn_result_reason = reason;
+                }
+
+                Serial.printf("[Cloud] MQTT conn reason=%d\n", s_conn_result_reason);
+            }
             break;
 
         default:
@@ -1142,13 +1211,12 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
         Serial.println("[Cloud] Empty MQTT message");
         return;
     }
-    Serial.println("=================");
-    Serial.println("[Cloud] MQTT RX");
-    Serial.println(message);
 
     DynamicJsonDocument doc(4096);
     if(deserializeJson(doc, message))
     {
+        Serial.println("[Cloud] MQTT RX (unparsable, printed raw)");
+        Serial.println(message);
         Serial.println("[Cloud] JSON parse failed");
         return;
     }
@@ -1157,8 +1225,50 @@ static void cloud_process_rx_message(const uint8_t* data, size_t len)
     const char* c = compact ? doc["c"] : doc["cmd"];
     if(c == nullptr)
     {
+        Serial.println("[Cloud] MQTT RX (missing command, printed raw)");
+        Serial.println(message);
         Serial.println("[Cloud] Missing command");
         return;
+    }
+
+    // =====================================================
+    // Phase D-2：**凭据类命令的原始报文绝不回显**
+    //
+    // 原因（安全边界 D-5）：下行 `credential_set` 报文内含明文 password，
+    // 原实现在此处无条件 `Serial.println(message)` ⇒ 等同于把凭据写进串口日志。
+    // 现改为：先解析、识别对象名，命中凭据对象则**只打印命令名与 id**。
+    //
+    // ⚠️ 这里只做"是否脱敏"的判定，不解析凭据字段、也不持有其内容。
+    // =====================================================
+    const char* rx_object = nullptr;
+    if(compact)
+    {
+        rx_object = doc["p"]["o"] | (const char*)nullptr;
+        if(rx_object == nullptr)
+        {
+            rx_object = doc["p"]["object"] | (const char*)nullptr;
+        }
+    }
+    else
+    {
+        rx_object = doc["ob"] | (const char*)nullptr;
+    }
+
+    const bool rx_is_credential =
+        credential_manager_is_credential_object(rx_object);
+
+    Serial.println("=================");
+    Serial.println("[Cloud] MQTT RX");
+    if(rx_is_credential)
+    {
+        Serial.printf(
+            "[Cloud] [credential cmd redacted] c=%s id=%s\n",
+            c,
+            (compact ? (doc["i"] | "") : (doc["id"] | "")));
+    }
+    else
+    {
+        Serial.println(message);
     }
     // FIX-4：协议级 log_ack 必须绕过"命令 id 必需性"与"命令去重缓存"
     //
@@ -1385,11 +1495,11 @@ static bool cloud_connect()
         Serial.print("client_id=");
         Serial.println(cfg.client_id);
 
-        Serial.print("username=");
-        Serial.println(cfg.username);
-
-        Serial.print("password=");
-        Serial.println(cfg.password);
+        // ★ Phase D-2（安全边界 D-5）：**不得打印凭据**
+        //   原实现曾打印 username / password 明文 ⇒ 已移除。
+        //   仅打印"凭据来源"这一非敏感事实，便于排障。
+        Serial.println("username=(hidden)");
+        Serial.println("password=(hidden)");
 
         Serial.print("buffer=");
         Serial.println(cfg.buffer_size);
@@ -1560,12 +1670,47 @@ void cloud_init()
     mqtt_client_id = cloud_render_client_id(config_get_mqtt_client_id());
     Serial.print("MQTT client_id=");
     Serial.println(mqtt_client_id);
-    mqtt_username = config_get_mqtt_username();
-    Serial.print("MQTT username=");
-    Serial.println(mqtt_username);
-    mqtt_password = config_get_mqtt_password();
-    Serial.print("MQTT password=");
-    Serial.println(mqtt_password);
+
+    // =====================================================
+    // Phase D-2：凭据来源 —— **凭据存储优先，配置兜底**
+    //
+    // 冻结（Phase C Q6 / 用例 D-3）：
+    //   - 已有 `gfcred` ACTIVE 凭据 ⇒ 用它（一机一密）
+    //   - 无（未签发 / NVS 损坏）⇒ 回落配置值，**不阻塞启动**（P0 过渡凭据）
+    //   - **绝不打印凭据内容**（安全边界 D-5）
+    // =====================================================
+    {
+        char cred_user[CRED_USERNAME_MAX] = { 0 };
+        char cred_pass[CRED_PASSWORD_MAX] = { 0 };
+
+        if (credential_manager_get_active(cred_user, sizeof(cred_user),
+                                          cred_pass, sizeof(cred_pass)))
+        {
+            mqtt_username = cred_user;
+            mqtt_password = cred_pass;
+            Serial.println("[Cloud] credential source: gfcred (ACTIVE)");
+        }
+        else
+        {
+            mqtt_username = config_get_mqtt_username();
+            mqtt_password = config_get_mqtt_password();
+            Serial.println("[Cloud] credential source: config (fallback)");
+        }
+
+        // 本地副本清零，缩短明文驻留
+        memset(cred_user, 0, sizeof(cred_user));
+        memset(cred_pass, 0, sizeof(cred_pass));
+    }
+
+    // 记录初始身份版本：避免 cloud_task 首次运行即触发一次多余换连
+    {
+        CredentialIdentity ident;
+
+        if (credential_manager_get_identity(ident))
+        {
+            s_cred_epoch_applied = ident.epoch;
+        }
+    }
     mqtt_sub_topic = cloud_render_topic(config_get_mqtt_subscribe_topic(),
                                         GF_TOPIC_TPL_DOWN, "subscribe_topic");
     Serial.print("MQTT subscribe=");
@@ -1729,6 +1874,85 @@ static void cloud_process_mqtt_events()
 // =====================================================
 // 云主循环任务
 // =====================================================
+// =====================================================
+// Phase D-2：与 CredentialManager 的同步（**唯一交界**）
+//
+// 本函数做两件事，且**仅此两件**（冻结：Phase C Q9）：
+//   A. 把 esp-mqtt 任务记录下的"连接结果"转交给 CredentialManager
+//   B. 若期望身份发生变化 ⇒ 应用新身份并重建 MQTT 客户端
+//
+// ⚠️ 本函数**不判断** ok/reason 的语义、**不认识** generation / TESTING / ACTIVE，
+//    也不推断"当前是不是在试连" —— 全部语义归 CredentialManager。
+// =====================================================
+static void cloud_sync_credentials()
+{
+    // ---- A. 转交连接结果（在 loop 上下文做，允许对端写 NVS）----
+    if (s_conn_result_pending)
+    {
+        const bool ok = s_conn_result_ok;
+        const int reason = s_conn_result_reason;
+
+        s_conn_result_pending = false;
+        s_conn_result_ok = false;
+        s_conn_result_reason = 0;
+
+        credential_manager_notify_conn_result(ok, reason);
+
+        // 换连窗口结束（结果已消费 ⇒ 后续断开按正常语义处理）
+        s_swapping_credentials = false;
+    }
+
+    // ---- B. 期望身份变化 ⇒ 换连 ----
+    CredentialIdentity ident;
+
+    if (!credential_manager_get_identity(ident))
+    {
+        return;   // 无凭据：保持配置兜底（P0 行为）
+    }
+
+    if (ident.epoch == s_cred_epoch_applied)
+    {
+        return;   // 未变化
+    }
+
+    s_cred_epoch_applied = ident.epoch;
+
+    mqtt_username = ident.username;
+    mqtt_password = ident.password;
+
+    // client_id 模板来自 CredentialManager（对这里是不透明字符串）；
+    // 渲染仍然走工程内**唯一**渲染点（T-2）
+    String rendered = cloud_render_client_id(String(ident.client_id_template));
+
+    if (rendered.length() > 0)
+    {
+        mqtt_client_id = rendered;
+    }
+
+    Serial.printf(
+        "[Cloud] credential epoch=%lu applied (client_id=%s)\n",
+        (unsigned long)ident.epoch,
+        mqtt_client_id.c_str());
+
+    // 重建客户端：stop + destroy ⇒ 由既有重连逻辑用新身份重连。
+    // （不是 ESP.restart()，不触碰 Critical Operation 契约）
+    if (mqtt_client != nullptr)
+    {
+        s_swapping_credentials = true;
+
+        esp_mqtt_client_stop(mqtt_client);
+        esp_mqtt_client_destroy(mqtt_client);
+
+        mqtt_client = nullptr;
+        mqtt_client_active = false;
+        mqtt_connected = false;
+        mqtt_connect_pending = false;
+        mqtt_disconnect_pending = false;
+
+        state_set_bool(STATE_MQTT_STATUS, false);
+    }
+}
+
 void cloud_task()
 {
     // P2-D：发布失败的**周期聚合上报**
@@ -1736,6 +1960,11 @@ void cloud_task()
     // ⚠️ 必须在任何早期 return **之前**：离线时最需要这条记录，而离线恰恰是
     //    下面 `!wifi_connected` 直接 return 的情形。窗口内无失败 ⇒ 完全静默。
     cloud_report_publish_fail();
+
+    // Phase D-2：凭据结果转交 + 期望身份变化时的换连
+    // ⚠️ 同样放在 `!wifi_connected` 之前：离线时也需要把失败结果转交，
+    //    否则凭据验证只能等超时。
+    cloud_sync_credentials();
 
     if(!wifi_connected)
     {
