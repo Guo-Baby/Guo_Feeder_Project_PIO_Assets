@@ -5,6 +5,8 @@
 > **本文件边界**：**不改** `src/` · **不改** `Cloudflare_Assets/guo-feeder-api/src/`（Worker）· **不改** `migrations/`（`0001` 已 apply，不可动）
 > **撰写日期**：2026-10-04
 > **一句话**：把 `device_binding` 从"已建好但零引用"变成**唯一 owner 的可审计归属链**，且**不碰凭据、不碰身份、不碰在线状态**。
+>
+> ⚠️ **本文是设计稿（保留为史料，正文不改）。最终实现与设计的差异见 [`P1-5-Final-Review.md`](./P1-5-Final-Review.md)（Δ-A…Δ-K）；两者冲突时以代码为准。**
 
 ---
 

@@ -38,7 +38,7 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 
 | 文档 | 负责 |
 |---|---|
-| **本文档** | 传输层、Topic、报文外壳、字段缩写、ACK、分片、错误码 |
+| **本文档** | 传输层、Topic、报文外壳、字段缩写、ACK、分片、错误码；**§11 = 管理端「控制面 API」**（属**控制面**，**非**设备 MQTT 协议） |
 | `workflow_cloud_interface.md` | `workflow.*` 七条命令的请求/响应/Variant/Dirty 语义 |
 | `config_manager接口文档.md` | `config_query` / `config_set` 等系统命令 |
 | `readme.md` §2.5 / §4.12 | CloudManager 的架构定位（概述层，不重复协议细节） |
@@ -705,6 +705,135 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 
 ---
 
+## 11. Control Plane API（管理端 HTTP 契约 —— **非设备协议**）
+
+> ⚠️ **本章属于「控制面（Control Plane）」，不属于设备 MQTT 协议。**
+> §1–§10 描述的是**设备 ↔ 云**的 MQTT 报文；本章描述的是**云端 Worker 暴露给管理端（运维 / APP 后端）的 HTTP 端点**。
+> 二者**没有直接关系**：绑定 / 解绑 / 转让是**控制面操作，不要求设备在线**。
+> **代码真源**：`Cloudflare_Assets/guo-feeder-api/src/` 下的 `binding.js` · `index.js` · `credential.js`。
+> 设计稿与实现的差异桥接见固件仓 `docs/architecture/P1-5-Final-Review.md`；**本章与代码冲突时以代码为准。**
+
+### 11.1 通用约定
+
+| 项 | 值 |
+|---|---|
+| 前缀 | `/api/admin/**` |
+| 鉴权 | `Authorization: Bearer <ADMIN_API_TOKEN>`（缺失 / 错误 / 未配置 ⇒ **同一个 401 响应体**） |
+| 方法 | 变更一律 `POST`；查询 `GET` |
+| 响应 | `application/json`；错误体 `{"error":"<snake_case>", …}`；成功体含 `http` 字段（与状态码同值） |
+| `user_id` | 正则 `^[A-Za-z0-9_.:@-]{1,64}$`；**区分大小写** |
+| `device_id` | 正则 `^[0-9a-f]{12}$`（12 位小写 hex） |
+| `reason` | 可选字符串，**≤200 字符**；超限返回 `400 invalid_reason`（**不截断**） |
+| 幂等 | **语义幂等** —— 重复调用不改状态、不写事件；**不引入** `Idempotency-Key` |
+| 与凭据的边界 | **绑定 / 解绑 / 转让一律不吊销凭据**（归属关系 ≠ MQTT 身份）；**绑定不要求设备在线** |
+
+> **owner 的唯一真源 = `device_binding WHERE unbound_at IS NULL`。** `device.state` 只是**摘要**，
+> **禁止**以"设备状态是 `BOUND`"反推存在 active binding。
+
+### 11.2 `POST /api/admin/device/:id/bind`
+
+**请求**：`{ "user_id": "…", "reason": "…"? }` —— `user_id` **必填**
+
+| 情形 | HTTP | 响应 |
+|---|---|---|
+| 首次绑定 | 200 | `{http:200, device_id, user_id, bound:true, idempotent:false}` |
+| 同一 owner 重复 | 200 | `{http:200, device_id, user_id, idempotent:true}`（**零写入**） |
+| 已有**其他** owner | 422 | `{error:"already_bound", device_id, owner}` |
+| `user_id` 非法 / 缺失 | 400 | `{error:"invalid_user_id"}` |
+| 设备不存在 | 404 | `{error:"device_not_found"}` |
+| 未注册（`FACTORY` / `CLAIM_PENDING`） | 422 | `{error:"device_not_registered"}` |
+| 已退役 | 422 | `{error:"device_revoked"}` |
+| 事务失败 | 500 | `{error:"batch_failed", device_id}` |
+
+**幂等行为**：已是同一 owner ⇒ 直接返回 `idempotent:true`，**不写 binding、不写事件、不改 device**。
+
+### 11.3 `POST /api/admin/device/:id/unbind`
+
+**请求**：`{ "reason": "…"? }`
+
+- **`forced` 规则**：由服务端**固定为 `true`**，**客户端不可控制** —— 请求体里若带 `forced` 一律被忽略，
+  事件 `payload.forced` 恒为 `true`。
+- **副作用**：关闭 binding + `device.state→UNBOUND` + `unbind` 事件（**同一事务**）；**不吊销凭据**。
+
+| 情形 | HTTP | 响应 |
+|---|---|---|
+| 正常解绑 | 200 | `{http:200, device_id, user_id:"<prev>", unbound:true, idempotent:false}` |
+| 无 active binding | 200 | `{http:200, device_id, user_id:null, idempotent:true}`（**零写入**） |
+| `device_id` 非法 | 400 | `{error:"invalid_device_id"}` |
+| 设备不存在 | 404 | `{error:"device_not_found"}` |
+| 未注册 | 422 | `{error:"device_not_registered"}` |
+| 已退役 | 422 | `{error:"device_revoked"}` |
+| 事务失败 | 500 | `{error:"batch_failed", device_id}` |
+
+> **已退役（`REVOKED`）设备的绑定只能由 `revoke` 路径关闭**，普通 `unbind` 一律拒绝（422）。
+
+### 11.4 `POST /api/admin/device/:id/transfer`
+
+**请求**：`{ "to_user_id": "…", "from_user_id": "…"?, "reason": "…"? }` —— `to_user_id` **必填**
+
+- `from_user_id` 是**可选 CAS**：提供且与当前 owner 不符 ⇒ `422 binding_conflict` 且**零写入**。
+- **不降级**：无 active binding ⇒ `422 not_bound`（**不会**退化成 bind）。
+
+| 情形 | HTTP | 响应 |
+|---|---|---|
+| 成功 | 200 | `{http:200, device_id, from, to, transferred:true, idempotent:false}` |
+| 入参非法 | 400 | `{error:"invalid_user_id"}` |
+| 设备不存在 | 404 | `{error:"device_not_found"}` |
+| 未注册 / 已退役 | 422 | `{error:"device_not_registered"}` / `{error:"device_revoked"}` |
+| 无 active binding | 422 | `{error:"not_bound", device_id}` |
+| **CAS 不符** | 422 | `{error:"binding_conflict", device_id, owner}` |
+| 事务失败 | 500 | `{error:"batch_failed", device_id}` |
+
+### 11.5 `GET /api/admin/device/:id/binding`
+
+**响应**：`{http:200, device_id, current_owner, user_id, history}`
+
+- `current_owner`：active binding 行 **或 `null`** —— **owner 的唯一真源**。
+- `history`：**含已关闭的历史绑定**（追加式，不删行）。
+- **响应不含 `device.state`**，也不含任何凭据字段。
+
+| 情形 | HTTP | 响应 |
+|---|---|---|
+| 有 / 无 owner | 200 | 上述结构（无 owner ⇒ `current_owner:null`、`user_id:null`、`history:[]`） |
+| `device_id` 非法 | 400 | `{error:"invalid_device_id"}` |
+| 设备不存在 | 404 | `{error:"device_not_found"}` |
+
+### 11.6 `GET /api/admin/user/:userId/devices`
+
+- 路径 `userId` 需 URL 解码（允许字符含 `@ : . - _`）；query `limit` 可选（默认 200，内部钳位 1..500）。
+- **响应**：`{http:200, user_id, devices:[…], count}` —— 只含 **active binding 投影**（一用户多设备，1:N 不设上限）。
+
+| 情形 | HTTP | 响应 |
+|---|---|---|
+| 正常 | 200 | 上述结构 |
+| `userId` 非法 | 400 | `{error:"invalid_user_id"}` |
+| 路径形状不符 | 404 | `{error:"not_found"}` |
+| 非 GET 方法 | 405 | `{error:"method_not_allowed"}` |
+
+### 11.7 `POST /api/admin/device/:id/revoke`（退役）
+
+**请求**：`{ "reason": "…"? }`（默认 `retire`）
+
+**响应**：`{http:200, device_id, revoked:true, acl_tightened:true, kicked, binding_closed:<bool>, detail}`
+
+- **不变量 INV-4**：退役**必须关闭** active binding —— **同一 D1 事务**内依次：
+  关 binding → 写 `unbind` 事件 → 凭据 `REVOKED` → `device.state='REVOKED'` → 写 `retire` 事件。
+- 设备**无** active binding 时 `binding_closed:false`，且**不写** `unbind` 事件。
+- ⚠️ **已知限制**：ACL 收紧与踢会话是 **EMQX 外部调用，不在 D1 事务内**；事务失败时 ACL / 会话已生效
+  （不可逆），但凭据仍为 `REVOKED` ⇒ 设备无法接入（偏向保守）。
+
+### 11.8 与设备协议的关系（重申）
+
+| 维度 | 设备协议（§1–§10） | 控制面 API（本章） |
+|---|---|---|
+| 传输 | MQTT（8883 / 8084） | HTTPS（Cloudflare Worker） |
+| 鉴权 | 一机一账号 + ACL | `ADMIN_API_TOKEN`（Bearer） |
+| 方向 | 设备 ↔ 云 | 管理端 → 云 |
+| 与设备在线的关系 | 需在线 | **不需要**（归属与连通性解耦） |
+| 影响面 | 命令执行 / 遥测上报 | 归属关系 / 凭据台账 |
+
+---
+
 ## 附录 A：命令清单（速查）
 
 | 分类 | 命令 | 文档 |
@@ -722,3 +851,6 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 
 *本文档由代码实读重写（基线 `ce9ba37`）。若后续修改 CloudManager 的报文结构、
 字段缩写、Topic 或错误码，必须同步更新本文档 —— 见 §0.1 的约定。*
+
+*§11（Control Plane API）于 **2026-10-04** 依 P1-5 实现补入。控制面契约变更须同步更新
+`docs/architecture/P1-5-Final-Review.md`；设备协议部分（§1–§10）不受其影响。*
