@@ -1,7 +1,7 @@
 # 交接文档 · Guo Feeder Project
 
 > **用途**：跨会话 / 跨人交接。新开会话时**先读本文件**，再按 §1 的清单读对应文档。
-> **最后更新**：2026-10-02
+> **最后更新**：2026-10-04
 
 ---
 
@@ -117,7 +117,8 @@
 | **Phase D-1** 云端基础能力 | ✅ 完成（Cloudflare 仓 `21de1c8`）—— `emqx-admin` / `admin-auth` / `credential-gen` / `device-registry` |
 | **Phase D-2** 固件凭据管理 | ✅ 完成（`004ebf0`）—— `cred_store` + `credential_manager` + `credential_set` + Q13 source 门控 |
 | **Phase D-3** 真机联调 | ✅ **完成（2026-10-04）** —— **51/51 全绿**；云端签发闭环 + 管理端点 + ingest 建档/确认；固件修 **2 处真实缺陷**（见下） |
-| P1-5 / P1-6 / P1-7 | ⏳ 未开始 |
+| **P1-5** 设备绑定（Binding） | ✅ **实现完成（2026-10-04）** —— **P1-5-1** `binding.js` · **P1-5-2** Admin API 5 端点 · **P1-5-3** **INV-4：退役必关 binding** · **P1-5-4** 文档同步。离线自测 **276 PASS / 0 FAIL**。收口评审 → `docs/architecture/P1-5-Final-Review.md`。**P1-5-5 正式验收（真实 D1 + 部署版 Worker）待做** |
+| P1-6 / P1-7 | ⏳ 未开始（见 `P1-实现清单.md`） |
 
 #### ★ P1 关键冻结事项（改代码前必读）
 
@@ -170,7 +171,7 @@
 | Secrets | `EMQX_APP_ID` / `EMQX_APP_SECRET`（**已同步为新 Key**）/ `WEBHOOK_SECRET`（代码里仍是注释） |
 | 工具链 | `wrangler 4.145.0`（装在项目内 `node_modules`，未污染全局） |
 
-**已知待改**（对照 P1/P3）：主题硬编码无 `device_id`、webhook 鉴权被注释、无登录/绑定/凭据签发、**每条消息一行 INSERT**（11 台即打满 D1）、一张 `mqtt_messages` 装所有消息。
+**已知待改**（对照 P1/P3）：~~无绑定~~ ✅ **P1-5 已实现**（bind / unbind / transfer / 查询 + **INV-4**；见 `P1-5-Final-Review.md`）；**仍缺 APP 用户体系**（`user_id` 为占位身份）与**在线状态**（Phase F）；主题硬编码无 `device_id`、webhook 鉴权被注释、**每条消息一行 INSERT**（11 台即打满 D1）、一张 `mqtt_messages` 装所有消息。
 
 ### 4.3 消息侧（`EMQX_Assets`）
 
@@ -201,7 +202,7 @@
 | 阶段 | 内容 |
 |---|---|
 | **P0** ✅ | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离 —— **已完成** |
-| **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0 含 A-7）✅ · Phase B（P1-1 D1 已 apply）✅ · Phase C（P1-2/P1-4 设计冻结 Q1–Q8）✅；下一阶段 Phase D 进入实现** |
+| **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0）✅ · B（P1-1）✅ · C（P1-2/P1-4）✅ · D（P1-3 凭据）✅ · E（P1-5 绑定）✅（2026-10-04）；剩 Phase F（P1-6 在线状态）· G（P1-7 生产检查）· P1-8 验收** |
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
 | **P3** | 历史/D1（多设备数据模型 + 遥测降频策略） |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） |
@@ -304,8 +305,9 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
    （配套结论摘要见 §4.1「★ P1 关键冻结事项」）。
    ▶ **当前下一步**：Phase D（P1-3 设备侧 `gfcred`）—— 先出实施计划，**人工审核通过后才编码**。
 4. 固件仓库历史中的 **明文 MQTT 凭据**尚未轮换（计划在 P1「Topic V3 + 一机一密」时一并处理）。
-5. 未跟踪的 **`docs/review/`**（三篇送审文档）仍未提交 —— 待决定入库或删除。
-6. ⚠️ 固件仓库 **`wb` 领先 `origin/wb` 与 `origin/main` 各 20 个提交**（截至 2026-10-03 未推送）。
+5. ✅ ~~未跟踪的 `docs/review/`~~ —— **已移出仓库**（2026-10-04 移至仓库外 `D:\Guo_Feeder_Project\review-materials\`，不再受 git 管理）。
+6. ⚠️ **P1-5 的代码与文档改动尚未 commit** —— Cloudflare 仓 4 处（`binding.js` **新增** · `device-registry.js` / `index.js` / `credential.js` **修改**）+ 固件仓 6 份文档（`P1-5-Final-Review.md` 新增 · `cloud_protocol.md` / 设计稿 / `docs/README.md` / `P1-实现清单.md` / `HANDOFF.md` 修改）。**提交粒度待定**（建议按 P1-5-1 / P1-5-2 / P1-5-3 / P1-5-4 分别提交，代码与文档分离）。
+7. **P1-5-5 正式验收未做** —— 当前绑定链路的全部结论均来自**离线 mock 自测**；真实 D1（`--local`/`--remote`）与部署版 Worker 上的 T-1…T-19 待跑。
 
 ---
 
@@ -358,3 +360,35 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - 固件仓库：`0255791`（P1-0 冻结）· `01f27bf`（Phase C 设计）· **`fece474`（A-7 实测）** ·
   **`10b6a57`（Phase C 冻结 Q1–Q8）** · `23cd731`（weight.enable）
 - `Cloudflare_Assets`：`75f84ab`（P1-1 D1 Schema，**已推送**）
+
+---
+
+## 10. 本轮（2026-10-04）完成清单 —— **P1-5 Device Binding**
+
+### 10.1 状态
+
+> ✅ **P1-5 Device Binding completed** —— 管理端绑定 API 已完成，**INV-4 已满足**。
+> **绑定链路的正式验收（P1-5-5）与代码提交尚未进行**。
+
+| 子阶段 | 内容 | 状态 |
+|---|---|---|
+| **P1-5-A** | 绑定设计（Q14–Q20 裁决） | ✅ 设计冻结 |
+| **P1-5-1** | Binding Core —— 新建 `binding.js`（5 导出）+ `device-registry.js` 只增 5 项能力 | ✅ Review Passed |
+| **P1-5-2** | Admin API —— `index.js` 接入 5 条路由（bind / unbind / transfer / GET binding / GET user devices） | ✅ 完成 + 全链路回归 |
+| **P1-5-3** | Revoke Binding Closure —— `revokeDevice()` 同批关 binding（**INV-4**） | ✅ 完成 |
+| **P1-5-4** | Documentation Synchronization | ✅ 完成 |
+| **P1-5-5** | 正式验收（真实 D1 + 部署版 Worker） | ⏳ **待做** |
+
+### 10.2 关键结论
+
+- **已完成**：`POST /api/admin/device/:id/{bind,unbind,transfer}` · `GET /api/admin/device/:id/binding` · `GET /api/admin/user/:userId/devices`；`revoke` 增强（`binding_closed`）。
+- **INV-4 已满足**：退役（`REVOKED`）与 active binding 互斥 —— 由 `revokeDevice()` **同一 D1 事务**内的"关 binding + 写 `unbind` 事件"保证。
+- **owner 唯一来源 = `device_binding`**；`device.state` 仅作摘要，**禁止**由其反推 owner。
+- **在线状态仍属于 Phase F（P1-6）**；**APP 用户体系尚未开始**（P1 的 `user_id` 是占位身份）。
+- **零固件改动**；**未新增迁移**（复用 `0001`）；`device_credential` 零触碰。
+
+### 10.3 交付物与差异登记
+
+- 代码：`Cloudflare_Assets/guo-feeder-api/src/` —— `binding.js`（新）· `device-registry.js`（+196/−7）· `index.js`（+136/−1）· `credential.js`（+77/−13）。
+- 文档：`docs/architecture/P1-5-Final-Review.md`（新 · 审计桥接）· `docs/interfaces/cloud_protocol.md` **§11 Control Plane API** · `P1-5-Device-Binding-Design.md`（加指针）· `docs/README.md` · `P1-实现清单.md` · `Cloudflare_Assets/README.md`。
+- **设计与实现差异 11 项（Δ-A…Δ-K）** 全部登记在 `P1-5-Final-Review.md` §2；**该文与代码冲突时以代码为准**。
