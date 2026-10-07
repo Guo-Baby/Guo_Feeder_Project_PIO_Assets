@@ -17,6 +17,30 @@
 #include "services/topic_renderer.h"  // P0-3：Topic / client_id 模板渲染（渲染点唯一）
 #include "services/device_identity.h" // P0-3：device_id()（判定 client_id 是否与设备身份相关）
 #include "services/credential_manager.h"  // Phase D-2：凭据身份获取 + 连接结果回报（Q9）
+
+// =====================================================
+// P1-7：Production Topic Enforcement（编译期环境开关）
+// =====================================================
+//   0（默认）= dev / test —— 完全保持 P0 行为：legacy 模板原样透传（T-5 不变）
+//   1        = production —— 3 个 MQTT Topic 模板必须含 <device_id>；
+//                            任一缺失 ⇒ 启动期 ERROR + **阻止 MQTT 上线**
+//
+// 为什么用**编译期宏**而不是配置项：运行期（config_set / 云端下发）**无法**关闭该检查，
+//   这是 P1-7 的安全前提。默认 0 ⇒ 生产分支与其字符串被 --gc-sections 剔除（零代价）。
+// 与 P0 §3.3.1 的关系：该节只加约束并明确"production 标志如何确定属后续阶段"，
+//   本宏即该"后续阶段"的裁决结果（P1-7，见 docs/architecture/P1-7-Review-Report.md 方案 ①）。
+// 生产构建：PLATFORMIO_BUILD_FLAGS="-DGF_ENV_PRODUCTION=1" pio run
+#ifndef GF_ENV_PRODUCTION
+#define GF_ENV_PRODUCTION 0
+#endif
+
+// P1-7 / F-3：启动前置检查结果。
+//   ★ 语义**仅限**"本模块当前启动配置被阻断"—— 不是 System State、
+//     不承担任何 Action/Workflow 实例 runtime、不进 loop 热路径。
+//   ★ 判定只在 cloud_init() 做**一次**；cloud_connect() 每轮 loop 都会调用，
+//     故只读该标志、不重复判定与打印（否则离线时会刷屏）。
+static bool s_mqtt_precheck_failed = false;
+
 // =====================================================
 // MQTT QoS 测试开关
 //
@@ -1469,6 +1493,16 @@ static void on_command_result(const String& json)
 // =====================================================
 static bool cloud_connect()
 {
+    // ---- P1-7 / F-3：启动前检查未通过 ⇒ 立即失败 ----
+    // ★ 必须在本函数**最前面**（esp_mqtt_client_init() 之前）：
+    //   不建立 MQTT session、不执行 subscribe。
+    // ★ 静默返回：失败原因已由 cloud_init() 打印**一次**；cloud_task() 每轮 loop
+    //   都会调用本函数，若在此打印会持续刷屏。
+    if(s_mqtt_precheck_failed)
+    {
+        return false;
+    }
+
     if(!wifi_connected)
     {
         Serial.println("[Cloud] WiFi offline, skip MQTT");
@@ -1735,6 +1769,61 @@ void cloud_init()
                                         GF_TOPIC_TPL_LOG, "log_topic");
     Serial.print("MQTT log=");
     Serial.println(mqtt_log_topic);
+
+    // =====================================================
+    // P1-7 / F-3：MQTT 上线前置检查（**判定一次**，结果供 cloud_connect() 读）
+    //
+    //   ① P1-7 production policy（仅 GF_ENV_PRODUCTION=1）：
+    //      三个 Topic **模板**（渲染前）必须含 <device_id>，否则判配置错误。
+    //      ★ 必须判**模板**：渲染后占位符已被替换，无法再判定。
+    //      ★ 这是"当前环境是否允许使用这个渲染结果"的**策略**判断，
+    //        不是渲染功能本身 ⇒ 放在 CloudManager；
+    //        TopicRenderer 的 T-5（无占位符 ⇒ 原样放行）**保持不变**。
+    //   ② F-3：渲染最终失败时 cloud_render_topic() 返回空串，其契约要求调用方
+    //      判为配置错误 ⇒ 绝不允许带空 topic / client_id 进入 init/start。
+    //      （任何模式都成立；复用既有"串口 ERROR"表达，不新增错误处理体系）
+    // =====================================================
+    {
+        const char* block_reason = nullptr;
+
+#if GF_ENV_PRODUCTION
+        if(config_get_mqtt_subscribe_topic().indexOf(GF_DEVICE_ID_PLACEHOLDER) < 0)
+        {
+            block_reason = "production policy: subscribe_topic lacks <device_id>";
+        }
+        else if(config_get_mqtt_publish_topic().indexOf(GF_DEVICE_ID_PLACEHOLDER) < 0)
+        {
+            block_reason = "production policy: publish_topic lacks <device_id>";
+        }
+        else if(config_get_mqtt_log_topic().indexOf(GF_DEVICE_ID_PLACEHOLDER) < 0)
+        {
+            block_reason = "production policy: log_topic lacks <device_id>";
+        }
+#endif
+
+        if(block_reason == nullptr)
+        {
+            if(mqtt_sub_topic.length() == 0)
+            {
+                block_reason = "config error: subscribe_topic unresolved";
+            }
+            else if(mqtt_pub_topic.length() == 0)
+            {
+                block_reason = "config error: publish_topic unresolved";
+            }
+            else if(mqtt_client_id.length() == 0)
+            {
+                block_reason = "config error: client_id unresolved";
+            }
+        }
+
+        if(block_reason != nullptr)
+        {
+            s_mqtt_precheck_failed = true;
+            Serial.printf("[Identity] ERROR MQTT blocked (%s)\n", block_reason);
+        }
+    }
+
     mqtt_ca_file = config_get_mqtt_ca_path();
     Serial.print("MQTT CA=");
     Serial.println(mqtt_ca_file);
