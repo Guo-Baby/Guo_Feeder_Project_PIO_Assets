@@ -33,7 +33,13 @@ serial*.log
 #   含真实 MQTT 凭据（host / port / 用户名 / 密码）
 #   ⚠️ 本规则只对「未跟踪」文件生效；已跟踪文件需 git rm --cached
 # ============================================================
-data/
+data/*
+# 例外：受跟踪的 MQTT V3 配置模板（不含任何真实凭据）
+#   用途：换机 / 重克隆后据此恢复 data/config/mqtt.json 的 Topic V3 模板
+#   （data/ 被整体忽略，故需先放行 config/ 目录再放行该文件）
+!data/config/
+data/config/*
+!data/config/mqtt.json.example
 
 # ============================================================
 # 含真实 MQTT 凭据（host / port / 用户名 / 密码），禁止入库
