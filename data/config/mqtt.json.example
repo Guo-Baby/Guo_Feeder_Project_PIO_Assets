@@ -1,0 +1,15 @@
+{
+    "mqtt_server": "n302933b.ala.cn-hangzhou.emqxsl.cn",
+    "mqtt_port": 8883,
+    "client_id": "dev_<device_id>",
+    "username": "",
+    "password": "",
+    "subscribe_topic": "guo_feeder/<device_id>/down",
+    "publish_topic": "guo_feeder/<device_id>/up",
+    "log_topic": "guo_feeder/<device_id>/log",
+    "ca_path": "/emqxsl-ca.crt",
+    "retry_interval": 10000,
+    "retry_max": 30,
+    "sleep_retry_interval": 1800000,
+    "mqtt_keep_alive": 60
+}
