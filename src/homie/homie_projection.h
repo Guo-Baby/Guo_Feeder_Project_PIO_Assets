@@ -120,6 +120,24 @@ inline const char* homie_datatype_name(DeviceModelDatatype t)
 }
 
 // =====================================================
+// ②.0 无符号 64 位 → 十进制（**唯一**实现；供 int / uint / float / fnv 复用）
+//
+//   ★ 调用方保证 out 至少有 21 字节（uint64 最大 20 位 + '\0'）
+//   ★ 先写临时缓冲再整体复制 ⇒ 调用方无需逐字符做容量检查（体积更小）
+//   ★ 禁止在此之外重复该十进制循环
+// =====================================================
+inline size_t hp_u64_dec(uint64_t v, char* out)
+{
+    char   t[21];
+    size_t n = 0;
+    if(v == 0) { t[n++] = '0'; }
+    while(v > 0) { t[n++] = (char)('0' + (uint8_t)(v % 10u)); v /= 10u; }
+    for(size_t i = 0; i < n; ++i) { out[i] = t[n - 1 - i]; }
+    out[n] = '\0';
+    return n;
+}
+
+// =====================================================
 // ② FNV-1a 32（$description.version 与 snapshot fingerprint —— §11.3 / §15.3）
 // =====================================================
 #define HOMIE_FNV_SEED 0x811C9DC5u
@@ -138,11 +156,7 @@ inline uint32_t homie_fnv1a32(uint32_t h, const char* s)
 inline uint32_t homie_fnv1a32_u32(uint32_t h, uint32_t v)
 {
     char dec[12];
-    size_t n = 0;
-    if(v == 0) { dec[n++] = '0'; }
-    while(v > 0) { dec[n++] = (char)('0' + (v % 10u)); v /= 10u; }
-    for(size_t i = 0; i < n / 2; ++i) { char t = dec[i]; dec[i] = dec[n - 1 - i]; dec[n - 1 - i] = t; }
-    dec[n] = '\0';
+    hp_u64_dec((uint64_t)v, dec);
     return homie_fnv1a32(h, dec);
 }
 
@@ -276,42 +290,45 @@ inline bool homie_id_valid(const char* s)
 //   ★ 必须：① 属于本设备 namespace ② 恰好 3 段（node/prop/set）
 //          ③ node/prop 字符集合法
 //   任何一条不满足 ⇒ false（不进入后续任何处理）
+//
+//   ★ P2-6-opt：单次扫描定位 3 段（原实现每段各扫一遍 + 逐层调用），
+//     语义逐条等价：level3/4/5 必须存在、level6 必须不存在、第 3 段必须为 "set"。
 inline bool homie_parse_set_topic(const char* topic, const char* base,
                                   char* node, size_t node_cap,
                                   char* prop, size_t prop_cap)
 {
     if(!homie_topic_is_own(topic, base)) { return false; }
 
-    // base = "homie/5/<device_id>/" 共 3 层（末尾 '/' 之后的空层不计）
-    // ⇒ 其后应恰好是：第 3 层 = node，第 4 层 = prop，第 5 层 = 字面 "set"，
-    //    第 6 层**不得存在**（多出层级 ⇒ 拒绝）。
-    const char* b0 = NULL; const char* e0 = NULL;
-    const char* b1 = NULL; const char* e1 = NULL;
-    const char* b2 = NULL; const char* e2 = NULL;
-    const char* b3 = NULL; const char* e3 = NULL;
-    if(!homie_topic_level(topic, 3, &b0, &e0)) { return false; }
-    if(!homie_topic_level(topic, 4, &b1, &e1)) { return false; }
-    if(!homie_topic_level(topic, 5, &b2, &e2)) { return false; }
-    if(homie_topic_level(topic, 6, &b3, &e3))  { return false; }   // 多出层级 ⇒ 拒绝
-
-    // 第 6 层必须是字面 "set"
+    // base = "homie/5/<device_id>/" 共 3 层 ⇒ 其后应恰好 3 层：node / prop / "set"
+    const char* b[3];
+    const char* e[3];
+    size_t got = 0;
+    size_t cur = 0;
+    const char* p = topic;
+    for(;;)
     {
-        char tmp[HOMIE_TOPIC_MAX];
-        size_t n = (size_t)(e2 - b2);
-        if(n + 1 > sizeof(tmp)) { return false; }
-        for(size_t i = 0; i < n; ++i) { tmp[i] = b2[i]; }
-        tmp[n] = '\0';
-        if(!hp_eq(tmp, "set")) { return false; }
+        const char* s = p;
+        while(*p != '\0' && *p != '/') { ++p; }
+        if(cur >= 3 && cur <= 5) { b[got] = s; e[got] = p; ++got; }
+        if(*p == '\0') { break; }          // 本层即最后一层
+        ++p;
+        ++cur;
+        if(cur > 5) { return false; }      // 存在第 6 层（或更多）⇒ 拒绝
     }
+    if(got != 3) { return false; }
+
+    // 第 3 段必须恰为字面 "set"
+    if((e[2] - b[2]) != 3) { return false; }
+    if(b[2][0] != 's' || b[2][1] != 'e' || b[2][2] != 't') { return false; }
 
     // node / prop 复制（长度校验后逐字节）
-    const size_t nl = (size_t)(e0 - b0);
-    const size_t pl = (size_t)(e1 - b1);
-    if(nl == 0 || pl == 0)                  { return false; }
+    const size_t nl = (size_t)(e[0] - b[0]);
+    const size_t pl = (size_t)(e[1] - b[1]);
+    if(nl == 0 || pl == 0)                     { return false; }
     if(nl + 1 > node_cap || pl + 1 > prop_cap) { return false; }
-    for(size_t i = 0; i < nl; ++i) { node[i] = b0[i]; }
+    for(size_t i = 0; i < nl; ++i) { node[i] = b[0][i]; }
     node[nl] = '\0';
-    for(size_t i = 0; i < pl; ++i) { prop[i] = b1[i]; }
+    for(size_t i = 0; i < pl; ++i) { prop[i] = b[1][i]; }
     prop[pl] = '\0';
 
     return homie_id_valid(node) && homie_id_valid(prop);
@@ -409,14 +426,14 @@ struct HomieSample
 inline int homie_float_decimals(const char* format)
 {
     if(format == NULL) { return 2; }
+    // 取第 2 个 ':' 之后为 step 段（找到即停 —— 与"数完全部冒号"语义等价）
     int colon = 0;
-    const char* p = format;
     const char* step = NULL;
-    for(; *p != '\0'; ++p)
+    for(const char* p = format; *p != '\0'; ++p)
     {
-        if(*p == ':') { ++colon; if(colon == 2) { step = p + 1; } }
+        if(*p == ':' && ++colon == 2) { step = p + 1; break; }
     }
-    if(colon < 2 || step == NULL || *step == '\0') { return 2; }
+    if(step == NULL || *step == '\0') { return 2; }
     // step 形如 "1" / "0.1" / "0.01"
     bool seen_dot = false;
     int  digits = 0;
@@ -435,22 +452,14 @@ inline int homie_float_decimals(const char* format)
 inline bool homie_int_to_str(int32_t v, char* out, size_t cap)
 {
     if(out == NULL || cap == 0) { return false; }
-    size_t len = 0;
-    out[0] = '\0';
-    if(v < 0)
-    {
-        if(!hp_append_char(out, cap, &len, '-')) { return false; }
-    }
-    uint32_t u = (v < 0) ? (uint32_t)(0u - (uint32_t)v) : (uint32_t)v;
-
-    char digits[16];
+    char tmp[24];
     size_t n = 0;
-    if(u == 0) { digits[n++] = '0'; }
-    while(u > 0) { digits[n++] = (char)('0' + (u % 10u)); u /= 10u; }
-    for(size_t k = 0; k < n; ++k)
-    {
-        if(!hp_append_char(out, cap, &len, digits[n - 1 - k])) { return false; }
-    }
+    if(v < 0) { tmp[n++] = '-'; }
+    const uint32_t u = (v < 0) ? (uint32_t)(0u - (uint32_t)v) : (uint32_t)v;
+    n += hp_u64_dec(u, tmp + n);
+    if(n + 1 > cap) { out[0] = '\0'; return false; }
+    for(size_t i = 0; i < n; ++i) { out[i] = tmp[i]; }
+    out[n] = '\0';
     return true;
 }
 
@@ -458,16 +467,11 @@ inline bool homie_int_to_str(int32_t v, char* out, size_t cap)
 inline bool homie_uint_to_str(uint32_t u, char* out, size_t cap)
 {
     if(out == NULL || cap == 0) { return false; }
-    size_t len = 0;
-    out[0] = '\0';
-    char digits[16];
-    size_t n = 0;
-    if(u == 0) { digits[n++] = '0'; }
-    while(u > 0) { digits[n++] = (char)('0' + (u % 10u)); u /= 10u; }
-    for(size_t k = 0; k < n; ++k)
-    {
-        if(!hp_append_char(out, cap, &len, digits[n - 1 - k])) { return false; }
-    }
+    char tmp[12];
+    const size_t n = hp_u64_dec((uint64_t)u, tmp);
+    if(n + 1 > cap) { out[0] = '\0'; return false; }
+    for(size_t i = 0; i < n; ++i) { out[i] = tmp[i]; }
+    out[n] = '\0';
     return true;
 }
 
@@ -475,7 +479,8 @@ inline bool homie_uint_to_str(uint32_t u, char* out, size_t cap)
 //
 //   做法：先按 decimals 放大并四舍五入成整数，再从整数拆出「整数部分 / 小数部分」。
 //   这样既避免了浮点逐位取余的误差，也保持实现简短可验证。
-//   ★ 定容缓冲：容量不足 ⇒ 失败（绝不截断、绝不越界）。
+//   ★ 先在本地缓冲组装，最后一次性做容量判定 ⇒ 语义与逐段检查等价（早失败，
+//     且失败时不留半截输出）；输出格式与浮点运算路径**逐位不变**。
 inline bool homie_float_to_str(float v, int decimals, char* out, size_t cap)
 {
     if(out == NULL || cap == 0) { return false; }
@@ -486,7 +491,7 @@ inline bool homie_float_to_str(float v, int decimals, char* out, size_t cap)
     if(!(v == v) || v > 3.0e30f || v < -3.0e30f) { return false; }
 
     const bool neg = (v < 0.0f);
-    double x = neg ? -(double)v : (double)v;
+    const double x = neg ? -(double)v : (double)v;
 
     // 10^decimals（decimals ≤ 3 ⇒ 精确）
     uint64_t pow10 = 1;
@@ -499,36 +504,24 @@ inline bool homie_float_to_str(float v, int decimals, char* out, size_t cap)
     const uint64_t ipart = total / pow10;
     const uint64_t fpart = total - ipart * pow10;
 
-    size_t len = 0;
-    out[0] = '\0';
-    if(neg)
-    {
-        if(!hp_append_char(out, cap, &len, '-')) { return false; }
-    }
-
-    // 整数部分
-    {
-        char digits[24];
-        size_t n = 0;
-        uint64_t t = ipart;
-        if(t == 0) { digits[n++] = '0'; }
-        while(t > 0) { digits[n++] = (char)('0' + (t % 10u)); t /= 10u; }
-        for(size_t k = 0; k < n; ++k)
-        {
-            if(!hp_append_char(out, cap, &len, digits[n - 1 - k])) { return false; }
-        }
-    }
+    char   tmp[24];
+    size_t n = 0;
+    if(neg) { tmp[n++] = '-'; }
+    n += hp_u64_dec(ipart, tmp + n);
 
     // 小数部分（定宽补零）
     if(decimals > 0)
     {
-        if(!hp_append_char(out, cap, &len, '.')) { return false; }
-        char buf[8];
+        tmp[n++] = '.';
+        char   d[4];
         uint64_t t = fpart;
-        for(int k = decimals - 1; k >= 0; --k) { buf[k] = (char)('0' + (t % 10u)); t /= 10u; }
-        buf[decimals] = '\0';
-        if(!hp_append(out, cap, &len, buf)) { return false; }
+        for(int k = decimals - 1; k >= 0; --k) { d[k] = (char)('0' + (uint8_t)(t % 10u)); t /= 10u; }
+        for(int k = 0; k < decimals; ++k)      { tmp[n++] = d[k]; }
     }
+
+    if(n + 1 > cap) { out[0] = '\0'; return false; }
+    for(size_t i = 0; i < n; ++i) { out[i] = tmp[i]; }
+    out[n] = '\0';
     return true;
 }
 

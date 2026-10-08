@@ -125,9 +125,13 @@ static HomiePendingTable s_pending;
 //    属已冻结契约，**不得**在 P2-3 擅自新增段。⇒ 本阶段所有 Homie 日志走串口，
 //    待 LogManager EventId 冻结流程走完后再替换。
 // =====================================================
-static void homie_log(const char* level, const char* msg)
+// ★ P2-6-opt：级别用单字符（'I'/'W'/'E'）代替字符串常量。
+//   事件身份（哪条告警）保持不变；仅压掉每个调用点的 level 指针加载与
+//   "INFO"/"WARN"/"ERROR" 字面量 ⇒ 每条调用点节省 code + .rodata。
+//   文案缩短但语义一一对应，**不删除任何一条诊断**。
+static void homie_log(char lvl, const char* msg)
 {
-    Serial.printf("[Homie][%s] %s\n", level, msg);
+    Serial.printf("[H]%c %s\n", lvl, msg);
 }
 
 // =====================================================
@@ -311,7 +315,7 @@ static bool homie_build_and_publish_description()
         }
         if(s_desc_buf == nullptr)
         {
-            homie_log("ERROR", "description buffer alloc failed");
+            homie_log('E', "desc buf alloc fail");
             return false;
         }
     }
@@ -329,7 +333,7 @@ static bool homie_build_and_publish_description()
     uint32_t ver = 0;
     if(!homie_desc_build(in, &len, &ver))
     {
-        homie_log("ERROR", "description build failed (too large)");
+        homie_log('E', "desc build fail oversized");
         return false;
     }
 
@@ -345,7 +349,7 @@ static bool homie_build_and_publish_description()
     s_desc_fp      = ver;      // fingerprint = 生成时的 description version（§15.3 ⑤）
     if(len > HOMIE_DESC_TARGET)
     {
-        homie_log("WARN", "description exceeds target size");
+        homie_log('W', "desc over target size");
     }
     return true;
 }
@@ -378,16 +382,16 @@ static void homie_log_outcome(HomieOutcome oc)
     switch(oc)
     {
         case HOMIE_OUTCOME_SUCCESS:
-            homie_log("INFO", "homie command success");
+            homie_log('I', "cmd ok");
             break;
         case HOMIE_OUTCOME_FAILED:
-            homie_log("WARN", "homie command failed");
+            homie_log('W', "cmd failed");
             break;
         case HOMIE_OUTCOME_TIMEOUT:
-            homie_log("WARN", "homie command timeout");
+            homie_log('W', "cmd timeout");
             break;
         case HOMIE_OUTCOME_REJECTED:
-            homie_log("WARN", "homie command rejected");
+            homie_log('W', "cmd rejected");
             break;
         case HOMIE_OUTCOME_COMPLETED:
             // 终态已由既有业务 up 结果通道交付 ⇒ 不重复刷屏（§七 不改 P1 结果通道）
@@ -443,7 +447,7 @@ static void homie_check_fingerprint()
     if(now - s_last_fp_warn_ms >= HOMIE_FP_WARN_MIN_MS)
     {
         s_last_fp_warn_ms = now;
-        homie_log("WARN", "LOG_HOMIE_DESC_STALE: registry changed since boot snapshot");
+        homie_log('W', "desc stale: registry changed");
     }
 }
 
@@ -476,7 +480,7 @@ static void homie_on_foreign(const char* topic,
     // 禁止用 payload / topic / 时间 / cmd_id 等启发式替代。
     if(retain)
     {
-        homie_log("WARN", "discard retained /set");
+        homie_log('W', "retained /set dropped");
         return;
     }
 
@@ -485,7 +489,7 @@ static void homie_on_foreign(const char* topic,
     char prop[32];
     if(!homie_parse_set_topic(topic, s_base, node, sizeof(node), prop, sizeof(prop)))
     {
-        homie_log("WARN", "set topic outside own homie namespace, discarded");
+        homie_log('W', "set topic outside ns");
         return;
     }
 
@@ -493,7 +497,7 @@ static void homie_on_foreign(const char* topic,
     const DeviceModelProperty* p = dm_find(node, prop);
     if(p == nullptr)
     {
-        homie_log("WARN", "unknown node/property in /set, discarded");
+        homie_log('W', "set unknown node/prop");
         return;
     }
 
@@ -501,7 +505,7 @@ static void homie_on_foreign(const char* topic,
     char value[HOMIE_SET_VALUE_MAX];
     if(len == 0 || len + 1 > sizeof(value))
     {
-        homie_log("WARN", "empty or oversized /set payload, discarded");
+        homie_log('W', "set payload bad size");
         return;
     }
     for(size_t i = 0; i < len; ++i)
@@ -509,7 +513,7 @@ static void homie_on_foreign(const char* topic,
         const uint8_t c = data[i];
         if(c == 0 || c < 0x20 || c > 0x7E)
         {
-            homie_log("WARN", "non-printable byte in /set payload, discarded");
+            homie_log('W', "set payload non-printable");
             return;
         }
         value[i] = (char)c;
@@ -520,7 +524,7 @@ static void homie_on_foreign(const char* topic,
     const DeviceModelValidateResult vr = dm_validate_set(p, value);
     if(vr != DM_VALID_OK)
     {
-        homie_log("WARN", "protocol-layer validation rejected /set");
+        homie_log('W', "set validation rejected");
         return;
     }
 
@@ -528,7 +532,7 @@ static void homie_on_foreign(const char* topic,
     const DeviceModelCommand* cmd = nullptr;
     if(!dm_resolve_command(p, value, &cmd) || cmd == nullptr)
     {
-        homie_log("WARN", "no command mapping for /set value");
+        homie_log('W', "set no command mapping");
         return;
     }
 
@@ -556,7 +560,7 @@ static void homie_on_foreign(const char* topic,
     // ---- ⑧ 进 pending 表（只读轮询结果；表满 / 重复 ⇒ 不跟踪但不阻塞）----
     if(!homie_pending_add(&s_pending, cid, millis()))
     {
-        homie_log("WARN", "pending table full or duplicate, outcome not tracked");
+        homie_log('W', "pending full/dup");
     }
 }
 
@@ -570,12 +574,12 @@ void homie_init()
     // §8.1：base topic 段必须来自 DeviceIdentity（禁止自行取 MAC / 随机 / 另一套 ID）
     if(!device_id_valid())
     {
-        homie_log("ERROR", "device_id invalid, homie disabled");
+        homie_log('E', "device_id invalid");
         return;
     }
     if(!homie_base_topic(device_id(), s_base, sizeof(s_base)))
     {
-        homie_log("ERROR", "base topic build failed, homie disabled");
+        homie_log('E', "base topic build fail");
         return;
     }
 
@@ -589,12 +593,12 @@ void homie_init()
     {
         if(!mqtt_transport_subscribe(filter, HOMIE_QOS))
         {
-            homie_log("ERROR", "homie subscribe registration failed");
+            homie_log('E', "subscribe register fail");
         }
     }
     else
     {
-        homie_log("ERROR", "set filter build failed");
+        homie_log('E', "set filter build fail");
     }
 
     // ③ LWT：仅在 Homie 启用时设置（AD-10a）；payload=`lost`、retain=true 属规范强制（§10.3）
@@ -610,7 +614,7 @@ void homie_init()
     homie_pending_init(&s_pending);      // P2-4：pending 表清零（无 RAM 残留下永久 pending）
     s_initialized = true;
 
-    Serial.printf("[Homie] enabled, base=%s\n", s_base);
+    Serial.printf("[H] enabled base=%s\n", s_base);
 }
 
 void homie_task()
@@ -653,7 +657,7 @@ void homie_task()
             homie_publish_values(true);
             if(!homie_publish_state("ready")) { return; }
             s_phase = HOMIE_PHASE_READY;
-            Serial.println("[Homie] $state=ready");
+            Serial.println("[H] $state=ready");
             break;
         }
 
