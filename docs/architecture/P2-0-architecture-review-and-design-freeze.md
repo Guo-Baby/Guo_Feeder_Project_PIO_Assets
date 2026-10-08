@@ -3,6 +3,7 @@
 > **状态**：`FROZEN（本文件即 P2-1…P2-8 的唯一上位设计依据）`
 > **日期**：2026-10-08 · **阶段性质**：**只读审查 + 设计冻结**（零生产代码 / 零配置 / 零协议 / 零 ACL / 零 schema 改动）
 > **修订**：**P2-0.1 Freeze Corrections（2026-10-08）** —— 修复 BLOCKER-1（QoS 规范语义 vs transport profile）· BLOCKER-2（`$description` / Registry rebuild 一致性）· BLOCKER-3（P2-7 三级成立判据）+ 6 项冻结修正 + 全文一致性 pass。**本修订不改变任何既定架构决策，仅消除契约/边界/验收/内部一致性问题。**
+> **修订**：**P2-0.2 Flash Budget Amendment（2026-10-09）** —— **仅修改 §17.2 的 Flash 增量预算条款**：`.text` / `.rodata` 不再单列为硬性 acceptance ceiling，**Flash 合计增量上限由 `+4…8.5 KiB`（8,704 B）修订为 `≤ 14 KiB`（14,336 B）**；其余资源约束（DRAM / PSRAM / 栈 / CPU / MQTT / 网络）**全部保持不变**。**本修订不改变任何架构决策、行为契约、ABI、安全语义与 topic 契约，只调整资源预算数字。** 依据：`docs/architecture/P2-Flash-Budget-Reconciliation.md`（审计 `b1ca1de`）+ `docs/architecture/P2-6-Resource-Acceptance-Closure.md`。
 > **基线**：Firmware `623da59`(wb) · EMQX `76bd1c9`(main) · Cloudflare `d604f2e`(main) · Worker `846384cd-8b84-488b-a7a1-3ee5f9fae52a`
 > **上位文档**：`Cloud-APP-Platform-Plan.md` §2/§3/§6/§10/§11（P0–P6 路线，§2.3 投影规则与 §2.4 双协议并存）
 > **权威外部规范**：**Homie Convention v5**（`homieiot.github.io/specification`）
@@ -970,19 +971,49 @@ boot 生成 $description 时：
 text = 1,120,774 B   data = 284,452 B   bss = 1,222,621 B   （bss 含 PSRAM 段）
 ```
 
-### 17.2 P2 预算（FROZEN — 上限，非目标）
+### 17.2 P2 预算（**FROZEN — 上限，非目标** · 已按 P2-0.2 修订 Flash 条款）
+
 | 项 | 预算 | 说明 |
 |---|---|---|
-| **新增 DRAM 静态数组** | **0 B** | 铁律；所有表 `const` → Flash |
-| Flash `.rodata`（Device Model 表 + 字符串） | **+1.2 … 2.5 KB** | 约 20 属性 |
-| Flash `.text`（投影 + Facade 代码） | **+3 … 6 KB** | 估 400–700 行 |
-| **Flash 合计** | **+4 … 8.5 KB** | 相对 1.12 MB 基线 = **+0.4% ~ +0.8%** |
+| **新增 DRAM 静态数组** | **0 B** | 铁律；所有表 `const` → Flash（口径见 `P2-6-Resource-Acceptance.md` §4 正式裁决：约束针对**静态语义/描述数据表**，runtime state/cache 不属该行） |
+| Flash `.rodata` | **不再单列为硬性 acceptance ceiling** | 保留为**观测项**（当前实测 +3,284 B） |
+| Flash `.text` | **不再单列为硬性 acceptance ceiling** | 保留为**观测项**（当前实测 +9,264 B） |
+| **Flash 合计增量** ★ | **≤ 14 KiB（14,336 B）** | **唯一 Flash acceptance ceiling**；相对 1.12 MB 基线 = **+1.22%** |
 | PSRAM 堆（`$description` 缓冲） | **4096 B**（boot 分配一次，复用） | 非 static 数组 |
-| DRAM 堆 | **0 B** | 无动态字符串拼接 |
+| DRAM 堆 | **0 B**（nominal） | 无动态字符串拼接；`MALLOC_CAP_8BIT` 回退路径存在 ⇒ 见 `P2-6-Resource-Acceptance.md` §5 `DRAM fallback = WARNING` |
 | 栈 | `homie_task()` 帧 **≤ 512 B** | 禁大局部（含 JSON 写缓冲） |
 | CPU | boot：构建 description **< 5 ms** 一次性<br>稳态：每 loop **~21 次** state 取值 + 比较 | 变化检测 |
 | MQTT | description **单包 ≤ 4096 B** < 8192 缓冲（F-16）⇒ **不分片** | |
 | 网络 | 稳态**零** Homie 流量（除属性变化） | 变化驱动，非轮询上报 |
+
+#### 17.2.1 Flash Budget Amendment（**FROZEN · 2026-10-09**）
+
+> **原冻结**：`.text +3…6 KB` · `.rodata +1.2…2.5 KB` · **合计 `+4…8.5 KB`（≤ 8,704 B）**
+> **修订后**：`.text` / `.rodata` **不再单列为硬性 ceiling** ⇒ **Flash 合计增量上限 = `≤ 14 KiB`（14,336 B）**
+
+**当前正式基线**（`6775bb3`，Homie-enabled 构型 B − base `623da59`，ELF 段级）：
+
+```
+.flash.text   增量 = +9,264 B
+.flash.rodata 增量 = +3,284 B
+Flash 合计增量     = +12,548 B
+新 ceiling         = +14,336 B（14 KiB）
+headroom           = +1,788 B（≈ 14.2%）
+```
+
+**修订理由（原文照录）**：
+
+> Original P2-0 budget was based on an earlier and materially smaller implementation scope. The final frozen architecture includes Device Model, Homie Projection, Homie Bridge, MQTT Transport Facade/Routing, retained-set safety handling, pending command tracking, diagnostics, and 16 properties. The revised 14 KiB ceiling reflects the final frozen architecture and current measured implementation scale.
+
+**追溯依据（`P2-Flash-Budget-Reconciliation.md` §1）**：原 `+3…6 KB` 预算**只有"行数"一个推算变量**（"估 400–700 行"），而其上游假设来自更早的范围（`Cloud-APP-Platform-Plan.md:428` 的 250–350 行 + §4.2 的 *Node 4–5 / Property 8–10*）；最终冻结范围扩为 **4 node / 16 property / 6 命令**，并新增 Device Model 独立层、Transport Facade、分片重组、订阅注册表、pending 结果分类、fingerprint 哨兵、诊断等，行数**未随之重估**。凡按"量"推导的预算项（属性表 1,546 B ≤ 2.5 KB、description 1,907 B ≤ 2,048 B）**实测全部达标**；失控仅发生在"只有行数"的 `.text` 上。归因结论 = **D. 预算与功能共同漂移**（非实现低效：密度 13.9 B/SLOC、符号级 100% 对账、无跨 TU 重复）。
+
+**14 KiB 的性质**：是 **acceptance ceiling（上限）**，**不是**要求实现必须达到的目标值；**不得**描述为"Homie 本身需要 14 KiB"。
+
+**本次修订的边界（FROZEN）**：
+- **只**修改 §17.2 的 Flash 数字条款；**未**修改任何架构决策 / 行为契约 / ABI / topic 契约 / 安全语义。
+- 上表其余各行（DRAM / PSRAM / 栈 / CPU / MQTT / 网络）**继续有效**，§17.3 禁止事项与 §17.4 变化检测 **继续有效**。
+- **不得**通过删除安全机制（retained `/set` 防护、command validation、namespace/设备隔离）或削减已发布 ABI 来"满足预算"——修订后已无此需要。
+
 
 ### 17.3 禁止事项（FROZEN）
 - ❌ 每个 property 一个固定大数组
@@ -1214,7 +1245,7 @@ client 之前 retained 过一个 /set
 
 ## 23. Architecture Freeze Checklist
 
-> **26 项** = **23 FROZEN** + **3 DEFERRED**（D-4 / D-8 / D-13）。P2-0.1 修订新增 #3 / #6 / #13 / #16 / #17 / #20 及 DEFERRED 三行，并细化 #2 / #14 / #18。
+> **26 项** = **23 FROZEN** + **3 DEFERRED**（D-4 / D-8 / D-13）。P2-0.1 修订新增 #3 / #6 / #13 / #16 / #17 / #20 及 DEFERRED 三行，并细化 #2 / #14 / #18。**P2-0.2 修订仅更新 #19 的 Flash 数字（`≤ 14 KiB`，见 §17.2.1），不新增/删除任何 checklist 项。**
 
 | # | 冻结项 | 决策 | 状态 |
 |---|---|---|---|
@@ -1236,7 +1267,7 @@ client 之前 retained 过一个 /set
 | 16 | **QoS profile 定性** | 全 **QoS1 = Guo Feeder transport profile**，**非** Homie 规范要求（AD-3a…3d/§3.4） | **FROZEN** |
 | 17 | **LWT** | topic=`$state`、payload=`lost`、**retain=true（规范）**；**QoS=1（工程）**（§10.3） | **FROZEN** |
 | 18 | ACL 基础模型 + **职责边界** | 子树内允许、**跨设备通配禁止**；ACL **仅 namespace 隔离**，**不承担 per-property capability authorization**（AD-11/§16.2/§16.4） | **FROZEN** |
-| 19 | 资源策略 | DRAM 静态 +0；PSRAM 4 KB 单缓冲；变化驱动 + 死区 + 限流（§17） | **FROZEN** |
+| 19 | 资源策略 | DRAM 静态 +0；PSRAM 4 KB 单缓冲；变化驱动 + 死区 + 限流（§17）；**Flash 合计增量上限 `≤ 14 KiB`（P2-0.2 修订，§17.2.1）** | **FROZEN** |
 | 20 | **P2-7 三级成立判据** | **Step 7 = semantic/control-loop proven**；**Step 10 = security/identity/isolation proven**；**Overall PASS = Step 1~10 全 PASS**（§19.4） | **FROZEN** |
 | 21 | OLED / Web / Android | **共用 Device Model**；远端经 Homie 间接共享（AD-12） | **FROZEN** |
 | 22 | Workflow 是否投影 | **否**（AD-9） | **FROZEN** |
