@@ -484,6 +484,25 @@ extern "C" void probe_main()
         // 一次性命令（zero / computer-reset）在两种 retain 下映射一致 ⇒ 策略单一
         CK(dm_resolve_command(dm_find("water", "zero"), "true", &cmd), "G: zero mapping stable");
         CK(dm_resolve_command(dm_find("control", "computer-reset"), "true", &cmd), "G: reset mapping stable");
+
+        // ★ 场景 A（实时 retained publish）与场景 B（broker retained replay）：
+        //   在 MQTT 层**都**表现为 retain == true ⇒ 必须得到**同一**判定
+        //   （丢弃 + 无 CommandManager 调用 + 无硬件动作）。
+        //   判据**只有** retain —— 结构证明：下游 homie_parse_set_topic /
+        //   dm_validate_set / dm_resolve_command **均不接收 retain 参数**，
+        //   因此 retain 不可能影响解析与映射（**禁止** payload/topic/时间/cmd_id 启发式）。
+        //   ★ 真机 broker retained replay 属 **NOT RUN**（§四十：host 不能证明 EMQX 行为）。
+        char gn[32];
+        char gp[32];
+        CK(homie_parse_set_topic("homie/5/a5a0000000a1/water/valve/set",
+                                 "homie/5/a5a0000000a1/",
+                                 gn, sizeof(gn), gp, sizeof(gp)),
+           "G: A/B identical parse (retain is not an input)");
+        CK(hp_eq(gn, "water") && hp_eq(gp, "valve"), "G: A/B identical result");
+        // 一次性命令：其 resolve 与 retain 无关 ⇒ retained 投递被入口拦下后
+        // 永远到不了 resolve（保证 zero/computer-reset/scan 不会被 replay 触发）
+        CK(dm_resolve_command(dm_find("climate", "scan"), "start", &cmd), "G: scan start stable");
+        CK(dm_resolve_command(dm_find("climate", "scan"), "stop", &cmd), "G: scan stop stable");
     }
 
     // ----------------------------------------------------
@@ -609,6 +628,97 @@ extern "C" void probe_main()
         // 复制超长 ⇒ 失败
         char n2[4];
         CK(!hp_copy(n2, sizeof(n2), "homie/5/"), "K: hp_copy cap");
+    }
+
+    // ----------------------------------------------------
+    // L. Pending 表 + 命令结果分类（P2-4；纯逻辑 —— §7.4 / 任务 §五）
+    //
+    //   ★ 宿主可证明：插入 / 幂等 / 满表 / 出表 / 兜底超时 / 分类 / 无永久 pending。
+    //   ★ 设备侧只可达 RUNNING 与 RELEASED（CommandManager 原子 release，见头注释）；
+    //     SUCCESS / FAILED / TIMEOUT 三个终态在此**直接注入**验证 —— 属纯函数契约，
+    //     不代表真机可观察到（报告已记为 OPEN ISSUE）。
+    // ----------------------------------------------------
+    {
+        HomiePendingTable t;
+        homie_pending_init(&t);
+        CK(homie_pending_count(&t) == 0, "L: init -> empty");
+        CK(homie_pending_find(&t, "h1-000001") < 0, "L: find on empty -> -1");
+
+        // 定容插入
+        CK(homie_pending_add(&t, "h1-000001", 1000), "L: add 1");
+        CK(homie_pending_add(&t, "h1-000002", 1000), "L: add 2");
+        CK(homie_pending_add(&t, "h1-000003", 1000), "L: add 3");
+        CK(homie_pending_add(&t, "h1-000004", 1000), "L: add 4");
+        CK(homie_pending_count(&t) == HOMIE_PENDING_CAP, "L: count == cap");
+
+        // 重复 cmd_id ⇒ 拒绝（幂等；不新增条目、不重复执行）
+        CK(!homie_pending_add(&t, "h1-000001", 2000), "L: duplicate cmd_id rejected");
+        CK(homie_pending_count(&t) == HOMIE_PENDING_CAP, "L: count unchanged after dup");
+
+        // 表满 ⇒ 拒绝（不覆盖在跑记录、不无限增长）
+        CK(!homie_pending_add(&t, "h1-000005", 2000), "L: table full rejected");
+        CK(homie_pending_count(&t) == HOMIE_PENDING_CAP, "L: count unchanged after full");
+
+        // 非法输入 ⇒ 拒绝
+        CK(!homie_pending_add(&t, "",  0), "L: empty cmd_id rejected");
+        CK(!homie_pending_add(&t, NULL, 0), "L: NULL cmd_id rejected");
+
+        CK(homie_pending_find(&t, "h1-000003") >= 0, "L: find existing");
+
+        // 分类：5 个观察态 → 结论
+        CK(homie_classify_observed(HOMIE_OBS_RUNNING)  == HOMIE_OUTCOME_PENDING,   "L: RUNNING -> PENDING");
+        CK(homie_classify_observed(HOMIE_OBS_SUCCESS)  == HOMIE_OUTCOME_SUCCESS,   "L: SUCCESS -> SUCCESS");
+        CK(homie_classify_observed(HOMIE_OBS_FAILED)   == HOMIE_OUTCOME_FAILED,    "L: FAILED -> FAILED");
+        CK(homie_classify_observed(HOMIE_OBS_TIMEOUT)  == HOMIE_OUTCOME_TIMEOUT,   "L: TIMEOUT -> TIMEOUT");
+        CK(homie_classify_observed(HOMIE_OBS_RELEASED) == HOMIE_OUTCOME_COMPLETED, "L: RELEASED -> COMPLETED");
+
+        // 终态判定（REJECTED 只能由 execute()==false 产生 ⇒ 单独判定）
+        CK(!homie_outcome_is_terminal(HOMIE_OUTCOME_NONE),     "L: NONE not terminal");
+        CK(!homie_outcome_is_terminal(HOMIE_OUTCOME_PENDING),  "L: PENDING not terminal");
+        CK(homie_outcome_is_terminal(HOMIE_OUTCOME_SUCCESS),   "L: SUCCESS terminal");
+        CK(homie_outcome_is_terminal(HOMIE_OUTCOME_FAILED),    "L: FAILED terminal");
+        CK(homie_outcome_is_terminal(HOMIE_OUTCOME_TIMEOUT),   "L: TIMEOUT terminal");
+        CK(homie_outcome_is_terminal(HOMIE_OUTCOME_REJECTED),  "L: REJECTED terminal");
+        CK(homie_outcome_is_terminal(HOMIE_OUTCOME_COMPLETED), "L: COMPLETED terminal");
+
+        // tick：仍在跑且未超时 ⇒ PENDING，且保留在表
+        CK(homie_pending_tick(&t, "h1-000001", HOMIE_OBS_RUNNING, 1100, 30000)
+               == HOMIE_OUTCOME_PENDING, "L: tick running -> pending");
+        CK(homie_pending_count(&t) == HOMIE_PENDING_CAP, "L: running stays tracked");
+
+        // tick：仍在跑但已超时 ⇒ TIMEOUT 且出表（Bridge 侧兜底看门狗）
+        CK(homie_pending_tick(&t, "h1-000002", HOMIE_OBS_RUNNING, 1000 + 30000, 30000)
+               == HOMIE_OUTCOME_TIMEOUT, "L: tick expired -> timeout");
+        CK(homie_pending_find(&t, "h1-000002") < 0, "L: expired removed");
+
+        // tick：终态 ⇒ 对应结论 + 出表
+        CK(homie_pending_tick(&t, "h1-000003", HOMIE_OBS_SUCCESS, 1200, 30000)
+               == HOMIE_OUTCOME_SUCCESS, "L: tick success");
+        CK(homie_pending_find(&t, "h1-000003") < 0, "L: success removed");
+        CK(homie_pending_tick(&t, "h1-000004", HOMIE_OBS_FAILED, 1200, 30000)
+               == HOMIE_OUTCOME_FAILED, "L: tick failed");
+        CK(homie_pending_find(&t, "h1-000004") < 0, "L: failed removed");
+
+        // RELEASED（设备侧唯一可达终态）⇒ COMPLETED + 出表；槽位可复用
+        CK(homie_pending_add(&t, "h1-000006", 1300), "L: re-add reuses slot");
+        CK(homie_pending_tick(&t, "h1-000006", HOMIE_OBS_RELEASED, 1400, 30000)
+               == HOMIE_OUTCOME_COMPLETED, "L: tick released -> completed");
+        CK(homie_pending_find(&t, "h1-000006") < 0, "L: released removed");
+
+        // 未跟踪 cmd_id ⇒ NONE（不改表）
+        CK(homie_pending_tick(&t, "h9-999999", HOMIE_OBS_RUNNING, 1500, 30000)
+               == HOMIE_OUTCOME_NONE, "L: untracked -> none");
+
+        // 无永久 pending
+        CK(homie_pending_remove(&t, "h1-000001"), "L: remove tracked");
+        CK(homie_pending_count(&t) == 0, "L: no permanent pending");
+        CK(!homie_pending_remove(&t, "h1-000001"), "L: remove idempotent");
+
+        // timeout_ms == 0 ⇒ 关闭兜底看门狗（不误判超时）
+        CK(homie_pending_add(&t, "h1-000007", 2000), "L: add for watchdog-off");
+        CK(homie_pending_tick(&t, "h1-000007", HOMIE_OBS_RUNNING, 99999999UL, 0)
+               == HOMIE_OUTCOME_PENDING, "L: timeout_ms=0 disables watchdog");
+        CK(homie_pending_remove(&t, "h1-000007"), "L: cleanup");
     }
 }
 
