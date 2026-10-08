@@ -27,6 +27,7 @@ static const struct {
     // 重量
     {"weight_value", STATE_WEIGHT_VALUE, STATE_TYPE_FLOAT, true},
     {"weight_error", STATE_WEIGHT_ERROR, STATE_TYPE_BOOL, false},
+    {"weight_valid", STATE_WEIGHT_VALID, STATE_TYPE_BOOL, true},
 
     //MQTT
     {"mqtt_status", STATE_MQTT_STATUS, STATE_TYPE_BOOL, true},

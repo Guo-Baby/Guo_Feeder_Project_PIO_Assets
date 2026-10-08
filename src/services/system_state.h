@@ -33,6 +33,9 @@ enum SystemStateKey
     STATE_WEIGHT_VALUE,
     // 称重异常
     STATE_WEIGHT_ERROR,
+    // 称重可用性（weight.enable=false ⇒ false；
+    // 与 STATE_MI_THERMO_VALID 同构的"专用有效性"键）
+    STATE_WEIGHT_VALID,
     // Event队列数量
     STATE_EVENT_QUEUE_COUNT,
     //MQTT连接状态
