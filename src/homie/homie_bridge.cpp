@@ -71,6 +71,10 @@
 #define HOMIE_FP_WARN_MIN_MS     60000 // fingerprint 陈旧告警限频
 #define HOMIE_SET_VALUE_MAX      40    // /set 裸值缓冲
 
+// pending 表定容与纯逻辑模块（homie_projection.h）必须一致
+static_assert(HOMIE_PENDING_MAX == HOMIE_PENDING_CAP,
+              "HOMIE_PENDING_MAX must match HOMIE_PENDING_CAP");
+
 // =====================================================
 // 生命周期相位（FROZEN §9）
 // =====================================================
@@ -107,15 +111,10 @@ struct HomiePropState
 static HomiePropState s_prop_state[HOMIE_MAX_PROPERTIES];
 
 // pending 表（FROZEN §7.4：定容 ≤4；只读轮询 get_runtime，不新增回调）
-struct HomiePending
-{
-    bool          active;
-    bool          saw_terminal;
-    uint8_t       terminal;          // CommandState
-    char          cmd_id[16];
-    unsigned long start_ms;
-};
-static HomiePending s_pending[HOMIE_PENDING_MAX];
+//
+// ★ P2-4：表结构 / 结论分类 / 终态移除**全部**在 homie_projection.h 的纯逻辑中
+//   （单一真源，可宿主测试）；本文件只负责「取 runtime + 映射 + 打日志」。
+static HomiePendingTable s_pending;
 
 // =====================================================
 // 日志
@@ -358,59 +357,66 @@ static bool homie_build_and_publish_description()
 //   ★ 成功 ⇒ 不写属性值，等 System State 自然反映（§12.5-5）
 //   ★ 失败 / 超时 ⇒ WARN + 释放槽位，property 保持原值
 // =====================================================
-static bool homie_pending_add(const char* cmd_id)
+
+// CommandState → HomieObservedState（**唯一**依赖 CommandManager 枚举之处）
+static HomieObservedState homie_observed_from_rt(const CommandRuntime* rt)
 {
-    for(uint8_t i = 0; i < HOMIE_PENDING_MAX; ++i)
+    if(rt == nullptr) { return HOMIE_OBS_RELEASED; }
+    switch(rt->state)
     {
-        if(!s_pending[i].active)
-        {
-            s_pending[i].active       = true;
-            s_pending[i].saw_terminal = false;
-            s_pending[i].terminal     = 0;
-            s_pending[i].start_ms     = millis();
-            hp_copy(s_pending[i].cmd_id, sizeof(s_pending[i].cmd_id), cmd_id);
-            return true;
-        }
+        case COMMAND_STATE_SUCCESS: return HOMIE_OBS_SUCCESS;
+        case COMMAND_STATE_FAILED:  return HOMIE_OBS_FAILED;
+        case COMMAND_STATE_TIMEOUT: return HOMIE_OBS_TIMEOUT;
+        case COMMAND_STATE_PENDING:
+        default:                    return HOMIE_OBS_RUNNING;
     }
-    homie_log("WARN", "pending table full, command result not tracked");
-    return false;
 }
 
+// 结论日志（§7.4：只记录，**绝不**据此改写 property 值 —— §六 事实源是 System State）
+static void homie_log_outcome(HomieOutcome oc)
+{
+    switch(oc)
+    {
+        case HOMIE_OUTCOME_SUCCESS:
+            homie_log("INFO", "homie command success");
+            break;
+        case HOMIE_OUTCOME_FAILED:
+            homie_log("WARN", "homie command failed");
+            break;
+        case HOMIE_OUTCOME_TIMEOUT:
+            homie_log("WARN", "homie command timeout");
+            break;
+        case HOMIE_OUTCOME_REJECTED:
+            homie_log("WARN", "homie command rejected");
+            break;
+        case HOMIE_OUTCOME_COMPLETED:
+            // 终态已由既有业务 up 结果通道交付 ⇒ 不重复刷屏（§七 不改 P1 结果通道）
+            break;
+        default:
+            break;
+    }
+}
+
+// 只读轮询：取 runtime → 映射 → 纯逻辑判定（终态自动出表 ⇒ 无永久 pending）
 static void homie_poll_pending()
 {
     const unsigned long now = millis();
 
-    for(uint8_t i = 0; i < HOMIE_PENDING_MAX; ++i)
+    for(uint8_t i = 0; i < HOMIE_PENDING_CAP; ++i)
     {
-        HomiePending& pe = s_pending[i];
-        if(!pe.active) { continue; }
+        if(!s_pending.slot[i].active) { continue; }
 
-        CommandRuntime* rt = command_manager_get_runtime(String(pe.cmd_id));
+        char cid[HOMIE_CMD_ID_MAX];
+        hp_copy(cid, sizeof(cid), s_pending.slot[i].cmd_id);
 
-        if(rt == nullptr)
+        const CommandRuntime* rt = command_manager_get_runtime(String(cid));
+        const HomieOutcome oc = homie_pending_tick(
+            &s_pending, cid, homie_observed_from_rt(rt), now,
+            (unsigned long)HOMIE_PENDING_TIMEOUT_MS);
+
+        if(oc != HOMIE_OUTCOME_PENDING && oc != HOMIE_OUTCOME_NONE)
         {
-            // 运行时记录已释放 ⇒ 结果已由 CommandManager 走既有通道处理；
-            // 本表只负责释放槽位（§7.4「以最后一次已知结果收尾」）。
-            pe.active = false;
-            continue;
-        }
-
-        if(rt->state != COMMAND_STATE_PENDING)
-        {
-            pe.saw_terminal = true;
-            pe.terminal     = (uint8_t)rt->state;
-            pe.active       = false;
-            if(rt->state != COMMAND_STATE_SUCCESS)
-            {
-                homie_log("WARN", "homie command not successful");
-            }
-            continue;
-        }
-
-        if(now - pe.start_ms >= HOMIE_PENDING_TIMEOUT_MS)
-        {
-            homie_log("WARN", "homie command tracking timeout");
-            pe.active = false;
+            homie_log_outcome(oc);
         }
     }
 }
@@ -541,12 +547,17 @@ static void homie_on_foreign(const char* topic,
 
     if(!command_manager_execute(m))
     {
-        homie_log("WARN", "command_manager_execute rejected homie command");
+        // REJECTED：execute() 拒绝（未创建 runtime）。错误结果已由 CommandManager
+        // 走既有业务通道上报 ⇒ 本层不复制结果通道（§七）。
+        homie_log_outcome(HOMIE_OUTCOME_REJECTED);
         return;
     }
 
-    // ---- ⑧ 进 pending 表（只读轮询结果）----
-    homie_pending_add(cid);
+    // ---- ⑧ 进 pending 表（只读轮询结果；表满 / 重复 ⇒ 不跟踪但不阻塞）----
+    if(!homie_pending_add(&s_pending, cid, millis()))
+    {
+        homie_log("WARN", "pending table full or duplicate, outcome not tracked");
+    }
 }
 
 // =====================================================
@@ -596,6 +607,7 @@ void homie_init()
     // boot 序号（§7.3）：用于 cmd_id 的"设备内短期唯一"
     s_boot_seq    = (uint16_t)(esp_random() & 0xFFFFu);
     s_cmd_counter = 0;
+    homie_pending_init(&s_pending);      // P2-4：pending 表清零（无 RAM 残留下永久 pending）
     s_initialized = true;
 
     Serial.printf("[Homie] enabled, base=%s\n", s_base);

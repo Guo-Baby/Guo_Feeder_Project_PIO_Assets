@@ -818,4 +818,168 @@ inline void homie_cmd_id(uint16_t boot_seq, uint32_t counter, char* out, size_t 
     out[n] = '\0';
 }
 
+// =====================================================
+// ⑪ 命令结果观察 + pending 表（纯逻辑 —— FROZEN §7.4 / 任务 §五）
+//
+// 目的：把「/set → CommandManager → 结果观察」的全部判定做成**无副作用纯函数**，
+//       固件与宿主测试共用同一份真源（不新增第二套 command result system）。
+//
+// ★ 冻结约束（AD-7a / §7.4）：
+//   - Bridge **不注册** CommandManager 结果回调（唯一回调槽归 CloudManager）
+//   - 只读轮询 command_manager_get_runtime()
+//   - 不新增去重缓存、不新增队列（pending 表本身即唯一有界跟踪结构）
+//
+// ★ 设备侧可观测性（**代码实证**，非假设）：
+//   command_manager.cpp 的 command_temp_action_callback() 与
+//   command_runtime_report_timeout() 在**同一次同步调用**内「置终态 + 上报 + release」，
+//   而 command_runtime_release() 会清 active 与 cmd_id（:434-451），
+//   command_runtime_find_by_cmd_id() 要求 active && cmd_id 匹配（:417-429）。
+//   ⇒ command_manager_get_runtime() 只会返回「PENDING 的 runtime」或「nullptr」。
+//     设备侧可观察到的只有：
+//       HOMIE_OBS_RUNNING （还在执行）
+//       HOMIE_OBS_RELEASED（终态已交付 ⇒ 具体结果走既有业务 up 结果通道）
+//     HOMIE_OBS_SUCCESS / FAILED / TIMEOUT 三个终态**在设备侧不可达**，
+//     由宿主测试直接注入验证（纯函数可表达），并作为 OPEN ISSUE 记录：
+//     设备侧区分终态需改 CommandManager ⇒ 触发 STOP-3 / STOP-16。
+// =====================================================
+#define HOMIE_PENDING_CAP       4      // pending 表定容（FROZEN §7.4；不得运行时增长）
+#define HOMIE_CMD_ID_MAX        16     // "h<4hex>-<6hex>" = 12 字符 + '\0'
+
+// 设备侧对 CommandManager 运行时的观察结果
+enum HomieObservedState : uint8_t
+{
+    HOMIE_OBS_RUNNING = 0,   // runtime 存在且 state == PENDING
+    HOMIE_OBS_SUCCESS,       // runtime 存在且 state == SUCCESS
+    HOMIE_OBS_FAILED,        // runtime 存在且 state == FAILED
+    HOMIE_OBS_TIMEOUT,       // runtime 存在且 state == TIMEOUT
+    HOMIE_OBS_RELEASED       // runtime 不存在 ⇒ 终态已交付（或从未创建）
+};
+
+// 分类结论（任务 §五.5）
+enum HomieOutcome : uint8_t
+{
+    HOMIE_OUTCOME_NONE = 0,   // 未跟踪 / 无结论
+    HOMIE_OUTCOME_PENDING,    // accepted，仍在执行
+    HOMIE_OUTCOME_SUCCESS,
+    HOMIE_OUTCOME_FAILED,
+    HOMIE_OUTCOME_TIMEOUT,    // 到期（CommandManager 超时或 Bridge 兜底看门狗）
+    HOMIE_OUTCOME_REJECTED,   // command_manager_execute() 拒绝（未创建 runtime）
+    HOMIE_OUTCOME_COMPLETED   // 终态已由既有业务通道交付（本通道不携带具体结果）
+};
+
+inline HomieOutcome homie_classify_observed(HomieObservedState s)
+{
+    switch(s)
+    {
+        case HOMIE_OBS_RUNNING:  return HOMIE_OUTCOME_PENDING;
+        case HOMIE_OBS_SUCCESS:  return HOMIE_OUTCOME_SUCCESS;
+        case HOMIE_OBS_FAILED:   return HOMIE_OUTCOME_FAILED;
+        case HOMIE_OBS_TIMEOUT:  return HOMIE_OUTCOME_TIMEOUT;
+        case HOMIE_OBS_RELEASED: return HOMIE_OUTCOME_COMPLETED;
+        default:                 return HOMIE_OUTCOME_NONE;
+    }
+}
+
+inline bool homie_outcome_is_terminal(HomieOutcome o)
+{
+    return (o == HOMIE_OUTCOME_SUCCESS) || (o == HOMIE_OUTCOME_FAILED) ||
+           (o == HOMIE_OUTCOME_TIMEOUT) || (o == HOMIE_OUTCOME_REJECTED) ||
+           (o == HOMIE_OUTCOME_COMPLETED);
+}
+
+struct HomiePendingSlot
+{
+    bool          active;
+    char          cmd_id[HOMIE_CMD_ID_MAX];
+    unsigned long start_ms;
+};
+
+struct HomiePendingTable
+{
+    HomiePendingSlot slot[HOMIE_PENDING_CAP];
+};
+
+inline void homie_pending_init(HomiePendingTable* t)
+{
+    if(t == NULL) { return; }
+    for(uint8_t i = 0; i < HOMIE_PENDING_CAP; ++i)
+    {
+        t->slot[i].active    = false;
+        t->slot[i].cmd_id[0] = '\0';
+        t->slot[i].start_ms  = 0;
+    }
+}
+
+inline int homie_pending_find(const HomiePendingTable* t, const char* cmd_id)
+{
+    if(t == NULL || cmd_id == NULL || cmd_id[0] == '\0') { return -1; }
+    for(uint8_t i = 0; i < HOMIE_PENDING_CAP; ++i)
+    {
+        if(t->slot[i].active && hp_eq(t->slot[i].cmd_id, cmd_id)) { return (int)i; }
+    }
+    return -1;
+}
+
+inline uint8_t homie_pending_count(const HomiePendingTable* t)
+{
+    if(t == NULL) { return 0; }
+    uint8_t n = 0;
+    for(uint8_t i = 0; i < HOMIE_PENDING_CAP; ++i) { if(t->slot[i].active) { ++n; } }
+    return n;
+}
+
+// 插入：空 cmd_id / 重复 cmd_id / 表满 ⇒ false（**不静默覆盖、不无限增长**）
+inline bool homie_pending_add(HomiePendingTable* t, const char* cmd_id, unsigned long now)
+{
+    if(t == NULL || cmd_id == NULL || cmd_id[0] == '\0') { return false; }
+    if(homie_pending_find(t, cmd_id) >= 0) { return false; }   // 幂等：重复拒绝
+    for(uint8_t i = 0; i < HOMIE_PENDING_CAP; ++i)
+    {
+        if(!t->slot[i].active)
+        {
+            t->slot[i].active = true;
+            hp_copy(t->slot[i].cmd_id, sizeof(t->slot[i].cmd_id), cmd_id);
+            t->slot[i].start_ms = now;
+            return true;
+        }
+    }
+    return false;   // 表满
+}
+
+inline bool homie_pending_remove(HomiePendingTable* t, const char* cmd_id)
+{
+    const int i = homie_pending_find(t, cmd_id);
+    if(i < 0) { return false; }
+    t->slot[i].active    = false;
+    t->slot[i].cmd_id[0] = '\0';
+    t->slot[i].start_ms  = 0;
+    return true;
+}
+
+// 单槽推进：返回当前结论；**终态自动移除** ⇒ 不出现永久 pending。
+//   obs == RUNNING 且已超时 ⇒ 兜底超时（TIMEOUT）并移除。
+inline HomieOutcome homie_pending_tick(HomiePendingTable* t,
+                                       const char* cmd_id,
+                                       HomieObservedState obs,
+                                       unsigned long now,
+                                       unsigned long timeout_ms)
+{
+    const int i = homie_pending_find(t, cmd_id);
+    if(i < 0) { return HOMIE_OUTCOME_NONE; }        // 未被跟踪（如入表失败）
+
+    if(obs == HOMIE_OBS_RUNNING)
+    {
+        if(timeout_ms != 0 && (now - t->slot[i].start_ms) >= timeout_ms)
+        {
+            homie_pending_remove(t, cmd_id);        // Bridge 侧兜底看门狗
+            return HOMIE_OUTCOME_TIMEOUT;
+        }
+        return HOMIE_OUTCOME_PENDING;
+    }
+
+    const HomieOutcome oc = homie_classify_observed(obs);
+    if(homie_outcome_is_terminal(oc)) { homie_pending_remove(t, cmd_id); }
+    return oc;
+}
+
 #endif // HOMIE_PROJECTION_H
