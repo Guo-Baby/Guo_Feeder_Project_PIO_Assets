@@ -67,6 +67,40 @@ typedef void (*CloudLogAckCallback)(
 void cloud_set_log_ack_callback(CloudLogAckCallback callback);
 
 // =====================================================
+// P2-2：Transport Facade 面向接口（**最小、窄化**）
+//
+// 语义：这些接口**只**供 `cloud/mqtt_transport.cpp` 转发使用，
+//       业务代码不直接调用；它们让 Facade 能在 include 边界上
+//       完全独立于 CloudManager 内部实现，同时保持
+//       `CloudManager → mqtt_transport` **不成立**（无循环依赖，P2-0 §6.4）。
+//
+// ★ 仍不暴露 esp-mqtt / 内部结构体：仅使用原始类型。
+// =====================================================
+
+// 发布原始 payload（retain / store 可显式指定）。
+// ★ 现有业务发布路径（cloud_send_up/set/log）**不使用**本接口，
+//   其 retain 恒为 false、语义与 P1 完全一致。
+bool cloud_transport_publish(const char* topic,
+                             const char* payload,
+                             size_t len,
+                             int qos,
+                             bool retain,
+                             bool store);
+
+// 注册**非业务** topic filter（幂等；有限容量）。
+bool cloud_transport_subscribe(const char* topic_filter, int qos);
+
+// 注册"非业务 topic"接收回调（**loop 上下文**执行）。
+void cloud_transport_set_foreign_handler(
+    void (*cb)(const char* topic, const uint8_t* data, size_t len, bool retain));
+
+// [T-1 能力准备] 设置 LWT；未设置 ⇒ CONNECT 报文与 P1 完全一致。
+void cloud_transport_set_lwt(const char* topic,
+                             const char* message,
+                             int qos,
+                             bool retain);
+
+// =====================================================
 // 协议枚举（云端协议定义）
 // =====================================================
 
