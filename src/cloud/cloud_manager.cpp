@@ -17,6 +17,7 @@
 #include "services/topic_renderer.h"  // P0-3：Topic / client_id 模板渲染（渲染点唯一）
 #include "services/device_identity.h" // P0-3：device_id()（判定 client_id 是否与设备身份相关）
 #include "services/credential_manager.h"  // Phase D-2：凭据身份获取 + 连接结果回报（Q9）
+#include "cloud/mqtt_routing.h"  // P2-2：topic 分派 / 分片重组 / 订阅注册表（纯逻辑，宿主可测）
 
 // =====================================================
 // P1-7：Production Topic Enforcement（编译期环境开关）
@@ -274,9 +275,41 @@ static uint8_t  rx_count = 0;
 // MQTT 底层长消息重组缓存
 static uint8_t mqtt_large_rx_buffer[CLOUD_MQTT_BUFFER_SIZE];
 
-static size_t mqtt_large_rx_total = 0;
-static size_t mqtt_large_rx_offset = 0;
-static bool mqtt_large_rx_active = false;
+// =====================================================
+// P2-2：MQTT 传输边界状态（分片重组 / 订阅注册表 / foreign 队列 / LWT）
+//
+// ★ 全部为**有限容量**的静态状态，无动态分配、无无限增长容器。
+// ★ 分片重组逻辑在 mqtt_routing.h（纯函数，宿主可测），此处只持状态与缓冲。
+// =====================================================
+static MqttRxAssembler s_rx_asm;      // 下行分片重组状态机（缓冲 = mqtt_large_rx_buffer）
+static MqttSubRegistry s_foreign_subs; // 非业务（foreign）订阅注册表（有限容量、幂等）
+
+// foreign 消息队列：esp-mqtt 任务**只入队**（轻量拷贝），
+// loop 上下文（cloud_task）出队并交付 handler ⇒ 满足 AD-5a「不在 MQTT 任务内执行」。
+#define MQTT_FOREIGN_QUEUE_SLOTS  2
+#define MQTT_FOREIGN_PAYLOAD_MAX  256
+
+struct CloudForeignMsg
+{
+    char     topic[MQTT_ROUTE_TOPIC_MAX];
+    uint16_t len;
+    bool     retain;
+    uint8_t  data[MQTT_FOREIGN_PAYLOAD_MAX];
+};
+
+static CloudForeignMsg s_foreign_q[MQTT_FOREIGN_QUEUE_SLOTS];
+static uint8_t s_foreign_head  = 0;
+static uint8_t s_foreign_tail  = 0;
+static uint8_t s_foreign_count = 0;
+
+// foreign 接收回调（仅函数指针；由 mqtt_transport_set_foreign_handler 注入）
+static void (*s_foreign_cb)(const char*, const uint8_t*, size_t, bool) = nullptr;
+
+// P2-2 · T-1：LWT 能力准备（**默认未设置 ⇒ CONNECT 报文与 P1 完全一致**）
+static char s_lwt_topic[MQTT_ROUTE_TOPIC_MAX];
+static char s_lwt_msg[64];
+static int  s_lwt_qos    = 0;
+static bool s_lwt_retain = false;
 
 // =====================================================
 // 前置声明
@@ -366,6 +399,110 @@ static bool cloud_rx_dequeue(uint8_t* out, size_t& out_len, size_t cap)
 }
 
 // =====================================================
+// P2-2：topic 分派 / foreign 队列（transport 边界）
+//
+// ★ 只做"分类 + 拷贝入队"，**不执行业务命令、不调 foreign handler**：
+//     · 业务 topic ⇒ 沿用既有 cloud_rx_enqueue()（业务管线**逐字不变**）
+//     · foreign    ⇒ 仅拷贝进 s_foreign_q（由 cloud_task 在 loop 上下文交付）
+//     · 未注册     ⇒ 丢弃（既不进业务管线，也不交 foreign）
+//
+// ★ 本段运行在 **esp-mqtt 任务上下文**（由 mqtt_event_handler 调用）
+//   ⇒ 只允许无阻塞、无 NVS、无回调的轻量操作。
+// =====================================================
+static void cloud_transport_enqueue_foreign(
+    const char* topic,
+    const uint8_t* data,
+    size_t len,
+    bool retain)
+{
+    if(s_foreign_count >= MQTT_FOREIGN_QUEUE_SLOTS)
+    {
+        Serial.println("[Cloud] foreign queue full, message dropped");
+        return;
+    }
+    if(len > MQTT_FOREIGN_PAYLOAD_MAX)
+    {
+        Serial.printf(
+            "[Cloud] foreign message too large (%u), dropped\n",
+            (unsigned)len);
+        return;
+    }
+
+    CloudForeignMsg& m = s_foreign_q[s_foreign_tail];
+    mqtt_cstr_copy(m.topic, MQTT_ROUTE_TOPIC_MAX, topic);
+    m.len = (uint16_t)len;
+    m.retain = retain;
+    for(size_t i = 0; i < len; ++i)
+    {
+        m.data[i] = data[i];
+    }
+    s_foreign_tail = (uint8_t)((s_foreign_tail + 1) % MQTT_FOREIGN_QUEUE_SLOTS);
+    s_foreign_count++;
+}
+
+static void cloud_transport_dispatch_rx(
+    const char* topic,
+    const uint8_t* data,
+    size_t len,
+    bool retain)
+{
+    const MqttRouteKind kind =
+        mqtt_route_topic(topic, mqtt_sub_topic.c_str(), s_foreign_subs);
+
+    if(kind == MQTT_ROUTE_BUSINESS)
+    {
+        // 既有业务路径（P2-2 前即为此调用，逐字保留）
+        cloud_rx_enqueue(data, len);
+        return;
+    }
+    if(kind == MQTT_ROUTE_FOREIGN)
+    {
+        cloud_transport_enqueue_foreign(topic, data, len, retain);
+        return;
+    }
+
+    Serial.printf(
+        "[Cloud] RX dropped (unregistered topic): %s\n",
+        (topic != nullptr) ? topic : "(null)");
+}
+
+// 由 cloud_task() 在 **loop 上下文** 调用：出队并交付 foreign handler
+static void cloud_transport_process_foreign()
+{
+    while(s_foreign_count > 0)
+    {
+        CloudForeignMsg& m = s_foreign_q[s_foreign_head];
+        if(s_foreign_cb != nullptr)
+        {
+            s_foreign_cb(m.topic, m.data, (size_t)m.len, m.retain);
+        }
+        s_foreign_head = (uint8_t)((s_foreign_head + 1) % MQTT_FOREIGN_QUEUE_SLOTS);
+        s_foreign_count--;
+    }
+}
+
+// 由 mqtt_event_handler 在 CONNECTED 时调用：重放 foreign 订阅
+static void cloud_transport_replay_foreign()
+{
+    if(mqtt_client == nullptr)
+    {
+        return;
+    }
+    for(int i = 0; i < s_foreign_subs.count; ++i)
+    {
+        const int msg_id = esp_mqtt_client_subscribe(
+            mqtt_client,
+            s_foreign_subs.entries[i].filter,
+            s_foreign_subs.entries[i].qos);
+        Serial.printf(
+            "[Cloud] MQTT replay subscribe filter=%s qos=%d msg_id=%d\n",
+            s_foreign_subs.entries[i].filter,
+            s_foreign_subs.entries[i].qos,
+            msg_id);
+    }
+}
+
+// =====================================================
 // MQTT 事件回调（运行在 esp-mqtt 任务线程）
 //
 // 只做轻量操作：
@@ -400,6 +537,9 @@ static void mqtt_event_handler(
                     CLOUD_MQTT_QOS,
                     msg_id);
             }
+            // ★ P2-2（T-2）：重放注册表中已登记的 **foreign** 订阅。
+            //   业务订阅保持上面那段**逐字不变**（filter/QoS/日志一致）。
+            cloud_transport_replay_foreign();
             Serial.printf(
                 "[Cloud] MQTT connected outbox=%d\n",
                 esp_mqtt_client_get_outbox_size(mqtt_client));
@@ -448,44 +588,39 @@ static void mqtt_event_handler(
             break;
 
         case MQTT_EVENT_DATA:
-            if(event->data != nullptr && event->data_len > 0)
+        {
+            // ★ P2-2（T-3）：topic-aware 分派。
+            //   esp-mqtt 契约（mqtt_client.h）：一条消息若被分片，**只有首片携带 topic**，
+            //   其余片只有 data/data_len/current_data_offset ⇒ topic 在 offset==0 时捕获。
+            //   ⚠️ 业务路径**逐字保留**：业务 topic 仍走 cloud_rx_enqueue() 同一入口；
+            //      foreign / 未注册 topic 不进入业务管线（不分派到 translate/ACK/dedupe）。
+            const int rx_rc = s_rx_asm.feed(
+                event->current_data_offset,
+                event->total_data_len,
+                event->topic,
+                event->topic_len,
+                event->retain,
+                (const uint8_t*)event->data,
+                event->data_len);
+
+            if(rx_rc == 1)
             {
-                // 第一次收到长消息
-                if(event->current_data_offset == 0)
-                {
-                    if(event->total_data_len > CLOUD_MQTT_BUFFER_SIZE)
-                    {
-                        Serial.printf(
-                            "[Cloud] MQTT message too large: %d\n",
-                            event->total_data_len);
-                        mqtt_large_rx_active = false;
-                        break;
-                    }
-                    mqtt_large_rx_total = event->total_data_len;
-                    mqtt_large_rx_offset = 0;
-                    mqtt_large_rx_active = true;
-                }
-                if(!mqtt_large_rx_active)
-                {
-                    break;
-                }
-                memcpy(
-                    mqtt_large_rx_buffer + event->current_data_offset,
-                    event->data,
-                    event->data_len);
-                mqtt_large_rx_offset += event->data_len;
-                // 接收完成
-                if(mqtt_large_rx_offset >= mqtt_large_rx_total)
-                {
-                    cloud_rx_enqueue(
-                        mqtt_large_rx_buffer,
-                        mqtt_large_rx_total);
-                    mqtt_large_rx_active = false;
-                    mqtt_large_rx_total = 0;
-                    mqtt_large_rx_offset = 0;
-                }
+                // 完整一条消息 ⇒ 按 topic 分派
+                cloud_transport_dispatch_rx(
+                    s_rx_asm.topic_cstr(),
+                    s_rx_asm.data(),
+                    s_rx_asm.len(),
+                    s_rx_asm.retain_flag());
+                s_rx_asm.reset();
+            }
+            else if(rx_rc == 2)
+            {
+                Serial.printf(
+                    "[Cloud] MQTT message too large: %d\n",
+                    event->total_data_len);
             }
             break;
+        }
 
         case MQTT_EVENT_ERROR:
             Serial.println("[Cloud] MQTT error event");
@@ -524,10 +659,12 @@ static void mqtt_event_handler(
 // 底层发布（QoS1，非阻塞，失败自动重发直到 PUBACK）
 // =====================================================
 static bool cloud_mqtt_publish_binary(
-    const String& topic,
+    const char* topic,
     const uint8_t* data,
     size_t len,
-    int qos)
+    int qos,
+    bool retain = false,
+    bool store = CLOUD_MQTT_STORE)
 {
     if(mqtt_client == nullptr || !mqtt_connected)
     {
@@ -538,32 +675,35 @@ static bool cloud_mqtt_publish_binary(
     int msg_id;
     int outbox_before = esp_mqtt_client_get_outbox_size(mqtt_client);
 
-    if(CLOUD_MQTT_QOS == 0)
+    // ★ P2-2（T-4）：retain / store 改为**显式参数**（默认 false / CLOUD_MQTT_STORE）
+    //   ⇒ 现有业务调用点（4 处，均传 qos=1、不传 retain/store）语义**完全不变**；
+    //     仅 Transport Facade 显式传入 retain=true 时才改变（且只影响非业务消息）。
+    if(qos == 0)
     {
         msg_id = esp_mqtt_client_publish(
             mqtt_client,
-            topic.c_str(),
+            topic,
             (const char*)data,
             len,
             0,
-            0);
+            retain ? 1 : 0);
     }
     else
     {
         msg_id = esp_mqtt_client_enqueue(
             mqtt_client,
-            topic.c_str(),
+            topic,
             (const char*)data,
             len,
-            CLOUD_MQTT_QOS,
-            0,
-            CLOUD_MQTT_STORE);
+            qos,
+            retain ? 1 : 0,
+            store);
     }
     if(msg_id < 0)
     {
         Serial.printf(
             "[Cloud] publish FAIL %s len=%u\n",
-            topic.c_str(),
+            topic,
             (unsigned)len);
         // P2-D：只累加计数（真正的上报由 cloud_task() 按 60s 窗口做）
         cloud_note_publish_fail();
@@ -572,8 +712,8 @@ static bool cloud_mqtt_publish_binary(
     Serial.printf(
         "[Cloud] ENQ id=%d qos=%d store=%d outbox=%d->%d len=%u t=%lu\n",
         msg_id,
-        CLOUD_MQTT_QOS,
-        (int)CLOUD_MQTT_STORE,
+        qos,
+        (int)store,
         outbox_before,
         esp_mqtt_client_get_outbox_size(mqtt_client),
         (unsigned)len,
@@ -582,9 +722,11 @@ static bool cloud_mqtt_publish_binary(
 }
 
 static bool cloud_mqtt_publish_text(
-    const String& topic,
+    const char* topic,
     const String& text,
-    int qos)
+    int qos,
+    bool retain = false,
+    bool store = CLOUD_MQTT_STORE)
 {
     if(mqtt_client == nullptr || !mqtt_connected)
     {
@@ -594,35 +736,35 @@ static bool cloud_mqtt_publish_text(
     }
     int msg_id;
 
-    if(CLOUD_MQTT_QOS == 0)
+    if(qos == 0)
     {
         msg_id = esp_mqtt_client_publish(
             mqtt_client,
-            topic.c_str(),
+            topic,
             text.c_str(),
             text.length(),
             0,
-            0);
+            retain ? 1 : 0);
     }
     else
     {
         msg_id = esp_mqtt_client_enqueue(
             mqtt_client,
-            topic.c_str(),
+            topic,
             text.c_str(),
             0,
-            CLOUD_MQTT_QOS,
-            0,
-            CLOUD_MQTT_STORE);
+            qos,
+            retain ? 1 : 0,
+            store);
     }
 
     if(msg_id < 0)
     {
         Serial.printf(
             "[Cloud] publish FAIL qos=%d store=%d topic=%s len=%u\n",
-            CLOUD_MQTT_QOS,
-            CLOUD_MQTT_STORE,
-            topic.c_str(),
+            qos,
+            (int)store,
+            topic,
             (unsigned)text.length());
         // P2-D：只累加计数（真正的上报由 cloud_task() 按 60s 窗口做）
         cloud_note_publish_fail();
@@ -632,10 +774,83 @@ static bool cloud_mqtt_publish_text(
     Serial.printf(
         "[Cloud] enqueue OK id=%d qos=%d store=%d len=%u\n",
         msg_id,
-        CLOUD_MQTT_QOS,
-        CLOUD_MQTT_STORE,
+        qos,
+        (int)store,
         (unsigned)text.length());
     return true;
+}
+
+// =====================================================
+// P2-2：Transport Facade 面向实现（public）
+//
+// ★ 仅由 cloud/mqtt_transport.cpp 转发使用；业务代码不直接调用。
+// ★ 保持 CloudManager **不依赖** mqtt_transport（本文件不 include mqtt_transport.h）
+//   ⇒ 无 cloud_manager ↔ mqtt_transport 循环（P2-0 §6.4）。
+// =====================================================
+bool cloud_transport_publish(const char* topic,
+                             const char* payload,
+                             size_t len,
+                             int qos,
+                             bool retain,
+                             bool store)
+{
+    if(topic == nullptr || payload == nullptr)
+    {
+        return false;
+    }
+    return cloud_mqtt_publish_binary(
+        topic,
+        (const uint8_t*)payload,
+        len,
+        qos,
+        retain,
+        store);
+}
+
+bool cloud_transport_subscribe(const char* topic_filter, int qos)
+{
+    // 注册（幂等 + 有限容量）；超限 / 超长直接拒绝（不静默截断）
+    if(!s_foreign_subs.add(topic_filter, qos))
+    {
+        Serial.printf(
+            "[Cloud] subscribe reject (invalid/null/full): %s\n",
+            (topic_filter != nullptr) ? topic_filter : "(null)");
+        return false;
+    }
+
+    // 已连接 ⇒ 立即订阅；未连接 ⇒ 只注册（不失败），待 CONNECTED replay
+    if(mqtt_client != nullptr && mqtt_connected)
+    {
+        const int msg_id = esp_mqtt_client_subscribe(mqtt_client, topic_filter, qos);
+        Serial.printf(
+            "[Cloud] MQTT subscribe(foreign) filter=%s qos=%d msg_id=%d\n",
+            topic_filter,
+            qos,
+            msg_id);
+        return (msg_id >= 0);
+    }
+    return true;
+}
+
+void cloud_transport_set_foreign_handler(
+    void (*cb)(const char* topic, const uint8_t* data, size_t len, bool retain))
+{
+    s_foreign_cb = cb;
+}
+
+void cloud_transport_set_lwt(const char* topic,
+                             const char* message,
+                             int qos,
+                             bool retain)
+{
+    if(topic == nullptr || topic[0] == '\0')
+    {
+        return;
+    }
+    mqtt_cstr_copy(s_lwt_topic, MQTT_ROUTE_TOPIC_MAX, topic);
+    mqtt_cstr_copy(s_lwt_msg, sizeof(s_lwt_msg), (message != nullptr) ? message : "");
+    s_lwt_qos = qos;
+    s_lwt_retain = retain;
 }
 
 // =====================================================
@@ -651,15 +866,10 @@ static bool cloud_publish_fragmented(
     size_t len,
     uint8_t msg_type)
 {
-    String topic;
-    if(msg_type == CLOUD_FRAG_UP)
-    {
-        topic = mqtt_pub_topic;
-    }
-    else
-    {
-        topic = mqtt_sub_topic;
-    }
+    // P2-2：publish 助手改为接受 const char* topic（避免为 Facade 造临时 String）
+    const char* topic = (msg_type == CLOUD_FRAG_UP)
+                            ? mqtt_pub_topic.c_str()
+                            : mqtt_sub_topic.c_str();
 
     // 未超限：直接发送
     if(len <= cloud_msg_limit)
@@ -1520,6 +1730,20 @@ static bool cloud_connect()
         cfg.keepalive = keep_alive;
         cfg.buffer_size = CLOUD_MQTT_BUFFER_SIZE;
         cfg.disable_clean_session = 0;
+
+        // ---- P2-2（T-1）：LWT 能力准备 ----
+        // ★ 仅当调用方显式设置过 LWT（s_lwt_topic 非空）才写入 cfg。
+        //   默认未设置 ⇒ cfg 与 P1 **完全一致**（CONNECT 报文不带 will）⇒ 零行为变化。
+        // ★ 本阶段只提供 transport 能力，不实现任何 Homie $state / 在线状态机。
+        if(s_lwt_topic[0] != '\0')
+        {
+            cfg.lwt_topic   = s_lwt_topic;
+            cfg.lwt_msg     = s_lwt_msg;
+            cfg.lwt_msg_len = (int)mqtt_cstr_len(s_lwt_msg);
+            cfg.lwt_qos     = s_lwt_qos;
+            cfg.lwt_retain  = s_lwt_retain ? 1 : 0;
+        }
+
         // MQTT TLS
         if(mqtt_port == 8883)
         {
@@ -1852,6 +2076,16 @@ void cloud_init()
     rx_tail = 0;
     rx_count = 0;
 
+    // ---- P2-2：传输边界状态初始化 ----
+    //   ★ 分片重组器绑定既有的 mqtt_large_rx_buffer（不新增缓冲）
+    //   ★ 注册表 / foreign 队列清零（无动态分配）
+    //   ★ s_foreign_cb 与 LWT 配置**不在此清零**：保留调用方（P2-3）已注入的设置
+    s_rx_asm.init(mqtt_large_rx_buffer, CLOUD_MQTT_BUFFER_SIZE);
+    s_foreign_subs.init();
+    s_foreign_head  = 0;
+    s_foreign_tail  = 0;
+    s_foreign_count = 0;
+
     // 注册 Command Manager 结果回调
     command_manager_set_result_callback(on_command_result);
 
@@ -2106,6 +2340,11 @@ void cloud_task()
     //    否则凭据验证只能等超时。
     cloud_sync_credentials();
 
+    // ---- P2-2：foreign 消息交付（**loop 上下文**）----
+    // ⚠️ 同样放在 `!wifi_connected` 之前：即便此刻已断开，也应把断开前入队的
+    //    foreign 消息交付给 handler（不得在 esp-mqtt 任务内执行，AD-5a）。
+    cloud_transport_process_foreign();
+
     if(!wifi_connected)
     {
         if(mqtt_connected)
@@ -2212,7 +2451,7 @@ bool cloud_send_set(const char* message)
     Serial.println("[Cloud SET JSON]");
     Serial.println(upload);
     return cloud_mqtt_publish_text(
-        mqtt_pub_topic,
+        mqtt_pub_topic.c_str(),
         upload,
         1
     );
@@ -2242,7 +2481,7 @@ bool cloud_send_up(const char* message)
     Serial.println("[Cloud UP JSON]");
     Serial.println(upload);
     bool result = cloud_mqtt_publish_text(
-        mqtt_pub_topic,
+        mqtt_pub_topic.c_str(),
         upload,
         1
     );
@@ -2289,7 +2528,7 @@ bool cloud_send_log(const uint8_t* data, size_t length)
     }
 
     const bool ok = cloud_mqtt_publish_binary(
-        mqtt_log_topic,
+        mqtt_log_topic.c_str(),
         data,
         length,
         1);
