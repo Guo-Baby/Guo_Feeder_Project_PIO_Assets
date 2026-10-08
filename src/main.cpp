@@ -25,6 +25,7 @@
 #include "test/test_mqtt.h"
 #include "automation/capability_registry.h"
 #include "app/MiThermometer.h"
+#include "homie/homie_bridge.h"   // P2-3：Homie Projection（GF_HOMIE_ENABLED 门控，默认 0）
 // LogManager P1.1 冻结契约（仅契约 + 编译期 static_assert，不含实现）
 //
 // 必须被某个编译单元包含，否则 log_events.h 里的 static_assert 不会被求值。
@@ -586,6 +587,16 @@ void setup()
     // =====================================================
     capability_registry_init();
     // =====================================================
+    // 第七层·附加：Homie Projection（P2-3）
+    //
+    // 必须放在 capability_registry_init() **之后**：
+    //   $description 的 boot-time availability filter 需要读取 Registry 中
+    //   已注册的 Action（§五 / §15.3 AD-15b）。
+    // ★ homie_init() **不发布任何消息**；首次发布发生在 loop 中检测到
+    //   MQTT 已连接之后（§9）。GF_HOMIE_ENABLED=0 时为空实现。
+    // =====================================================
+    homie_init();
+    // =====================================================
     // 第八层：启动确认（必须位于 setup 最后）
     //
     // 只有完整走完 setup 才会写入启动标记。
@@ -630,6 +641,15 @@ void loop()
     // Phase D-2：凭据状态机（试连超时 / promote / rollback，非阻塞）
     credential_manager_task();
     command_manager_task();
+    // ---- P2-3：Homie Projection（投影层，非阻塞）----
+    //
+    // 位置说明（不重排既有任务，只在中间插入一次调用）：
+    //   · 必须在 cloud_task() **之后** —— 由它交付 foreign 队列（/set）与连接状态；
+    //   · 必须在 command_manager_task() **之后** —— 便于当轮观察到命令运行时状态；
+    //   · 放在 workflow_task() **之前** —— 本轮发起的 Action 可当轮被执行，
+    //     System State 变化最快在下轮被投影发布（§17.4 变化驱动）。
+    //   · GF_HOMIE_ENABLED=0（默认）时为空实现 ⇒ 生产零开销。
+    homie_task();
     config_task();            // 配置修改后的自动重启倒计时
     // ---- 新增：Workflow 任务 ----
     workflow_task();          // 执行 Workflow 状态机
