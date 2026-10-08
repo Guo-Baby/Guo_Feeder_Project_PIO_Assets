@@ -719,6 +719,11 @@ void weight_init()
         // 避免云端查询到未初始化的残留值造成误判。
         state_set_bool(STATE_WEIGHT_ERROR, false);
         state_set_float(STATE_WEIGHT_VALUE, 0.0f);
+        // ★ 可用性硬判定：enable=false ⇒ 秤不可用。
+        //   显式置 false，不依赖"无新数据"间接推导，也不依赖 RAM 残留
+        //   （system_state_init() 已把全部 valid 清零，本次是权威覆盖）。
+        //   与 STATE_MI_THERMO_VALID 同构：消费者只需读这一个键。
+        state_set_bool(STATE_WEIGHT_VALID, false);
 
         Serial.println("[Weight] Disabled by config "
                        "(HX711 not installed) -> weight_decrease / "
@@ -750,6 +755,8 @@ void weight_init()
     // 5. 初始状态同步
     state_set_float(STATE_WEIGHT_VALUE, current_weight);
     state_set_bool(STATE_WEIGHT_ERROR, false);
+    // ★ 可用性硬判定：enable=true 且 HX711 初始化完成 ⇒ 秤可用。
+    state_set_bool(STATE_WEIGHT_VALID, true);
 
     initialized = true;
     Serial.printf("[Weight] Init OK (dt=%d sck=%d scale=%.1f zero_offset=%ld)\n",
