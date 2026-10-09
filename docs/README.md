@@ -50,6 +50,28 @@
 | `P1-5-Final-Review.md` | **★ P1-5 收口评审（Final Review · 实施完成 2026-10-04）** —— **设计稿 ↔ 实现的审计桥接**：交付物 · **Δ-A…Δ-K 差异表** · **最终 API 契约（6 端点）** · **INV-1…INV-7 落地**（含 **INV-4 退役必关 binding**）· 事务设计 · 验收结果 · 遗留问题 · 给 P1-5-5 的前置。**对接 APP / 运维看这一篇** |
 | `jsonstorage开发架构.md` | JsonStorage 存储层架构设计 |
 
+### P2 · Homie Bridge（设备侧 Homie 5 投影）—— 阶段索引
+
+> **阶段状态**：**`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** —— `P2-0.2 = FROZEN` · `P2-1…P2-6 = CLOSED` ·
+> **`P2-7 = SOFTWARE READY` · 硬件 `DEFERRED`（`NOT RUN`，不阻塞）** · `P2-8 = CLOSED（评审）` · `P2-9 = NOT STARTED`。
+> 权威依据：`P2-0-architecture-review-and-design-freeze.md`（**§19 / §23 / §17.2.1 / §16**）。
+
+| 文档 | 说明 |
+|---|---|
+| **`P2-0-architecture-review-and-design-freeze.md`** | **★ P2 架构冻结（FROZEN · 含 P2-0.2 修订）＝P2 不可擅改基线** —— Device Model / Transport Facade / Homie Projection 三层设计；**§23 Freeze Checklist（23 FROZEN + 3 DEFERRED）** · **§19 P2-7 三级成立判据** · **§17.2.1 Flash 预算 `≤ 14 KiB`** · **§16 ACL 模型与职责边界** · §22 依赖图 |
+| `P2-8-Closure-Review.md` | **★ P2 收口评审（本阶段权威结论）** —— WP-1 基线冻结与「无未记录代码修改」核验 · **§23 逐条对齐（26/26）** · **§19 完成度（PASS / NOT RUN 分列）** · §17.2.1 预算 · ACL/topic 契约 · 四态分类总表 · 遗留项登记 · `stable_id` 专项审查 · 阶段级结论 |
+| `P2-8-Plan.md` | P2-8 计划（收口评审 + 文档同步）：目标 / WP-1…WP-7 / 依赖 / 验收 A-1…A-11 · N-1…N-16 · H-1…H-5 · F-1…F-5（**PLAN ONLY 记录**） |
+| `P2-7-Software-Readiness-Report.md` | **P2-7 软件侧 readiness（无硬件条件下的全部验证）** —— A. 已验证 PASS（构建 / 资源零回归 / 静态契约 / 728 断言回归 / Homie 制品 / EMQX 真实 broker）· B. NOT RUN（N-1…N-16）· C. HUMAN_REQUIRED checklist |
+| `P2-7-Hardware-Deferral-Record.md` | **P2-7 硬件延期记录** —— 决策与原因 · 16 项硬件项（保持 `NOT RUN`）· **未来返回节点 R-1…R-6**（Valve → HX711 → 真机 MQTT/Homie → 第二设备隔离 → retained/LWT/discovery → **App 联调**）· 再入纪律 |
+| `P2-7-Hardware-Test-Readiness.md` | 实物测试准备清单 —— §19 摘要判据 · 责任矩阵 · 需要人工准备的真实设备（A–F）· **接线清单（Valve `GPIO12` / HX711 `DT6·SCK7` / 安全铁律）** · 待确认项 Q-1…Q-8 |
+| `P2-6-Resource-Acceptance-Closure.md` | **P2-6 资源验收（新 ceiling ≤14 KiB 下）** —— 四构型段级实测 · `B − base = +12,548 B` **PASS** · 逐项资源复核（DRAM/PSRAM/栈/$description/IRAM） |
+| `P2-6-Resource-Acceptance.md` | P2-6 资源验收（**旧预算下的 FAIL 记录，历史保留**）—— 用于对照新 ceiling 的修订依据 |
+| `P2-6-Optimization-Feasibility-Audit.md` | Flash 优化可行性审计（`B. POSSIBLE WITH TRADE-OFF`）· Δ 可二分 · 编译选项实测（`-fno-exceptions` 有效 / `-flto` 构建失败） |
+| `P2-Flash-Budget-Reconciliation.md` | Flash 预算对账审计（Q1–Q8）· 归因 **`D. 预算与功能共同漂移`** · 重冻选项 A/B/C |
+| `P2-5-Homie-ACL.md` | **P2-5 Homie ACL 实施与验证** —— 设备级 5 条 ACL（`credential.js` ⇄ `acl-rules.v3.json` 双路径收敛）· PUT 全量覆盖 · 真实 EMQX 授权实测 23/23 · 补写流程 |
+
+> **设备侧 Homie 模块说明**：`src/homie/readme.md`（职责 / topic / property / `/set` 流程）
+
 ## interfaces/ 接口 / 协议
 
 > **接入新功能前必读。** 这是对外/对云契约的唯一权威来源。

@@ -108,6 +108,9 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 （`cloud_manager.cpp:1465`），并非 `mqtt_sub_topic`。"set / up" 这两个名字在代码中
 **都指向同一个上行 Topic**，区别只在串口日志标签。云端不应依赖这个区分。
 
+> **★ 第二条命名空间**：自 P2 起设备**同时**在 `homie/5/<device_id>/#` 上做 **Homie 5 投影**（与上表并存，非替代）。
+> 完整契约见 **§12**；`log` topic 仍为预留（§8.2）。
+
 ### 1.4 连接生命周期
 
 ```
@@ -834,6 +837,96 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 
 ---
 
+## 12. Homie 5 投影协议（设备侧）
+
+> **性质**：**设备 ↔ 云** 的第二条 topic 命名空间，与 §1–§10 的 `guo_feeder/<device_id>/{down,up,log}` **并存**（不是替代）。
+> **权威来源**：`docs/architecture/P2-0-architecture-review-and-design-freeze.md`（**FROZEN**：§8 Topic · §10 `$state` · §11 `$description` ·
+> §12 映射 · §13 校验 · §14 `/set` · §16 ACL · §17.2.1 预算）。
+> **本节只**摘要**已冻结的实现契约**，**不重新设计协议**；与冻结文档冲突时**以冻结文档为准**。
+> **模块说明**：`src/homie/readme.md` · **收口结论**：`docs/architecture/P2-8-Closure-Review.md`。
+>
+> **★ 验证状态**：本节的软件侧契约**已验证**；**真机 / 真 broker 端到端为 `NOT RUN`（硬件 DEFERRED）** ——
+> 见 `docs/architecture/P2-7-Hardware-Deferral-Record.md`。**本文档描述协议，不代表硬件已验证。**
+
+### 12.1 开关与实现边界
+
+| 项 | 值 |
+|---|---|
+| 编译期开关 | `GF_HOMIE_ENABLED`（**默认 0**；为 0 时该模块全部为空实现 ⇒ 生产零代价） |
+| 依赖方向 | `homie_bridge → cloud/mqtt_transport → cloud_manager → esp_mqtt_client`（**单向**） |
+| MQTT 客户端 | **单客户端**（仍归 `cloud_manager`）；Homie 只经 Transport Facade 收发 |
+| 执行路径 | `/set` **必须**经 `command_manager_execute()`（`source="homie"`），**不得绕过 CommandManager** |
+| 投影范围 | **仅 Device Model 属性**；**Workflow 不投影**（§23 #22 / AD-9） |
+
+### 12.2 Topic 结构
+
+**base** = `homie/5/<device_id>/`
+
+| 方向 | Topic | retained | QoS |
+|---|---|:---:|:---:|
+| pub | `homie/5/<id>/$state` | **是**（规范强制） | 1 |
+| pub | `homie/5/<id>/$description` | **是**（规范强制） | 1 |
+| pub | `homie/5/<id>/<node>/<prop>` | 见 §12.5 | 1 |
+| sub | `homie/5/<id>/+/+/set` | — | 1 |
+| LWT | `homie/5/<id>/$state` = `lost` | 是（规范） | 1 |
+
+> **QoS1 是 Guo Feeder 的 transport profile 选择，不是 Homie 规范要求**（AD-3a…3d）。
+> `$description` 在 **Registry rebuild 后不重生成、不重发布、不改 contract**，仅打 fingerprint 陈旧 `WARN`（§23 #13）。
+
+### 12.3 `$state` 生命周期
+
+- 6 态取 4：**`init` → `ready`**；`disconnected` / `lost` 由 **broker LWT** 表达（设备**不自行**发 `lost`）。
+- **`ready` = 五条件合取**：① MQTT 已连 ② `$description` 已发 ③ 只读初值已发 ④ Capability Registry 已就绪 ⑤ CommandManager 已初始化。
+- 断连后重连**幂等重走** `init → ready`。
+
+### 12.4 `$description`
+
+- **仅 boot `init` 阶段生成一次**并 retained 发布；**硬上限 4096 B**，超限则**不发布坏描述并停在 `init`**。
+- 结构：`{"homie":"5.0","version":<fnv(desc/action/trigger)>,"nodes":{ <node>: {name,type,properties:{…}} }}`。
+- **设备级 `name` 省略**（P2 不引入友好名，D-8 → P3）；**无 `$target`**（D-13）。
+- 实测体积：**1,907 B**（16 属性）/ **1,618 B**（13 属性，`weight.enable=false`）—— 均不分片（< `CLOUD_MQTT_BUFFER_SIZE`）。
+- **boot-time 可用性过滤**：写侧要求属性的**全部** Action 已注册；无自身 Action 的只读属性按 HomieGate 锚定的 Action 判定。
+  典型后果：`weight.enable=false` ⇒ `water/weight` · `water/weight-error` · `water/zero` **同时不出现**（16 → 13 属性）—— **预期行为**。
+
+### 12.5 属性与命令映射（摘要）
+
+> 完整语义定义在 **Device Model**（`src/homie/device_model.h`，`constexpr` 表，**DRAM 静态 0 B**）；此处只列大纲。
+
+| node | property | datatype | 可写 | 命令映射 |
+|---|---|:---:|:---:|---|
+| `water` | `valve` | `enum("open,close")` | ✅ | `VALVE_OPEN` / `VALVE_CLOSE` |
+| `water` | `weight` / `weight-error` | `float` / `boolean` | — | — |
+| `water` | `zero` | `boolean` | ✅ | `WEIGHT_ZERO` |
+| `climate` | `temperature` / `humidity` / `battery` / `scan-enabled` | `float` / `boolean` | — | — |
+| `climate` | `scan` | `enum("start,stop")` | ✅ | `MI_THERMO_START_SCAN` / `MI_THERMO_STOP_SCAN` |
+| `system` | `mqtt-connected` / `wifi-rssi` / `wifi-signal` / `time-valid` / `event-queue` / `mqtt-retries` | `boolean` / `integer` / `enum` | — | — |
+| `control` | `computer-reset` | `boolean` | ✅ | `COMPUTER_RESET` |
+
+合共 **4 node / 16 property / 6 命令**。**node / property id 一律语义字符串**（`[a-z0-9-]`）；
+**禁止使用 `stable_id` 作为 Homie 身份**（其为 runtime_id 字母序 index，会平移）。
+
+### 12.6 `/set`（客户端 → 设备）
+
+- 载荷 = **裸值**（**不是** JSON 信封），topic = `homie/5/<id>/<node>/<prop>/set`。
+- **`retain=1` 一律丢弃**（覆盖 场景 A 实时 retained publish 与 场景 B broker 重连重放；**判据只有 `retain`**，禁用启发式替代）。
+- 校验顺序：① 属于本设备 namespace 且恰好 3 段 ⇒ ② 属性存在 / `settable` / dtype / enum 成员 / 数值范围 ⇒ ③ **显式映射表**得 `action_id`
+  （**客户端永远无法提供或覆盖 `action_id`**）⇒ ④ `command_manager_execute({source:"homie"})`。
+- 失败（越权 / 未知 / 只读 / 非法值 / retained）⇒ **不执行、不发布**，WARN 落 LogManager。
+- 结果收尾：pending 表（定容 4）+ 30 s 兜底超时，映射为 SUCCESS / FAILED / TIMEOUT / REJECTED / COMPLETED。
+
+### 12.7 ACL namespace（设备级隔离）
+
+| 规则 | permission |
+|---|---|
+| `homie/5/<id>/#` | **publish** |
+| `homie/5/<id>/+/+/set` | **subscribe** |
+
+- `<id>` 段**逐字枚举，禁止通配**（`homie/5/#` / `homie/5/+/…` / `#` 一律**拒绝**） ⇒ 跨设备隔离。
+- ACL **只做 namespace 隔离**，**不承担 per-property capability authorization**（AD-11 / §16.4；能力约束由 Device Model 校验负责）。
+- 设备账号需**同时**持有本条 Homie 两条 **与** §1–§10 的 P1 三条业务 topic ⇒ **PUT 为全量覆盖，必须一次写全 5 条**。
+
+---
+
 ## 附录 A：命令清单（速查）
 
 | 分类 | 命令 | 文档 |
@@ -854,3 +947,10 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 
 *§11（Control Plane API）于 **2026-10-04** 依 P1-5 实现补入。控制面契约变更须同步更新
 `docs/architecture/P1-5-Final-Review.md`；设备协议部分（§1–§10）不受其影响。*
+
+*§12（Homie 5 投影协议）于 **2026-10-10** 依 P2 收口补入。该节**只摘要**
+`docs/architecture/P2-0-architecture-review-and-design-freeze.md` 的冻结契约（§8/§10–§14/§16/§17.2.1），
+**不构成第二真源**；与冻结文档冲突时**以冻结文档为准**。Homie 设备协议变更须同步更新
+`src/homie/readme.md` 与 `docs/architecture/P2-8-Closure-Review.md`。*
+*★ **验证状态**：Homie 软件侧契约已验证；**真机 / 真 broker 端到端为 `NOT RUN`（硬件 DEFERRED）**，
+见 `docs/architecture/P2-7-Hardware-Deferral-Record.md`。*
