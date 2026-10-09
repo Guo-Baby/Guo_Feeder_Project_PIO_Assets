@@ -82,6 +82,7 @@
 | 文档 | 说明 |
 |---|---|
 | `P3-History-D1-Plan.md` | **★ P3 实施计划（PLAN ONLY）** —— 背景（P2 已建通信基础设施 / P3 建历史数据平台 / 为 P4 Web UI 铺路）· Scope（**IN 3.1–3.7** / OUT）· **WP-1…WP-7**（遥测策略 · D1 schema 设计 · EMQX 集成 · ingest Worker · LogHistory · 容量验证 · 保留策略）· Dependencies（前置已满足 / **未满足 U-1…U-3**）· Acceptance（**PASS / NOT RUN / HUMAN_REQUIRED / BLOCKED**）· Risks · 门禁 **G-1…G-5** |
+| `P3-Entry-Gate-Review.md` | **★ P3 实施入口评审（PLAN REVIEW ONLY）** —— **A** Plan R2 状态（7/7 `PASS`）· **B** 前置阶段（P0/P1/P2 `CLOSED` · P3 `NOT STARTED`）· **C** Entry Gate（`G-1`…`G-4` **未通过**）· **当前允许**（WP-1 设计准备 / Telemetry Policy 讨论）· **当前禁止**（建 migration / 改 Worker / 改 EMQX rule / 写 D1 / 部署）· **六态 Acceptance** · **人工裁决留痕表** |
 
 ## interfaces/ 接口 / 协议
 
