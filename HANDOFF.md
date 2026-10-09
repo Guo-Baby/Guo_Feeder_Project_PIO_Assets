@@ -210,7 +210,7 @@
 | **P0** ✅ | 设备身份（MAC 派生 `device_id` + NVS 持久化 + 禁漂移）· **Topic V3** `guo_feeder/<device_id>/...` · ACL 隔离 —— **已完成** |
 | **P1** | **设备生命周期管理**：注册（`CLAIM_PENDING` 防抢注）· 一机一凭据（建账号 + ACL + 轮换/回收）· 绑定 / 在线状态 · 生产模式检查 —— **Phase A（P1-0）✅ · B（P1-1）✅ · C（P1-2/P1-4）✅ · D（P1-3 凭据）✅ · E（P1-5 绑定）✅（2026-10-04）；剩 Phase F（P1-6 在线状态）· G（P1-7 生产检查）· P1-8 验收** |
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
-| **P3** | 历史/D1（多设备数据模型 + 遥测降频策略） |
+| **P3** ◀ **下一阶段** | 历史/D1（多设备数据模型 + 遥测降频策略）—— 计划见 `docs/architecture/P3-History-D1-Plan.md`（**PLAN ONLY**） |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） |
 | **P5** | Cloudflare Pages 部署 + 安卓 WebView 壳 |
 | **P6** | 原生 Android（**【后续可选】**，现在不装 Android Studio） |
@@ -413,9 +413,10 @@ P2-1 … P2-6       = CLOSED                 （P2-5 ACL 已落地；P2-6 资源
 P2-7 软件侧        = SOFTWARE READY / CLOSED
 P2-7 硬件侧        = ★ DEFERRED → NOT RUN  （HUMAN_REQUIRED；不阻塞）
 P2-7 含硬件 Overall = NOT RUN              （§19 要求 Step 1~10 全 PASS ⇒ 不宣称 PASS）
-P2-8              = CLOSED（收口评审 + 文档同步）
+P2-8              = CLOSED（收口评审 + 文档同步 + 归档）
 P2 阶段级          = SOFTWARE CLOSED / HARDWARE DEFERRED
-P2-9              = NOT STARTED
+P2 编号            = 结束于 P2-8
+下一阶段            = P3 · History / D1（NOT STARTED；计划见 P3-History-D1-Plan.md）
 ```
 
 **★ 权威结论文档**：`docs/architecture/P2-8-Closure-Review.md`（四态严格区分：PASS / NOT RUN / HUMAN_REQUIRED / DEFERRED）。
