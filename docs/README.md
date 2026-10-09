@@ -77,15 +77,17 @@
 ### P3 · History / D1 —— 阶段索引
 
 > **阶段状态**：**`P3 = NOT STARTED / PLANNED`** —— 计划已立项（**PLAN ONLY**）；实施须先过 `P3-History-D1-Plan.md` **§8 门禁（G-1…G-5）**并经人工批准。
+> **`WP-1 = CLOSED`**（Telemetry Policy 已冻结 `P3-WP1-Telemetry-Policy-Final.md` ⇒ **`G-2` 已解除**）；`G-1` / `G-3` / `G-4` **仍未通过**。
 > **`P2` 编号结束于 `P2-8`**；**`P3` = 下一主阶段**。
 
 | 文档 | 说明 |
 |---|---|
 | `P3-History-D1-Plan.md` | **★ P3 实施计划（PLAN ONLY）** —— 背景（P2 已建通信基础设施 / P3 建历史数据平台 / 为 P4 Web UI 铺路）· Scope（**IN 3.1–3.7** / OUT）· **WP-1…WP-7**（遥测策略 · D1 schema 设计 · EMQX 集成 · ingest Worker · LogHistory · 容量验证 · 保留策略）· Dependencies（前置已满足 / **未满足 U-1…U-3**）· Acceptance（**PASS / NOT RUN / HUMAN_REQUIRED / BLOCKED**）· Risks · 门禁 **G-1…G-5** |
-| `P3-Entry-Gate-Review.md` | **★ P3 实施入口评审（PLAN REVIEW ONLY）** —— **A** Plan R2 状态（7/7 `PASS`）· **B** 前置阶段（P0/P1/P2 `CLOSED` · P3 `NOT STARTED`）· **C** Entry Gate（`G-1`…`G-4` **未通过**）· **当前允许**（WP-1 设计准备 / Telemetry Policy 讨论）· **当前禁止**（建 migration / 改 Worker / 改 EMQX rule / 写 D1 / 部署）· **六态 Acceptance** · **人工裁决留痕表** |
+| `P3-Entry-Gate-Review.md` | **★ P3 实施入口评审（PLAN REVIEW ONLY · R2）** —— **A** Plan R2 状态（7/7 `PASS`）· **B** 前置阶段（P0/P1/P2 `CLOSED` · P3 `NOT STARTED`）· **C** Entry Gate（`G-1` `HUMAN_REQUIRED` · **`G-2` `PASS`（已解除）** · `G-3` `HUMAN_REQUIRED` · `G-4` `BLOCKED`）· **当前允许**（WP-1 `CLOSED` / WP-2 schema 设计草案 / WP-3·WP-4 设计层）· **当前禁止**（建 migration / 改 Worker / 改 EMQX rule / 写 D1 / 部署）· **六态 Acceptance** · **人工裁决留痕表** |
 | `P3-WP1-Telemetry-Policy-Design.md` | **★ WP-1 遥测策略设计（DESIGN ONLY · 草案）** —— §1 **唯一权威位置 = 设备侧**（EMQX 只执行过滤 / Worker 只负责存储）+ 反模式 · §2 **全量 8 类**分类 · §3 **逐类 5 维**（落库/频率/降频/生命周期/成本） · §4 汇总矩阵 · §5 **待人工裁决 5 项 `HUMAN_REQUIRED`**（阈值 `X` · 周期 `N` · heartbeat · online persistence · config key） · §6 与 `§7.3` / `P3-History-D1-Plan.md` R2 / `cloud_protocol.md` 一致性 |
 | `P3-WP1-Telemetry-Policy-Review.md` | **★ WP-1 审核报告（REVIEW ONLY）** —— §2 架构正确性审核（**唯一权威位置逐条核对** · 数据分类完整性 · 降频策略 · 引用真实性）· §3 **发现清单 `F-1…F-6`**（`R-n` 命名空间混用 · `system/*` 未分类 · 未区分 telemetry/control · `weight.enable` 依赖 · `$state` 术语 · Log 落库级别口径；各含**位置/冲突/建议**）· §4 **`HUMAN_REQUIRED` Decision List**（`H-W1-1…H-W1-5`；ID/问题/建议/选项/影响/推荐方向）· §5 冻结建议与**修改/不修改列表** |
-| `P3-WP1-Telemetry-Policy-Final-Draft.md` | **★ §7.3 终稿候选（`FINAL DRAFT`，待人工批准 · 非 `PASS` · 不解除 `G-2`）** —— 依审核 `F-1…F-6` 修订：§1 唯一权威位置 · §2 **9 类**（补 **System health**）+ **telemetry/control 边界声明** · §3 逐类 5 维（含 `weight.enable` 依赖 · `$state` 术语校正 · Log 落库级别口径） · §4 矩阵 + **不可加性说明** · §5 **`HUMAN_REQUIRED` `H-W1-1…H-W1-6`**（新增 `H-W1-6`） · §6 一致性 · §7 并入方式与生效条件 |
+| `P3-WP1-Telemetry-Policy-Final-Draft.md` | **★ §7.3 终稿候选（`FINAL DRAFT`，已被 `…Final.md` 取代）** —— 依审核 `F-1…F-6` 修订：§1 唯一权威位置 · §2 **9 类**（补 **System health**）+ **telemetry/control 边界声明** · §3 逐类 5 维 · §4 矩阵 + **不可加性说明** · §5 **`HUMAN_REQUIRED` `H-W1-1…H-W1-6`** |
+| **`P3-WP1-Telemetry-Policy-Final.md`** | **★★ §7.3 Telemetry Policy 最终冻结（`FROZEN` · `WP-1 = CLOSED` · **`G-2` 解冻依据**）** —— §1 唯一权威位置（设备侧 / EMQX 过滤 / Worker ingest·storage）· §2 **9 类** + **telemetry/control 边界** + **`system/*` 归类** · §3 逐类 5 维（含 `weight.enable` 依赖 · `$state` 词表含 `stale` · **Log 双级别分离**）· §4 矩阵 · §5 **人工裁决 `H-W1-1…H-W1-6` 冻结决策**（`N = 15 min` · heartbeat 不落库 · online 迁移 `init`/`ready`/`disconnected`/`lost` · `mqtt.json.telemetry` · system health 仅异常）· §8 `NOT RUN` 待实测项 |
 
 ## interfaces/ 接口 / 协议
 
