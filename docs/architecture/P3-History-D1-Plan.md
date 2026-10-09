@@ -1,0 +1,340 @@
+# P3 —— History / D1（历史数据平台实施计划）
+
+> **性质**：**PLAN ONLY（仅规划）**。本文件**只做计划与边界声明**，不实现、不建表、不写代码、不建 migration。
+> **状态**：**`P3 = NOT STARTED / PLANNED`** —— 计划已立项；**实施须先通过 §8 门禁并经人工批准**。
+> **上位依据**：`Cloud-APP-Platform-Plan.md`（**§10 P3 · 七项任务 3.1–3.7** · **§7.3 遥测→历史策略【待设计，P3 必须定稿】** · **§7.3 分层策略表** · **D10**）
+> **前置阶段**：`P1-Cloud-Device-Lifecycle-Plan.md`（P1 = CLOSED）· `P2-0-architecture-review-and-design-freeze.md`（P2 = FROZEN）· `P2-8-Closure-Review.md`（P2 = SOFTWARE CLOSED / HARDWARE DEFERRED）
+> **配套文档**：`migrations/README.md`（D1 schema 约定）· `docs/interfaces/cloud_protocol.md`（设备协议）· `docs/issues/未修复的问题.md`（BT-1 等）
+>
+> **⚠️ 术语铁律**：`PASS` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED` · `DEFERRED` · `CLOSED`
+> **`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 一律 ≠ `PASS`**。本计划**不把任何未验证项写成 PASS**。
+
+---
+
+## 0. 定位与一句话
+
+**P3 = 把"设备实时通信"升级为"历史数据平台"** —— 让设备产生的遥测与日志**持久化到 D1**，
+支持按 `device_id` + 时间范围的历史查询，**为 P4 Web UI（MQTT-Tiles + Homie Discovery Adapter）提供查询基础**。
+
+> **★ 一句话**：P2 让设备**能说话**（MQTT / Homie 投影 / 凭据 / ACL）；P3 让这些话音**能被记住并查回来**；
+> P4 才让用户**看得见**。P3 是三者之间的**存储与管道层**。
+
+---
+
+## 1. 背景
+
+### 1.1 P2 已完成什么（设备通信基础设施 = 已完成）
+
+- **设备身份与 Topic 隔离（P0）**：`device_id`（12 位小写 hex，MAC 派生 + NVS 持久化）· Topic V3 `guo_feeder/<device_id>/...`。
+- **设备生命周期与安全（P1）**：一机一凭据（EMQX 账号 + ACL）· 绑定 / 解绑 / 转让 · 在线状态投影 · 硬退役（REVOKED 终态）· N-3 脱敏。
+- **Homie 5 投影（P2）**：Device Model · Transport Facade · Homie Bridge（`$state` / `$description` / 属性发布 / `/set` → CommandManager）· ACL 5/5 双向覆盖。
+- **已有上行链路**：设备 → EMQX → `POST /api/ingest`（必须 `X-Webhook-Key`，含 REVOKED 早退守卫）。
+
+> ⇒ **通信、身份、安全、可发现性均已成立**；**但数据落库仍是"每来一条消息插一行"**，
+> 无历史归档、无降频、无保留策略（见 `migrations/README.md`：`mqtt_messages` **完全不动，P3 才重构**）。
+
+### 1.2 P3 要建立什么（历史数据平台能力）
+
+| 能力 | 说明 |
+|---|---|
+| **落库（持久化）** | 遥测与日志按 `device_id` + 时间写入 D1，可追溯 |
+| **降频（成本控制）** | 高频数据经**阈值 + 抽样 + 状态变化**过滤后再落库 |
+| **管道（数据集成）** | EMQX 侧 SQL 过滤 + HTTP Action → ingest Worker |
+| **容量可控** | 目标 **< 1200 行/设备/天**，11 台 ≈ 13,200 行/天（**13% 免费额度**） |
+| **生命周期** | 保留策略（TTL / 归档），避免无界增长 |
+
+### 1.3 为什么是 P3（以及为什么现在规划）
+
+- **路线图顺位**：`Cloud-APP-Platform-Plan.md` §10 计划顺序为 **P2 → P3 → P4**；P2 已 CLOSED。
+- **P4 的硬前置**：Web UI 的"历史查询"页（§10 P4 任务 4.7 `历史查询（调 Worker → D1）`）**必须**有 P3 的数据与端点。
+- **成本窗口**：§7.3 明示 **11 台设备即接近 D1 免费额度** ⇒ **必须在落库前把降频策略定稿**，否则返工。
+- **登记在案的欠账**：`migrations/README.md` 已把 `mqtt_messages` 重构**明确留给 P3**；`D10` 建议 BT-1 修复也在 P3。
+
+---
+
+## 2. Scope
+
+### 2.1 IN（P3 范围内）
+
+| # | 任务（对齐 §10 P3） | 落点 |
+|---|---|---|
+| **3.1** | **遥测 → 历史策略定稿**（§7.3） | 文档（**前置，必须最先完成**） |
+| **3.2** | **D1 schema 设计**（`TelemetryHistory` / `LogHistory`，含 `device_id` + `ts` + 查询索引） | 设计文档 + **后续** `0003_*` migration |
+| **3.3** | **EMQX 数据集成**（SQL 过滤 + HTTP Action → ingest Worker） | EMQX 仓 |
+| **3.4** | **ingest Worker**（批量 INSERT；**只拼接不解析**） | Cloudflare 仓 |
+| **3.5** | **LogHistory**（日志落库） | Cloudflare 仓（**依赖 BT-1**） |
+| **3.6** | **容量验证**（11 台实际行数 vs 预估；目标 < 1200 行/设备/天） | 实测 |
+| **3.7** | **保留策略**（TTL / 归档） | Cloudflare 仓（Cron Triggers） |
+
+### 2.2 OUT（P3 明确不做）
+
+| 项 | 归属 | 说明 |
+|---|---|---|
+| **Web UI**（MQTT-Tiles + Homie Discovery Adapter） | **P4** | P3 只提供数据与端点，不做界面 |
+| **Android（Pages + WebView 壳）** | **P5** | — |
+| **原生 App** | **P6（可选）** | 仅当出现明确需求才启动 |
+| **出粮机构（步进电机）/ 喂食计划 / 投喂异常检测** | 后续产品阶段 | 与历史平台无关 |
+| **P2-7 硬件实物验证**（Valve / HX711 / 第二设备隔离 / retained-LWT-discovery 真机） | **Hardware Integration + App 联调**（`P2-7-Hardware-Deferral-Record.md` R-1…R-6） | **与 P3 无依赖，可并行推进**；P3 **不代做** |
+| 修改固件 `src/` 业务逻辑 | — | P3 以**云侧为主**；设备侧若有改动仅限"上报频率/阈值配置"（见 WP-1） |
+
+---
+
+## 3. Work Package（WP-1 … WP-7）
+
+### WP-1 · 遥测 → 历史策略定稿（§7.3）—— **前置，最先做**
+
+**唯一交付**：把 §7.3 的【待设计】表**冻结为终稿**（本 WP 不改代码）。
+
+**必须明确的四件事**：
+
+| 维度 | 内容（基于 §7.3 的分层策略表，待定稿） |
+|---|---|
+| **数据类型** | ① 故障/安全事件（`EVENT_*` / `VALVE_ERROR`）· ② 供水动作（`VALVE_OPEN/CLOSE` / `0x0505`）· ③ 重量（`weight.value`）· ④ 水位/温湿度 · ⑤ 在线状态（`$state`）· ⑥ 心跳 |
+| **上报频率** | 故障=低频 · 供水=中低频 · 重量=高频 · 水位/温湿度=高频 · 在线=低频 · 心跳=高频 |
+| **降频策略** | 故障 **100% 落库** · 供水 **100% 落库** · 重量 **阈值 + 抽样**（变化 >Xg 或每 N 分钟一条）· 水位/温湿度 **每 5–15 分钟一条**（或超阈值）· 在线 **状态变化才落库** · 心跳 **不落库**（仅内存） |
+| **存储成本评估** | 目标 **< 1200 行/设备/天**；11 台 ≈ **13,200 行/天 = 13% 额度**；D1 存储 **~1 GB/年** ⇒ **安全** |
+
+**降频的三个可选手段（§7.3 二选一或组合，待定稿时裁决）**：
+1. **设备侧**：上报频率/阈值由**配置**控制（**不新增 Action**，走现有 `config`）⇒ 需冻结配置项键名。
+2. **EMQX 侧**：数据集成规则 SQL 里 `WHERE` 过滤（只转发变化超阈值的事件）。
+3. **ingest 侧**：Worker 内按 `device_id` 聚合 + 批量 INSERT（**只做拼接不做解析**，注意 CPU 预算）。
+
+**OPEN（本 WP 必须回答）**：
+- 阈值 `X`（重量死区）取值？抽样周期 `N` 取值？
+- "变化才落库"的**判定放在哪一层**（设备 / EMQX / ingest）？三者口径必须一致。
+- **心跳**：明确"不落库"，但**在线状态迁移点是否落库**（§7.3 表内"在线状态=状态变化才落库"）？
+- 是否复用既有 `device_event` 表，还是新建 `TelemetryHistory`？（见 WP-2 §关联项）
+
+**产出**：§7.3 终稿（可直接并入 `Cloud-APP-Platform-Plan.md` 或本文件 Appendix）。
+
+---
+
+### WP-2 · D1 schema 设计（**仅计划，不建 migration**）
+
+> **⚠️ 本 WP 只产出设计**。**不创建任何 migration 文件**；`0003_*` 的落地属 P3 实施阶段（须人工批准）。
+
+**仅计划两张表**：
+
+#### `TelemetryHistory`（遥测历史）
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `device_id` | TEXT NOT NULL | 12 位小写 hex（对齐 `device` 表） |
+| `ts` | INTEGER NOT NULL | **Unix 秒**（⚠️ 项目时间单位 = 秒；仅既有 `mqtt_messages.created_at` 是毫秒） |
+| `metric` | TEXT NOT NULL | 度量名（如 `weight.value` / `$state` / `valve.action`） |
+| `value` | REAL / TEXT | 数值或枚举（设计待定稿） |
+| `seq` | INTEGER | 可选：设备侧序号，用于去重 |
+
+#### `LogHistory`（日志历史）
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `device_id` | TEXT NOT NULL | 同上 |
+| `ts` | INTEGER NOT NULL | **Unix 秒** |
+| `level` | TEXT | `INFO` / `WARN` / `ERROR` / `CRITICAL` |
+| `code` | INTEGER / TEXT | 事件编号（EventId） |
+| `boot` | INTEGER | Boot 序号（用于跨重启关联） |
+| `seq` | INTEGER | 设备侧日志序号（**与 BT-1 ACK 关联**） |
+| `message` | TEXT | 可选，截断存储（体量控制） |
+
+**查询索引要求（必须）**：
+- `ix_th_device_ts (device_id, ts DESC)` —— 主查询模式"某设备某时间窗"。
+- `ix_lh_device_ts (device_id, ts DESC)` —— 同上。
+- （可选）`ix_th_metric_ts (metric, ts DESC)` —— 跨设备按度量聚合。
+
+**★ 关联项（既有登记，不在本 WP 展开）**：
+- **既有 `device_event` 表**（P1 建的，记录绑定/退役等**控制面事件**）与 `TelemetryHistory` **职责不同**：前者=控制面生命周期事件，后者=设备遥测。**是否合并须在 WP-1 定稿时明确**，本计划**不预设**。
+- **既有 `mqtt_messages`**：`migrations/README.md` 已登记「**完全不动，P3 才重构**」⇒ P3 需评估其**去留**（重构 / 退役 / 拆分）。**本计划仅登记，不裁决**。
+
+**★ 命名与纪律**（来自 `migrations/README.md`）：`0001_*` 一经上线**不得再编辑**；后续一律**新增** `000N_*`（当前已用到 `0002_*` ⇒ 下一个是 **`0003_*`**）；全部 `IF NOT EXISTS` 可重复执行。
+
+---
+
+### WP-3 · EMQX 数据集成
+
+**目标**：让 EMQX 把设备上行**按规则**转发到 ingest 端点，**在源头降频**。
+
+| 项 | 计划内容 |
+|---|---|
+| **SQL 过滤** | EMQX 规则 SQL 选择上行 topic（`guo_feeder/<id>/up` / `/log`）并 `WHERE` 过滤（阈值 / 只转发变化） |
+| **HTTP Action** | 规则动作 → `POST /api/ingest`，带 `X-Webhook-Key` |
+| **ingest endpoint** | 复用**既有** `POST /api/ingest`（`src/index.js`）；**保持 REVOKED 早退守卫**（`P1-6-3-D · IT-1`） |
+
+**☆ 边界**：
+- **不改设备 ACL**（P2-5 的 5/5 规则**保持不动**）。
+- **不放宽** `X-Webhook-Key` 鉴权。
+- 规则变更须与 Cloudflare 侧**同批/有序**上线（避免"转发了但没有接住"或反之）。
+
+---
+
+### WP-4 · Cloudflare ingest Worker
+
+**目标**：把 EMQX 转发来的消息**高效写入 D1**。
+
+| 项 | 计划内容 |
+|---|---|
+| **batch insert** | 单次请求内**批量 INSERT**（多值 `INSERT` 或 `D1 batch`），降低写入次数与 CPU |
+| **validation boundary** | 只做**边界校验**：`X-Webhook-Key` · `device_id` 形状 · REVOKED 守卫 · 必需字段存在 |
+| **不负责设备业务解析** | **只拼接不解析**：Worker **不解释** 设备业务语义（不判断"这是不是一次有效投喂"），**原样归档** |
+| **幂等** | 需**幂等**（EMQX 重投 / 重试不得产生重复行）——手段待定稿（唯一键 / `INSERT OR IGNORE`） |
+
+**☆ 边界**：不改动既有 `/api/admin/**` 控制面；不改 ACL 模板；不引入明文 secret（保持 N-3 脱敏）。
+
+---
+
+### WP-5 · LogHistory
+
+**目标**：日志结构化落库。
+
+> **★ 硬依赖：`BT-1`（云端从不回送 `log_ack`）必须先修。**
+
+**为什么依赖 BT-1**：
+- 当前云端**从不回 `log_ack`** ⇒ 设备侧 `acked_seq` 不前进 ⇒ **Flash 日志段永不回收**，
+  496 条写满后开始**淘汰未确认记录（静默丢 WARN+）**。
+- **落库（= 开始持久化日志）之前必须先修 BT-1**，否则落库的是"正在被淘汰的残缺日志"。
+- **⚠️ 修 BT-1 的隐含回归风险**（`docs/issues/未修复的问题.md`）：修好后段可回收 ⇒ 上行会**升至设计上限 `LOG_TX_MIN_INTERVAL_MS = 500` ⇒ 2 Hz（×30）** ⇒
+  **必须同步评估设备侧 CPU / Wi-Fi / loop 节奏负载**。⇒ **BT-1 修复须与设备侧负载评估同批**。
+
+---
+
+### WP-6 · 容量验证
+
+**目标**：用**真实数据**验证「**< 1200 行/设备/天**」的假设。
+
+| 项 | 内容 |
+|---|---|
+| **实测对象** | 11 台设备的**实际日行数** vs §7.3 **预估** |
+| **判据** | 单设备 **< 1200 行/天**；11 台 **< 13,200 行/天**（≈13% 免费额度） |
+| **若超标** | 回到 **WP-1** 收紧降频阈值（**不得**先上线再补） |
+
+**☆ 分类**：**容量实测 = `NOT RUN`**（需真实设备流量；本文档仅为计划）。
+**可用近似**：在无 11 台真机时，可用**单设备 + 合成流量**做**代理验证**，但**必须标注为代理证据，不得写成 PASS**。
+
+---
+
+### WP-7 · 保留策略
+
+**目标**：防止历史表无界增长。
+
+| 项 | 计划内容 |
+|---|---|
+| **手段** | D1 无原生 TTL ⇒ 用 **Cloudflare Cron Triggers**（定时 Worker）**删除超期行** / 或**归档** |
+| **保留窗口** | 待定稿（需结合 §7.3 的 ~1 GB/年 与免费额度） |
+| **索引友好删除** | 按 `ts` 批量删除，避免全表扫描（依赖 WP-2 的 `ts` 索引） |
+
+---
+
+## 4. Dependencies
+
+### 4.1 前置（**已满足**）
+
+| 依赖 | 状态 |
+|---|---|
+| **P2 CLOSED** | ✅ `P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`（`P2-8-Closure-Review.md`） |
+| **D1 available** | ✅ 库 `guofeeder`（绑定 `guofeeder_DB`）已建，`0001_*` / `0002_*` 已 apply |
+| **Worker infrastructure** | ✅ `guo-feeder-api` 已在运行，`POST /api/ingest` 端点存在（含 `X-Webhook-Key` 与 REVOKED 守卫） |
+| **设备上行链路** | ✅ MQTT → EMQX → ingest 已通 |
+| **EMQX 账号 / ACL** | ✅ P2-5 落地（5/5）；P3 **不修改** ACL |
+
+### 4.2 未满足（**开工门禁，必须先解决**）
+
+| # | 未满足项 | 影响 | 处置 |
+|---|---|---|---|
+| **U-1** | **telemetry policy 未冻结**（§7.3 仍【待设计】） | 落库口径未定 ⇒ 无法设计 schema / EMQX 规则 | **WP-1 必须先完成并冻结** |
+| **U-2** | **`BT-1` 未修**（云端不回 `log_ack`） | LogHistory 落的是被淘汰的残缺日志；修复后有上行升频回归风险 | **WP-5 前必须修 + 设备侧负载评估** |
+| **U-3** | **device heartbeat 未落地** | 心跳"不落库"但**在线状态迁移点**依赖心跳/`$state` 事件 | 随 **WP-1** 明确"在线状态落库"口径；如需设备侧心跳，落点已预登记 `mqtt.json.telemetry`（**不新增 Config 模块**） |
+
+> **★ 门禁规则**：**U-1 未冻结 ⇒ 不得开始 WP-2 / WP-3 / WP-4**；**U-2 未修 ⇒ 不得开始 WP-5**。
+
+---
+
+## 5. Acceptance（四态严格区分）
+
+### 5.1 必须 `PASS`（可在 P3 内自动/静态验证）
+
+| ID | 项 | 判据 |
+|---|---|---|
+| A-1 | WP-1 策略已冻结 | §7.3 由【待设计】→ **终稿**；四要素（类型/频率/降频/成本）齐全 |
+| A-2 | D1 schema 设计完成 | `TelemetryHistory` / `LogHistory` 含 `device_id` + `ts` + 索引；**仅设计，无 migration 落地** |
+| A-3 | EMQX 规则设计完成 | SQL 过滤 + HTTP Action + endpoint + 鉴权 明确 |
+| A-4 | ingest Worker 设计完成 | batch / 校验边界 / 不做业务解析 / 幂等 明确 |
+| A-5 | 保留策略设计完成 | 手段 + 窗口 + 删除方式 明确 |
+| A-6 | 静态一致性 | 端点 / topic / 字段名与 `cloud_protocol.md` / `migrations/README.md` 不冲突 |
+| A-7 | **本文档 doc-only** | 未改任何代码 / migration / 冻结文档 |
+
+### 5.2 必须 `NOT RUN`（P3 计划阶段**不得**声称通过）
+
+| ID | 项 | 原因 |
+|---|---|---|
+| N-1 | 容量实测（11 台真实行数） | 需真实设备流量 |
+| N-2 | 端到端落库验证（设备→EMQX→ingest→D1） | 需部署 + 真实流量 |
+| N-3 | 保留策略实际生效验证 | 需部署 + 时间跨度 |
+| N-4 | BT-1 修复后的上行升频实测 | 需设备侧负载评估（且 P3 未必含固件改动） |
+
+### 5.3 `HUMAN_REQUIRED`（人工裁决）
+
+| ID | 项 |
+|---|---|
+| H-1 | §7.3 终稿的**阈值 `X` / 抽样周期 `N`** 取值 |
+| H-2 | **schema 是否锁死**（`TelemetryHistory` 列集合定稿即冻结？） |
+| H-3 | **`mqtt_messages` 的去留**（重构 / 退役 / 拆分） |
+| H-4 | **保留窗口**取值 |
+| H-5 | **是否与 `device_event` 合并** |
+| H-6 | 是否批准 P3 **进入实施**（本计划仅为 PLAN） |
+
+### 5.4 `BLOCKED`（当前无法推进）
+
+| ID | 项 | 阻塞源 |
+|---|---|---|
+| B-1 | WP-2 / WP-3 / WP-4 | **U-1**（telemetry policy 未冻结） |
+| B-2 | WP-5 | **U-2**（BT-1 未修） |
+
+> **★** `BLOCKED ≠ FAIL` · `NOT RUN ≠ PASS` · `HUMAN_REQUIRED` 表示**须人工决策后才能继续**。
+
+---
+
+## 6. Risks
+
+| # | 风险 | 等级 | 说明 | 缓解 |
+|---|---|---|---|---|
+| **R-1** | **D1 免费额度** | 🔴 高 | §7.3 估算 **11 台 ≈ 13% 额度**，但**依赖降频真的生效**；若降频失效 ⇒ 打满 | WP-1 定稿 + WP-6 实测；上线前先小批量 |
+| **R-2** | **高频 telemetry** | 🟠 中 | 重量/温湿度为高频源；阈值判定若放错层 ⇒ 无效 | 三层口径统一（WP-1）；优先**源头降频**（EMQX） |
+| **R-3** | **schema lock-in** | 🟠 中 | `0001_*` 已"一经上线不得再编辑"；历史表列集合若定错 ⇒ 迁移昂贵 | **设计阶段冻结列集合**（H-2）；预留 `value` 的宽松类型 |
+| **R-4** | **log volume** | 🔴 高 | 修 BT-1 后上行**升至 2 Hz（×30）**；日志量可能远超预估 | BT-1 与设备侧负载**同批**评估；`message` 截断存储；LogHistory 可独立保留窗口 |
+| **R-5** | 幂等缺失导致重复行 | 🟠 中 | EMQX 重投 / Worker 重试 | WP-4 明确幂等键 |
+| **R-6** | 与既有 `mqtt_messages` 冲突 | 🟡 低 | 现有"每消息一行 INSERT"仍在跑 | H-3 决定去留后再动；过渡期并存 |
+
+---
+
+## 7. 交付物与提交纪律
+
+**本计划阶段的交付物**：**仅本文档**（`docs/architecture/P3-History-D1-Plan.md`）。
+
+**实施阶段的预期交付物（尚未产出，列此仅为索引）**：
+- WP-1：§7.3 终稿
+- WP-2：`0003_*` migration（**须人工批准后**）+ schema 设计附录
+- WP-3：EMQX 规则文件（EMQX 仓）
+- WP-4 / WP-5 / WP-7：ingest Worker 改动 + Cron（Cloudflare 仓）
+- WP-6：容量实测报告
+
+**纪律**：
+- 每阶段**独立 commit**；**代码与文档分离**；禁 `git add -A` / `.`。
+- 本计划阶段**禁止**：改固件 / 改 Cloudflare 代码 / 改 EMQX 配置 / 改 D1 schema / 改迁移文件 / push。
+
+---
+
+## 8. 进入实施的门禁（G-1 … G-5）
+
+> **全部满足并经人工批准后**，方可进入 P3 实施（即产出 `0003_*` 与云侧代码）。
+
+| 门禁 | 条件 |
+|---|---|
+| **G-1** | 本计划**经人工审核通过**（H-6） |
+| **G-2** | **WP-1 完成**：§7.3 **终稿**（解 **U-1 / B-1**） |
+| **G-3** | **H-2 / H-3 / H-4 / H-5** 已裁决（schema 列集合 / `mqtt_messages` / 保留窗口 / 与 `device_event` 关系） |
+| **G-4** | **BT-1 修复方案**已定并**配套设备侧负载评估**（解 **U-2 / B-2**，仅 WP-5） |
+| **G-5** | P3 范围**未扩大**（不触碰 §2.2 OUT 清单） |
+
+---
+
+*本文件于 **2026-10-10** 建立，为 **PLAN ONLY**；不含任何实现、迁移或代码改动。*
