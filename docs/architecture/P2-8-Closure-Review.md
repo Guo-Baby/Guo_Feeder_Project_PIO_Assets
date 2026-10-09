@@ -1,7 +1,7 @@
 # P2-8 Closure Review（P2 阶段收口评审）
 
 > **性质**：**收口评审报告（documentation-only）**。本文件**只做评审与状态对齐**，不实现、不修复、不改代码。
-> **状态**：**`P2-8 = CLOSED（评审部分）`** · **`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** · **`P2-9 = NOT STARTED`**
+> **状态**：**`P2-8 = CLOSED（评审部分）`** · **`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** · **下一阶段 = `P3 · History / D1`**
 > **上位冻结文档**：`P2-0-architecture-review-and-design-freeze.md`（**§19** P2-7 判据 · **§23** Freeze Checklist · **§17.2.1** Flash 预算 · **§16** ACL）
 > **配套文档**：`P2-7-Software-Readiness-Report.md` · `P2-7-Hardware-Deferral-Record.md` · `P2-6-Resource-Acceptance-Closure.md` · `P2-5-Homie-ACL.md` · `P2-8-Plan.md`
 >
@@ -284,7 +284,8 @@ P2-7 含硬件 Overall = NOT RUN            （§19 要求 Step 1~10 全 PASS �
 P2 §23 Checklist  = 23 FROZEN 全 COMPLIANT + 3 DEFERRED 全 HELD
 P2-8 评审          = CLOSED（本文件）
 P2 阶段级          = SOFTWARE CLOSED / HARDWARE DEFERRED
-P2-9              = NOT STARTED
+P2 编号            = 结束于 P2-8
+下一阶段            = P3 · History / D1（NOT STARTED）
 ```
 
 ### 9.2 本轮边界声明
@@ -293,5 +294,5 @@ P2-9              = NOT STARTED
 - **未修改任何冻结架构文档**（`P2-0-…freeze.md` 一字未动）。
 - **未把任何硬件未测试项转换为 PASS**；`NOT RUN` / `HUMAN_REQUIRED` / `DEFERRED` 三态保持严格区分。
 - **未修复 §7 的遗留项**（仅登记）。
-- **未进入 P2-9**，未开发任何 P2 范围外功能。
+- **未进入下一阶段（`P3 · History / D1`）**，未开发任何 P2 范围外功能。
 - **未 push**。

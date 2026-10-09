@@ -1,7 +1,7 @@
 # P2-8 Archive Record（P2 阶段归档记录）
 
 > **性质**：**归档记录（documentation-only）**。本文件**只记录人工裁决与最终状态**，不实现、不修复、不改代码。
-> **状态**：**`P2-8 = CLOSED`** · **`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** · **`P2-9 = NOT STARTED`** · **`push = DEFERRED`**
+> **状态**：**`P2-8 = CLOSED`** · **`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** · **下一阶段 = `P3 · History / D1`** · **`push = DEFERRED`**
 > **上位冻结文档**：`P2-0-architecture-review-and-design-freeze.md`（**§19** P2-7 判据 · **§23** Freeze Checklist · **§17.2.1** Flash 预算 · **§16** ACL）
 > **配套文档**：`P2-8-Closure-Review.md`（收口评审）· `P2-8-Plan.md`（计划与 H-1…H-5）· `P2-7-Hardware-Deferral-Record.md` · `P2-6-Resource-Acceptance-Closure.md` · `docs/issues/未修复的问题.md`（KI 登记）
 >
@@ -19,10 +19,10 @@
 | **push** | **`DEFERRED`** —— 全部 commit **仅保留在本地**，不推送 |
 | **scratch** | **`RETAINED`** —— 验证证据环境**保留，不删除、不修改** |
 | **P2-8-KI-1 / KI-2** | **`DEFERRED`** —— 保持 **Known Issue**，**不立修复任务**，留待 **Hardware Integration** 阶段重新评估 |
-| **P2-9** | **可开始**（技术前置无阻塞）——**但须人工下达指令后方可启动** |
+| **下一阶段（`P3 · History / D1`）** | **可开始**（技术前置无阻塞）——**但须人工下达指令后方可启动**（**P2 编号结束于 P2-8**） |
 
 > **★ 一句话**：P2-8 已收口并归档；三类人工裁决（**不 push / 不清理 scratch / KI 不修复**）已落地为记录；
-> **P2 的软件与契约部分完整 CLOSED**，硬件部分保持 `DEFERRED`/`NOT RUN`；**P2-9 未被启动**，等待人工下一步指令。
+> **P2 的软件与契约部分完整 CLOSED**，硬件部分保持 `DEFERRED`/`NOT RUN`；**下一阶段（`P3 · History / D1`）未被启动**，等待人工下一步指令。
 
 ---
 
@@ -138,7 +138,8 @@ P2-7 含硬件 Overall = NOT RUN             （§19 要求 Step 1~10 全 PASS �
 P2 §23 Checklist   = 23 FROZEN 全 COMPLIANT + 3 DEFERRED 全 HELD
 P2-8               = CLOSED               （评审 93d7abf + 文档同步 c2dea6d + 本归档记录）
 P2 阶段级           = SOFTWARE CLOSED / HARDWARE DEFERRED
-P2-9               = NOT STARTED
+P2 编号             = 结束于 P2-8
+下一阶段             = P3 · History / D1（NOT STARTED）
 push               = DEFERRED
 scratch            = RETAINED
 ```
@@ -154,16 +155,16 @@ scratch            = RETAINED
 
 ---
 
-## 7. P2-9 是否可以开始
+## 7. 下一阶段（`P3 · History / D1`）是否可以开始
 
 | 维度 | 结论 |
 |---|---|
 | **技术前置** | **无硬阻塞** —— P2-0.2 已冻结 · P2-1…P2-6 已 CLOSED · P2-7 软件就绪且硬件部分已正式 `DEFERRED`（**不阻塞**）· P2-8 已 CLOSED |
 | **可开始性** | **可开始**（技术层面） |
-| **启动条件** | **须人工明确下达指令后方可启动** —— 本轮**未启动**，也未做任何 P2-9 相关设计或实现 |
-| **边界** | P2-9 的**范围、目标、验收标准均尚未定义**（不在本记录内定义，亦不推定） |
+| **启动条件** | **须人工明确下达指令后方可启动** —— 本轮**未启动**，也未做任何 P3 相关设计或实现 |
+| **边界** | 下一阶段（`P3 · History / D1`）的范围 / 目标 / 验收以其**正式计划文档** `P3-History-D1-Plan.md` 为准；本记录**不重复定义** |
 
-> **★ 纪律**：**"可开始" ≠ "已开始"**。本记录仅陈述技术前置已清空这一**事实**，**不代表**授权进入 P2-9。
+> **★ 纪律**：**"可开始" ≠ "已开始"**。本记录仅陈述技术前置已清空这一**事实**，**不代表**授权进入下一阶段。
 
 ---
 
@@ -178,7 +179,8 @@ scratch            = RETAINED
 | **C · 其他软件线（W-1 / W-2 / P3）** | 纯软件推进（不依赖硬件） | 具体范围须人工定义 |
 
 **建议**：**以 A/B（Hardware Integration + App 联调）为首选返回点** —— 因为 P2 唯一未完成部分即硬件端到端，
-且 3 项 KI 的重新评估（§1.3）与 2 项配置分歧的最终处置都挂在**真机阶段**。**最终入口由人工裁决（H-5 仍未定）。**
+且 3 项 KI 的重新评估（§1.3）与 2 项配置分歧的最终处置都挂在**真机阶段**。
+> **★ H-5 已裁决（2026-10-10）**：下一阶段 = **`P3 · History / D1`**（主线正式编号阶段）；硬件线（A/B）**不取消**，与 P3 **并行推进**（`P2-7-Hardware-Deferral-Record.md` R-1…R-6）。
 
 ---
 
@@ -193,7 +195,7 @@ scratch            = RETAINED
 | 5 | 第二设备 isolation 实测 | **`NOT RUN`** | 需第二台真实 ESP32-S3 |
 | 6 | 真机 discovery / `$state=ready` / LWT 验证 | **`NOT RUN`** | 需真机 + 真 broker |
 | 7 | retained `/set` 真机两场景（A/B） | **`NOT RUN`** | 需真机 |
-| 8 | **H-5**：P2-8 之后进入哪条线 | **`HUMAN_REQUIRED`** | 等待人工裁决 |
+| 8 | **H-5**：P2-8 之后进入哪条线 | **`RESOLVED`** | 已裁决（2026-10-10）= **`P3 · History / D1`** |
 | 9 | push 三仓 | **`DEFERRED`** | 等待人工授权 |
 | 10 | scratch 清理 | **`DEFERRED`**（保留） | 等待人工授权（当前裁决：保留） |
 
@@ -208,7 +210,7 @@ scratch            = RETAINED
 - **未修复 P2-8-KI-1 / KI-2**（仅确认登记状态）；**未改任何默认值 / 配置系统 / weight 模块**。
 - **未清理、未修改任何 scratch 目录**。
 - **未 push**。
-- **未进入 P2-9**，未定义其范围，未开发任何 P2 范围外功能。
+- **未进入下一阶段（`P3 · History / D1`）**，未定义其范围，未开发任何 P2 范围外功能。
 - **未扩大 P2 scope**。
 
 ---

@@ -53,7 +53,7 @@
 ### P2 · Homie Bridge（设备侧 Homie 5 投影）—— 阶段索引
 
 > **阶段状态**：**`P2 = SOFTWARE CLOSED / HARDWARE DEFERRED`** —— `P2-0.2 = FROZEN` · `P2-1…P2-6 = CLOSED` ·
-> **`P2-7 = SOFTWARE READY` · 硬件 `DEFERRED`（`NOT RUN`，不阻塞）** · `P2-8 = CLOSED（评审 + 归档）` · `P2-9 = NOT STARTED` ·
+> **`P2-7 = SOFTWARE READY` · 硬件 `DEFERRED`（`NOT RUN`，不阻塞）** · `P2-8 = CLOSED（评审 + 归档）` · **下一阶段 = `P3 · History / D1`（P2 编号结束于 P2-8）** ·
 > **`push = DEFERRED` · `scratch = RETAINED`**。
 > 权威依据：`P2-0-architecture-review-and-design-freeze.md`（**§19 / §23 / §17.2.1 / §16**）。
 
@@ -62,7 +62,7 @@
 | **`P2-0-architecture-review-and-design-freeze.md`** | **★ P2 架构冻结（FROZEN · 含 P2-0.2 修订）＝P2 不可擅改基线** —— Device Model / Transport Facade / Homie Projection 三层设计；**§23 Freeze Checklist（23 FROZEN + 3 DEFERRED）** · **§19 P2-7 三级成立判据** · **§17.2.1 Flash 预算 `≤ 14 KiB`** · **§16 ACL 模型与职责边界** · §22 依赖图 |
 | `P2-8-Closure-Review.md` | **★ P2 收口评审（本阶段权威结论）** —— WP-1 基线冻结与「无未记录代码修改」核验 · **§23 逐条对齐（26/26）** · **§19 完成度（PASS / NOT RUN 分列）** · §17.2.1 预算 · ACL/topic 契约 · 四态分类总表 · 遗留项登记 · `stable_id` 专项审查 · 阶段级结论 |
 | `P2-8-Plan.md` | P2-8 计划（收口评审 + 文档同步）：目标 / WP-1…WP-7 / 依赖 / 验收 A-1…A-11 · N-1…N-16 · H-1…H-5 · F-1…F-5（**PLAN ONLY 记录**） |
-| `P2-8-Archive-Record.md` | **★ P2-8 归档记录** —— 归档裁决落地（**不 push（`DEFERRED`）/ 不清理 scratch（`RETAINED`）/ KI 保持 Known Issue**）· `P2-8-KI-1`/`KI-2` 登记确认 · H-1…H-5 处置 · P2 最终状态 · P2-9 可开始性 · 未解决事项列表 |
+| `P2-8-Archive-Record.md` | **★ P2-8 归档记录** —— 归档裁决落地（**不 push（`DEFERRED`）/ 不清理 scratch（`RETAINED`）/ KI 保持 Known Issue**）· `P2-8-KI-1`/`KI-2` 登记确认 · H-1…H-5 处置 · P2 最终状态 · 下一阶段（`P3 · History / D1`）可开始性 · 未解决事项列表 |
 | `P2-7-Software-Readiness-Report.md` | **P2-7 软件侧 readiness（无硬件条件下的全部验证）** —— A. 已验证 PASS（构建 / 资源零回归 / 静态契约 / 728 断言回归 / Homie 制品 / EMQX 真实 broker）· B. NOT RUN（N-1…N-16）· C. HUMAN_REQUIRED checklist |
 | `P2-7-Hardware-Deferral-Record.md` | **P2-7 硬件延期记录** —— 决策与原因 · 16 项硬件项（保持 `NOT RUN`）· **未来返回节点 R-1…R-6**（Valve → HX711 → 真机 MQTT/Homie → 第二设备隔离 → retained/LWT/discovery → **App 联调**）· 再入纪律 |
 | `P2-7-Hardware-Test-Readiness.md` | 实物测试准备清单 —— §19 摘要判据 · 责任矩阵 · 需要人工准备的真实设备（A–F）· **接线清单（Valve `GPIO12` / HX711 `DT6·SCK7` / 安全铁律）** · 待确认项 Q-1…Q-8 |
@@ -73,6 +73,15 @@
 | `P2-5-Homie-ACL.md` | **P2-5 Homie ACL 实施与验证** —— 设备级 5 条 ACL（`credential.js` ⇄ `acl-rules.v3.json` 双路径收敛）· PUT 全量覆盖 · 真实 EMQX 授权实测 23/23 · 补写流程 |
 
 > **设备侧 Homie 模块说明**：`src/homie/readme.md`（职责 / topic / property / `/set` 流程）
+
+### P3 · History / D1 —— 阶段索引
+
+> **阶段状态**：**`P3 = NOT STARTED / PLANNED`** —— 计划已立项（**PLAN ONLY**）；实施须先过 `P3-History-D1-Plan.md` **§8 门禁（G-1…G-5）**并经人工批准。
+> **`P2` 编号结束于 `P2-8`**；**`P3` = 下一主阶段**。
+
+| 文档 | 说明 |
+|---|---|
+| `P3-History-D1-Plan.md` | **★ P3 实施计划（PLAN ONLY）** —— 背景（P2 已建通信基础设施 / P3 建历史数据平台 / 为 P4 Web UI 铺路）· Scope（**IN 3.1–3.7** / OUT）· **WP-1…WP-7**（遥测策略 · D1 schema 设计 · EMQX 集成 · ingest Worker · LogHistory · 容量验证 · 保留策略）· Dependencies（前置已满足 / **未满足 U-1…U-3**）· Acceptance（**PASS / NOT RUN / HUMAN_REQUIRED / BLOCKED**）· Risks · 门禁 **G-1…G-5** |
 
 ## interfaces/ 接口 / 协议
 
