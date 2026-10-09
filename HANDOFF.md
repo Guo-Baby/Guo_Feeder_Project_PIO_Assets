@@ -1,7 +1,7 @@
 # 交接文档 · Guo Feeder Project
 
 > **用途**：跨会话 / 跨人交接。新开会话时**先读本文件**，再按 §1 的清单读对应文档。
-> **最后更新**：2026-10-04
+> **最后更新**：2026-10-10（**P2 阶段收口** —— 见 §11）
 
 ---
 
@@ -30,8 +30,14 @@
 9. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\cloud_protocol.md      ← MQTT 协议唯一权威
 10. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\interfaces\workflow_cloud_interface.md
 11. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\AI_CONTEXT.md / AI_RULES.md
+12. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\architecture\P2-8-Closure-Review.md   ← ★ P2 阶段收口结论（当前阶段权威）
+13. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\architecture\P2-0-architecture-review-and-design-freeze.md
+                                                                             ← ★ P2 架构冻结（§19 判据 / §23 Checklist / §17.2.1 预算 / §16 ACL，不可擅改）
+14. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\docs\architecture\P2-7-Hardware-Deferral-Record.md
+                                                                             ← ★ P2-7 硬件延期记录 + 未来返回节点 R-1…R-6
+15. D:\Guo_Feeder_Project\PIO_Assets\Guo_Feeder_Project\src\homie\readme.md    ← 设备侧 Homie 投影模块说明
 
-【背景】当前处于「云端/APP 架构落地」阶段，下一步是 P0–P6（详见 HANDOFF.md §4）。
+【背景】P0 与 P1 已完成；**P2（Homie Bridge）软件侧已收口**、**硬件实物测试已延期**（见 §11）。
 我（用户）是 ESP32 固件开发者，习惯先看文档再动手；改动前请先说明方案。
 构建/烧录/串口调试的完整命令与已知坑见 AGENTS.md。
 ```
@@ -392,3 +398,84 @@ export HTTPS_PROXY=$https_proxy HTTP_PROXY=$http_proxy
 - 代码：`Cloudflare_Assets/guo-feeder-api/src/` —— `binding.js`（新）· `device-registry.js`（+196/−7）· `index.js`（+136/−1）· `credential.js`（+77/−13）。
 - 文档：`docs/architecture/P1-5-Final-Review.md`（新 · 审计桥接）· `docs/interfaces/cloud_protocol.md` **§11 Control Plane API** · `P1-5-Device-Binding-Design.md`（加指针）· `docs/README.md` · `P1-实现清单.md` · `Cloudflare_Assets/README.md`。
 - **设计与实现差异 11 项（Δ-A…Δ-K）** 全部登记在 `P1-5-Final-Review.md` §2；**该文与代码冲突时以代码为准**。
+
+---
+
+## 11. 本轮（2026-10-10）完成清单 —— **P2 阶段收口（Closure Review + 文档同步）**
+
+### 11.1 当前状态（**最重要**）
+
+```
+P0                = CLOSED
+P1（含 P1-5 / P1-6 / P1-7 / P1-8）= CLOSED
+P2-0.2            = CLOSED / FROZEN        （架构冻结；Flash 预算 ceiling ≤ 14 KiB，§17.2.1）
+P2-1 … P2-6       = CLOSED                 （P2-5 ACL 已落地；P2-6 资源验收 PASS）
+P2-7 软件侧        = SOFTWARE READY / CLOSED
+P2-7 硬件侧        = ★ DEFERRED → NOT RUN  （HUMAN_REQUIRED；不阻塞）
+P2-7 含硬件 Overall = NOT RUN              （§19 要求 Step 1~10 全 PASS ⇒ 不宣称 PASS）
+P2-8              = CLOSED（收口评审 + 文档同步）
+P2 阶段级          = SOFTWARE CLOSED / HARDWARE DEFERRED
+P2-9              = NOT STARTED
+```
+
+**★ 权威结论文档**：`docs/architecture/P2-8-Closure-Review.md`（四态严格区分：PASS / NOT RUN / HUMAN_REQUIRED / DEFERRED）。
+
+### 11.2 ★ P2-7 硬件实物测试 = **DEFERRED（`NOT RUN`，不是 PASS，也不是 FAIL）**
+
+- **原因**：当前无法连接真实 Valve / HX711 / 外部传感器，也没有第二台 ESP32-S3。
+- **去向**：由人工在未来完成，计划**与 App 联调阶段**一并做端到端验证。
+- **未完成项（16 项，保持 `NOT RUN`）**：Valve 物理动作 · HX711 真实重量闭环 · 电磁阀安全超时断电 ·
+  retained `/set` 真机两场景（A 实时 / B broker 重放）· 真机 Homie discovery · 真机 LWT `lost` ·
+  **第二设备隔离（Step 10）** · `$state` `init`→`ready` 真机生命周期 · reconnect · Wi-Fi/MQTT 真机连接 ·
+  `weight.zero` / `weight-error` / OQ-3 真机 · boot `$description` 耗时 · 稳态抓包 · 米家读数。
+
+### 11.3 ★ 未来硬件回归入口（**接上硬件后按此顺序回归**）
+
+> 完整清单见 `docs/architecture/P2-7-Hardware-Deferral-Record.md` §4；实物准备与接线见 `P2-7-Hardware-Test-Readiness.md`。
+
+| 节点 | 触发条件 | 回归项 |
+|---|---|---|
+| **R-1 Valve 接入** | 阀 + MOSFET/继电器 + 独立电源 + **共地** + 续流二极管 | Valve 物理动作 · 安全超时断电 |
+| **R-2 HX711 接入** | HX711 + Load Cell + **已知砝码**（`weight.enable=true`） | 重量闭环 · `water/zero` 归零 · 死区 |
+| **R-3 真机 MQTT/Homie** | 真机 + 2.4 GHz 可出公网 Wi-Fi + 设备凭据 + MQTT 客户端 | discovery · `$state` 生命周期 · reconnect · 抓包 · boot 耗时 |
+| **R-4 第二设备隔离** | 第二台 ESP32-S3（或等价第二 MQTT 身份） | Step 10 跨设备 ACL 被拒（`real second-device isolation`） |
+| **R-5 retained / LWT / discovery** | 真机 + 可控断连/断电 + 能发 retained 的客户端 | retained `/set` 场景 A/B · LWT `lost` |
+| **R-6 App 联调** | App 侧就绪 + 真实设备在线 | 端到端联调（**本次延期的主要落点**） |
+
+**再入纪律**：不得把硬件项标为 PASS（除非真实证据）· 不修改测试标准 · 不删硬件清单 ·
+`fixture ACL isolation` ≠ `real second-device isolation` · **真实 LWT 不得用 `SIGKILL` 代替** ·
+设备端配置以 `config_query` 实值为准 · **严禁 GPIO 直驱电磁阀**。
+
+### 11.4 本轮交付物
+
+| 文件 | 类型 |
+|---|---|
+| `docs/architecture/P2-8-Closure-Review.md` | **新增**（P2 收口评审） |
+| `docs/architecture/P2-8-Plan.md` | 新增（P2-8 计划，PLAN ONLY 记录） |
+| `docs/architecture/P2-7-Software-Readiness-Report.md` | 新增（P2-7 软件侧验证） |
+| `docs/architecture/P2-7-Hardware-Deferral-Record.md` | 新增（硬件延期记录） |
+| `docs/architecture/P2-7-Hardware-Test-Readiness.md` | 新增（实物准备清单） |
+| `docs/architecture/P2-0-architecture-review-and-design-freeze.md` | **§17.2.1 修订**（Flash ceiling → 14 KiB，P2-0.2） |
+| `docs/README.md` | 新增 **P2 阶段索引** |
+| `HANDOFF.md` | 本文件 |
+| `docs/interfaces/cloud_protocol.md` | 新增 **§Homie 协议章节** |
+| `src/homie/readme.md` | 新增（Homie 模块说明） |
+| `docs/issues/未修复的问题.md` | 新增 **P2-8 遗留项登记** |
+
+### 11.5 已知遗留（**仅登记，未修复**）
+
+| ID | 问题 |
+|---|---|
+| **P2-8-KI-1** | weight 代码默认 `dt=4` / `sck=5` **与 OLED I2C（4/5）冲突**（`config_manager.cpp:3625/3630`）；仓库写 6/7 规避，设备端缺键会回落 4/5 |
+| **P2-8-KI-2** | **`weight.enable` 三方不一致**：仓库 `false` / 代码默认 `true` / 设备端缺键⇒`true` |
+| P2-4-OPEN-1 | 设备侧无法区分命令终态 |
+| P2-3-OPEN | LogManager EventId 无冻结编号（Flash 部分已由 P2-0.2 解决） |
+
+### 11.6 仓库基线与推送状态
+
+| 仓库 | HEAD | 推送 |
+|---|---|---|
+| 固件 `PIO_Assets/Guo_Feeder_Project` | 见 `git log -1` | **未 push**（`origin/wb` 落后） |
+| 云端 `Cloudflare_Assets/guo-feeder-api` | `392f181` | **未 push** |
+| 消息 `EMQX_Assets` | `eec9444` | **未 push** |
+

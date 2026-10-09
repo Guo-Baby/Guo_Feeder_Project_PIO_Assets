@@ -26,6 +26,21 @@
 > **下一步计划（P0–P6）与当前进度见 `HANDOFF.md`**；
 > 云端架构权威方案见 **`docs/architecture/Cloud-APP-Platform-Plan.md`**（v2）。
 
+**★ 当前阶段（2026-10-10）：P0 / P1 已完成；P2（Homie Bridge）软件侧已收口。**
+
+| 阶段 | 状态 |
+|---|---|
+| P0 · P1 | **CLOSED** |
+| P2-0.2 / P2-1…P2-6 | **CLOSED**（架构冻结 · Flash 预算 ceiling ≤ 14 KiB） |
+| **P2-7** | **软件侧 `SOFTWARE READY`** · **硬件侧 `DEFERRED`（`NOT RUN`，不阻塞）** |
+| P2-8 | **CLOSED**（收口评审 + 文档同步） |
+| P2 阶段级 | **SOFTWARE CLOSED / HARDWARE DEFERRED** |
+
+> **★ P2-7 硬件实物测试延期**（当前无 Valve / HX711 / 第二台 ESP32-S3），计划与 **App 联调阶段**一起做端到端验证；
+> 未来回归入口见 `docs/architecture/P2-7-Hardware-Deferral-Record.md`（R-1…R-6）。
+> **P2 收口结论**：`docs/architecture/P2-8-Closure-Review.md`；**Homie 模块说明**：`src/homie/readme.md`；
+> **Homie 协议章节**：`docs/interfaces/cloud_protocol.md` §12。
+
 ---
 ## 一、硬件平台
 主控单元
@@ -402,7 +417,15 @@ Guo_Feeder_Project
 │   │   └── log_ack.h               // ACK 处理
 │   │
 │   ├── cloud/                  // 云通信层
-│   │   └── cloud_manager.cpp/.h    // MQTT / 云协议 / JSON+CBOR / ACK
+│   │   ├── cloud_manager.cpp/.h    // MQTT / 云协议 / JSON+CBOR / ACK
+│   │   ├── mqtt_transport.cpp/.h   // P2-2 Transport Facade（LWT / retain / foreign 分派）
+│   │   └── mqtt_routing.h          // P2-2 纯逻辑：topic 匹配 / 订阅注册表 / 分片重组
+│   │
+│   ├── homie/                  // P2 Homie 5 投影层（编译期门控 GF_HOMIE_ENABLED，默认 0）
+│   │   ├── device_model.cpp/.h     // 语义定义（4 node / 16 property / 6 命令；DRAM 静态 0 B）
+│   │   ├── homie_projection.h      // 纯逻辑层（topic / $description / 值序列化 / /set 解析）
+│   │   ├── homie_bridge.cpp/.h     // 薄桥接（$state 相位机 / 属性发布 / set→CommandManager）
+│   │   └── readme.md               // ★ 模块说明（职责 / topic / property / set 流程）
 │   │
 │   └── test/                   // 测试桩
 │       └── test_mqtt.cpp/.h        // MQTT 测试 Action
