@@ -1,7 +1,10 @@
 # P2-7 Hardware Test Readiness（实物测试准备清单）
 
 > **性质**：**准备清单（documentation-only）**。本文件**不代表任何实物测试已完成**。
-> **状态**：`P2-6 = CLOSED`（见 `P2-6-Resource-Acceptance-Closure.md`）· **`P2-7 = READY — WAITING FOR HUMAN HARDWARE SETUP`**
+> **状态**：`P2-6 = CLOSED`（见 `P2-6-Resource-Acceptance-Closure.md`）· **`P2-7 SOFTWARE READY` · `WAITING FOR FUTURE HARDWARE INTEGRATION`**
+> **★ 硬件实物测试已决策「延期」**（不等待硬件接入，不阻塞后续阶段；计划与 App 联调阶段一起做端到端验证）⇒
+> 决策与返回节点见 **`P2-7-Hardware-Deferral-Record.md`**；软件侧结论见 **`P2-7-Software-Readiness-Report.md`**。
+> **本文件为「准备清单」，其条目全部保留、未删减；实物测试项一律保持 `NOT RUN` / `HUMAN_REQUIRED`（非 PASS）。**
 > **上位冻结文档**：`P2-0-architecture-review-and-design-freeze.md` **§19**（P2-7 Vertical Slice，FROZEN）· §16（ACL）· §17.2.1（预算）
 > **代码基线**：`6775bb3`（src/ 与 HEAD 一致）
 >
@@ -176,6 +179,18 @@ ESP32 GND    ────────────────► 外部电源 GN
 
 ## 5. ★ 前置阻塞项（**必须先解决，否则真机 P2-7 无法开始**）
 
+> **★ 状态更新（2026-10-09）：本节记录的阻塞项已「解除」——不再是阻塞项。**
+> 本节内容**原样保留**为历史记录（当时核查为「未落地」属实）；结论已变更如下：
+>
+> | 原记录 | 现状（2026-10-09 复核） |
+> |---|---|
+> | §5.1 P2-5 Homie ACL 模板 + 补写**未落地** | **已落地**：`Cloudflare 392f181`（`credential.js` 5 条）· `EMQX eec9444`（`acl-rules.v3.json` + `homieRuleTemplate` + `scripts/apply-acl.mjs` / `acl-expand.mjs` / `backfill-homie-acl.mjs`）· 文档 `P2-5-Homie-ACL.md`（固件 `c1f525c`） |
+> | §5.1 后果（Homie topic 被兜底 `# deny` 全拒） | **不再成立**：真实 broker 授权实测 **23/23 PASS**（见 `P2-7-Software-Readiness-Report.md` §1.6），设备账号含 5 条 ACL |
+> | §5.2 生产设备 ACL 补写需显式授权（`replaceUserAclRules` 为 PUT 全覆盖） | **仍成立且仍有效**：PUT 必须一次给全 5 条（P1 三条 + Homie 两条），只发 2 条会打掉既有业务规则。生产设备 `288485896ce4` **未被改动** |
+> | §5 结论「P2-5 是 P2-7 真机测试的硬前置」 | **已满足** ⇒ `P2-7 前置依赖 = UNBLOCKED` |
+>
+> ⇒ **当前真机 P2-7 的唯一剩余前置 = 硬件接入本身（阀/秤/第二设备/Wi-Fi/客户端）**，见 §3 与 §6。
+
 ### 5.1 P2-5（Homie ACL 模板 + 补写）尚未落地
 
 现状核查（只读）：
@@ -230,9 +245,11 @@ ESP32 GND    ────────────────► 外部电源 GN
 
 ```
 P2-6                          = CLOSED / PASS  （新 ceiling ≤14 KiB，见 Closure 文档）
-P2-7 Agent-side 可自动部分     = 已全部执行且 PASS
-P2-7 实物/真 broker 部分        = NOT RUN        （HUMAN_REQUIRED）
-P2-7 前置依赖                  = BLOCKED  ← P2-5 Homie ACL 未落地 + 目标设备 ACL 需授权（§5）
-P2-7 Overall                  = READY — WAITING FOR HUMAN HARDWARE SETUP
-P2-8                          = NOT STARTED
+P2-7 Agent-side 可自动部分     = 已全部执行且 PASS  （见 P2-7-Software-Readiness-Report.md）
+P2-7 实物/真 broker 部分        = NOT RUN        （HUMAN_REQUIRED；★ 已决策「延期」）
+P2-7 前置依赖                  = UNBLOCKED  （P2-5 已落地并真实 broker 复测 23/23；本节 §5 已更新）
+P2-7 软件侧                    = SOFTWARE READY
+P2-7 含硬件 Overall            = WAITING FOR FUTURE HARDWARE INTEGRATION （NOT RUN，非 PASS，非 FAIL）
+P2-7 是否阻塞                  = 否（不作为阻塞阶段）
+P2-8                          = NOT STARTED （计划见 P2-8-Plan.md）
 ```

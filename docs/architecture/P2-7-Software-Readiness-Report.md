@@ -5,6 +5,12 @@
 > **上位冻结文档**：`P2-0-architecture-review-and-design-freeze.md` **§19**（P2-7 Vertical Slice, FROZEN）· §16（ACL）· §17.2.1（预算）
 > **前置文档**：`P2-7-Hardware-Test-Readiness.md`（清单）· `P2-6-Resource-Acceptance-Closure.md`（资源验收）· `P2-5-Homie-ACL.md`
 >
+> **★ 状态（2026-10-09 更新 · P2-7 收口决策）**
+> **`P2-7 SOFTWARE READY` · `WAITING FOR FUTURE HARDWARE INTEGRATION`**
+> **P2-7 不作为阻塞阶段。** 硬件实物测试**延期**（决策与返回节点见 `P2-7-Hardware-Deferral-Record.md`），
+> 计划与 **App 联调阶段**一并做端到端验证。**§1 的软件侧 PASS 结论全部有效、不变；§2 的硬件项一律保持
+> `NOT RUN` / `HUMAN_REQUIRED`，不得标记为 `PASS`；测试标准与 §3 硬件清单均未修改/未删除。**
+>
 > **⚠️ 术语铁律（全文适用）**
 > `PASS` · `FAIL` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED`
 > **`HUMAN_REQUIRED` ≠ `FAIL`**。本报告**不含**任何 mock 成硬件测试的结论；凡需真实阀/秤/第二设备/broker 行为者，
@@ -22,10 +28,13 @@
 | 静态契约检查（GPIO / 配置 / ACL↔topic） | **PASS**（含 2 项**需人工复核**的分歧注记） |
 | 自动化回归（9 类套件） | **全绿**（累计 **728 项断言 PASS / 0 FAIL**，另有 7 项**已登记的** legacy EXPECTED_FAILURE） |
 | MQTT/Homie 软件侧制品 | **PASS**（topic / `$description` / ID / set parser 全部实测） |
-| **真机 / 真 broker 行为** | **NOT RUN**（`HUMAN_REQUIRED`，见 §2） |
-| **P2-7 Overall** | **`READY — WAITING FOR HUMAN HARDWARE SETUP`** |
+| **真机 / 真 broker 行为** | **NOT RUN**（`HUMAN_REQUIRED`，见 §2；硬件延期，见 §6） |
+| **P2-7 软件侧 Overall** | **`SOFTWARE READY`** |
+| **P2-7 含硬件 Overall** | **`WAITING FOR FUTURE HARDWARE INTEGRATION`**（`NOT RUN`，**非 PASS**） |
+| **是否阻塞下一阶段** | **否**（P2-7 不作为阻塞阶段） |
 
-**一句话**：**所有不依赖硬件的 P2-7 验证已全部执行且通过；P2-7 剩余部分是 100% 的实物 / 真 broker 环节。**
+**一句话**：**所有不依赖硬件的 P2-7 验证已全部执行且通过；P2-7 剩余部分是 100% 的实物 / 真 broker 环节，
+该部分已决策为「延期至未来硬件接入 + App 联调阶段」，并保持 `NOT RUN` / `HUMAN_REQUIRED`（不视为 PASS，也不阻塞）。**
 
 ---
 
@@ -393,8 +402,33 @@ homie_task 栈帧 / 静态 PSRAM / IRAM 增量        = 240 B / 0 / 0           
 MQTT/Homie 软件侧制品                          = PASS   （topic / $description 1,907·1,618 B / 4 node·16 prop / set parser）
 EMQX ACL 真实 broker 授权                      = PASS   （fixture ACL isolation 23/23；探针零残留）
 
-真机 / 真 broker 端到端（N-1…N-16）             = NOT RUN （HUMAN_REQUIRED）
-P2-7 前置依赖                                  = UNBLOCKED （P2-5 已落地并复测；前置文档 §5 待人工更新）
-P2-7 Overall                                   = READY — WAITING FOR HUMAN HARDWARE SETUP
-P2-8                                           = NOT STARTED
+真机 / 真 broker 端到端（N-1…N-16）             = NOT RUN （HUMAN_REQUIRED；硬件延期，见 §6 与 Deferral Record）
+P2-7 前置依赖                                  = UNBLOCKED （P2-5 已落地并复测）
+P2-7 软件侧 Overall                            = SOFTWARE READY
+P2-7 含硬件 Overall                            = WAITING FOR FUTURE HARDWARE INTEGRATION （NOT RUN，非 PASS）
+P2-7 是否阻塞                                  = 否
+P2-8                                           = NOT STARTED （计划见 P2-8-Plan.md）
 ```
+
+---
+
+## 6. 状态变更记录（P2-7 收口决策 — 硬件延期）
+
+> 本节为**状态记录**，**不改动 §1–§3 的任何结论、标准或清单**。
+
+| 项 | 内容 |
+|---|---|
+| 决策 | **P2-7 硬件实物测试阶段暂缓，不等待硬件接入** |
+| 原因 | 当前无法连接真实 Valve / HX711 / 外部传感器，也没有第二台 ESP32-S3 |
+| 硬件验证去向 | **人工在未来完成**，计划与 **App 联调阶段**一并做端到端验证 |
+| P2-7 状态 | **`P2-7 SOFTWARE READY` · `WAITING FOR FUTURE HARDWARE INTEGRATION`**（**不阻塞**） |
+| 软件侧结论 | **全部保留、全部有效**（§1 / §1.6 的 PASS 结论不受影响） |
+| 硬件项 | **一律保持 `NOT RUN` / `HUMAN_REQUIRED`** —— **未标记为 PASS，也不会被标记为 PASS** |
+| 测试标准 | **未修改**（§19 三级成立判据、Step 1–10 判据、全部 `NOT RUN` 判据原样保留） |
+| 硬件清单 | **未删除**（§3 HUMAN_REQUIRED checklist 与 `P2-7-Hardware-Test-Readiness.md` 全文保留） |
+| 返回节点 | 见 `P2-7-Hardware-Deferral-Record.md`（Valve / HX711 / 真机 MQTT·Homie / 第二设备隔离 / retained·LWT·discovery / App 联调） |
+| 范围声明 | 本节及关联文档均为 **doc-only**；**未修改** firmware / Cloudflare / EMQX / 架构冻结内容 |
+
+> **★ 关于「P2-7 Overall」的措辞**：由于 §19 的 `Overall PASS = Step 1~10 全 PASS`，而 Step 6/7/9/10 等
+> 依赖实物 ⇒ **含硬件的 P2-7 Overall 仍为 `NOT RUN`**（**不是** PASS，**不是** FAIL）。
+> 本阶段只声明**软件侧已就绪**，不宣称 P2-7 整体通过。
