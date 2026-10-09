@@ -2,9 +2,10 @@
 
 > **性质**：**REVIEW / SELF-CHECK ONLY**。本文件**不含代码、不修改任何既有文档**，只做**对 WP-2 设计的自检与合规核对**。
 > **状态**：**`P3 = NOT STARTED / PLANNED`** · **`G-3` 仍 `HUMAN_REQUIRED`** · **未解除任何 Gate** · **`push = DEFERRED`**
-> **被检对象**：`docs/architecture/P3-WP2-History-Data-Model-Design.md`（WP-2 设计 · `DESIGN ONLY`）
+> **被检对象**：`docs/architecture/P3-WP2-History-Data-Model-Design.md`（WP-2 设计 · `DESIGN ONLY` · **R2 / G-3 候选**）
 > **自检依据**：`P3-WP1-Telemetry-Policy-Final.md`（**冻结**）· `P3-History-D1-Plan.md`（R2）· `migrations/README.md`
-> **自检时点**：**2026-10-10** · 固件仓 HEAD = **`e015a29`**（工作树 clean）
+> **自检时点**：**2026-10-10** · 固件仓 HEAD = **`24ffc2a`**（工作树 clean）
+> **★ 修订**：**R2（2026-10-10）** —— 被检对象已修订为 **G-3 候选**（`value` 物理 `TEXT` · telemetry 增 `seq`/`schema_version`、删 `boot_seq`/`trace_id` · 幂等键明确 · 索引调整 · `H-WP2` 重编号）。**自检四项结论不变**；**`H-WP2` 清单同步更新（§6）**。
 >
 > **⚠️ 术语铁律**：`PASS` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED` · `DEFERRED` · `CLOSED`。**一律 ≠ `PASS`**。
 
@@ -19,7 +20,7 @@
 | **是否修改实现** | ✅ **否** —— 未动 `src/` / Worker / EMQX / migration / D1（详见 §4） |
 | **是否解除任何 Gate** | ✅ **否** —— `G-1` / `G-2` / `G-3` / `G-4` / `G-5` 状态**全部未变**（详见 §5） |
 | **是否与 `WP-1` 冲突** | ✅ **无冲突**（§2 逐条） |
-| **是否新增 `HUMAN_REQUIRED`** | ⚠️ **是（预期内）** —— `H-WP2-1…H-WP2-11`（§6），**属设计产出的待裁决项，非违规** |
+| **是否新增 `HUMAN_REQUIRED`** | ⚠️ **是（预期内）** —— **待裁决 `H-WP2-1`/`3`/`5`/`8`/`9`/`10`/`11`/`12`/`13`**（§6.1），**属设计产出的待裁决项，非违规**；`H-WP2-2`/`4`/`6`/`7` **已由 R2 裁决**（§6.2） |
 | **是否 `push`** | ✅ **否** |
 | **`P3` 状态** | **`NOT STARTED / PLANNED`**（**未变**） |
 
@@ -108,23 +109,33 @@
 
 ---
 
-## 6. 新增 `HUMAN_REQUIRED` 清单（**`H-WP2-1…H-WP2-11`**）
+## 6. `HUMAN_REQUIRED` 清单（**`H-WP2-*` · R2 重编号**）
+
+### 6.1 待裁决（OPEN）
 
 | ID | 问题 | 本设计建议（**仅建议**） | 关联 |
 |---|---|---|---|
-| **`H-WP2-1`** | history 是否统一表（A/B/C 取舍） | **推荐 C**（`telemetry_history` + `log_history` 分域二表） | `WP-1` 分离原则 · R2 `WP-2` |
-| **`H-WP2-2`** | retention 周期 | 候选：telemetry 90d · event 180d · log 30d | R2 `H-4` |
+| **`H-WP2-1`** | 双表架构（方案 C）是否批准 | **推荐 C**（`telemetry_history` + `log_history` 分域二表） | `WP-1` 分离原则 · R2 `WP-2` |
 | **`H-WP2-3`** | 是否保存原始 payload | telemetry 不存原始；log 保留 `payload`（限体积） | R2 `WP-2` |
-| **`H-WP2-4`** | 是否需要 `schema_version` | 建议纳入（整数） | §3.2 |
-| **`H-WP2-5`** | 表命名风格 | 建议 snake_case（对齐 `device_event`） | §2.3 |
-| **`H-WP2-6`** | 是否需要 `boot_seq`（telemetry 域） | 可选 | §3.2 |
-| **`H-WP2-7`** | 是否需要 `seq` + 幂等唯一键 | **建议纳入 `seq`** | §3.2 · WP-4 幂等 |
-| **`H-WP2-8`** | `log_history.payload` 体积上限 / 超限处置 | 建议给字节上限 | R2 `WP-2` |
-| **`H-WP2-9`** | `mqtt_messages` 去留 | 本设计不裁决 | R2 `H-3` |
-| **`H-WP2-10`** | 是否与 `device_event` 合并 | **不建议合并**（职责不同） | R2 `H-5` |
-| **`H-WP2-11`** | `ts` 取值口径（设备 vs ingest） | 建议设备时间（`time-valid` 时），否则回退 ingest | `§12.5` `time-valid` |
+| **`H-WP2-5`** | **表命名最终确认** | 建议 snake_case（对齐 `device_event`） | §2.3 |
+| **`H-WP2-8`** | **`payload` 最大长度** / 超限处置 | 建议给字节上限 | R2 `WP-2` |
+| **`H-WP2-9`** | **telemetry retention 周期** | 候选 **90 天** | R2 `H-4` |
+| **`H-WP2-10`** | **log retention 周期** | 候选 **30 天** | R2 `H-4` |
+| **`H-WP2-11`** | `mqtt_messages` 去留 | 本设计不裁决 | R2 `H-3` |
+| **`H-WP2-12`** | 是否与 `device_event` 合并 | **不建议合并**（职责不同） | R2 `H-5` |
+| **`H-WP2-13`** | `ts` 取值口径（设备 vs ingest） | 建议设备时间（`time-valid` 时），否则回退 ingest | `§12.5` `time-valid` |
 
-> **★** 以上**全部 `HUMAN_REQUIRED`**，**agent 不代决**。它们是 **`G-3`（Schema 冻结）** 的裁决内容。
+### 6.2 已由 R2 修订裁决（**不再为 `HUMAN_REQUIRED`**）
+
+| 原 ID | 项 | **R2 裁决** |
+|---|---|---|
+| `H-WP2-2` | retention 周期（合并项） | **拆分为 `H-WP2-9`（telemetry）+ `H-WP2-10`（log）** |
+| `H-WP2-4` | 是否需要 `schema_version` | **✅ 纳入**：`INTEGER NOT NULL DEFAULT 1` |
+| `H-WP2-6` | 是否需要 `boot_seq`（telemetry 域） | **✅ 删除**（仅保留于 `log_history`） |
+| `H-WP2-7` | 是否需要 `seq` + 幂等唯一键 | **✅ 纳入 `seq`（NOT NULL）**；键 = `(device_id, type, ts, seq)` |
+
+> **★ 编号迁移（透明留痕）**：原 `H-WP2-9`（`mqtt_messages`）→ **`H-WP2-11`** · 原 `H-WP2-10`（`device_event` 合并）→ **`H-WP2-12`** · 原 `H-WP2-11`（`ts` 口径）→ **`H-WP2-13`**（腾出 9/10 承载 retention 两项）。
+> **★ 纪律**：§6.1 各项**一律 `HUMAN_REQUIRED`**，**agent 不代决**。它们是 **`G-3`（Schema 冻结）** 的裁决内容；**本轮未裁决任何一项**。
 
 ---
 
@@ -148,4 +159,4 @@
 ---
 
 *本文件于 **2026-10-10** 建立，为 **WP-2 自检审核报告（REVIEW ONLY）**；不含任何实现、迁移或代码改动。*
-*被检对象 = `P3-WP2-History-Data-Model-Design.md`；基线 = 固件仓 HEAD `e015a29`。*
+*被检对象 = `P3-WP2-History-Data-Model-Design.md`（R2 / G-3 候选）；基线 = 固件仓 HEAD `24ffc2a`。*
