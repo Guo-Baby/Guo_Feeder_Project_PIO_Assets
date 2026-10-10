@@ -1,0 +1,892 @@
+# P3 · DT:WP-4 —— History Ingestion & Cloud Pipeline Design（历史数据接入与云端管道设计 · **`DESIGN ONLY`**）
+
+> ## 🟢 `FROZEN` · **R5 冻结回填（`CLOSED` 15 项 / `OPEN` 2 项）**（**设计已冻结 · 实施唯一基线 · 已由人工批准 · 不含任何实现**）
+>
+> - 本文件 = **P3 历史数据「进入云端后的完整链路」设计稿**（Device → MQTT → EMQX → Worker ingest → validation → idempotency → D1 persistence）；**不含代码**、**不创建任何 migration**、**不写 D1**、**不改 Worker / EMQX**。
+> - **★ 状态声明（英文原文，须逐字保留）**：
+>   > **WP-4 Design only means ingestion pipeline design completed.**
+>   > **It does not mean implementation started.**
+>   > **WP-4 Implementation Ready Candidate means the design has no remaining hard blockers and is submitted for implementation review.**
+>   > **It does not mean the design is frozen, approved, or implemented.**
+>   > **WP-4 Implementation Review Ready means the design closure is complete and the document is submitted for final approval.**
+>   > **It does not mean the design is frozen, approved, or implemented.**
+>   > **WP-4 Frozen means the ingestion pipeline design is frozen and is the single implementation baseline.**
+>   > **It does not mean implementation started.**
+> - ⚠️ **本文件不解除任何门禁** —— **`G-1` / `G-2` / `G-3` / `G-4` / `G-5` 状态均未改动**（见 §0.1）。
+> - ⚠️ **`DT:WP-4 = FROZEN`（设计已冻结 · 实施唯一基线）** —— **冻结 = 设计冻结，≠ "实施已完成" · ≠ "实施已开始"** · **`P3 = NOT STARTED / PLANNED`**（**未改变**）。
+>
+> **状态**：**`DT:WP-4 = FROZEN`（设计已冻结 · 实施唯一基线 · 人工批准）** · **`P3 = NOT STARTED / PLANNED`** · **`push = DEFERRED`**
+> **上位依据（设计轨）**：`P3-WP1-Telemetry-Policy-Final.md`（**`FROZEN`**）· `P3-WP2-History-Data-Model-Design.md`（**`FROZEN`** · Schema Freeze）· `P3-WP3-History-Storage-Policy-Design.md`（**`FROZEN`**）
+> **上位依据（计划轨）**：`P3-History-D1-Plan.md`（**R2** · **`计划:WP-3`（EMQX 数据集成）** + **`计划:WP-4`（Cloudflare ingest Worker）** · §4.3 Entry Gate · §6 Risks）· `Cloud-APP-Platform-Plan.md`（§7.3 / §7.4 · §10 P3 任务 3.2 / 3.3）
+> **接口依据**：`docs/interfaces/cloud_protocol.md`（**§2 报文外壳与字段** · **§4 上行** · **§8.2 `log` Topic（规划中）** · **§12.3 `$state`** · **§12.5 属性映射**）
+> **现状依据（只读引用）**：`Cloudflare_Assets/guo-feeder-api/src/index.js`（`POST /api/ingest` · `POST /api/presence/event` · `deviceIdFromTopic()` · REVOKED 守卫 `P1-6-3-D · IT-1` · N-3 脱敏日志）· `migrations/README.md`（**migration 止于 `0002_*`**）
+> **设计时点**：**2026-10-10**（R1 / R2）· **2026-10-11**（R3 / R4 / R5）· R1 基线 = 固件仓 HEAD **`fee6b77`**（`DT:WP-3` 冻结提交）· **R2 / R3 / R4 / R5 基线 = 同一 HEAD `fee6b77`**（工作树 clean）
+>
+> **★ 修订标记（R2 · 2026-10-10 · 依人工裁决回填）** —— ① **`H-WP4-02` / `03` / `05` / `06` / `07` / `11` 六项 → `CLOSED`**（留痕见 **§10.0-R2**）· ② **§2 / §4 / §5 / §6 / §7 / §8 / §9 的候选描述 → 确定方案** · ③ **`F-WP4-4` / `5` / `8` → `CLOSED`**（分别由 `05` / `02`+`03` / `05` 消解；`F-WP4-6` 已缓解）· ④ **`H-WP4-01` / `04` / `08` / `09` / `10` / `12` / `13` / `14` / `15` 保持 `OPEN`**，并**新增 `16` / `17`**（`H-WP4-05` 的派生缺口）。
+> **★ 修订标记（R3 · 2026-10-11 · 依人工裁决回填）** —— ① **`H-WP4-01` / `13` / `16` / `17` 四项 → `CLOSED`**（留痕见 **§10.0-R3**）· ② **入口 topic 统一为 `guo_feeder/<device_id>/…`**（**不新增专用入口 · 不建第二套映射 · `device_id` 身份来源 = topic**；§2.2 / §2.3 / §2.6）· ③ **log 幂等键三分量 `(device_id, boot_seq, seq)` 由信封明文携带**、承载字段定名 **`payload_base64`**（§2.4b / §2.5 / §4.1 / §5.2 / §6 / §8.1）· ④ **`payload` 跨冻结冲突收敛为「`Base64` = 传输承载 ≠ 落库语义」**（落库语义仍依 `DT:WP-2` `H-WP2-3`；§4.2 / §9.2）· ⑤ **`H-WP3-06` 的 Worker 侧处置 = 遵守平台 request body 上限并拒收超限**（**不发明业务上限**；§4.2 / §5.1 `V-L5` / §9.3）· ⑥ **`F-WP4-3` / `11` / `12` → `CLOSED`**（`F-WP4-11` 为**责任转移**：脱敏归设备侧）· ⑦ **状态 → `IMPLEMENTATION READY CANDIDATE`（未冻结 · 未批准 · 不解除任何门禁）** · **⚠️ 剩余 `OPEN` 7 项（`04` / `08` / `09` / `10` / `12` / `14` / `15`）见 §10.1 · 尚非「已冻结／已批准」**。
+> **★ 修订标记（R4 · 2026-10-11 · 设计收口 · 依人工裁决回填）** —— ① **`H-WP4-04` / `08` / `09` / `15` 四项 → `CLOSED`**（留痕见 **§10.0-R4**）· ② **`schema_version > 1` = 接收 + 校验格式 + 原样保存**（**禁拒绝未知版本 / 禁解释未知字段 / 禁改 payload** ⇒ forward compatibility；§3.3）· ③ **DLQ 不进入 WP-4** —— 失败模型固化（**临时失败 = 5xx + 上游重投 + 幂等吸收**；**永久失败 = 4xx + 不回投**），DLQ **登记未来版本**（§7.4 / §10.6）· ④ **Worker structural validation 边界显式化**（**允许 5 类**：topic/`device_id` 一致性 · envelope 必填 · 类型 · `schema_version` 格式 · 幂等键完整性；**禁止 5 类**：telemetry policy · heartbeat 判断 · 业务价值判断 · 降频 · 数据有效性业务裁决；§5.1 / §3.2 / §3.4）· ⑤ **不增加限流 / IP 限制 / key rotation** —— 保留 `X-Webhook-Key` + EMQX ACL + Cloudflare 基础防护；**登记未来安全增强**（§9.1 / §9.3 / §10.6）· ⑥ **`H-WP4-14` 保持 `OPEN`**（**A/B 最终选择须人工裁决** · 风险分析保留；§9.1 / §10.1）· ⑦ **`F-WP4-1` → `CLOSED`（裁决：Worker 不做 heartbeat 判断 ⇒ 无 Worker 侧防线，由上游保证）** · ⑧ **状态 → `IMPLEMENTATION REVIEW READY`（设计收口完成 · 待人工最终批准 · 未冻结 · 不解除任何门禁）** · **⚠️ 剩余 `OPEN` 3 项（`10` / `12` / `14`）见 §10.1**。
+> **★ 修订标记（R5 · 2026-10-11 · 冻结回填 · 依人工裁决回填）** —— ① **`H-WP4-14` → `CLOSED`**（留痕见 **§10.0-R5**）：**最终裁决 = 选择 B（新增 history ingest endpoint）** —— 理由：**不继承旧 `/api/ingest` 的 `mqtt_messages` side effect** · **避免双写一致性问题** · **保持职责单一**；② **端点定义 = `POST /api/history/ingest`**（专用 · `X-Webhook-Key` 强制 · 拒绝 `source=cloud_api`）；**旧 `/api/ingest` 保持现状（不改）**；③ **EMQX Action 指向关系**：EMQX 规则 HTTP Action **指向新端点**（⚠️ **属实施期 EMQX 配置动作 · 本文件不改 EMQX**）；④ **authentication 继承规则** = 沿用 `X-Webhook-Key` 强制链 + `/api/admin/**` 走 `ADMIN_API_TOKEN` + 拒 `cloud_api` + 不引入第二因子；⑤ **与旧 endpoint 边界** = 二者互不依赖 · 新端点**不写 `mqtt_messages`**（§9.1）；⑥ **`F-WP4-10` → `CLOSED`**（双写 / 鉴权语义分歧由裁决消解）；⑦ **状态 → `FROZEN`（经人工**冻结批准** · 设计已冻结 · 实施唯一基线 · 不解除任何门禁）** · **⚠️ 剩余 `OPEN` 2 项（`10` / `12` · 均明确界外可延后）见 §10.1**。
+>
+> **⚠️ 术语铁律**：`PASS` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED` · `DEFERRED` · `CLOSED`。**`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 一律 ≠ `PASS`。**
+>
+> **★ 引用规范**：见 **§1.1** —— 本文件**凡引用计划条目一律写 `计划:WP-n`**，**凡引用设计轨条目一律写 `DT:WP-n`**，**禁止裸写 `WP-n`**；`WP1:§n` / `WP2:§n` / `WP3:§n` = 三份冻结文档对应章节；`计划:§n` = `P3-History-D1-Plan.md` 章节；`issues:<id>` = `docs/issues/未修复的问题.md`；`proto:§n` = `docs/interfaces/cloud_protocol.md` 章节。
+
+---
+
+## §0 本阶段定位与状态声明
+
+| 项 | 内容 |
+|---|---|
+| **`DT:WP-4` 性质** | **设计轨（Design Track）** —— 产出**历史数据接入与云端管道设计**（入口 / 校验 / 幂等 / 错误处置 / 写入 / 安全边界） |
+| **本文件定位** | **冻结设计（Design · **`FROZEN` · 实施唯一依据**）** —— 已由人工批准冻结，**作为 `计划:WP-3` / `计划:WP-4` 实施的唯一设计基线**；⚠️ **冻结 ≠ 实施已完成** |
+| **`DT:WP-4` 状态** | **`FROZEN`（设计已冻结 · 实施唯一基线 · 人工批准）** —— ⚠️ **≠ "功能已实现"** · **≠ "实施已开始"** |
+| **P3 状态** | **`NOT STARTED / PLANNED`**（**未改变**） |
+| **Gate 影响** | **无** —— 本文件**不解除、不新增、不改动任何门禁**（见 §0.1） |
+| **本文件不做的** | **No implementation** · **No Worker code**（**新端点仅设计定名，未写任何 Worker 实现**）· **No migration**（**未创建 `0003_*`**）· **No DDL** · **No D1 write** · **No EMQX change** · **No deploy** · **不改 `src/`** · **不改 `cloud_protocol.md`** · **不改 `DT:WP-1` / `DT:WP-2` / `DT:WP-3` 冻结文档** |
+| **裁决来源（R5 更新）** | **R2 六项**（`02` / `03` / `05` / `06` / `07` / `11` · 留痕 **§10.0-R2**）+ **R3 四项**（`01` / `13` / `16` / `17` · 留痕 **§10.0-R3**）+ **R4 四项**（`04` / `08` / `09` / `15` · 留痕 **§10.0-R4**）+ **R5 一项**（`14` · 留痕 **§10.0-R5**）**已由人工裁决**；**其余 `OPEN` 2 项**（`10` / `12`）见 §10.1 —— **本文件不代人工裁决任何未决项** |
+| **本文件不自行裁决** | 一切**未裁决的设计冲突**与**需要人工决定**的问题，**一律登记为 `H-WP4-*`**（§10）或 **`F-WP4-*`**（§10.4），**不擅自解决** |
+
+### 0.1 ★ Gate 状态（**基线复核 —— 逐项未改动**）
+
+| 门禁 | 状态 | 本轮是否改动 |
+|---|---|---|
+| **`G-1`** P3 Plan approved | **`HUMAN_REQUIRED`** | **否** |
+| **`G-2`** Telemetry Policy 冻结 | **`PASS`**（系 `DT:WP-1` 的人工裁决记录） | **否** |
+| **`G-3`** Schema 冻结 | **`PASS`**（系 `DT:WP-2` 的人工裁决记录） | **否** |
+| **`G-4`** `BT-1` `CLOSED` | **`BLOCKED`** | **否** |
+| **`G-5`** 范围未扩大 | **`PASS`** | **否** |
+
+> **★ 明确声明**：本文件**不映射、不新增、不解除任何门禁**；`DT:WP-4` 属**设计层**，其裁决项（`H-WP4-*`）**未被指派到任何门禁**。
+> **★ 与 `计划:WP-4` 实施的关系**：**`计划:WP-4`（ingest Worker 实施）仍受 `G-1` 批准门禁**（`计划:§4.3` / `计划:§8`）—— **本设计稿不改变该门禁**。
+
+---
+
+## §1 编号口径与上位依据
+
+### 1.1 ★ 编号解释（Numbering Clarification）—— 沿用 `DT:WP-3` §1 口径
+
+> **★ 目的**：消除 **「设计轨 `DT:WP-4`」** 与 **「计划轨 `计划:WP-4`」** 的同名歧义（二者**内容不同**）。**本文件全文强制使用「轨前缀」，禁止裸写 `WP-n`。**
+
+| 轨 | 定义 | 编号形式 |
+|---|---|---|
+| **设计轨（Design Track · `DT`）** | 本轮 P3 **设计阶段**的 Work Package 序列（产出设计 / 审核 / 冻结文档） | **`DT:WP-n`** |
+| **计划轨（Plan Track）** | `docs/architecture/P3-History-D1-Plan.md` 的 `计划:WP-1…WP-7`（**实施导向**的任务分解） | **`计划:WP-n`** |
+
+**设计轨 ↔ 计划轨 对应表**：
+
+| 设计轨（`DT`） | 内容 | 计划轨（`计划`） | 对齐性 |
+|---|---|---|---|
+| `DT:WP-1` | Telemetry Policy | `计划:WP-1` | ✅ 对齐（同号同义） |
+| `DT:WP-2` | History Data Model / Schema | `计划:WP-2` | ✅ 对齐（同号同义） |
+| `DT:WP-3` | History Storage Policy | `计划:WP-7` | ⚠️ 跨号对应 |
+| **★ `DT:WP-4`（本文件）** | **History Ingestion & Cloud Pipeline（入口 → 校验 → 幂等 → 写入）** | **`计划:WP-3`（EMQX 数据集成）+ `计划:WP-4`（Cloudflare ingest Worker）** | ⚠️ **一号对两号（本文件 = 二者合并设计）** |
+| `DT:WP-5`（后续 · 未开始） | 后续设计 WP | `计划:WP-5`（LogHistory）等 | ⚠️ 待后续编号时另行声明 |
+
+**引用规则（强制）**：
+
+| 规则 | 内容 |
+|---|---|
+| **R-1** | 提及**计划**条目 ⇒ 一律写 **`计划:WP-n`** |
+| **R-2** | 提及**设计轨**条目 ⇒ 一律写 **`DT:WP-n`** |
+| **R-3** | **禁止裸写 `WP-n`**（无前缀 = 歧义 ⇒ 视为文档缺陷） |
+| **R-4** | 本文件**自身** = **`DT:WP-4`**；其**实施归属** = **`计划:WP-3`（EMQX 侧）+ `计划:WP-4`（Worker 侧）** |
+| **R-5** | 编号口径的**最终解释权归人工** —— 本文件**不擅改计划编号**（`P3-History-D1-Plan.md` **未被修改**）；`DT:WP-4` ↔ `计划:WP-3/4` 的**合并口径**沿用 `DT:WP-3` §1 已采纳口径；⚠️ **命名/口径统一项 `H-WP4-13` 已于 R3 关闭** —— 其**内容** = **入口 topic 族统一**（见 §2.2），**不涉及**计划编号重排 |
+
+> **★ 一句话**：**本文件 = 设计轨 `DT:WP-4`；它设计的链路，将由 `计划:WP-3`（EMQX 转发）+ `计划:WP-4`（Worker ingest）实施；计划里的 `计划:WP-4` 是「实施任务」，本文件是「它之前的设计」。**
+
+### 1.2 上位依据（**逐份引用 · 不得违反**）
+
+| # | 文档 | 状态 | 本设计消费的内容 |
+|---|---|---|---|
+| **U-1** | `P3-WP1-Telemetry-Policy-Final.md` | **`FROZEN`** | §1 **唯一权威位置**（设备侧采样决策 / EMQX 只执行过滤 / Worker 只 ingest+storage）· §2 **9 类分类** · §3 逐类策略（heartbeat 不落库 `H-W1-3` · online 仅迁移点 `H-W1-4` · system health 仅异常 `H-W1-6` · **设备 Flash 级别 ≠ 云端级别 `F-6`**）· §5 裁决 |
+| **U-2** | `P3-WP2-History-Data-Model-Design.md` | **`FROZEN`** | §3 **`telemetry_history` schema**（`device_id`/`ts`/`type`/`value`/`source`/`seq`/`schema_version`/`created_at`）· §4.2 **`log_history` schema**（`device_id`/`ts`/`level`/`code`/`boot_seq`/`seq`/`message`/`payload`）· §3.4 **幂等键**（telemetry `(device_id,type,ts,seq)` · log `(device_id,boot_seq,seq)`）· §5 **索引集合（冻结）** · `H-WP2-13` **`ts` = Unix 秒** |
+| **U-3** | `P3-WP3-History-Storage-Policy-Design.md` | **`FROZEN`** | `H-WP3-01` **telemetry retention = 90 天** · `H-WP3-02` **log retention = 180 天**（L-A 统一窗口）· `H-WP3-03` **cleanup = scheduled cleanup job** · §7.4 **删除硬规则 `D-1…D-5`** · `H-WP3-06` **`payload` 上限 = `DEFERRED`（⚠️ 缺口）** · `H-WP3-10` **no additional index** |
+| **U-4** | `P3-History-D1-Plan.md`（R2） | **计划** | **`计划:WP-3`**（EMQX 规则 SQL + HTTP Action → `POST /api/ingest`；⚠️ **R5：本设计定稿 Action 指向新端点 `POST /api/history/ingest`（选择 B）** —— **计划口径差异已登记 · 本文件不擅改计划**）· **`计划:WP-4`**（Worker 4 职责 + 4 禁止）· **`计划:§4.3` Entry Gate**（`BT-1` 门禁 `计划:WP-5`）· **`计划:§6`** 风险 `R-5`（幂等缺失 ⇒ 重复行） |
+| **U-5** | `docs/interfaces/cloud_protocol.md` | **接口** | §2 **报文外壳**（旧格式 `cmd/ob/id/pl` vs 新格式 `c/i/p`；`v`+`k`）· §4 **上行语义** · §8.2 **`log` Topic**（CBOR / 批 ≤16 / 单条 ≤4096 B / 去重键 `(device_id,boot_seq,seq)`）· §12.3 `$state` · §12.5 属性映射（**不改该规范**） |
+| **U-6** | `Cloudflare_Assets/guo-feeder-api/src/index.js` | **现状（只读）** | `POST /api/ingest`（`X-Webhook-Key` 强制）· `deviceIdFromTopic()`（**topic 2 级路径优先**）· **REVOKED 早退守卫**（返回 200 `{ignored:"device_revoked"}`）· **N-3 脱敏日志**（`redactSecrets()`）· 既有 `mqtt_messages` 写入副作用 |
+
+---
+
+## §2 数据入口设计
+
+> **★ 原则**：**入口只描述"数据长什么样、怎么进来"** —— **不重新定义 telemetry policy**（`U-1` §1 `I-1`）。
+> **★ R3 更新（裁决已关闭）**：本章的**入口口径冲突**（`H-WP4-01` / `H-WP4-13`）**已由人工裁决关闭** —— **入口 topic 族 = `guo_feeder/<device_id>/…`（P2 已冻结 · ACL 已覆盖）**，**不新增任何专用入口**，**Worker 不建立第二套 topic 映射**（见 §2.2 / §2.3 / §2.6）。
+
+### 2.1 链路总览（**目标形态**）
+
+```
+┌──────────┐   MQTT    ┌──────────────┐   HTTP POST    ┌───────────────────────────────┐
+│  Device  │──────────▶│    EMQX      │───────────────▶│   Cloudflare Worker           │
+│ (采样决策 │  topic +  │  规则 SQL    │ /api/history/  │  ① auth (X-Webhook-Key)        │
+│  唯一权威)│  payload  │  ① 选 topic  │   ingest       │  ② envelope 解析                │
+└──────────┘           │  ② WHERE 过滤│  + JSON body   │  ③ device identity 解析        │
+                       │  ③ HTTP 动作 │                │  ④ REVOKED 守卫（早退）         │
+                       │  （只执行，  │                │  ⑤ 域路由（telemetry / log）    │
+                       │   不重定义） │                │  ⑥ 逐条 validation             │
+                       └──────────────┘                │  ⑦ 幂等（唯一键 INSERT OR IGNORE）│
+                                                       │  ⑧ 批量 persist（D1 batch）     │
+                                                       │  ⑨ 响应（200 / 4xx / 5xx）      │
+                                                       └───────────┬───────────┬────────┘
+                                                                   │           │
+                                                      telemetry 域 │           │ log 域
+                                                                   ▼           ▼
+                                                     ┌──────────────────┐ ┌──────────────────┐
+                                                     │ telemetry_history│ │   log_history    │
+                                                     └──────────────────┘ └──────────────────┘
+                                                       ⚠️ 清理（90 d）      ⚠️ 清理（180 d）
+                                                       —— 由 **独立 Cron** 承担，**不在本链路内**（§7.5）
+```
+
+> **★ R5 更新（入口端点）**：EMQX HTTP Action **指向新专用端点 `POST /api/history/ingest`**（**不写 `mqtt_messages`** · 见 §9.1；⚠️ **EMQX Action 指向变更属实施期配置 · 本文件不改 EMQX**）。
+
+> **★ 三个层次的责任边界（`U-1` §1 冻结）**：
+> | 层 | 唯一职责 | 不做什么 |
+> |---|---|---|
+> | **设备侧** | **采样决策**（频率 / 阈值 / 何时算变化 / 是否值得上报） | 不做存储、不做转发过滤 |
+> | **EMQX** | **只执行过滤**（规则 SQL `WHERE`） | **不重新定义阈值语义** |
+> | **Worker** | **ingest / validation / idempotency / persist**（**仅此 4 项**） | **不判断"该不该存" / 不做业务语义判断 / 不实现降频** |
+
+### 2.2 Topic 口径（**R3 定稿：统一为 `guo_feeder/<device_id>/…`**）
+
+> **★ 裁决（`H-WP4-01` + `H-WP4-13` = `CLOSED`）**：**Telemetry / Log ingest 的来源统一采用 P2 已冻结 topic 族 `guo_feeder/<device_id>/…`**；**不新增 `/up` 专用入口**（**不发明新 topic**）；**Worker 不建立第二套 topic 映射**（**Worker 侧只有一张 topic → 域 映射表**）；**`device_id` 的身份来源 = topic**。
+
+| 来源 | 记载的 topic | **R3 处置** |
+|---|---|---|
+| **P2-5 ACL（已落地 · 5/5 覆盖）** | `guo_feeder/<id>/down` · `guo_feeder/<id>/up` · `guo_feeder/<id>/log` | ✅ **唯一采纳族** —— **telemetry = `guo_feeder/<device_id>/up`** · **log = `guo_feeder/<device_id>/log`** |
+| `proto:§8.1`（**当前实现章节**） | `guo_feeder/down` · `guo_feeder/up` | ⚠️ **扁平写法 = 历史遗留**；**以 P2-5 `guo_feeder/<id>/…` 为准**（⚠️ **`proto` 文档不由本文件修改**） |
+| `proto:§8.2`（**规划中 · 未实现**） | `guo_feeder/log` | ⚠️ **被 `guo_feeder/<device_id>/log` 取代**（同上，**不改 `proto` 文档**） |
+| **P2 Homie 投影（已落地）** | `homie/5/<id>/$state` · `/$description` · `/<node>/<prop>` | ❌ **不作为历史 ingest 入口族** —— **避免第二套 topic 映射**（该族 = **设备模型投影**，维持其原语义，**不由本链路消费**） |
+
+> **★ 闭环（`F-WP4-3` → `CLOSED`）**：**「telemetry 入口 topic 三套口径并存」已由裁决消除** —— **唯一入口族 = `guo_feeder/<device_id>/…`**。
+> **★ 与 P2 ACL 一致性**：`guo_feeder/<id>/up`（pub）· `guo_feeder/<id>/log`（pub）**均已在 P2-5 ACL 覆盖内** ⇒ **无需新增 ACL、无需改 EMQX**（本文件**不改 EMQX 配置**）。
+> **★ 不新增的确认**：**未新增 topic**、**未新增订阅**、**未新增 `/up` 之外的专用入口**。
+
+### 2.3 域 → 入口映射（**R3 定稿：入口族唯一**）
+
+| 域 | 目标表 | **入口 topic（R3 定稿）** | 数据形状 | 幂等键（**冻结**） |
+|---|---|---|---|---|
+| **telemetry 域** | `telemetry_history` | **`guo_feeder/<device_id>/up`**（P2 已冻结 · ACL 覆盖） | **JSON**（EAV 一条 = 一个观测） | **`(device_id, type, ts, seq)`** |
+| **log 域** | `log_history` | **`guo_feeder/<device_id>/log`**（P2 已冻结 · ACL 覆盖） | **CBOR 批次 ⇒ 信封字段 `payload_base64` 以 `Base64` 承载**（`H-WP4-05` = `CLOSED`） | **`(device_id, boot_seq, seq)`** —— **★ 三分量由信封明文携带**（`H-WP4-16` = `CLOSED`） |
+| **控制面（**不入历史**）** | `device_event` | `POST /api/presence/event`（**独立入口 · 不属于本设计**） | JSON | — |
+
+> **★ 界外声明**：**存在性事件（online/offline）走 `POST /api/presence/event`**（`index.js` 已实现 · 独立早退分支）—— **不经本链路**；本设计**不改动**该入口。
+> **★ 但 `online.state`（§3.6 迁移点）属 telemetry 域**（`WP2:§4` 第 6 行）⇒ 两者是**不同数据**：一个进 `device_event`（基础设施事实），一个进 `telemetry_history`（运行历史）。**该区分须在设计审核中确认不混淆**（见 Review §3）。
+
+### 2.4 信封（envelope）解析设计
+
+> **★ Worker 消费的信封 = EMQX HTTP Action 投递的 JSON body**（**不是** MQTT 原始报文的语义 —— 语义已由设备侧与 EMQX 定稿）。
+
+**（a）通用信封字段（现状 + 设计确认）**
+
+| 字段（**EMQX webhook 形态**） | 用途 | 设计处置 |
+|---|---|---|
+| `topic` | **权威 `device_id` 来源**（§2.6 `ID-2` / `ID-3`）+ 域判定 | **必填**；缺失 ⇒ 校验失败（§5.3 V-2） |
+| `clientid` | `device_id` **回落**来源（**仅当 topic 无法解析**） | ⚠️ **R3：入口族已统一 ⇒ 回落路径不再是常态**；**保留现状语义** |
+| `payload` | 设备侧载荷（**字符串 / 对象**） | **必填**；按域解析（§2.5） |
+| `source` | 来源标签（`mqtt` 默认） | **新 history 端点 `/api/history/ingest` 拒绝** `cloud_api`（**继承现状守卫语义** · R5） |
+| **（建议新增）** `qos` · `ts_broker` · `username` | 排障 / 溯源 | ⚠️ **不得作为 telemetry policy 输入**；仅**观测**用（`H-WP4-14` 关联） |
+
+**（b）★ log 域：幂等键字段**必须**由信封明文携带（R3 定稿 · `H-WP4-16` = `CLOSED`）**
+
+| 信封字段（**R3 定名**） | 含义 | 来源要求 |
+|---|---|---|
+| `device_id` | 幂等键分量 ① —— **必须与 topic 解析结果一致**（§2.6 `ID-6`） | **信封明文**（**不得由解码 CBOR 取得**） |
+| `boot_seq` | 幂等键分量 ②（设备启动序号） | **信封明文** |
+| `seq` | 幂等键分量 ③（boot 内日志序号） | **信封明文** |
+| `payload_base64` | **CBOR 原始字节的 `Base64` 承载** | **透明数据** —— **Worker 不解码** |
+
+> **★ 铁律（`H-WP4-16`）**：**Worker 不得通过解析 CBOR 获取上述任一字段**；**CBOR `payload`（`payload_base64`）保持透明数据**；**不引入第二套幂等键**（仍为 `(device_id, boot_seq, seq)`，`U-2` §3.4）。
+> **★ 放置粒度**：三键分量置于**记录级**（逐条携带）为**默认**；若协议定稿选择**批次级共用**（同批 `device_id` / `boot_seq` 相同，`seq` 仍逐条），**亦满足本要求** —— **判据 = 每条记录的 `(device_id, boot_seq, seq)` 均可由信封明文获得**。
+
+> **★ 设计立场**：**信封是"传输事实"，不是"业务语义"** —— Worker **只从信封取"谁 / 从哪个 topic / 原始载荷是什么 / 幂等键是什么"**，**不据此判断数据价值**。
+> **★ 承载方案（`H-WP4-05` = `CLOSED` · `F-WP4-4` 已消解）**：`log` 域载荷为 **CBOR 二进制**（`proto:§8.2`），而 **history ingest 端点（`POST /api/history/ingest`）消费 JSON** ⇒ **统一承载 = `Base64` 字段 `payload_base64`**：
+> ① **设备侧 CBOR 编码保持不变**（**不改固件**）；② **CBOR bytes → `Base64` 字符串**放入 ingest 信封；
+> ③ **Worker 不解码 CBOR、不解析 log 内容、不修改内容、不对日志等级做业务判断**（见 **§4.2**）。
+> **★ 键字段与承载字段定名（R3）**：**键 = `device_id` / `boot_seq` / `seq`**（由 `H-WP4-16` 明确）· **承载 = `payload_base64`**（由 `H-WP4-05` + `H-WP4-16` 明确）。
+
+### 2.5 载荷（payload）形状
+
+| 域 | 载荷形态 | 设计要点 |
+|---|---|---|
+| **telemetry** | JSON 对象，**一条 = 一个观测**（`type` + 值 + 元信息）或**一个观测数组** | ✅ **`ts` / `seq` 均由设备侧生成并随报文携带**（`H-WP4-02` / `03` = `CLOSED`）；**Worker 不生成、不覆盖** |
+| **log** | CBOR 批次（≤16 条 · 单条 ≤4096 B，`proto:§8.2`）→ **信封字段 `payload_base64` 以 `Base64` 承载**（`H-WP4-05` = `CLOSED`） | ⚠️ **Worker 不解码、不解析内容**（**透明数据**）；**幂等键三分量 `(device_id, boot_seq, seq)` 由信封明文提供**（`H-WP4-16` = `CLOSED` · §2.4b） |
+
+> **★ 纪律**：**Worker 不做任何载荷语义解释**（不判断"这是不是一次有效投喂"、不判断"重量变化是否有效"）—— 只做**结构解析 + 字段存在性/形状校验**（§5）。
+> **★ 三层分离（R3 · 承 `H-WP4-17` = `CLOSED`）**：**① 设备侧编码（CBOR · 不变）** → **② 传输承载（`Base64` · 字段 `payload_base64`）** → **③ 落库（`log_history.payload`）**。**`Base64` 是传输层编码（transport encoding），不构成对落库语义的重新定义**；**`log_history.payload` 继续遵循 `DT:WP-2` `H-WP2-3` 冻结的 `TEXT(JSON)` 语义**；**Worker 只负责 ② → ③ 的「原样搬运」**（**不解码 / 不修改 / 不脱敏 / 不判断业务合法性**）。
+
+### 2.6 Device Identity 解析（**安全关键**）
+
+| 规则 | 内容 | 依据 |
+|---|---|---|
+| **ID-1** | **`device_id` 权威来源 = topic 路径**（**优先于 `clientid`、绝不信任 payload**） | `index.js` `deviceIdFromTopic()` · `计划:WP-3` |
+| **ID-2** | **形状校验**：12 位**小写** hex（`device.device_id` 冻结格式） | `migrations/README.md` §3.4 |
+| **ID-3** | **★ R3 定稿：`device_id` 提取规则唯一** —— `guo_feeder/<device_id>/…` ⇒ 取**第 2 段**（`split('/')[1]`）；**入口族已统一**（§2.2）⇒ **无第二种形态、无分支** | `H-WP4-01` / `13` = `CLOSED` |
+| **ID-4** | **未知 `device_id`**（不在 `device` 表）⇒ **不视为错误**：仍可落 history（`device` 行由既有 upsert 路径建档），**但不受 REVOKED 守卫保护** ⇒ 见 §5.3 / §9.3 | — |
+| **ID-5** | **`device_id` 不合法（形状失败）⇒ 拒收**（4xx，**不回投**） | §7.2 |
+| **ID-6** | **★ R3 新增：信封 `device_id` 一致性校验（仅 log 域 · 必需字段）** —— 信封携带的 `device_id` **必须与 topic 解析结果一致**；**不一致 ⇒ 拒收**（**属结构一致性校验，非业务判断**） | `H-WP4-16` · §5.3 `V-3` |
+
+> **★ 安全重申**：**`device_id` 只能来自 broker 侧事实（topic）** —— **`payload` 中的 `device_id` 一律忽略**（防伪造 / 防越权写入他人历史）；**信封级 `device_id`（仅 log 域必需）不构成身份来源**，**仅用于一致性校验**（`ID-6`：与 topic 不一致即拒收）。
+
+---
+
+## §3 Telemetry Ingest Pipeline（**设计**）
+
+> **目标**：`telemetry_history` 的**单条观测**从入口到落库的**确定性路径**。
+> **★ 不变量**：Worker **只**校验 + 幂等 + 写；**"该不该存"由设备侧决定**（`U-1` §1）。
+
+### 3.1 管线阶段（顺序固定）
+
+| # | 阶段 | 输入 | 输出 | 失败处置 |
+|---|---|---|---|---|
+| **T-1** | **鉴权** | HTTP header `X-Webhook-Key` | 通过 / 拒绝 | **401**（`H-WP4-15` 关联限流） |
+| **T-2** | **信封解析** | JSON body | `{topic, clientid, payload}` | **400**（无回投价值） |
+| **T-3** | **identity 解析** | `topic` / `clientid` | `device_id` | **400**（形状失败） |
+| **T-4** | **REVOKED 守卫** | `device_id` → D1 `device.state` | 通过 / 早退 | **200 `{ignored:"device_revoked"}`**（**保留现状语义** · 见 `F-WP4-7`） |
+| **T-5** | **载荷解析** | `payload` | 观测数组（归一化为记录列表） | **400**（不可解析） |
+| **T-6** | **逐条 validation** | 记录 | 合法记录 / 拒收记录 | 见 §5.3；**拒收不阻断同批其他记录**（§5.5） |
+| **T-7** | **幂等归一** | 合法记录 | 带唯一键的记录 | 冲突 ⇒ **忽略**（§6） |
+| **T-8** | **批量 persist** | 记录列表 | D1 写入结果 | **5xx**（§7.4） |
+| **T-9** | **响应** | 结果计数 | HTTP 状态 + 计数体 | 见 §7.2 |
+
+> **★ 阶段不可重排**：**T-4 必须在 T-8 之前**（REVOKED 设备不得落库）；**T-6 必须在 T-7/T-8 之前**（避免"先写后验"）。
+
+### 3.2 归一化（**结构归一 ≠ 业务判断**）
+
+| 归一动作 | 是否允许 | 边界 |
+|---|---|---|
+| **类型转换**（`ts` 字符串 → 整数；`seq` → 整数） | ✅ 允许 | 仅**类型层**；**单位固定为 Unix 秒**（`H-WP4-02` = `CLOSED`）⇒ **Worker 不做单位换算、不生成、不覆盖 `ts`** |
+| **缺失可选字段填默认**（`source` 缺省、`schema_version` 缺省 `1`） | ✅ 允许（**仅在 schema 已定义默认值时**） | ⚠️ **不得为"缺失的必填字段"造值**（`ts` / `seq` / `type` 缺失 ⇒ **拒收**，见 §5.3） |
+| **值舍入 / 单位转换 / 阈值裁剪** | ❌ **禁止** | 属**业务语义** ⇒ **构成第三套 policy**（`U-1` §1 禁止） |
+| **按 `type` 丢弃**（如"丢掉 heartbeat"） | ❌ **禁止（R4 定稿 · `H-WP4-09` = `CLOSED`）** | **heartbeat 不落库须由上游（设备侧 / EMQX）保证** —— **Worker 不得做 heartbeat 判断、不得按 `type` 白名单 / 黑名单过滤**（`F-WP4-1` 已按裁决 `CLOSED`：**无 Worker 侧防线，属上游职责**） |
+
+### 3.3 `schema_version` 处理（**设计**）
+
+| 场景 | 设计处置 |
+|---|---|
+| **缺省**（字段不存在） | 按 **`DEFAULT 1`** 写入（`WP2:§3.1`） |
+| **= 1**（已知） | 原样写入；`value` 按 **`WP2:§3.3` v1 约定**解释（**Worker 不解释** —— 解释权在消费者） |
+| **> 1（未知未来版本）** | ✅ **R4 定稿（`H-WP4-04` = `CLOSED`）**：**接收 + 校验格式 + 原样保存** —— **禁止**：① **拒绝未知版本** · ② **解释未知字段** · ③ **修改 `payload`**（**理由 = 保持 forward compatibility**） |
+| **非整数 / 负数 / 0** | **形状失败 ⇒ 拒收**（§5.3），**不写入** |
+
+> **★ 立场**：**`schema_version` 是"解码约定"，不是"业务有效性"** —— Worker **不因版本差异改写 `value`**（`WP2:§3.3`：旧行按旧版本解读）。
+> **★ R4 补充（`H-WP4-04` = `CLOSED`）**：**`schema_version` 的校验仅限「格式」（正整数）** —— **版本值本身不构成拒收理由**；**未知版本的解释权归消费者 / 未来版本**（**Worker 永不解释、永不改写 payload**）⇒ **前向兼容优先于"脏数据防护"**。
+
+### 3.4 `source` 字段
+
+| 项 | 设计 |
+|---|---|
+| **允许值** | **开放词汇**（`homie` / `derived` / `system` …，`WP2:§3.1`） |
+| **Worker 职责** | **仅长度/可打印性边界校验**；**不做白名单拒收**（✅ **R4 定稿 · `H-WP4-09` = `CLOSED`**：**白名单 / 黑名单式过滤 = 业务判断 ⇒ 禁止**） |
+| **缺省** | 允许 `NULL`（schema 允许） |
+
+---
+
+## §4 Log Ingest Pipeline（**设计**）
+
+> **目标**：`log_history` 的**日志记录**从入口到落库的确定性路径。
+> **★ 硬边界**：**设备 Flash Log 策略 ≠ 云端 `log_history` 策略**（`U-1` `F-6` / `I-7`）—— 本设计**只涉及云端侧**。
+> **★ 门禁提醒**：**`日志真正落库（实施）受 `G-4`（`BT-1` `CLOSED`）门禁**（`计划:§4.3`）—— **本设计稿不受该门禁，但实施受**。
+
+### 4.1 管线阶段
+
+| # | 阶段 | 说明 | 与 telemetry 的差异 |
+|---|---|---|---|
+| **L-1** | **鉴权** | 同 T-1 | — |
+| **L-2** | **信封解析** | 同 T-2 | **`payload_base64` = `Base64` 字符串**（承载 CBOR 原始字节 · `H-WP4-05` = `CLOSED`）—— **Worker 不解码**；**同时解析信封明文的 `device_id` / `boot_seq` / `seq`**（`H-WP4-16` = `CLOSED` · §2.4b） |
+| **L-3** | **identity 解析** | 同 T-3 | topic 族不同（`/log`） |
+| **L-4** | **REVOKED 守卫** | 同 T-4 | **保留**（退役设备日志亦不得落库） |
+| **L-5** | ~~**CBOR 解码**~~ ⇒ **R2 取消该阶段** | — | ❌ **Worker 不解码 CBOR**（`H-WP4-05` = `CLOSED`）⇒ `payload` **原样（`Base64`）落库** |
+| **L-6** | **逐条 validation** | **信封提供的键字段**（`device_id` / `boot_seq` / `seq` / `ts`）**存在性与类型** | ⚠️ **不对日志等级做业务判断**（`H-WP4-05` 禁令）；**不按 `level` 过滤 / 丢弃**；✅ **键字段来源已定 = 信封明文**（`H-WP4-16` = `CLOSED`） |
+| **L-7** | **幂等归一** | 唯一键 **`(device_id, boot_seq, seq)`**（**三分量均来自信封明文** · `H-WP4-16`） | **与 `proto:§8.2` 既定去重键一致**；**不引入第二套键** |
+| **L-8** | **批量 persist** | 同 T-8 | — |
+| **L-9** | **响应** | 同 T-9 | **⚠️ 不含 `log_ack`**（见 §4.3） |
+
+### 4.2 级别与 `payload` 处置（**R3 定稿：承载 = `Base64` · 落库语义依 `DT:WP-2`**）
+
+> **★ 上游口径（`H-WP4-05` = `CLOSED`）**：**设备侧 CBOR 保持不变**；进入 JSON ingest envelope 时 **CBOR binary → `Base64` 字段 `payload_base64`**。
+> **★ R3 澄清（`H-WP4-17` = `CLOSED`）**：**`Base64` 只属于传输承载（transport encoding），不改变历史表的 `payload` 语义** —— **`log_history.payload` 继续保持 `DT:WP-2` `H-WP2-3` 冻结的 `TEXT(JSON)` 语义**；**传输编码 ≠ 落库语义**。
+
+| 项 | 设计（**R3 定稿**） | 依据 |
+|---|---|---|
+| **★ 承载方式** | **CBOR bytes → `Base64` 字符串**（字段名 = **`payload_base64`**）· 设备侧编码**不变** | `H-WP4-05` · `H-WP4-16` |
+| **★ 传输 vs 落库** | **`Base64` = 传输层编码**；**落库语义 = `DT:WP-2` 冻结语义（`TEXT(JSON)`）** —— **本文件不重新定义** | **`H-WP4-17` = `CLOSED`** |
+| **★ Worker 对 `payload` 的权限** | **只做「原样透传 + 落库」** —— **不解码 / 不解析 / 不修改 / 不改写 / 不脱敏** | `H-WP4-05` · `H-WP4-17` |
+| **★ 禁止清单** | ❌ 理解 log 业务结构 · ❌ 修改 `payload` 内容 · ❌ 对日志等级做业务判断（含按 `level` 过滤 / 丢弃） · ❌ **判断 `payload` 内容的业务合法性** · ❌ **执行 secret 脱敏** | `H-WP4-05` · `H-WP4-17` |
+| **★ 脱敏责任（R3 定稿）** | **归设备侧：禁止上传包含 secret 的日志内容** —— **云侧 ingest 不承担 `payload` 脱敏职责**（与 §9.2 一致） | `H-WP4-17` |
+| **落库级别（上游口径）** | **`{WARN, ERROR, CRITICAL}`** / **INFO 不入库** —— ⚠️ **该排除由上游（设备侧 / EMQX）保证**；**Worker 不做**等级过滤 | `U-1` `F-6` · `H-WP4-05` |
+| **★ 体量防线（R3 · `H-WP3-06` 处置）** | **Worker 只遵守「平台 request body 上限」**（由 Cloudflare 平台定义 · **本设计不发明数值**）；**超限请求 ⇒ 拒收（4xx · 永久失败 · 不重投）**；**具体 `payload` 业务上限继续由 `DT:WP-3` 定义** | `U-3` `H-WP3-06` · §5.1 `V-L5` |
+| **⚠️ `payload` 业务上限** | **仍未裁决** ⇒ 承接 **`DT:WP-3` `H-WP3-06` = `DEFERRED`**（⚠️ **`Base64` ⇒ 体积 ≈ +33%**）—— **Worker 侧不再自行设计该上限** | `U-3` §6.4 · `F-WP4-9` |
+| **`message`** | 人读摘要（`WP2:§4.2`）；⚠️ 上限 / 来源仍由 `DT:WP-3` 定义 | 同上 |
+
+> **★ 残留（`F-WP4-9` / `R-WP4-3`）**：**`payload` 业务上限**仍属 `DT:WP-3` 的 `H-WP3-06`（`DEFERRED`）⇒ **Worker 侧可执行防线仅为「平台 request body 上限 + 拒收超限」**；**业务上限闭环仍须 `DT:WP-3` 后续裁决**（**登记为跨 WP 项**，见 §10.5）。
+> **⇒ 本文件立场**：**不在 Worker 侧发明上限**（否则与 `DT:WP-3` 的存储策略冲突）；**不新增 schema / 字段 / 索引**。
+
+### 4.3 `log_ack`（**明确界外**）
+
+| 项 | 结论 |
+|---|---|
+| **`log_ack` 是什么** | 云端 → 设备的**批次级确认**（`proto:§8.2` · 走 `down` topic） |
+| **产生位置** | ⚠️ **未裁决**（EMQX 规则？Worker 回调 EMQX？）⇒ **`H-WP4-12`** |
+| **本设计是否设计它** | ❌ **不设计** —— 属 **`计划:WP-5`（LogHistory）+ `计划:WP-3`**，且**受 `G-4` 门禁** |
+| **与 ingest 的关系** | **ingest 链路不得内含 ack 副作用**（否则污染 `I-1` 边界）；**ACK 由独立通路产生** |
+
+> **★ `F-WP4-2` 关联**：`BT-1` = **云端从不回 `log_ack`**（`issues:BT-1`）⇒ `G-4 = BLOCKED`。**本设计稿不修复、不设计该通路**。
+
+---
+
+## §5 Validation 策略（**边界校验 —— 不是业务判断**）
+
+> **★ 定义（`计划:WP-4` ①）**：Worker 只做**边界校验（validation boundary）** —— `X-Webhook-Key` · `device_id` 形状 · REVOKED 守卫 · 必需字段**存在性**。
+> **★ 红线**：**任何"这个值是否合理 / 是否有意义 / 是否值得存"的判断 ⇒ 属业务语义 ⇒ 禁止**（`U-1` §1）。
+
+### 5.1 校验分层
+
+| 层 | 校验内容 | 失败类别 |
+|---|---|---|
+| **V-L0 传输** | `X-Webhook-Key` 正确 | **401**（§7.2） |
+| **V-L1 信封** | body 是 JSON · `topic` 存在 · `payload` 存在 | **400** |
+| **V-L2 身份** | `device_id` 可由 topic 解析（**`guo_feeder/<device_id>/…` 第 2 段** · `ID-3`）· **12 位小写 hex** · **log 域：信封 `device_id` 须与 topic 一致**（`ID-6`） | **400** |
+| **V-L3 结构** | 每条记录的**必需字段存在且类型正确**（含 `ts` 存在 + 整数；**不做合理性判断**） | **逐条拒收**（§5.5） |
+| **V-L4 枚举** | **仅 schema 已冻结的枚举**（如 `log.level`） | **逐条拒收** |
+| **V-L5 体量** | ① **平台 request body 上限**（**R3 定稿 ⇒ 超限拒收 4xx**）· ② 批次条数 / 单条字节数**业务上界** | ① ✅ **已定**（遵守平台限制 · §4.2）；② ⚠️ **业务上限仍 `OPEN`** ⇒ 承接 `H-WP3-06` · `F-WP4-9`（**Worker 不发明**） |
+
+> **★ 明确禁止（V-禁止）**：**不得**校验「重量变化是否超过阈值」· **不得**校验「这是否是一次有效投喂」· **不得**按 `type` 判断「该不该存」（`计划:WP-4` 4 禁止）· **不得对日志等级做业务判断**（**不得按 `level` 过滤 / 丢弃**；`H-WP4-05` 禁令）· **不得判断 `payload` 内容的业务合法性 · 不得执行 secret 脱敏**（`H-WP4-17` = `CLOSED`）。
+> **★ `ts` 校验边界（`H-WP4-02` = `CLOSED`）**：Worker **仅校验字段存在 + 类型**；**不判断时间是否合理 / 是否过期 / 是否未来时间**（时间窗口 = **未来策略**，不属 `DT:WP-4`）。
+
+#### 5.1.1 ★ Worker structural validation 边界（**R4 定稿 · `H-WP4-09` = `CLOSED`**）
+
+> **★ 一句话**：**Worker 只做「结构 / 身份 / 格式」校验 —— 不做「业务 / 价值 / 有效性」裁决**。
+
+| 类别 | 内容 | 依据 |
+|---|---|---|
+| **✅ 允许（5 类 · 全部为结构层）** | ① **topic / `device_id` 一致性**（`ID-3` / `ID-6`）· ② **envelope 必填字段检查**（`topic` / `payload` / log 键三分量）· ③ **类型检查**（`ts` / `seq` / `schema_version` 为整数 …）· ④ **`schema_version` 格式检查**（正整数；**版本值本身不拒收**，见 §3.3）· ⑤ **幂等键完整性检查**（键三分量齐备，**不解码 CBOR**） | §5.1 `V-L1…V-L5` · §5.2 · §2.6 |
+| **❌ 禁止（5 类 · 全部为业务层）** | ① **telemetry policy**（阈值 / 频率 / 「是否算变化」）· ② **heartbeat 判断**（按 `type` 白/黑名单过滤）· ③ **业务价值判断**（「这次投喂是否有意义」）· ④ **降频**（采样 / 抽稀 / 丢弃）· ⑤ **数据有效性业务裁决**（值域合理性 / 是否过期 / 是否未来） | §3.2 · §5.1 V-禁止 · `INV-1` / `INV-14` |
+
+> **★ 边界判据（可复用）**：**判据只看「字段是否存在 / 类型是否正确 / 身份是否一致 / 格式是否合法」** —— **任何需要"读懂这个值代表什么"的判断 ⇒ 一律禁止**。
+> **★ 与 `F-WP4-1` 的关系（R4 已 `CLOSED`）**：**heartbeat 的「结构性空档」由裁决定分** —— **Worker 侧不设防线**（加白名单即违 `INV-14`）；**不落库由上游（设备侧 / EMQX 过滤）保证**。
+> **★ 与 `H-WP3-06` 的关系**：**体量业务上限不在本表**（属 `DT:WP-3`）；Worker 侧仅保留 **平台 request body 上限**（§5.1 `V-L5`）。
+
+### 5.2 必需字段矩阵（**依冻结 schema**）
+
+| 域 | 必需（NOT NULL） | 可选 | 依据 |
+|---|---|---|---|
+| **telemetry** | `device_id` · `ts` · `type` · `value` · **`seq`** · `schema_version`(默认 1) | `source` | `WP2:§3.1` |
+| **log** | `device_id` · `ts` · `level` · **`boot_seq`** · **`seq`** —— ⚠️ **幂等键三分量 `(device_id, boot_seq, seq)` 必须来自信封明文**（`H-WP4-16` = `CLOSED`） | `code` · `message` · **`payload`**（由承载字段 **`payload_base64`** 提供） | `WP2:§4.2` |
+
+> **★ 已裁决（R2 · `F-WP4-5` = `CLOSED`）**：**`ts` 与 `seq` 统一由设备侧生成并随报文携带**（`H-WP4-02` / `H-WP4-03` = `CLOSED`）。
+> **⇒ 派生要求（R3 已闭环）**：设备侧在**信封**中显式携带 **`ts` / `seq`**（telemetry）与 **`device_id` / `boot_seq` / `seq`**（log）—— ✅ **入口族已统一为 `guo_feeder/<device_id>/…`**（`H-WP4-01` / `13` = `CLOSED`），✅ **键字段承载方式已定**（`H-WP4-16` = `CLOSED`）。
+> **⇒ 转交（不在 `DT:WP-4` 解决）**：若**固件协议尚未定义 `seq` 的跨 boot 递增规则** ⇒ **登记为设备协议后续问题**（见 §10.6）。
+> **★ 提交读取**：**`created_at` 不由设备提供** —— 由 **D1 默认 `unixepoch()`** 生成（`WP2:§3.1`），**Worker 不覆盖**（除非 `H-WP4-xx` 另裁）。
+
+### 5.3 服务级失败清单（**影响 HTTP 状态**）
+
+| ID | 失败 | 处置 | 回投？ |
+|---|---|---|---|
+| **V-1** | 无 / 错 `X-Webhook-Key` | **401** | 否（⚠️ **R4：不引入限流 / IP 限制 / key rotation** ⇒ 仅作**滥用信号**记录，见 §9.1） |
+| **V-2** | body 非 JSON / `topic` 或 `payload` 缺失 / **超出平台 request body 上限** | **400**（**超限 = 永久失败 ⇒ 不重投** · R3） | 否 |
+| **V-3** | `device_id` 无法解析 / 形状非法 / **（log 域）信封 `device_id` 与 topic 解析结果不一致**（`ID-6`） | **400** | 否 |
+| **V-4** | 整批不可解析（信封非 JSON / 必要字段缺失） | **400** | **否**（**结构性错误 ⇒ 重投无意义**；R2：**CBOR 解码已不由 Worker 承担**，见 §7.3） |
+| **V-5** | D1 不可用 / 写入异常 | **5xx** | **是**（⇒ 幂等吸收重复，§6.4） |
+
+### 5.4 记录级失败清单（**不影响整批 HTTP 状态**）
+
+| ID | 失败（单条） | 处置 |
+|---|---|---|
+| **R-1** | 必需字段缺失 —— telemetry：`ts` / `seq` / `type` / `value`；log：**信封** `boot_seq` / `seq` / `ts` / `level` | **丢弃该条** + 计数（`rejected`） |
+| **R-2** | 类型错误（`ts` 非整数 …） | **丢弃该条** + 计数 |
+| **R-3** | `log.level` 不在 **schema 冻结枚举** | **该条 `rejected` + 计数**（**属结构一致性校验**；⚠️ **非**「按等级做业务判断」—— **不因等级语义丢弃任何记录**） |
+| **R-4** | `schema_version` **未知（> 1）** | ✅ **R4 定稿（`H-WP4-04` = `CLOSED`）**：**原样保存（`accepted`）** —— **不拒绝、不解释、不改写**（forward compatibility；见 §3.3） |
+| **R-5** | `ts` 合理性（未来 / 过老） | **不做判断**（`H-WP4-02` = `CLOSED`）⇒ **原样接受**；窗口策略属**未来策略**（`H-WP4-10` 保持 `OPEN`，**不属 `DT:WP-4`**） |
+| **R-6** | 幂等键冲突（重复） | **忽略（非错误）** + 计数为 `duplicate` |
+
+> **★ 纪律**：**记录级失败不得升级为整批 5xx** —— 否则 **1 条坏记录会阻塞整批正常数据**（且触发无意义重投）。
+
+### 5.5 ★ 部分失败策略（**R2 定稿 = 逐条校验 + 批量执行 + 单条结果统计**）
+
+| 方案 | 形态 | 评价 |
+|---|---|---|
+| **PA** | **先全批校验 ⇒ 合法子集入库**（脏条丢弃并计数） | ✅ **推荐** —— 单条脏数据不阻塞整批；可观测 |
+| **PB** | **有一条脏 ⇒ 整批拒收** | ❌ 不推荐 —— 放大单条错误、触发重投风暴 |
+| **PC** | **不校验，直接 `INSERT OR IGNORE`** | ❌ 危险 —— `OR IGNORE` **会连 NOT NULL 违规一起吞掉**（`F-WP4-6`）⇒ **静默丢数据** |
+
+> **★ ⚠️ SQLite 语义提醒（`F-WP4-6`）**：`INSERT OR IGNORE` **不区分**「唯一键冲突」与「NOT NULL/CHECK 违规」—— **两者都静默跳过**。⇒ **必须先在应用层完成校验（PA），再入库**；`OR IGNORE` **仅用于吸收幂等冲突**。
+> **★ 该点列为设计强制项**（§8.3 `W-4`）。
+>
+> **★ R2 定稿（`H-WP4-11` = `CLOSED`）**：采用 **PA（逐条校验 + 批量执行 + 单条结果统计）** —— **不因单条坏数据阻塞整批**；每条记录独立判定 **`accepted` / `duplicate` / `rejected`**；**D1 `batch` 能力保留，但业务语义不是「全批失败」**（详见 §6.3 / §6.4 / §8.1）。
+
+---
+
+## §6 Idempotency 设计
+
+> **★ 幂等键（**冻结，不得改**）**：telemetry **`(device_id, type, ts, seq)`** · log **`(device_id, boot_seq, seq)`**（`U-2` §3.4）。**本设计不得引入第二套键。**
+> **★ 键分量来源（R2 定稿 · `H-WP4-03` = `CLOSED`）**：**`seq` 由设备生成**（设备 telemetry 事件序号）· **必须参与幂等键** · **Worker 不生成、不修改 `seq`**；**跨 boot 行为沿用现有冻结幂等键定义，不新增第二套 key**（跨 boot 递增规则若未在固件协议冻结 ⇒ 转交设备协议，见 §10.6）。
+> ✅ **log 域连带已闭环（R3 · `H-WP4-16` = `CLOSED`）**：因 `H-WP4-05` 令 Worker **不解码 CBOR** ⇒ **`device_id` / `boot_seq` / `seq` 三分量一律由信封明文提供**（§2.4b）—— **Worker 不得解码 CBOR 取得键字段**；**不引入第二套幂等键**。
+
+### 6.1 幂等目标
+
+| 场景 | 来源 | 必须的结果 |
+|---|---|---|
+| **EMQX 重投** | HTTP 动作失败重试 / QoS1 重发 | **不产生重复行** |
+| **Worker 重试** | 上游重发同一批 | **不产生重复行** |
+| **设备重传** | 日志补发（`seq` 不变） | **不产生重复行** |
+
+### 6.2 实现手段（**设计层候选**）
+
+| 手段 | 形态 | 评价 |
+|---|---|---|
+| **IA** | `INSERT OR IGNORE` + **唯一索引** | ✅ **推荐**（索引**已由 `WP2:§5` 冻结**：`ux_th_dedup` / `ux_lh_dedup`）—— **零新增索引**（`U-3` `H-WP3-10`） |
+| **IB** | `ON CONFLICT (…) DO NOTHING` | ⚠️ 等价；**仅吞唯一键冲突**（比 `OR IGNORE` 更精确）—— 但需明确冲突目标 |
+| **IC** | 应用层"先 SELECT 再 INSERT" | ❌ **不推荐** —— **竞态窗口** + **读放大**（D1 读成本） |
+| **ID** | 去重表 / 外部缓存 | ❌ 过度设计（P3） |
+
+> **★ 与冻结索引的一致性**：**幂等能力已在 `WP2:§5` 由唯一索引提供** ⇒ **本设计只需"命中它"**，**不得新增索引**（`H-WP3-10` = `no additional index`）。
+> **★ `IA` vs `IB` 的取舍（R2）**：**两者皆可用**（差异仅在「是否只吞唯一键冲突」）；**两者都必须配合 §5.5 PA 的「先校验后入库」** —— 该点已由 **`H-WP4-11`** 的逐条校验语义覆盖（`F-WP4-6` 已缓解）。
+
+### 6.3 重复消息判定
+
+| 判定 | 结果 |
+|---|---|
+| **唯一键命中已有行** | **`duplicate`** —— **忽略写入**，**计为成功**（HTTP 200） |
+| **同批内自重复**（同批含两条同键） | **`H-WP4-11` 已裁决**：**逐条独立判定** —— 批内第二条同键 ⇒ 记为 **`duplicate`**（**不因冲突使整批失败**） |
+| **跨域误判** | ❌ 不可能 —— 两域键结构不同（`type` vs `boot_seq`），**且物理分表** |
+
+> **★ R2 定稿（`H-WP4-11` = `CLOSED`）**：**逐条校验 → 批量执行 → 单条结果统计**；每条记录独立产出 **`accepted` / `duplicate` / `rejected`** 三态之一（响应体见 §6.4）。
+
+### 6.4 响应语义（幂等角度）
+
+| 情形 | HTTP | 理由 |
+|---|---|---|
+| 全部写入 / 全部重复 | **200** | **重复 = 成功**（幂等语义） |
+| 部分写入 / 部分重复 / 部分 `rejected` | **200**（**body 带三态计数**） | `rejected` **不回投**（回投也不会变好） |
+| D1 失败 | **5xx** | **触发上游重投** ⇒ **由幂等吸收**（`H-WP4-07` 定稿） |
+
+**★ 响应体（`H-WP4-11` = `CLOSED` · 定稿形态）**：
+
+```json
+{
+  "accepted": 10,
+  "duplicate": 5,
+  "rejected": 1
+}
+```
+
+> **★ 三态语义**：**`accepted` = 新写入行数** · **`duplicate` = 幂等命中数** · **`rejected` = 逐条校验失败数**（**逐条判定，不整批**）。
+
+> **★ 闭环**：**"重投 ⇒ 重复 ⇒ 幂等吸收"** 是本链路的**唯一重试闭环**；**不引入 Worker 内部重试风暴**（§7.4）。
+
+---
+
+## §7 Error Handling
+
+### 7.1 分类总览
+
+| 类别 | 定义 | 处置原则 | 归属章节 |
+|---|---|---|---|
+| **E-1 传输失败** | 鉴权 / JSON 解析 | **拒收，不回投** | §7.2 |
+| **E-2 身份失败** | `device_id` 非法 | **拒收，不回投** | §7.2 |
+| **E-3 载荷失败** | 信封不可解析（JSON 层） | **拒收 4xx**（结构错误） | §7.3 |
+| **E-4 记录失败** | 单条字段/类型/枚举 | **丢该条 + 计数** | §5.4 |
+| **E-5 持久化失败** | D1 不可用 / 写入异常 | **5xx ⇒ 上游重投** | §7.4 |
+| **E-6 清理失败** | Cron 删除失败 | **不影响 ingest**（不同路径） | §7.5 |
+
+### 7.2 拒收（E-1 / E-2）—— **返回 4xx**
+
+> **★ 立场**：**结构性错误（无法解析 / 身份非法）的报文，重投永远不会成功** ⇒ **必须 4xx**，避免**无意义重试风暴**。
+> **★ R2 定稿（`H-WP4-07` = `CLOSED`）**：
+> ① **4xx = 永久失败**（鉴权失败 / 格式错误 / `identity` 非法）—— **重投不会成功**；
+> ② **5xx = 暂时失败**（D1 不可用 / 持久化异常）—— **语义 = 请重投**；
+> ③ **Worker 不内部 retry、不产生重试风暴**；
+> ④ **EMQX 侧 retry 行为 = 外部配置事项**（本设计**不预设、不修改** `EMQX_Assets`）。
+
+### 7.3 载荷失败（E-3）—— **R2 定稿（`F-WP4-8` 已消解）**
+
+> **★ R2 定稿（`H-WP4-05` = `CLOSED`）**：**Worker 不再解码 CBOR** ⇒ 原 **「CBOR 解码失败」这一失败模式在 Worker 侧消失** —— 失败面收敛为：
+> ① **信封非 JSON / 必需字段缺失** ⇒ **结构性错误 ⇒ 400（永久失败）**（`H-WP4-07`）；
+> ② **单条记录校验失败** ⇒ **该条 `rejected`**，**不影响同批其余记录**（`H-WP4-11`）。
+>
+> **⇒ `F-WP4-8`（「整批解码失败 ⇒ 丢批 vs 重投风暴」两难）→ `CLOSED`** —— 该两难所依赖的前提（Worker 侧解码）**已不成立**。
+>
+> **⚠️ 残留（不在本文件范围）**：**`log_ack` 通路缺失**（`BT-1` ⇒ `G-4 = BLOCKED`）导致的**设备侧重传语义不可靠**仍然存在 ⇒ 见 §4.3 与 **`H-WP4-12`（保持 `OPEN`）**。
+
+### 7.4 持久化失败（E-5）—— **返回 5xx**
+
+| 项 | 设计 |
+|---|---|
+| **Worker 内部重试** | ❌ **不做**（`计划:WP-4` 边界 + **避免重试风暴**）—— **交由上游重投** |
+| **响应** | **5xx**（语义：**"这是暂时性的，请重投"**） |
+| **幂等兜底** | **重投产生的重复由 §6 吸收** |
+| **可观测性** | **必须记录**（计数 / 错误摘要），**且必须脱敏**（§9.2） |
+| **是否需要 DLQ / 死信** | ✅ **R4 定稿（`H-WP4-08` = `CLOSED`）**：**WP-4 不实现 DLQ** —— **DLQ 需求登记未来版本，不进入 `DT:WP-4`**（见 §10.6） |
+| **★ R2 已定（`H-WP4-07`）** | **4xx = 永久失败** · **5xx = 暂时失败** · **Worker 不内部 retry** · **EMQX retry = 外部配置** |
+
+> **★ R4 固化：失败模型（`H-WP4-08` = `CLOSED`）**
+>
+> | 类别 | 触发 | 处置链 |
+> |---|---|---|
+> | **临时失败** | **HTTP 5xx**（D1 不可用 / 持久化异常） | **上游重投 → 幂等吸收**（`§6`）；**Worker 不内部 retry** |
+> | **永久失败** | **HTTP 4xx**（鉴权 / 格式 / identity / 超限） | **不回投**（**重投不会成功**） |
+>
+> **★ 无 DLQ 的含义（须显式确认）**：**长期 D1 失败的兜底 = 「上游重投 + 幂等」**；**不使用死信队列 / 不引入第二存储**（**避免在 `DT:WP-4` 内扩大实现面**）。⚠️ **该取舍的代价（数据可能在上游重试耗尽后丢失）= 已登记为未来版本议题**（§10.6）；**不属本阶段缺陷**。
+
+### 7.5 ★ Ingest 与 Cleanup 解耦（**强制**）
+
+> **★ 铁律（承接 `U-3` `H-WP3-03` / `I-1`）**：**ingest 路径内不得包含任何删除 / TTL / 归档逻辑。**
+
+| 维度 | **ingest** | **cleanup** |
+|---|---|---|
+| **触发** | **请求驱动**（EMQX HTTP Action） | **时间驱动**（**Cloudflare Cron** · `H-WP3-03` = `scheduled cleanup job`） |
+| **职责** | **只写**（insert / ignore） | **只删**（按 `device_id` 分批，`U-3` §7.4 `D-1…D-5`） |
+| **失败影响** | 影响上游重投 | **不得影响 ingest / 查询**（`U-3` §7.3） |
+| **共享资源** | D1（**共享，但不共享代码路径**） | D1 |
+| **窗口** | **不感知** retention | **唯一拥有** retention（90 d / 180 d） |
+
+> **★ 拒绝的反模式**：**在 ingest 中"顺手删超期行"**（= `U-3` §7.1 方案 B，**已冻结为不推荐**：违 `I-1`、拉高 ingest 延迟、删除量不可预测）。
+> **★ 拒绝的反模式**：**按设备访问惰性清理**（= `U-3` 方案 C，**不约束冷设备**）。
+> **⇒ 两者的唯一交点是"同一张表"，代码路径与调度必须完全分离。**
+
+---
+
+## §8 D1 写入策略（**仅设计 —— 禁止 DDL**）
+
+> **★ 硬边界**：**本文件不写任何 DDL / 不创建 migration / 不改 schema / 不改索引**。
+> **★ 表结构已由 `U-2`（`G-3`）冻结** —— 本节只设计**"怎么写"**，**不设计"表长什么样"**。
+
+### 8.1 写入形状
+
+| 项 | 设计 |
+|---|---|
+| **语句形态** | **批量 INSERT**（多值 `INSERT` 或 **D1 `batch()`**）—— 降低 round-trip 与 CPU（`计划:WP-4` ②） |
+| **支持粒度（`H-WP4-06` = `CLOSED`）** | **batch ingest 必支持**：**N = 1（单记录）与 N > 1（多记录）同一条链路**；⚠️ **Worker 不聚合消息** —— **聚合属上游** |
+| **参数绑定** | **必须参数化**（prepared / bind）—— **禁止字符串拼接**（注入 + 转义风险） |
+| **事务边界** | **保留 D1 `batch()` 能力**；⚠️ **业务语义 = 逐条结果统计，不是「全批失败」**（`H-WP4-11` = `CLOSED` ⇒ §6.3 / §6.4） |
+| **幂等冲突** | 命中唯一索引 ⇒ **忽略**（§6.2） |
+| **`created_at`** | **由 D1 默认 `unixepoch()` 生成**；**Worker 不覆盖** |
+| **`ts`** | **由设备侧生成**（单位 = **Unix 秒**，`H-WP2-13` · `H-WP4-02` = `CLOSED`）；**Worker 不生成、不覆盖** |
+| **★ 键分量来源（R3）** | **telemetry：`ts` / `seq` 来自报文**（`H-WP4-02` / `03` = `CLOSED`）· **log：`device_id` / `boot_seq` / `seq` 来自信封明文**（`H-WP4-16` = `CLOSED`）—— **Worker 不生成、不推导、不解码 CBOR 取得** |
+
+### 8.2 写入成本意识（**索引已冻结 ⇒ 写放大已确定**）
+
+| 表 | 每次 INSERT 需维护的索引 | 后果 |
+|---|---|---|
+| `telemetry_history` | **3**（`ux_th_dedup` · `ix_th_device_ts` · `ix_th_device_type_ts`） | 单行写成本 ≈ 1 数据行 + 3 索引项 |
+| `log_history` | **2**（`ux_lh_dedup` · `ix_lh_device_ts`） | 单行写成本 ≈ 1 数据行 + 2 索引项 |
+
+> **★ 结论**：**写成本由 `U-2` 冻结的索引集合决定** ⇒ **本设计只能"减少 round-trip"（批量化），不能"减少索引"**（`H-WP3-10` = 不新增索引；**亦不得删减**）。
+> **★ 与 `U-3` §9 容量模型呼应**：单行 ≈ **0.25 KB**（telemetry）/ **0.5–2.5 KB**（log）**已含索引摊销**。
+
+### 8.3 写入硬规则（**`W-1…W-5`**）
+
+| # | 规则 | 理由 |
+|---|---|---|
+| **W-1** | **禁止 DDL / 迁移 / schema 变更** | 结构已冻结（`G-3`）；本阶段明确禁止 |
+| **W-2** | **必须批量化**（单请求内多行） | 降低 D1 写次数（`计划:WP-4` ②） |
+| **W-3** | **必须参数化绑定** | 安全（§9） |
+| **W-4** | **必须先校验后入库**（§5.5 PA）—— `OR IGNORE` **只用于吸收幂等冲突** | `F-WP4-6`：`OR IGNORE` 会吞掉 NOT NULL 违规 |
+| **W-5** | **写入结果必须可观测**（写入数 / 重复数 / 丢弃数） | 无观测 ⇒ 无法验证降频与幂等是否生效 |
+
+---
+
+## §9 安全边界
+
+### 9.1 入口鉴权与端点（**R5 定稿：选择 B —— 新增专用 history ingest endpoint · `H-WP4-14` = `CLOSED`**）
+
+| 项 | 设计 |
+|---|---|
+| **机制** | **`X-Webhook-Key`**（**沿用现状**，`计划:WP-3`：**不放宽**） —— ✅ **R4 定稿（`H-WP4-15` = `CLOSED`）：不增加限流 / 不增加 IP 限制 / 不增加 key rotation** |
+| **★ 端点（R5 定稿 · `H-WP4-14` = `CLOSED`）** | **新增专用端点 `POST /api/history/ingest`** —— **只做 history ingest（telemetry / log 域）**；**不继承旧 `/api/ingest` 的 `mqtt_messages` 写入副作用** |
+| **`/api/admin/**`** | **必须走 `ADMIN_API_TOKEN`**（**不改**） |
+| **`cloud_api` 来源** | **新端点 `POST /api/history/ingest` 明确拒绝**（**继承现状守卫语义**，**保留**） |
+
+> **★ R5 裁决（`H-WP4-14` = `CLOSED` · 选择 B）—— 新增 history ingest endpoint**
+>
+> | 维度 | 内容 |
+> |---|---|
+> | **裁决** | **选择 B = 新增专用 history ingest endpoint** |
+> | **理由** | ① **不继承旧 `/api/ingest` 的 `mqtt_messages` side effect** · ② **避免双写一致性问题** · ③ **保持职责单一** |
+> | **端点定义** | **`POST /api/history/ingest`** —— 请求体 = §2.4 / §2.5 定义的信封（`topic` / `clientid` / `payload`；log 域另含 `payload_base64` + `device_id` / `boot_seq` / `seq`）；响应 = §6.4 三态统计 `{accepted, duplicate, rejected}` |
+> | **EMQX Action 指向关系** | EMQX 规则 SQL 的 **HTTP Action 指向新端点 `POST /api/history/ingest`**（**不再指向旧 `/api/ingest`**）—— ⚠️ **该指向变更属实施期 EMQX 配置动作**（`计划:WP-3`）；**本文件不改任何 EMQX 配置** |
+> | **authentication 继承规则** | ① **`X-Webhook-Key` 强制**（继承 `/api/ingest` 现状语义 · 不放宽）· ② **`source=cloud_api` 拒收**（继承现状守卫）· ③ **`/api/admin/**` 仍走 `ADMIN_API_TOKEN`**（不变）· ④ **不引入第二因子**（`H-WP4-15`） |
+> | **与旧 endpoint 的边界** | **旧 `POST /api/ingest` 保持现状（不改）** —— 含其既有 `mqtt_messages` 写入副作用与既有调用方；**新旧端点互不依赖**；**新端点不写 `mqtt_messages`**；`deviceIdFromTopic()` 身份解析**语义继承**（实施期可共享 helper · 属实施细节） |
+>
+> **★ 派生（`F-WP4-10` → `CLOSED`）**：原「复用 `/api/ingest` ⇒ 写 `mqtt_messages`」的双写风险，与「旧 webhook 鉴权被注释」的语义分歧，**因「选择 B = 职责单一的新端点」而消解**（见 §10.4 / §10.0-R5）。
+> **★ 实施前置说明（透明登记）**：**新端点实现 · EMQX Action 指向变更 · `deviceIdFromTopic()` helper 复用** —— 均属**实施阶段动作**（`计划:WP-3` / `计划:WP-4`），**不在本设计文件范围内**。
+
+> **★ A/B 对比（R4 保留 · **R5 已裁决为 B** · 留档）**
+>
+> | 选项 | 形态 | 主要收益 | **风险 / 代价** | **R5 裁决** |
+> |---|---|---|---|---|
+> | **A** | **继续 `POST /api/ingest`** | **零新增路由 / 复用既有 `X-Webhook-Key` 鉴权链 / 与现状一致** | ⚠️ **带入既有 `mqtt_messages` 写入副作用 ⇒ 双重写入**（与 `H-WP2-11` `mqtt_messages` 去留耦合）；⚠️ **既有路径鉴权语义不一致**（旧 webhook 鉴权被注释 · `F-WP4-10`）；⚠️ **history 与旧流程耦合 ⇒ 后续拆分成本高** | ❌ **未采纳** |
+> | **B** | **新增 history ingest endpoint `POST /api/history/ingest`** | **职责单一 / 不继承 `mqtt_messages` 副作用 / 鉴权链可显式对齐** | ⚠️ **新增路由与配置面**；⚠️ **需在 EMQX HTTP Action 侧改指向**（**属 EMQX 改动 · 本文件不做**）；⚠️ **与 `计划:WP-3` 口径需对齐**（**已登记**） | ✅ **采纳（R5）** |
+>
+> **★ R5 裁决原文（理由）**：**`DT:WP-4` history ingestion 不继承旧 `/api/ingest` 的 `mqtt_messages` side effect** · **避免双写一致性问题** · **保持职责单一**。
+> **★ 裁决效力**：**`H-WP4-14` 由 `OPEN` → `CLOSED`**；**「实施前必裁」项清零**；**方案 A 不再作为候选**（**旧 `/api/ingest` 保持现状、不被 history ingest 复用**）。
+
+> **★ R4 定稿：防护层 = 现状三层（`H-WP4-15` = `CLOSED`）**
+>
+> | 保留 | 说明 |
+> |---|---|
+> | **`X-Webhook-Key`** | 新端点 `POST /api/history/ingest` **强制**（不放宽） |
+> | **EMQX ACL** | P2 已落地 **5/5 覆盖**（**不改**） |
+> | **Cloudflare 基础防护** | **平台层**（**非本设计引入**） |
+>
+> **★ 明确不引入（R4 裁决）**：❌ **限流** · ❌ **IP 限制** · ❌ **key rotation** —— **登记为未来安全增强**（见 §10.6）；**本阶段不扩大实现面**（**新增端点为接口面定稿，不构成「实现面扩大」** —— ⚠️ **未写任何 Worker 代码**）。
+
+### 9.2 数据脱敏（**承 `N-3` · R3 定稿：Worker 不脱敏 `payload`**）
+
+| 场景 | 要求 |
+|---|---|
+| **诊断日志** | **必须打印脱敏副本**（`redactSecrets()`，`index.js` 现状）；**禁止裸 `console.log(body)`** |
+| **★ log 域 `payload`（R3 定稿）** | ✅ **裁决（`H-WP4-17` = `CLOSED`）**：**Worker 不解析 `payload` · 不执行 secret 脱敏 · 不判断 `payload` 内容业务合法性**；**脱敏责任归设备侧** —— **设备侧禁止上传包含 secret 的日志内容** |
+| **错误信息回包** | **不得回显原始载荷 / 密钥**（避免二次泄露） |
+| **`X-Webhook-Key`** | **不得写入任何日志** |
+
+> **★ R3 收敛（原 `F-WP4-11` = `CLOSED`）**：原冲突（**`DT:WP-2` `H-WP2-3` 冻结 `TEXT(JSON)`** ↔ **`H-WP4-05`：Worker 不改 `payload`** ↔ **`N-3`：secret 不得明文落库**）**已由裁决定分（三者按职责分层，不再互斥）**：
+> ① **`Base64` = 传输承载**，**落库语义仍依 `DT:WP-2`**（§4.2）；
+> ② **Worker 侧无 `payload` 脱敏职责**（不读 / 不改 / 不判断）；
+> ③ **脱敏责任转移到设备侧**（**禁止上传含 secret 的日志内容**）—— ⚠️ **该设备侧义务须在固件侧落地**（**转交登记**，见 §10.6；**本文件不设计固件**）。
+> **★ 说明**：本文件**未修改 `DT:WP-2`**；**`N-3` 的云侧实现（`redact.js`）仍适用于 Worker 自身的诊断日志**（与 `payload` 内容无关）。
+
+### 9.3 越权写入防护
+
+| 攻击面 | 防线 |
+|---|---|
+| **伪造 `device_id`** | **只信 topic**（`ID-1` · **R3：入口族统一 ⇒ 提取规则唯一**，`ID-3`）；**`payload` 中的 `device_id` 一律忽略**；**信封级 `device_id`（log 域）仅作一致性校验**（不一致 ⇒ 拒收 · `ID-6`） |
+| **向他人历史写数据** | 同上（`device_id` 不可由调用方任意指定） |
+| **退役设备继续写** | **REVOKED 早退守卫**（`T-4`/`L-4`，返回 200 不重投） |
+| **共享 key 泄露** | ✅ **R4 定稿（`H-WP4-15` = `CLOSED`）**：**不引入第二因子** —— **保留 `X-Webhook-Key` + EMQX ACL + Cloudflare 基础防护**；**限流 / IP 限制 / key rotation = 登记未来安全增强**（§10.6），⚠️ **残余风险 = 已知并接受** |
+| **重放攻击** | **幂等键天然吸收重放**（同一报文重放 ⇒ 无新行） ✅ |
+| **大载荷 DoS** | **① 平台 request body 上限**（✅ **R3 定稿**：**超限拒收 4xx**）· **② 业务上限 = `DT:WP-3` `H-WP3-06`（仍未裁决）** —— ⚠️ **`Base64` 承载 ⇒ 体积 ≈ +33%**，风险**仍高** |
+
+---
+
+## §10 HUMAN_REQUIRED 清单
+
+> **★ 纪律**：**已裁决项**（R2 / R3 / R4 / R5）→ **§10.0 裁决留痕**；**未裁决项** → **§10.1（`OPEN`）**。**本文件不代人工裁决任何未决项。**
+> **★ R5 计数**：`H-WP4-01…17` 共 **17** 项 —— **`CLOSED` 15 项**（**R2**：`02` / `03` / `05` / `06` / `07` / `11`；**R3**：`01` / `13` / `16` / `17`；**R4**：`04` / `08` / `09` / `15`；**R5**：`14`）· **`OPEN` 2 项**（`10` / `12`）。
+
+### 10.0-R2 ★ 人工裁决留痕（**R2 已关闭 6 项** · 2026-10-10）
+
+| ID | 问题 | **人工裁决（定稿）** | 状态 |
+|---|---|---|---|
+| **`H-WP4-02`** | `ts` 来源与单位 | **`ts` 必须由设备侧生成** · **单位 = Unix 秒** · **Worker 不生成业务 `ts`、不覆盖设备 `ts`** · **`created_at` 仍由 D1 自动生成** · Worker **仅校验字段存在 + 类型正确**；**不判断合理性 / 是否过期 / 是否未来**（时间窗口 = **未来策略**，不属 WP-4） | **`CLOSED`** |
+| **`H-WP4-03`** | telemetry `seq` 来源 | **`seq` 由设备生成**（设备 telemetry 事件序号）· **必须参与幂等键** · **Worker 不生成、不修改 `seq`** · **跨 boot 行为沿用现有冻结幂等键定义，不新增第二套 key**（若跨 boot 递增规则未在固件协议冻结 ⇒ **登记为设备协议后续问题**，见 §10.6） | **`CLOSED`** |
+| **`H-WP4-05`** | log `payload` 承载 | **设备侧 CBOR 保持不变**；进入 JSON ingest envelope 时 **CBOR binary → `Base64` 字段**；**Worker 不解析 log payload 内容**、**只负责 envelope validation / idempotency / persistence**；**禁止**：理解 log 业务结构 · 修改 payload 内容 · 对日志等级做业务判断 | **`CLOSED`**（⚠️ 派生 `16` / `17`，见 §10.1） |
+| **`H-WP4-06`** | ingest 粒度 | **支持 batch ingest**（降低 D1 round-trip · 与日志补发模型匹配）；Worker **必须同时支持单记录（N=1）与多记录（N>1）**；**不要求 Worker 聚合消息 —— 聚合属上游职责** | **`CLOSED`** |
+| **`H-WP4-07`** | 失败 HTTP 语义 | **4xx = 永久失败**（鉴权 / 格式 / identity 非法）· **5xx = 暂时失败**（D1 不可用 / 持久化异常）· **Worker 不内部 retry、不产生重试风暴** · **EMQX retry 行为 = 外部配置事项** | **`CLOSED`** |
+| **`H-WP4-11`** | 批次原子性 | **逐条校验 + 批量执行 + 单条结果统计**；**不因单条坏数据阻塞整批**；每条独立判 **`accepted` / `duplicate` / `rejected`**；**响应 body 返回三态计数**；**保留 D1 batch 能力，但业务语义不是「全批失败」** | **`CLOSED`** |
+
+### 10.0-R3 ★ 人工裁决留痕（**R3 已关闭 4 项** · 2026-10-11）
+
+| ID | 问题 | **人工裁决（定稿）** | 状态 |
+|---|---|---|---|
+| **`H-WP4-01`** | **Telemetry 物理入口 topic** | **统一采用 P2 已冻结 topic** —— 入口族 = **`guo_feeder/<device_id>/…`**（telemetry → **`/up`**）· **不新增 `/up` 专用入口** · **Worker 不建立第二套 topic 映射** · **topic 中 `device_id` 是身份来源** | **`CLOSED`** |
+| **`H-WP4-13`** | **topic 命名口径统一**（+ 信封字段命名） | **统一为 `guo_feeder/<device_id>/…`** · **`device_id` extraction 规则固定**（`ID-3` = 第 2 段）· **`payload` 中的 `device_id` 永远忽略** · **保持与 P2 ACL 一致**（5/5 覆盖 · **无需新增 ACL**） | **`CLOSED`** |
+| **`H-WP4-16`** | **log 记录级键字段的信封透出方式** | **log 幂等键 `(device_id, boot_seq, seq)` 必须由 ingest 信封明文携带** —— 新增/明确 log 信封字段 **`device_id` / `boot_seq` / `seq` / `payload_base64`**；**Worker 不允许通过解析 CBOR 获取上述字段**；**CBOR payload 保持透明数据**；**不引入第二套幂等键** | **`CLOSED`** |
+| **`H-WP4-17`** | **`log_history.payload` 最终内容形态** | **`Base64` 只属于传输承载（transport encoding），不改变历史表 `payload` 语义** —— **`log_history.payload` 继续保持 `DT:WP-2` 定义的 `TEXT(JSON)` 语义**；**Worker 不解析 payload · 不执行 secret 脱敏 · 不判断内容业务合法性**；**设备侧负责禁止上传包含 secret 的日志内容** | **`CLOSED`** |
+
+> **★ `H-WP3-06` 的处置（**非本文件裁决项** · R3 执行口径）**：**不重新设计 `payload` 生命周期** —— **Worker 必须遵守平台 request body 限制 · 超限请求拒收**；**具体 `payload` 业务上限继续由 `DT:WP-3` 定义**；**未新增 schema / 字段 / 索引**（见 §4.2 / §5.1 `V-L5` / §9.3）。
+
+### 10.0-R4 ★ 人工裁决留痕（**R4 已关闭 4 项** · 2026-10-11）
+
+| ID | 问题 | **人工裁决（定稿）** | 状态 |
+|---|---|---|---|
+| **`H-WP4-04`** | **`schema_version` > 1（未知未来版本）** | **Worker：接收 · 校验格式 · 原样保存**；**禁止**：① **拒绝未知版本** · ② **解释未知字段** · ③ **修改 `payload`** —— **理由 = 保持 forward compatibility** | **`CLOSED`** |
+| **`H-WP4-08`** | **长期 D1 失败后的 DLQ 策略** | **WP-4 不实现 DLQ** —— **失败模型**：**临时失败 = HTTP 5xx → 上游重投 → 幂等吸收**；**永久失败 = HTTP 4xx → 不回投**；**DLQ 需求登记未来版本，不进入 WP-4** | **`CLOSED`** |
+| **`H-WP4-09`** | **Worker structural validation 边界** | **允许**：① topic / `device_id` 一致性 · ② envelope 必填字段检查 · ③ 类型检查 · ④ `schema_version` 格式检查 · ⑤ 幂等键完整性检查；**禁止**：① telemetry policy · ② heartbeat 判断 · ③ 业务价值判断 · ④ 降频 · ⑤ 数据有效性业务裁决 | **`CLOSED`** |
+| **`H-WP4-15`** | **限流 / 防滥用** | **WP-4 不增加限流 / IP 限制 / key rotation** —— **保留现有**：**`X-Webhook-Key`** · **EMQX ACL** · **Cloudflare 基础防护**；**登记未来安全增强** | **`CLOSED`** |
+
+> **★ R4 派生说明（透明留痕）**：**`H-WP4-09` 的关闭使 `F-WP4-1`（heartbeat 结构性空档）随之 `CLOSED`** —— 裁决明确 **Worker 不做 heartbeat 判断 ⇒ 无 Worker 侧防线，属上游职责**（**非本文件自行解决**，依裁决收敛）。
+
+### 10.0-R5 ★ 人工裁决留痕（**R5 已关闭 1 项** · 2026-10-11）
+
+| ID | 问题 | **人工裁决（定稿）** | 状态 |
+|---|---|---|---|
+| **`H-WP4-14`** | **端点复用 vs 新增**（A = 继续 `POST /api/ingest` · B = 新增 history ingest endpoint） | **选择 B = 新增 history ingest endpoint** —— 理由：① **不继承旧 `/api/ingest` 的 `mqtt_messages` side effect** · ② **避免双写一致性问题** · ③ **保持职责单一**；**端点定义 = `POST /api/history/ingest`**（专用 · `X-Webhook-Key` 强制 · 拒 `source=cloud_api`）；**EMQX Action 指向关系 = 指向新端点**（⚠️ **属实施期 EMQX 配置动作 · 本文件不改 EMQX**）；**authentication 继承规则 = 沿用 `X-Webhook-Key` 强制链 + `/api/admin/**` 走 `ADMIN_API_TOKEN` + 拒 `cloud_api` + 不引入第二因子**；**与旧 endpoint 边界 = 旧 `POST /api/ingest` 保持现状不改 · 二者互不依赖 · 新端点不写 `mqtt_messages`** | **`CLOSED`** |
+
+> **★ R5 派生说明（透明留痕）**：**`H-WP4-14` 的关闭使 `F-WP4-10`（`/api/ingest` 复用 ⇒ 写 `mqtt_messages`；旧 webhook 鉴权被注释）随之 `CLOSED`** —— **双写风险与鉴权语义分歧由「选择 B = 职责单一新端点」消解**（**非本文件自行解决**，依裁决收敛）。
+
+### 10.1 `H-WP4-*` **仍待裁决（`OPEN` · `HUMAN_REQUIRED`）—— 2 项（R5）**
+
+| ID | 问题 | 为什么必须人工裁决 | 关联发现 |
+|---|---|---|---|
+| **`H-WP4-10`** | **`ts` 合理性窗口** —— 未来 / 过老数据策略 | **`H-WP4-02` 已定「Worker 不判断」** ⇒ 本项属**未来策略**（**不属 `DT:WP-4`**）—— **明确界外 · 可延后** | — |
+| **`H-WP4-12`** | **`log_ack` 的产生位置与归属**（Worker / EMQX） | 属 `计划:WP-5` + 受 `G-4` 门禁；本设计**明确界外** —— **明确界外 · 可延后** | `F-WP4-2` |
+
+> **★ R5 已关闭项留痕**：**R2 = `02` / `03` / `05` / `06` / `07` / `11`** · **R3 = `01` / `13` / `16` / `17`** · **R4 = `04` / `08` / `09` / `15`** · **R5 = `14`**（分别见 §10.0-R2 / §10.0-R3 / §10.0-R4 / §10.0-R5）。
+> **★ 无「实施前必裁」项残留** —— **`H-WP4-14`（端点）已于 R5 裁决（选 B）并关闭**；**剩余 `OPEN` 2 项均明确界外、可延后**，**不阻塞实施**（见 §13.1）。
+> **★ B 方案的实施前置说明（透明登记）**：**新端点 `POST /api/history/ingest` 的实现** · **EMQX HTTP Action 指向变更** · **`deviceIdFromTopic()` helper 复用** —— 均属**实施阶段动作**，**不在本设计文件范围内**（**未写任何 Worker / EMQX 改动**）。
+
+### 10.2 编号说明
+
+> **★ `H-WP4-*` 为设计期未生效编号**（同 `H-WP2-*` / `H-WP3-*` 惯例）。
+> **R1 → R2**：**无重编号**；**新增 `16` / `17`**（承接 `H-WP4-05` 的派生缺口）。
+> **R2 → R3**：**无重编号、无新增**；**关闭 `01` / `13` / `16` / `17`**（留痕见 **§10.0-R3**）。
+> **R3 → R4**：**无重编号、无新增**；**关闭 `04` / `08` / `09` / `15`**（留痕见 **§10.0-R4**）；**剩余 `OPEN` 3 项**（`10` / `12` / `14` · §10.1）。
+> **R4 → R5**：**无重编号、无新增**；**关闭 `14`**（留痕见 **§10.0-R5**）；**剩余 `OPEN` 2 项**（`10` / `12` · §10.1）。
+
+### 10.3 与上下游 `H-*` 的承接关系（**不重复裁决**）
+
+| 上游 ID | 内容 | 本文件处理 |
+|---|---|---|
+| **`DT:WP-3` `H-WP3-06`** | `payload` 体积上限 / 生命周期（**`DEFERRED`**） | **引用为阻塞项** —— ✅ **R3：Worker 侧处置已定 = 遵守平台 request body 上限 + 拒收超限**；⚠️ **业务上限仍归 `DT:WP-3`** ⇒ **不重开、不自行裁决**；`Base64` ⇒ 体积 ≈ +33% |
+| **`DT:WP-2` `H-WP2-3`** | `log_history.payload` = **`TEXT(JSON)`**（**已冻结**） | ✅ **R3 已闭环**：**`Base64` = 传输承载**，**落库语义仍依该冻结**（`H-WP4-17` = `CLOSED`）；**本文件未修改 `DT:WP-2`** |
+| **`DT:WP-2` `H-WP2-11`** | `mqtt_messages` 去留（**`DEFERRED`**） | **引用为耦合项**（`H-WP4-14`）—— **仅登记** |
+| **`DT:WP-1` `H-W1-1`** | Weight 阈值 `X`（**`NOT RUN`**） | **不涉及**（属设备侧采样，Worker 不感知） |
+| **`DT:WP-3` `H-WP3-10`** | no additional index | **继承为硬约束**（§6.2 / §8.2） |
+
+### 10.4 ★ 设计期发现（`F-WP4-*` · **R5 重新评估**）
+
+| ID | 发现 | R1 等级 | **R5 状态** | 依据 |
+|---|---|---|---|---|
+| **`F-WP4-1`** | heartbeat 的「结构性空档」 | 🟠 | ✅ **`CLOSED`（裁决）** | **R4 裁决（`H-WP4-09`）**：**Worker 不做 heartbeat 判断** ⇒ **无 Worker 侧防线，不落库由上游保证** |
+| **`F-WP4-2`** | `log_ack` 通路缺失（`BT-1`）与 ingest 的交互 | 🔴 | **`OPEN`**（不变） | `H-WP4-12` · `G-4` |
+| **`F-WP4-3`** | telemetry 入口 topic 三套口径并存 | 🔴 | ✅ **`CLOSED`** | **R3 裁决**：入口族统一 `guo_feeder/<device_id>/…`（`H-WP4-01` / `13`） |
+| **`F-WP4-4`** | log 为 CBOR 二进制、ingest 消费 JSON ⇒ 承载缺失 | 🔴 | ✅ **`CLOSED`** | **由 `H-WP4-05` 消解**（`payload_base64` 承载） |
+| **`F-WP4-5`** | telemetry `ts` / `seq` 无来源 ⇒ 幂等键不可构造 | 🔴 | ✅ **`CLOSED`** | **由 `H-WP4-02` + `03` 消解**（设备侧生成） |
+| **`F-WP4-6`** | `INSERT OR IGNORE` 吞掉 NOT NULL/CHECK 违规 | 🟠 | ✅ **`CLOSED`（已缓解）** | **由 `H-WP4-11` 的「逐条校验 + 批内独立判定」覆盖** ⇒ 强制 §5.5 PA / §8.3 `W-4` |
+| **`F-WP4-7`** | REVOKED 守卫返回 200（设计确认项） | 🟢 | **`CONFIRMED`**（不变） | — |
+| **`F-WP4-8`** | 载荷解码失败的两难（丢批 vs 重投风暴） | 🔴 | ✅ **`CLOSED`** | **由 `H-WP4-05` 消解**（Worker 不再解码 ⇒ 前提消失，见 §7.3） |
+| **`F-WP4-9`** | `payload` 无「业务」体积上限 | 🔴 | ⚠️ **部分保留** —— ✅ **Worker 侧处置已定**（平台 request body 上限 + 拒收超限）· ⚠️ **业务上限仍 `OPEN`**（归 `DT:WP-3` `H-WP3-06`） | `H-WP3-06`；`Base64` ⇒ +33% |
+| **`F-WP4-10`** | `/api/ingest` 复用 ⇒ 写 `mqtt_messages`；旧 webhook 鉴权被注释 | 🟠 | ✅ **`CLOSED`（R5 裁决）** | **R5 裁决（`H-WP4-14`）**：**选择 B = 新专用端点 `POST /api/history/ingest`** ⇒ **不写 `mqtt_messages`** · **职责单一 · 语义自洽**；**旧 `/api/ingest` 保持现状不改** |
+| **`F-WP4-11`** | `payload` 原始落库 ↔ N-3 脱敏冲突 | 🟠 | ✅ **`CLOSED`（责任转移）** | **R3 裁决**：**Worker 不脱敏**；**脱敏责任归设备侧**（`H-WP4-17`）；⚠️ **设备侧义务须在固件侧落地**（§10.6 转交） |
+| **`F-WP4-12`** | 不解码 CBOR ↔ log 逐条幂等需键字段 | 🔴 | ✅ **`CLOSED`** | **R3 裁决**：**键三分量由信封明文携带**（`H-WP4-16`） |
+
+> **★ R5 统计**：`CLOSED` / 已缓解 **9**（`1` / `3` / `4` / `5` / `6` / `8` / `10` / `11` / `12`）· **部分保留 1**（`9` · **Worker 侧已定、业务上限外挂**）· **`OPEN` 1**（`2` · `log_ack` · 界外 / `G-4`）· **`CONFIRMED` 1**（`7`）。
+
+### 10.5 跨 WP 阻塞提示（**R5 更新**）
+
+| 阻塞项 | 阻塞对象 | 说明 |
+|---|---|---|
+| ~~**`H-WP4-01` / `13`**~~ | ~~History ingest 实施（硬阻塞）~~ | ✅ **R3 已关闭** —— 入口族统一为 `guo_feeder/<device_id>/…` |
+| ~~**`H-WP4-16`**~~ | ~~Log 域 ingest 实施（硬阻塞）~~ | ✅ **R3 已关闭** —— 键三分量由信封明文携带 |
+| ~~**`H-WP4-17`**~~ | ~~Log 域落库（硬阻塞）~~ | ✅ **R3 已关闭** —— 传输编码 ≠ 落库语义 |
+| ~~**`H-WP4-04`**~~ | ~~Telemetry 写入策略收口~~ | ✅ **R4 已关闭** —— `schema_version > 1` 原样保存（forward compatibility） |
+| ~~**`H-WP4-08` / `09` / `15`**~~ | ~~可靠性 / 过滤边界 / 安全边界~~ | ✅ **R4 已关闭** —— **DLQ 不进入 WP-4** · **structural validation 边界已固化** · **不引入限流/IP/key rotation** |
+| ~~**`H-WP4-14`**~~ | ~~History ingest 实施第一步（端点）~~ | ✅ **R5 已关闭** —— **选择 B：新专用端点 `POST /api/history/ingest`**（**不写 `mqtt_messages` · 职责单一**；旧 `/api/ingest` 保持现状不改） |
+| **`H-WP3-06`（`payload` **业务**上限）** | **LogHistory 业务上限闭环** | ✅ **Worker 侧处置已定**（遵守平台 request body 上限 + 拒收超限）；⚠️ **业务上限仍归 `DT:WP-3`**（`DEFERRED`）—— **不阻塞 ingest 链路施工** |
+| **`G-1`** | `计划:WP-3` / `计划:WP-4` **实施** | 未变 |
+| **`G-4`（`BT-1`）** | `计划:WP-5`（**LogHistory 落库**） | 未变 |
+
+### 10.6 本轮不解决、转交他处的议题（**登记**）
+
+| 议题 | 转交对象 | 说明 |
+|---|---|---|
+| **`payload` 明文 secret 的脱敏** | **设备侧（唯一责任方 · R3 定稿）** —— **禁止上传包含 secret 的日志内容**；⚠️ **该义务须在固件侧落地**（本文件不设计固件） | `H-WP4-17`（`F-WP4-11` 已 `CLOSED`） |
+| **`payload` 业务体积上限** | **`DT:WP-3`（`H-WP3-06`）** | R3：**Worker 侧仅遵守平台上限 + 拒收超限** |
+| **DLQ / 死信队列** | **未来版本（不在 WP-4）** | **R4 裁决（`H-WP4-08`）**：**兜底 = 上游重投 + 幂等**；⚠️ **重试耗尽后的数据丢失 = 已接受并登记** |
+| **限流 / IP 限制 / key rotation** | **未来安全增强（不在 WP-4）** | **R4 裁决（`H-WP4-15`）**：保留 `X-Webhook-Key` + EMQX ACL + Cloudflare 基础防护 |
+| **新端点 `POST /api/history/ingest` 的实现 + EMQX Action 指向变更** | **实施阶段（`计划:WP-3` / `计划:WP-4`）** | **R5 裁决（`H-WP4-14` = `CLOSED`）**：**设计与边界已定**；⚠️ **实现不在本文件范围**（**未写 Worker / EMQX 改动**） |
+| **telemetry `seq` 跨 boot 递增规则**（若固件协议未定义） | **设备协议后续问题**（`DT:WP-4` 不解决） | `H-WP4-03` 裁决的明确附属说明 |
+| **`ts` 时间窗口策略** | **未来策略**（不属 `DT:WP-4`） | `H-WP4-10` 的定位说明（仍 `OPEN` · **可延后**） |
+
+---
+
+## §11 不变量继承（**`INV-1…INV-14` —— 必须全部满足**）
+
+> **★ 铁律**：本设计**任一项违反 ⇒ 该设计作废**。
+
+| ID | 不变量 | 来源 |
+|---|---|---|
+| **INV-1** | **telemetry policy 唯一权威位置 = 设备侧**；EMQX 只执行过滤；**Worker 只 ingest / validation / idempotency / persist** | `U-1` §1 · `U-3` `I-1` |
+| **INV-2** | **heartbeat 不进入历史库** | `U-1` `H-W1-3` |
+| **INV-3** | **system health 正常不落库**；仅异常 → EVENT/ERROR | `U-1` `H-W1-6` |
+| **INV-4** | **online 仅记录迁移点**（`init`/`ready`/`disconnected`/`lost`）；**禁周期 offline** | `U-1` `H-W1-4` |
+| **INV-5** | **`weight.enable=false` ⇒ 无 weight telemetry / 无 weight error history** | `U-1` `F-4` |
+| **INV-6** | **telemetry 与 log 物理分离**（两表，**不混**） | `U-2` §2.3 |
+| **INV-7** | **设备 Flash Log 级别 ≠ 云端 `log_history` 级别** | `U-1` `F-6` · `U-3` `I-7` |
+| **INV-8** | **幂等键冻结**：telemetry `(device_id,type,ts,seq)`；log `(device_id,boot_seq,seq)` | `U-2` §3.4 —— ✅ **R3：键分量来源全部落定**（telemetry = 报文；log = 信封明文 · `H-WP4-16`）；**未引入第二套键** |
+| **INV-9** | **schema / 字段 / 索引集合不得改**（`H-WP3-10` = no additional index） | `U-2` §3/§5 · `U-3` `H-WP3-10` |
+| **INV-10** | **时间单位 = Unix 秒**（`ts` / `created_at`） | `U-2` `H-WP2-13` |
+| **INV-11** | **retention 冻结**：telemetry **90 天** · log **180 天**；**cleanup = scheduled job** | `U-3` `H-WP3-01` / `02` / `03` |
+| **INV-12** | **ingest 与 cleanup 完全解耦**（ingest 内不得有删除逻辑） | §7.5 · `U-3` §7 |
+| **INV-13** | **既有 migration `0001_*` / `0002_*` 不得编辑**；本阶段**不新增 `0003_*`** | `migrations/README.md` |
+| **INV-14** | **Worker 不得成为第三套 telemetry policy**（禁业务降频 / 禁「是否有效」判断） | `计划:WP-4` 4 禁止 —— ✅ **R4 强化**：**§5.1.1 显式固化「允许 5 / 禁止 5」结构校验边界**（含禁 heartbeat 判断 / 禁降频 / 禁有效性裁决） |
+
+> **★ R5 检查结论**：**`INV-1…INV-14` 全部满足** —— 本轮（R5）仅**回填裁决 + 端点定稿 + 状态收敛**：**未新增字段 · 未新增索引 · 未改 schema · 未改 retention（90 / 180）· 未改 cleanup 边界（`scheduled`）· 未新增 topic / ACL / migration · 未引入 DLQ / 限流 / 第二套 policy**。
+> **★ R5 固化项**：**入口端点 = 新专用端点 `POST /api/history/ingest`（选择 B）** —— **不写 `mqtt_messages` · 职责单一 · `X-Webhook-Key` 强制 · 拒 `cloud_api`**；**旧 `POST /api/ingest` 保持现状不改**（`H-WP4-14`）。
+> **★ 端点 ≠ schema 变更**：**新增端点属「接口面」定稿，不构成 schema / 字段 / 索引 / retention / cleanup 的任何变更** ⇒ **`INV-9` / `INV-11` / `INV-12` / `INV-13` 均不受影响**；**`INV-1` / `INV-14`（Worker 仅 4 职责 · 非第三套 policy）保持**。
+> **★ 跨冻结状态**：**R3 已清零**（`H-WP4-17` 收敛为「传输编码 ≠ 落库语义」）—— **`DT:WP-2` 未被修改**；**R4 / R5 均未新增任何跨冻结遗留**。
+
+---
+
+## §12 与上游文档一致性
+
+| 引用文档 | 位置 | 本设计如何对齐 |
+|---|---|---|
+| `P3-WP1-Telemetry-Policy-Final.md` | `WP1:§1` 唯一权威位置 | §2.1 三层责任表 · §3.2 归一化红线 · §5 禁止项 · `INV-1` |
+| 同上 | `WP1:§3.7` heartbeat | `INV-2`；§3.2 明确**禁止 Worker 侧按 type 丢弃**（⇒ `F-WP4-1` 登记） |
+| 同上 | `WP1:§3.8` Log 双级别 | §4.2 · `INV-7`（**只设计云端侧**） |
+| 同上 | `WP1:§3.9` system health | `INV-3` |
+| 同上 | `WP1:§2` 9 类 | §2.3 域 → 表映射**不改任何落库判定** |
+| `P3-WP2-History-Data-Model-Design.md` | `WP2:§3` / `§4.2` schema | §5.2 必需字段矩阵（**逐字段对齐**）；**不新增字段** |
+| 同上 | `WP2:§3.4` 幂等键 | §6 逐键一致；**不引入第二套键** |
+| 同上 | `WP2:§5` 索引集合 | §6.2 复用 `ux_*_dedup`；§8.2 写成本意识（**不增不减索引**） |
+| 同上 | `WP2:§3.3` `value` / `schema_version` | §3.3（**Worker 不解释 `value`**；**R4：`schema_version` > 1 原样保存 · 不解释未知字段**） |
+| 同上 | `WP2:§4.2` `payload` = **`TEXT(JSON)`**（`H-WP2-3` 冻结） | ✅ **R3 已闭环**：**`Base64` = 传输承载，落库语义依本冻结**（`H-WP4-17` = `CLOSED` · §4.2；**未修改 `DT:WP-2`**） |
+| `P3-WP3-History-Storage-Policy-Design.md` | `H-WP3-01/02/03` | §7.5 · `INV-11`（**ingest 不感知窗口**） |
+| 同上 | §7.4 删除硬规则 | §7.5（**cleanup 专属，ingest 不介入**） |
+| 同上 | `H-WP3-06` `payload` 上限 | §4.2 · §5.1 `V-L5` · §9.3 —— **R3：Worker 只遵守平台 request body 上限 + 拒收超限**；**业务上限仍归 `DT:WP-3`** |
+| `P3-History-D1-Plan.md`（R2） | **`计划:WP-3`** | §2.1 EMQX "只执行过滤" · §9.1 `X-Webhook-Key` 不放宽 · REVOKED 守卫保留 · **§9.1 R5：Action 指向新端点 `POST /api/history/ingest`（选择 B）** |
+| 同上 | **`计划:WP-4`** 4 职责 / 4 禁止 | §3 / §5 / §6 / §8 逐条；`INV-14` |
+| 同上 | `计划:§4.3` / `§8` 门禁 | §0.1（**不解除任何门禁**）· §4.3（`log_ack` 受 `G-4`） |
+| 同上 | `计划:§6` `R-5` 幂等缺失 | §6 幂等设计即该风险的对策 |
+| `docs/interfaces/cloud_protocol.md` | §2 / §4 报文外壳 | §2.4 信封设计（**不改该规范**） |
+| 同上 | §8.2 `log` Topic | §2.2 / §2.4 / §4.2 —— **R3：入口族统一 `guo_feeder/<device_id>/log` · 承载 = `payload_base64`**（`H-WP4-05` / `16`）· **Worker 不解码 CBOR**（**未改该规范**） |
+| 同上 | §12.3 `$state` / §12.5 属性映射 | §2.3（telemetry `online.state` 与 `device_event` **different 数据**） |
+| `Cloudflare_Assets/.../index.js`（现状） | `/api/ingest` · REVOKED 守卫 · N-3 脱敏 | §9.1 / §9.2 / `T-4`（**旧端点保持现状语义不改**；**R5：新端点 `POST /api/history/ingest` 定稿（选择 B · 不写 `mqtt_messages`）**，`H-WP4-14` = `CLOSED`；**本文件未改 Worker 代码**） |
+| — | **本文件状态** | **`DT:WP-4 = FROZEN` · R5 冻结回填（15 `CLOSED` / 2 `OPEN`）**（**设计已冻结 · 实施唯一基线 · 人工批准 · 不解除任何门禁**） |
+
+> **★ 一致性结论**：本设计**未修改**任何被引用文档；**未与 `DT:WP-1` / `DT:WP-2` / `DT:WP-3` 的冻结内容冲突**；**所有冲突点已登记为 `H-WP4-*` / `F-WP4-*`，未自行解决**。
+
+---
+
+## §13 纪律声明（本轮边界）
+
+- **本文件为 `DESIGN ONLY`（设计稿 · **已冻结 · 实施唯一依据**）**：**不含代码**；**冻结后任何设计变更须走人工裁决**（**本文件不自改**）。
+- **未修改** `src/` · `platformio.ini` · `partitions.csv` · ConfigManager · MQTT 实现 · **固件任何代码**。
+- **未修改** Cloudflare Worker **代码** · EMQX 配置 **· 未创建 migration**（**未新建 `0003_*`**）· **未写 D1** · **未部署**。
+- **未修改** `cloud_protocol.md` · `P3-History-D1-Plan.md` · `Cloud-APP-Platform-Plan.md` · `P2-0-…freeze.md`。
+- **未修改** `DT:WP-1` / `DT:WP-2` / `DT:WP-3` 冻结文档（**逐字未动**）。
+- **未新增 topic / 未新增订阅 / 未改 ACL / 未改 EMQX 任何配置**（**R3：入口族统一利用了 P2 已冻结且 ACL 已覆盖的 topic**）。
+- **未引入 DLQ · 未引入限流 / IP 限制 / key rotation**（**R4：`H-WP4-08` / `15` 裁决**）；**R5：设计层定名新端点 `POST /api/history/ingest`（`H-WP4-14` = `CLOSED` · 选择 B）—— 仅为设计定稿，未写任何 Worker / EMQX 实现**。
+- **未改动任何 Gate**（`G-1` / `G-2` / `G-3` / `G-4` / `G-5` 状态**均未变**；见 §0.1）。
+- **本轮（R5）应用人工裁决**（`H-WP4-14` ⇒ `CLOSED` · 选择 B）；**未自行裁决其余 `OPEN` 2 项**（`10` / `12`）；**未自行解决任何 `F-WP4-*`**（仅按裁决**重新评估**其状态 —— 其中 `F-WP4-10` 依 `H-WP4-14` 裁决收敛为 `CLOSED`）。
+- **`P3` 状态保持 `NOT STARTED / PLANNED`**。
+- **未 `commit`、未 `push`**（按指示留待人工**冻结批准**）。
+
+### 13.1 ★ 冻结确认（**R5** · Freeze Confirmation）
+
+| 判据 | 结论 |
+|---|---|
+| **设计链路完整**（入口 → 校验 → 幂等 → 写入 → 错误处置） | ✅ **完整** |
+| **入口 / 命名口径** | ✅ **已定**（`guo_feeder/<device_id>/…`；`H-WP4-01` / `13` = `CLOSED`） |
+| **入口端点** | ✅ **已定（R5 选择 B）**（**新专用 `POST /api/history/ingest`** · 不写 `mqtt_messages` · 职责单一；`H-WP4-14` = `CLOSED`） |
+| **EMQX Action 指向关系** | ✅ **已定**（指向新端点；⚠️ **实施期 EMQX 配置动作**，本文件不改） |
+| **authentication 继承规则** | ✅ **已定**（`X-Webhook-Key` 强制 + `ADMIN_API_TOKEN` + 拒 `cloud_api` + 无第二因子） |
+| **与旧 endpoint 边界** | ✅ **已定**（旧 `POST /api/ingest` 保持现状不改 · 互不依赖） |
+| **log 幂等可构造性** | ✅ **已定**（键三分量由信封明文携带；`H-WP4-16` = `CLOSED`） |
+| **`payload` 跨冻结冲突** | ✅ **已收敛**（传输编码 ≠ 落库语义；`H-WP4-17` = `CLOSED`） |
+| **`schema_version` 前向兼容** | ✅ **已定**（接收 + 校验格式 + 原样保存；`H-WP4-04` = `CLOSED`） |
+| **失败模型** | ✅ **已定**（临时 = 5xx + 重投 + 幂等；永久 = 4xx + 不回投；**DLQ 界外**；`H-WP4-08` = `CLOSED`） |
+| **Worker 校验边界** | ✅ **已显式固化**（§5.1.1「允许 5 / 禁止 5」；`H-WP4-09` = `CLOSED`） |
+| **安全防护层** | ✅ **已定**（保留现有三层；**不引入限流 / IP / key rotation**；`H-WP4-15` = `CLOSED`） |
+| **`payload` 体量防线** | ✅ **Worker 侧已定**（平台 request body 上限 + 拒收超限）；⚠️ **业务上限仍归 `DT:WP-3` `H-WP3-06`** |
+| **裁决覆盖率** | ✅ **15 / 17 `CLOSED`（88%）** —— **硬阻塞 0**，**剩余 `OPEN` 2 项（均明确界外可延后）** |
+| **残余 `OPEN` 项** | `H-WP4-10`（`ts` 窗口 · **明确界外** · 可延后）· `H-WP4-12`（`log_ack` · **界外 / `G-4`** · 可延后）—— **无「实施前必裁」项** |
+| **结论** | ✅ **`FROZEN`（设计已冻结 · 实施唯一基线 · 人工批准）**；⚠️ **冻结 ≠ 实施已完成**；**实施仍受 `G-1`**（LogHistory 另受 `G-4`） |
+
+---
+
+> **DT:WP-4 = FROZEN · R5 冻结回填（`H-WP4` 15 `CLOSED` / 2 `OPEN` · **设计已冻结 · 实施唯一基线 · 人工批准**）.**
+> **WP-4 Design only means ingestion pipeline design completed. It does not mean implementation started.**
+> **WP-4 Frozen means the ingestion pipeline design is frozen and is the single implementation baseline. It does not mean implementation started.**
+> **Endpoint decision (R5): the design adopts a dedicated history ingest endpoint `POST /api/history/ingest` (option B). The legacy `POST /api/ingest` is unchanged.**
+> **Remaining OPEN (2): `H-WP4-10` (`ts` window — out of scope), `H-WP4-12` (`log_ack` — out of scope / `G-4`).**
+> **P3 remains NOT STARTED / PLANNED. No Gate changed.**
+> **No implementation. No Worker code. No migration. No DDL. No deploy. No new topic. No ACL change. No DLQ. No rate limiting. The new endpoint is design-only (no Worker / EMQX change).**
+
+---
+
+*本文件于 **2026-10-10** 建立（R1），经 **R2 / R3 / R4 / R5** 修订，为 **`DT:WP-4` 历史数据接入与云端管道设计（`DESIGN ONLY`）**；不含任何实现、迁移或代码改动。*
+*上位依据 = `P3-WP1-Telemetry-Policy-Final.md`（`FROZEN`）· `P3-WP2-History-Data-Model-Design.md`（`FROZEN`）· `P3-WP3-History-Storage-Policy-Design.md`（`FROZEN`）· `P3-History-D1-Plan.md`（R2 · `计划:WP-3` / `计划:WP-4`）。*
+*R1 / R2 / R3 / R4 / R5 基线 = 固件仓 HEAD **`fee6b77`**（`DT:WP-3` 冻结提交 · 工作树 clean）。*
