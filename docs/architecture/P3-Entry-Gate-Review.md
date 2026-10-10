@@ -4,9 +4,10 @@
 > **状态**：**`P3 = NOT STARTED / PLANNED`** · **入口评审结论 = `NOT PASSED`（`G-2` / `G-3` 已解除；`G-1` 待批准、`G-4` 被阻塞）** · **`push = DEFERRED`**
 > **评审对象**：`docs/architecture/P3-History-D1-Plan.md`（**R2**，`3383d5d`）
 > **上位依据**：`Cloud-APP-Platform-Plan.md`（§10 P3 · §7.3）· `P2-8-Closure-Review.md` · `P2-8-Archive-Record.md` · `docs/issues/未修复的问题.md`（BT-1）
-> **评审时点**：**2026-10-10** · 固件仓 HEAD = **`3383d5d`**（工作树 clean）
+> **评审时点**：**2026-10-10** · 评审基线 固件仓 HEAD = **`3383d5d`**；**R4 同步基线 = `fd41972`**
 > **★ 修订**：**R2（2026-10-10 · 仅 `G-2` 解除）** —— 依 `P3-WP1-Telemetry-Policy-Final.md`（**人工已裁决批准**），**`G-2` 由 `HUMAN_REQUIRED` → `PASS`**；同步其**直接后果**（`U-1` 解决 ⇒ `B-1` 解除 · `H-1` 已裁决）。**`G-1` / `G-3` / `G-4` 状态未改动**。**`P3` 仍 `NOT STARTED / PLANNED`**。
 > **★ 修订**：**R3（2026-10-10 · `G-3` 解除）** —— 依 `P3-WP2-History-Data-Model-Design.md`（**人工已裁决批准 · Schema Freeze**），**`G-3` 由 `HUMAN_REQUIRED` → `PASS`**；同步其**直接后果**（Acceptance `H-2` / `H-5` = `CLOSED`，`H-3` / `H-4` = `DEFERRED`；`WP-2 = CLOSED`）。**`G-1` / `G-4` 状态未改动**。**⚠️ `G-3 PASS` = 设计冻结，不等于实施开始**。**`P3` 仍 `NOT STARTED / PLANNED`**。
+> **★ 修订**：**R4（2026-10-10 · 仅同步 `DT:WP-3` 设计冻结）** —— 依 `P3-WP3-History-Storage-Policy-Design.md`（**人工已裁决批准 · `FROZEN`**），**设计轨 `DT:WP-3`（History Storage Policy）由 `FREEZE CANDIDATE` → `FROZEN`**；`H-WP3-01…11` **全部裁决**（`CLOSED` **8** · `DEFERRED` **3**）。**⚠️ 本次为「设计轨状态同步」，不涉及任何 Gate**：**`G-1` / `G-2` / `G-3` / `G-4` / `G-5` 状态均未改动**；**`P3` 仍 `NOT STARTED / PLANNED`**。**⚠️ `DT:WP-3` ≠ 计划 `计划:WP-3`（EMQX 数据集成）**。
 >
 > **⚠️ 术语铁律（本项目统一状态）**：`PASS` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED` · `DEFERRED` · `CLOSED`
 > **`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 一律 ≠ `PASS`**。本评审**不把任何未满足项写成 PASS**。
@@ -20,7 +21,7 @@
 | **A · P3 Plan R2 状态** | **`PASS`** —— 文件存在 · R2 修订记录存在 · Scope / WP / Acceptance 完整（见 §A） |
 | **B · 前置阶段状态** | **`PASS`** —— P1 `CLOSED` · P2 `SOFTWARE CLOSED` · P3 `NOT STARTED`（见 §B） |
 | **C · Entry Gate 条件** | **未通过** —— `G-1 HUMAN_REQUIRED` · **`G-2 PASS`（已解除）** · **`G-3 PASS`（已解除）** · `G-4 BLOCKED`（见 §C） |
-| **当前允许** | **WP-1 `CLOSED`**（策略已冻结）· **WP-2 `CLOSED`**（**Schema Design Frozen**，`G-3` 已解除）（见 §3） |
+| **当前允许** | **WP-1 `CLOSED`**（策略已冻结）· **WP-2 `CLOSED`**（**Schema Design Frozen**，`G-3` 已解除）· **`DT:WP-3 = FROZEN`**（存储策略设计冻结；⚠️ 设计轨，≠ 计划 `计划:WP-3`）（见 §3） |
 | **当前禁止** | 建 migration · 改 Worker · 改 EMQX rule · 写 D1 · 部署任何 P3 实现（见 §4） |
 | **P3 状态** | **`P3 = NOT STARTED / PLANNED`**（**未改变**） |
 
@@ -88,7 +89,8 @@
 | **3.2** | **Telemetry Policy（已冻结）** | ✅ 唯一权威位置 = **设备侧**；EMQX 只执行过滤；Worker 只负责 ingest / storage（见冻结文档 §1） |
 | **3.3** | **WP-2（已完成）** | ✅ **`WP-2 = CLOSED`（Schema Design Frozen）** —— schema 已冻结（`P3-WP2-History-Data-Model-Design.md`）；**"设计冻结完成" ≠ "功能已实现"** |
 | **3.4** | **本评审文档本身** | 评审 / 修订本文件，供人工批准 `G-1` |
-| **3.5** | **WP-3 / WP-4 设计层** | 可做**设计**（EMQX 规则草案 / Worker 边界草案）；**⚠️ 实施仍须 `G-1` 批准** |
+| **3.5** | **计划 `计划:WP-3` / `计划:WP-4` 设计层** | 可做**设计**（EMQX 规则草案 / Worker 边界草案）；**⚠️ 实施仍须 `G-1` 批准** |
+| **3.6** | **设计轨 `DT:WP-3`（已完成 · R4 同步）** | ✅ **`DT:WP-3 = FROZEN`（存储策略设计冻结）** —— `P3-WP3-History-Storage-Policy-Design.md`；**设计冻结 ≠ 实施**；**`DT:WP-3` ≠ 计划 `计划:WP-3`（EMQX 集成）** |
 
 > **★ 注意**：以上均属「**设计准备**」。**"设计准备" ≠ "实施"**。
 
@@ -169,6 +171,7 @@
 | C-3 | **P2-0.2 / P2-1…P2-8** | `CLOSED`（P2 阶段级 = SOFTWARE CLOSED / HARDWARE DEFERRED） |
 | **C-4** | **P3 · WP-1（Telemetry Policy）** | **`CLOSED`** —— **设计冻结完成**（`P3-WP1-Telemetry-Policy-Final.md`）；**非"功能已实现"** |
 | **C-5** | **P3 · WP-2（History Data Model）** | **`CLOSED`** —— **Schema Design Frozen**（`P3-WP2-History-Data-Model-Design.md`）；**非"功能已实现"** |
+| **C-6** | **P3 · `DT:WP-3`（History Storage Policy）** | **`CLOSED` / `FROZEN`** —— **存储策略设计冻结**（`P3-WP3-History-Storage-Policy-Design.md`）；`H-WP3-01…11` 全部裁决（`CLOSED` **8** · `DEFERRED` **3**）；**非"功能已实现"** |
 
 > **★ 纪律**：`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 均 **≠ `PASS`**；本评审**未把任何一项转为 PASS**。
 
@@ -209,6 +212,7 @@ P3 Entry Gate 总评     = ☐ PASSED（可进入实施）  ☐ NOT PASSED（继
 - **未修改固件 `src/` / `platformio.ini` / partition**；**未修改冻结文档**。
 - **未把任何 `NOT RUN` / `BLOCKED` 转为 `PASS`**；`G-2` / `G-3` 的 `PASS` 系**依人工裁决记录**（`P3-WP1-Telemetry-Policy-Final.md` / `P3-WP2-History-Data-Model-Design.md`），**非本评审自行判定**。
 - **未替人工裁决** `G-1` / `G-4`（**状态未改动**）；`G-2` / `G-3` 的裁决列由人工决定后记录。
+- **R4（2026-10-10）**：**仅同步 `DT:WP-3 = FROZEN`（设计轨）**；**未改动任何 Gate**（`G-1…G-5` 均未变）；**未创建 migration / 未改 Worker / 未改 EMQX / 未写 D1**。
 - **未 `push`**。
 - **`P3` 状态保持 `NOT STARTED / PLANNED`**。
 
