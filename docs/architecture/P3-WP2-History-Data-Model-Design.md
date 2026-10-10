@@ -6,12 +6,13 @@
 > - **本文件 = 供 `G-3`（Schema Freeze）审核的最终候选版本**；**`G-3` 状态保持 `HUMAN_REQUIRED`**（**本文件不解除、不标记 `PASS`**）。
 > - **`P3 = NOT STARTED / PLANNED`**（**未改变**）· **未解除任何 Gate**。
 >
-> **状态**：**`WP-2 = DESIGN`（G-3 候选，未冻结）** · **`P3 = NOT STARTED / PLANNED`** · **`push = DEFERRED`**
+> **状态**：**`WP-2 = DESIGN COMPLETE`（G-3 候选最终版 · 待人工批准）** · **`G-3 = HUMAN_REQUIRED`（未解除）** · **`P3 = NOT STARTED / PLANNED`** · **`push = DEFERRED`**
 > **上位依据**：`P3-WP1-Telemetry-Policy-Final.md`（**§7.3 已冻结**）· `P3-History-D1-Plan.md`（**R2** · **WP-2**）· `Cloud-APP-Platform-Plan.md` **§7.3 / §7.4**
 > **接口依据**：`docs/interfaces/cloud_protocol.md`（**§8.2** log Topic · **§12.3** `$state` · **§12.4** `$description` · **§12.5** 属性映射）
 > **D1 现状依据**：`Cloudflare_Assets/guo-feeder-api/migrations/`（`0001_*` / `0002_*` · **既有 `device` / `device_credential` / `device_binding` / `device_event`**）· `migrations/README.md`
-> **设计时点**：**2026-10-10** · 固件仓 HEAD = **`24ffc2a`**（工作树 clean）
+> **设计时点**：**2026-10-10** · R2 基线 HEAD = **`24ffc2a`** · **R3 基线 HEAD = `6cbd519`**（工作树 clean）
 > **★ 修订标记**：**R2（2026-10-10 · 依人工修订要求）** —— ① 增加 **schema 状态分类**（§1.2）· ② `value` **物理类型统一 `TEXT`** + 逻辑类型（`number`/`string`/`json`，由 `schema_version` 解释）· ③ `telemetry_history` **增 `seq`/`schema_version`，删 `boot_seq`/`trace_id`** · ④ **幂等键明确**（telemetry `(device_id,type,ts,seq)` / log `(device_id,boot_seq,seq)`）· ⑤ **索引调整**（删 `(type,ts)`；log `(device_id,level,ts)` 暂缓）· ⑥ `H-WP2` **重编号**并新增 retention 两项（见 §8）。**保留方案 C 与 EAV 方向不变。**
+> **★ 修订标记**：**R3（2026-10-10 · 依人工审核裁决）** —— ① **`H-WP2-5` / `H-WP2-12` / `H-WP2-13` → `CLOSED`** · ② **`H-WP2-9` / `H-WP2-10` / `H-WP2-11` → `DEFERRED`**（移交 **WP-3** / 既有 schema 生命周期管理）· ③ 状态提升为 **`WP-2 = DESIGN COMPLETE`**（**`G-3` 仍 `HUMAN_REQUIRED`**）。**字段设计 / EAV / `value TEXT` / `seq`·`schema_version` 一律未改。**
 >
 > **⚠️ 术语铁律**：`PASS` · `NOT RUN` · `HUMAN_REQUIRED` · `BLOCKED` · `DEFERRED` · `CLOSED`。**`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 一律 ≠ `PASS`**。
 
@@ -22,7 +23,9 @@
 | 项 | 内容 |
 |---|---|
 | **WP-2 性质** | **`DESIGN ONLY`** —— 只产出**数据模型设计 / Schema 候选 / 字段定义 / 索引设计 / 生命周期策略 / 待裁决项** |
-| **本文件定位** | **`G-3`（Schema Freeze）最终候选** —— 供人工审核；**不代表已冻结** |
+| **本文件定位** | **`G-3`（Schema Freeze）最终候选（final）** —— 供人工审核；**不代表已冻结** |
+| **WP-2 状态** | **`DESIGN COMPLETE`** —— **schema candidate 已完成**；**等待人工最终批准**（`G-3`） |
+| **G-3 状态** | **`HUMAN_REQUIRED`**（**未解除 · 未标记 `PASS`**）—— 本文件为候选，供人工审核 |
 | **P3 状态** | **`NOT STARTED / PLANNED`**（**未改变**） |
 | **本文件未做** | **No implementation** · **No migration**（**未创建 `0003_*`**）· **No D1 write** · **No Worker change** · **No EMQX change** · **No deploy** |
 | **Gate 影响** | **未解除任何 Gate**；**`G-3` 仍 `HUMAN_REQUIRED`**；`G-1` / `G-4` 状态**未改** |
@@ -80,7 +83,7 @@
 > **不推荐 A**：与 WP-1 冻结的"History/Log 分离"**直接冲突**（长文本 log 会污染 telemetry 查询与索引）。
 > **不推荐 B**：每类一张表 ⇒ **DDL 与索引数量随类型增长**，新增度量**必须建 migration**，与 EAV"零 DDL 扩展"的初衷相悖；且跨类型曲线需 UNION。
 >
-> **物理命名**：`telemetry_history` · `log_history`（snake_case，对齐既有 `device_event`）—— **最终命名 =【HR】`H-WP2-5`**。
+> **物理命名**：**`telemetry_history` · `log_history`**（snake_case，对齐既有 `device_event`）—— **命名已由人工裁决**（**`H-WP2-5 = CLOSED`**：**采用 `telemetry_history` / `log_history`**）。
 > （R2 `WP-2` 的逻辑名 `TelemetryHistory` / `LogHistory` 与之**一一对应**。）
 
 ```
@@ -257,11 +260,11 @@
 
 | 域 | **候选窗口**（**非结论**） | 裁决项 |
 |---|---|---|
-| **telemetry** | **90 天**（候选） | **【HR】`H-WP2-9`** |
-| **log** | **30 天**（候选） | **【HR】`H-WP2-10`** |
+| **telemetry** | **90 天**（候选） | **【`DEFERRED` → WP-3】`H-WP2-9`** |
+| **log** | **30 天**（候选） | **【`DEFERRED` → WP-3】`H-WP2-10`** |
 | **event**（既有 `device_event`，控制面） | **180 天**（候选，仅登记） | 牵连 R2 `H-4` |
 
-> **★ 纪律**：以上**全部为候选**，**一律 `HUMAN_REQUIRED`**（telemetry = `H-WP2-9`；log = `H-WP2-10`）。**本文件不裁决任何窗口**，**也不实现任何删除**。
+> **★ 纪律（R3 同步）**：以上**全部为候选**。**retention 窗口已由人工裁决为 `DEFERRED`** —— telemetry = `H-WP2-9` · log = `H-WP2-10` ⇒ **移交 WP-3 History Storage Policy / lifecycle policy**，**不属 `G-3` 裁决范围**。**本文件不裁决任何窗口**，**也不实现任何删除**。
 > **域间差异（沿用 R2 `WP-7`）**：**Telemetry 短 / Log 长**（或按上表——**具体值待裁决**）；`log_history` **独立保留窗口**。
 
 ---
@@ -295,25 +298,22 @@
 
 ---
 
-## §8 待人工裁决项（**`H-WP2-*` · R2 重编号**）
+## §8 待人工裁决项（**`H-WP2-*` · R2 重编号 · R3 同步人工裁决**）
 
 > **★ 纪律**：以下**一律 `HUMAN_REQUIRED`**；本设计**不替人工裁决**。**它们是 `G-3`（Schema 冻结）的裁决内容。**
+> **★ R3 同步（人工审核裁决）**：**已裁决项** → **§8.2（`CLOSED`）** · **已延期项** → **§8.3（`DEFERRED`）**；**§8.1 仅保留仍 `HUMAN_REQUIRED` 的裁决项**。
 
-### 8.1 **待裁决（OPEN）**
+### 8.1 **仍待裁决（OPEN · `HUMAN_REQUIRED`）**
 
 | ID | 问题 | 本设计建议（**仅建议**） | 状态 | 关联 |
 |---|---|---|---|---|
-| **`H-WP2-1`** | **双表架构（方案 C）是否批准** | 推荐 C（`telemetry_history` + `log_history` 分域二表） | 【SC】 | `WP-1` 分离原则 · R2 `WP-2` |
-| **`H-WP2-3`** | **是否保存原始 payload** | telemetry **不建议**存原始（只存 `value`）；**log 保留 `payload`（限体积）** | 【HR】 | §4.2 · R2 |
-| **`H-WP2-5`** | **表命名最终确认**（`telemetry_history` vs `TelemetryHistory`） | 建议 snake_case（对齐既有 `device_event`） | 【HR】 | §2.3 |
-| **`H-WP2-8`** | **`payload` 最大长度（体积上限）与超限处置** | 建议给**字节上限**（截断 / 丢弃 / 仅保键） | 【HR】 | §4.2 · R2 |
-| **`H-WP2-9`** | **telemetry retention 周期** | 候选 **90 天** | 【HR】 | §6.2 · R2 `H-4` |
-| **`H-WP2-10`** | **log retention 周期** | 候选 **30 天** | 【HR】 | §6.2 · R2 `H-4` |
-| **`H-WP2-11`** | **`mqtt_messages` 去留**（重构 / 退役 / 拆分） | 本设计**不做裁决**；`migrations/README.md` 已登记「P3 才重构」 | 【HR】 | R2 `H-3` |
-| **`H-WP2-12`** | **是否与既有 `device_event` 合并** | **不建议合并**（`device_event` = **控制面生命周期事件**；History = **设备遥测** ⇒ 职责不同） | 【HR】 | R2 `H-5` |
-| **`H-WP2-13`** | **`ts` 取值口径**（设备观测时刻 vs ingest 时刻） | 建议 `ts` = **设备时间**（`time-valid` 时）；**否则回退 ingest 时刻** | 【HR】 | §12.5 `time-valid` |
+| **`H-WP2-1`** | **双表架构（方案 C）是否批准** | 推荐 C（`telemetry_history` + `log_history` 分域二表） | 【SC】`HUMAN_REQUIRED` | `WP-1` 分离原则 · R2 `WP-2` |
+| **`H-WP2-3`** | **是否保存原始 payload** | telemetry **不建议**存原始（只存 `value`）；**log 保留 `payload`（限体积）** | 【HR】`HUMAN_REQUIRED` | §4.2 · R2 |
+| **`H-WP2-8`** | **`payload` 最大长度（体积上限）与超限处置** | 建议给**字节上限**（截断 / 丢弃 / 仅保键） | 【HR】`HUMAN_REQUIRED` | §4.2 · R2 |
 
-### 8.2 **已由本修订裁决（**不再为 `HUMAN_REQUIRED`**）**
+### 8.2 **已裁决（CLOSED）**
+
+#### 8.2.1 由 R2 设计修订裁决
 
 | 原 ID | 项 | **R2 裁决** |
 |---|---|---|
@@ -322,9 +322,27 @@
 | `H-WP2-6` | 是否需要 `boot_seq`（telemetry 域） | **✅ 删除**（仅保留于 `log_history`）（§3.2） |
 | `H-WP2-7` | 是否需要 `seq` + 幂等唯一键 | **✅ 纳入 `seq`（NOT NULL）**；键 = `(device_id, type, ts, seq)`（§3.4） |
 
+#### 8.2.2 ★ 由人工审核裁决（R3）
+
+| ID | 项 | **人工裁决** | 状态 |
+|---|---|---|---|
+| **`H-WP2-5`** | **表命名最终确认** | **采用 `telemetry_history` / `log_history`**（snake_case，对齐既有 `device_event`） | **`CLOSED`** |
+| **`H-WP2-12`** | **是否与既有 `device_event` 合并** | **保持独立** —— `device_event` = **生命周期事件**；`telemetry_history.event` = **运行历史事件** ⇒ 职责不同 | **`CLOSED`** |
+| **`H-WP2-13`** | **`ts` 取值口径** | **冻结 = Unix timestamp（秒）** | **`CLOSED`** |
+
+### 8.3 **已延期（DEFERRED）**
+
+| ID | 项 | **裁决** | 归属 | 状态 |
+|---|---|---|---|---|
+| **`H-WP2-9`** | **telemetry retention 周期** | **不属于 schema freeze 内容** | **WP-3 History Storage Policy** | **`DEFERRED`** |
+| **`H-WP2-10`** | **log retention 周期** | 属 **WP-3 lifecycle policy** | **WP-3** | **`DEFERRED`** |
+| **`H-WP2-11`** | **`mqtt_messages` 去留** | 属**已有 schema 生命周期管理**，**不影响 WP-2** | 既有 schema 生命周期管理 | **`DEFERRED`** |
+
+> **★ 延期 ≠ 拒绝 / 删除**：以上三项**未作任何设计变更**；其在 §6.2 的候选值与 `migrations/README.md` 的登记**保持不变**，仅**移出 `G-3` 裁决范围**，**不影响 WP-2 schema 冻结**。
+
 > **★ ID 迁移说明（透明留痕）**：R2 将**原 `H-WP2-9`（`mqtt_messages` 去留）→ `H-WP2-11`**、**原 `H-WP2-10`（`device_event` 合并）→ `H-WP2-12`**、**原 `H-WP2-11`（`ts` 口径）→ `H-WP2-13`**，以腾出 `H-WP2-9` / `H-WP2-10` 承载 **retention 两项**（依人工修订要求）。**`H-WP2-*` 为设计期未生效编号，本次为定稿前一次性重编号**。
 
-> **★ `H-WP2-12` 特别说明**：既有 `device_event`（P1 建，`migrations/0001_*`）记录 `register`/`bind`/`online`/`offline`/`retire` 等**控制面生命周期事件**，容量 `< 100 行/天`；与 `telemetry_history`（设备**遥测**，量级 ≤1200 行/天）**职责、量级、用途均不同** ⇒ **建议保持分离**（**不合并**），但**最终由人工裁决（R2 `H-5`）**。
+> **★ `H-WP2-12` 特别说明（R3 已裁决）**：既有 `device_event`（P1 建，`migrations/0001_*`）记录 `register`/`bind`/`online`/`offline`/`retire` 等**控制面生命周期事件**，容量 `< 100 行/天`；与 `telemetry_history`（设备**遥测**，量级 ≤1200 行/天）**职责、量级、用途均不同** ⇒ **人工裁决：保持独立（不合并）—— `H-WP2-12 = CLOSED`**。
 
 ---
 
@@ -358,12 +376,12 @@
 
 ---
 
-> **WP-2 = DESIGN ONLY（G-3 candidate）.**
-> **G-3 = HUMAN_REQUIRED（未解除）.**
+> **WP-2 = DESIGN COMPLETE（G-3 candidate · final）.**
+> **G-3 = HUMAN_REQUIRED（未解除 · 待人工最终批准）.**
 > **P3 remains NOT STARTED / PLANNED.**
 > **No implementation. No migration. No deploy.**
 
 ---
 
-*本文件于 **2026-10-10** 建立（**R2 修订**），为 **WP-2 历史数据模型设计（`DESIGN ONLY` · **G-3 候选**）**；不含任何实现、迁移或代码改动。*
-*修订基线 = 固件仓 HEAD `24ffc2a`；D1 现状 = `guo-feeder-api/migrations/0001_*` + `0002_*`（**未新建 `0003_*`**）。*
+*本文件于 **2026-10-10** 建立，经 **R2 修订** 与 **R3 人工裁决同步**，为 **WP-2 历史数据模型设计（`DESIGN ONLY` · **G-3 候选最终版**）**；不含任何实现、迁移或代码改动。*
+*R2 基线 = 固件仓 HEAD `24ffc2a`；**R3 基线 = 固件仓 HEAD `6cbd519`**；D1 现状 = `guo-feeder-api/migrations/0001_*` + `0002_*`（**未新建 `0003_*`**）。*
