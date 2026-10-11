@@ -61,7 +61,4 @@ void telemetry_task();
 // 诊断读取（只读快照）
 TelemetryStats telemetry_get_stats();
 
-// 当前是否启用（编译期门禁的运行时视图）
-bool telemetry_is_enabled();
-
 #endif // TELEMETRY_PUBLISHER_H

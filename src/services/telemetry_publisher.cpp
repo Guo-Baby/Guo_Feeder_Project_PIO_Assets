@@ -35,11 +35,6 @@ TelemetryStats telemetry_get_stats()
     return s;
 }
 
-bool telemetry_is_enabled()
-{
-    return false;
-}
-
 #else   // ---------------- GF_TELEMETRY_ENABLED == 1 ----------------
 
 #include <Arduino.h>
@@ -69,6 +64,17 @@ float    s_weight   = 0.0f;
 uint32_t s_temp_ms  = 0u;
 uint32_t s_humid_ms = 0u;
 uint32_t s_weight_ms = 0u;
+
+// (B · 表驱动) v1 取值通道描述子 —— 3 条通道逻辑同构，收敛为一张静态表
+struct TeleChannel
+{
+    SystemStateKey key;         // System State 取值键
+    const char    *type;        // telemetry `type`（T1 点分命名空间）
+    float         *last;        // 上次上报值（变化阈值基线）
+    uint32_t      *last_ms;     // 上次上报时刻（抽样兜底基线）
+    float          thr;         // 变化阈值
+    uint32_t       period_ms;   // 抽样兜底周期
+};
 
 // 时间有效性由 State 决定；未同步 ⇒ ts = 0（按原值上报，不伪造）
 inline uint32_t tele_ts()
@@ -172,54 +178,42 @@ void telemetry_task()
     //   已按裁决 **DEFER**（首版不产生这些 telemetry）；
     //   ⚠️ **不是删除能力** —— System State 侧读取与 Envelope 编码（state/boolean）均保留，
     //   后续启用只需恢复分支（`tele_emit_str` / `tele_emit_bool` 仍在下方可用）。
+    //
+    // ★ (B · 表驱动去重) 取值类：变化阈值优先，其次抽样兜底。
+    //   3 条通道逻辑同构 ⇒ 收敛为**一张静态表 + 一次遍历**，消除重复代码与重复字面量。
 
-    // ---- (2) 取值类：变化阈值优先，其次抽样兜底 ----
-
-    if (state_is_valid(STATE_MI_THERMO_TEMP))
+    static const TeleChannel kChannels[] =
     {
-        const float temp = state_get_float(STATE_MI_THERMO_TEMP);
+        { STATE_MI_THERMO_TEMP,  "climate.temperature", &s_temp,   &s_temp_ms,
+          TP_CLIMATE_DELTA_TEMP_C,    TP_CLIMATE_PERIOD_MS },
+        { STATE_MI_THERMO_HUMID, "climate.humidity",    &s_humid,  &s_humid_ms,
+          TP_CLIMATE_DELTA_HUMID_PCT, TP_CLIMATE_PERIOD_MS },
+        { STATE_WEIGHT_VALUE,    "weight.value",        &s_weight, &s_weight_ms,
+          TP_WEIGHT_DELTA_G,          TP_WEIGHT_PERIOD_MS  },
+    };
 
-        if (tp_delta_exceeded(temp, s_temp, TP_CLIMATE_DELTA_TEMP_C) ||
-            tp_cadence_due(now, s_temp_ms, TP_CLIMATE_PERIOD_MS))
+    for (uint8_t i = 0u; i < (uint8_t)(sizeof(kChannels) / sizeof(kChannels[0])); i++)
+    {
+        const TeleChannel &c = kChannels[i];
+
+        if (!state_is_valid(c.key))
         {
-            if (tele_emit_num("climate.temperature", temp))
-            {
-                s_temp = temp;
-                s_temp_ms = now;
-                return;
-            }
+            continue;
         }
-    }
 
-    if (state_is_valid(STATE_MI_THERMO_HUMID))
-    {
-        const float humid = state_get_float(STATE_MI_THERMO_HUMID);
+        const float v = state_get_float(c.key);
 
-        if (tp_delta_exceeded(humid, s_humid, TP_CLIMATE_DELTA_HUMID_PCT) ||
-            tp_cadence_due(now, s_humid_ms, TP_CLIMATE_PERIOD_MS))
+        if (!tp_delta_exceeded(v, *c.last, c.thr) &&
+            !tp_cadence_due(now, *c.last_ms, c.period_ms))
         {
-            if (tele_emit_num("climate.humidity", humid))
-            {
-                s_humid = humid;
-                s_humid_ms = now;
-                return;
-            }
+            continue;
         }
-    }
 
-    if (state_is_valid(STATE_WEIGHT_VALUE))
-    {
-        const float weight = state_get_float(STATE_WEIGHT_VALUE);
-
-        if (tp_delta_exceeded(weight, s_weight, TP_WEIGHT_DELTA_G) ||
-            tp_cadence_due(now, s_weight_ms, TP_WEIGHT_PERIOD_MS))
+        if (tele_emit_num(c.type, v))
         {
-            if (tele_emit_num("weight.value", weight))
-            {
-                s_weight = weight;
-                s_weight_ms = now;
-                return;
-            }
+            *c.last    = v;
+            *c.last_ms = now;
+            return;   // 每轮最多一条（TP_MAX_EMIT_PER_TASK）
         }
     }
 }
@@ -227,11 +221,6 @@ void telemetry_task()
 TelemetryStats telemetry_get_stats()
 {
     return s_stats;
-}
-
-bool telemetry_is_enabled()
-{
-    return true;
 }
 
 #endif  // GF_TELEMETRY_ENABLED
