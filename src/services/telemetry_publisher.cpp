@@ -42,7 +42,6 @@ bool telemetry_is_enabled()
 
 #include "services/system_state.h"
 #include "services/time_manager.h"
-#include "services/device_identity.h"
 #include "services/telemetry_policy.h"
 #include "services/telemetry_envelope.h"
 
@@ -78,17 +77,20 @@ inline uint32_t tele_ts()
 }
 
 // 组包 + 交运输；成功返回 true
-bool tele_emit(const char *type, float num, const char *str, const char *source)
+//   ★ Envelope v1 已冻结（docs/review/P3-WP4-Firmware-Telemetry-Decisions.md §1/§2）：
+//     5 字段 {ts,type,value,seq,schema_version} —— **不再携带 device_id / source**
+//     （device_id 由 MQTT topic identity 承载）
+bool tele_send(const char *type, TeValueKind kind, float num, const char *str, bool b)
 {
     TelemetryEnvelope e;
-    e.device_id      = device_id();
     e.ts             = tele_ts();
     e.type           = type;
+    e.kind           = kind;
     e.value_num      = num;
     e.value_str      = str;
-    e.source         = source;
+    e.value_bool     = b;
     e.seq            = ++s_seq;
-    e.schema_version = TELEM_SCHEMA_VERSION_PROVISIONAL;
+    e.schema_version = TELEM_SCHEMA_VERSION;
 
     char buf[TELEM_ENV_MAX_BYTES];
     const uint32_t n = telemetry_envelope_build(e, buf, (uint32_t)sizeof(buf));
@@ -109,9 +111,22 @@ bool tele_emit(const char *type, float num, const char *str, const char *source)
     return true;
 }
 
-inline bool tele_emit_bool(const char *type, bool v, const char *source)
+// number -> JSON number
+inline bool tele_emit_num(const char *type, float v)
 {
-    return tele_emit(type, v ? 1.0f : 0.0f, nullptr, source);
+    return tele_send(type, TE_VAL_NUM, v, nullptr, false);
+}
+
+// state -> JSON string
+inline bool tele_emit_str(const char *type, const char *v)
+{
+    return tele_send(type, TE_VAL_STR, 0.0f, v, false);
+}
+
+// boolean -> JSON boolean（**禁止** 0/1 数字编码）
+inline bool tele_emit_bool(const char *type, bool v)
+{
+    return tele_send(type, TE_VAL_BOOL, 0.0f, nullptr, v);
 }
 
 } // namespace
@@ -177,7 +192,7 @@ void telemetry_task()
         tp_online_should_emit(s_online, online) &&
         tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
     {
-        if (tele_emit("online.state", 0.0f, tp_online_state_name(online), "mqtt"))
+        if (tele_emit_str("online.state", tp_online_state_name(online)))
         {
             s_online = online;
             s_last_edge_ms = now;
@@ -188,7 +203,7 @@ void telemetry_task()
     if ((tf_valid != s_timevalid) &&
         tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
     {
-        if (tele_emit_bool("time.valid", tf_valid, "time"))
+        if (tele_emit_bool("time.valid", tf_valid))
         {
             s_timevalid = tf_valid;
             s_last_edge_ms = now;
@@ -199,7 +214,7 @@ void telemetry_task()
     if ((werror != s_werror) &&
         tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
     {
-        if (tele_emit_bool("weight.error", werror, "weight"))
+        if (tele_emit_bool("weight.error", werror))
         {
             s_werror = werror;
             s_last_edge_ms = now;
@@ -210,7 +225,7 @@ void telemetry_task()
     if ((valve != s_valve) &&
         tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
     {
-        if (tele_emit_bool("valve.state", valve, "valve"))
+        if (tele_emit_bool("valve.state", valve))
         {
             s_valve = valve;
             s_last_edge_ms = now;
@@ -221,7 +236,7 @@ void telemetry_task()
     if ((wifi != s_wifi) &&
         tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
     {
-        if (tele_emit_bool("wifi.state", wifi, "wifi"))
+        if (tele_emit_bool("wifi.state", wifi))
         {
             s_wifi = wifi;
             s_last_edge_ms = now;
@@ -238,7 +253,7 @@ void telemetry_task()
         if (tp_delta_exceeded(temp, s_temp, TP_CLIMATE_DELTA_TEMP_C) ||
             tp_cadence_due(now, s_temp_ms, TP_CLIMATE_PERIOD_MS))
         {
-            if (tele_emit("climate.temperature", temp, nullptr, "mi_thermo"))
+            if (tele_emit_num("climate.temperature", temp))
             {
                 s_temp = temp;
                 s_temp_ms = now;
@@ -254,7 +269,7 @@ void telemetry_task()
         if (tp_delta_exceeded(humid, s_humid, TP_CLIMATE_DELTA_HUMID_PCT) ||
             tp_cadence_due(now, s_humid_ms, TP_CLIMATE_PERIOD_MS))
         {
-            if (tele_emit("climate.humidity", humid, nullptr, "mi_thermo"))
+            if (tele_emit_num("climate.humidity", humid))
             {
                 s_humid = humid;
                 s_humid_ms = now;
@@ -270,7 +285,7 @@ void telemetry_task()
         if (tp_delta_exceeded(weight, s_weight, TP_WEIGHT_DELTA_G) ||
             tp_cadence_due(now, s_weight_ms, TP_WEIGHT_PERIOD_MS))
         {
-            if (tele_emit("weight.value", weight, nullptr, "weight"))
+            if (tele_emit_num("weight.value", weight))
             {
                 s_weight = weight;
                 s_weight_ms = now;
