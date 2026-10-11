@@ -12,6 +12,9 @@
 >
 > **⚠️ 本记录中的裁决为权威**。若与评审文档的建议冲突（评审 §3.3/§3.4 曾**建议** `schema_version` 保留、`seq` **持久化**），**以本记录为准**。
 > `DT:WP-4 = FROZEN` · `CF-1 = RESOLVED` · `CF-2 = BLOCKED`（本轮**不变**）· `Phase C = PLANNED / BLOCKED`（**不变**）。
+>
+> **🔄 更新记录（2026-10-12）**：
+> · **`H-WP4-FW-08 Resource Budget Override Decision`** —— 资源预算覆盖 ⇒ **`H-WP4-FW-08` = `CLOSED`**，**资源 blocker 解除**（`CF-2` 其余 blocker 保留）。
 
 ---
 
@@ -21,7 +24,7 @@
 |---|---|---|
 | **`H-WP4-FW-05`** — Envelope schema + `value` 编码 | **冻结**（字段裁减 + 三态编码） | 🟢 **`CLOSED`** |
 | **`H-WP4-FW-07`** — telemetry `seq` 语义 | **冻结**（boot lifetime · 不持久化 · 不复用 log seq） | 🟢 **`CLOSED`** |
-| **`H-WP4-FW-08`** — Flash 预算处置 | **允许优化实施**（方向 A/B/E；禁 C/D） | 🟠 **`CLOSED WITH GUARD`**（资源态仍 `RESOURCE BLOCKED`） |
+| **`H-WP4-FW-08`** — Flash 预算处置 | **允许优化实施**（方向 A/B/E；禁 C/D）⇒ **A+B+E 用尽后实测仍超** ⇒ **人工批准资源预算覆盖（Override）** | 🟢 **`CLOSED`**（见 `## H-WP4-FW-08 Resource Budget Override Decision`） |
 | **首版 telemetry 范围** | **KEEP** = temperature / humidity / weight；**DEFER** = valve / wifi / online / time.valid | 🟢 **冻结** |
 | **`/up` 路由** | topic **保持** `guo_feeder/<device_id>/up`；**分流责任 = EMQX Rule** | 🟢 **冻结** |
 | **`H-WP4-FW-06`** — `mqtt.json.telemetry` 字段与默认值 | **本轮未裁决** | 🔴 **`OPEN`**（不变） |
@@ -150,6 +153,9 @@ RESOURCE BLOCKED
 **状态**：`H-WP4-FW-08` = **`CLOSED WITH GUARD`**（**资源态仍为 `RESOURCE BLOCKED`**；guard 解禁 = 仅限 A/B/E 三项优化）。
 
 > ⚠️ **若 A/B/E 优化后实测仍超预算** ⇒ 须**再次人工裁决**（重裁 ceiling 或进一步削减）。见 §8。
+>
+> ✅ **该分支已发生并已裁决（2026-10-12）**：A+B+E 用尽后实测增量 **+1,648 B > 636 B**（超 1,012 B）⇒ 人工**批准资源预算覆盖**。
+> ⇒ 本节状态**已被下列章节取代**：**`## H-WP4-FW-08 Resource Budget Override Decision`**（`H-WP4-FW-08` = `CLOSED`，资源 blocker 解除）。
 
 ---
 
@@ -201,7 +207,7 @@ RESOURCE BLOCKED
 | `H-WP4-FW-05` | `type` 词表 + `value` 编码 + `schema_version` | `OPEN` | 🟢 **`CLOSED`**（§1 + §2） |
 | `H-WP4-FW-06` | `mqtt.json.telemetry` 字段集与默认值 | `OPEN` | 🔴 **`OPEN`**（本轮未裁决） |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `OPEN` | 🟢 **`CLOSED`**（§3，方案 A） |
-| `H-WP4-FW-08` | Flash 预算处置 | `CLOSED WITH GUARD`（🔴 `RESOURCE BLOCKED`） | 🟠 **`CLOSED WITH GUARD`**（+ 优化授权 A/B/E；禁 C/D） |
+| `H-WP4-FW-08` | Flash 预算处置 | `CLOSED WITH GUARD`（🔴 `RESOURCE BLOCKED`） | 🟢 **`CLOSED`**（A+B+E 后仍超 ⇒ **资源预算 Override 已批准**；见 `## H-WP4-FW-08 Resource Budget Override Decision`） |
 | `H-WP4-FW-09` | `/up` telemetry 载荷形态文档同步 | `OPEN` | 🔴 **`OPEN`**（§1 已给冻结 schema ⇒ 可同步，但**本轮未做**） |
 | `H-WP4C-03` | EMQX Rule 分流机制（rule scope） | `OPEN` | 🔴 **`OPEN`**（§6 已定"责任方 = EMQX Rule"，**具体 scope 未定**） |
 | `H-WP4C-04` / `05` / `06` | migration 授权 / Action 切换 / 部署顺序 | `OPEN` | 🔴 **`OPEN`**（不变） |
@@ -240,11 +246,12 @@ RESOURCE BLOCKED
 |---|---|---|---|
 | **`H-WP4-FW-06`** | `mqtt.json.telemetry` 字段集与默认值（含 `ts` 无效时的上报策略） | 🔴 `OPEN` | 实施 + `R-FRZ-2` |
 | **`H-WP4-FW-09`** | `/up` telemetry 载荷形态文档同步 | 🔴 `OPEN` | 文档一致性（可立即做） |
-| **`H-WP4-FW-08`（余项）** | 优化后若仍超预算 ⇒ 重裁 | 🟠 `CLOSED WITH GUARD` | 实施后实测 |
 | **`H-WP4C-03`** | EMQX Rule 分流（rule scope / 谓词） | 🔴 `OPEN` | 端到端链路 |
 | **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔴 `OPEN` | CF 侧 |
 | **`H-WP4C-05`** | EMQX Action 切换授权 | 🔴 `OPEN` | 端到端链路 |
 | **`H-WP4C-06`** | 部署顺序 | 🔴 `OPEN` | 端到端链路 |
+
+> ✅ **已解除（2026-10-12）**：**`H-WP4-FW-08`（余项）** —— 优化后仍超预算，已由 `## H-WP4-FW-08 Resource Budget Override Decision` 裁决（`H-WP4-FW-08 = CLOSED`），**不再列为剩余项**。
 
 ---
 
@@ -270,12 +277,81 @@ RESOURCE BLOCKED
 | `docs/review/P3-WP4-Firmware-Telemetry-Design-Freeze-Review.md`（`8385125`） | **输入**（评审 + 建议 A/B/C/D/E） |
 | `docs/review/P3-WP4-Firmware-Telemetry-Implementation.md`（`baeb177`） | 被冻结对象的实施记录（`RESOURCE BLOCKED` 出处） |
 | `docs/review/P3-WP4-Firmware-Integration-Design-Review.md` | `H-WP4-FW-*` 清单与 §9 裁决留痕 |
+| **实施提交**（A+B+E） | `d45f7c3`（信封对齐冻结 schema）· `594ff04`（首版范围裁剪）· `9dfc7b5`（publisher Flash 优化） |
 | `docs/architecture/P3-WP1-Telemetry-Policy-Final.md` | 设备侧策略权威（阈值不冻结） |
 | `Cloudflare_Assets/guo-feeder-api/migrations/0003_p3_history_tables.sql` | 云端表结构 + `ux_th_dedup` 幂等键 |
+| `docs/architecture/P2-0-architecture-review-and-design-freeze.md` | 被 Override 的原 Flash 增量 ceiling 出处（**本记录不修改该文档**） |
 
 ---
 
-*本文档于 **2026-10-12** 建立，为 **`WP4-FW-TELEMETRY` 的人工冻结裁决记录**；
+## H-WP4-FW-08 Resource Budget Override Decision
+
+> **裁决日期**：2026-10-12 · **性质**：**资源预算覆盖（Override）** —— 关闭 `telemetry v1` 的 `RESOURCE BLOCKED`。
+> **本节仅记录裁决**：❌ 不改 `P2-0` 冻结文档 · ❌ 不改 `src/` · ❌ 不启用 `GF_TELEMETRY_ENABLED`。
+
+### 1. Decision（裁决）
+
+**人工批准 `telemetry v1` 超出原 `P2-0` Flash ceiling 继续实施。**
+
+- `telemetry v1` 的实测增量 **`+1,648 B`** 被**接受**，**不再受**"剩余增量预算 636 B"约束。
+- 原增量预算（`P2-0 §17.2`：P3 **Flash 合计增量 `≤ 14 KiB` / 14,336 B**）对 **`telemetry v1` 单项予以豁免（waiver）**。
+- **⚠️ 覆盖范围严格受限**：仅针对 **`telemetry v1` 的 Flash 增量**。`P2-0` 的其余资源约束（**DRAM / PSRAM / 栈 / CPU / MQTT / 网络**）**全部不变**；`P2-0` 冻结文档本身**未修改、不修改**。
+
+**实测依据**：
+
+| 项 | 值 |
+|---|---|
+| baseline Flash（门禁 OFF，`9dfc7b5`） | **1,391,877 B** |
+| telemetry enabled Flash（`GF_TELEMETRY_ENABLED=1`） | **1,393,525 B** |
+| **enabled 增量** | **`+1,648 B`** |
+| 原剩余增量预算 | 636 B |
+| **超预算** | **+1,012 B** |
+| app 分区总容量 | 2,097,152 B |
+| **启用后总占用率** | **66.4 %**（余 **703,627 B / 33.6 %**） |
+
+### 2. Reason（理由）
+
+| # | 理由 |
+|---|---|
+| **R1** | **原 ceiling 来自早期阶段估算** —— `P2-0` 原始预算基于**更早、更小**的实现范围；`P2-0.2 Flash Budget Amendment` 本身即因范围扩大把增量上限由 `+8,704 B` 修订为 `14,336 B` ⇒ **同性质的"范围↔预算"再修正已有先例**。 |
+| **R2** | **当前固件实际 Flash 使用仍处安全范围** —— 实测总占用 **1,393,525 / 2,097,152 = 66.4 %**，app 分区仍余 **703,627 B（33.6 %）**，远高于任何合理安全阈值。 |
+| **R3** | **`telemetry v1` 属核心可观测性能力** —— 它是云端 `telemetry_history` 的唯一数据源（`DT:WP-4` ingest 契约）；缺失则整条遥测链路无输入，P3 的"历史/时序"目标不可达。 |
+| **R4** | **为避免继续削减 telemetry capability** —— 授权手段 **A+B+E 已用尽**（增量 `2,496 → 1,648 B`，累计 `−848 B`）；再削只能动 **KEEP 集**（temperature / humidity / weight）或破坏**已冻结协议**，**代价高于资源收益**。 |
+| **R5** | **纯代码优化已无可行空间** —— 授权范围内最优约 `−1,000…−1,400 B`，仍 > 636 B ⇒ "继续优化即可满足"的路径**客观不存在**（设计评审 §2.5 已预判）。 |
+
+### 3. New policy（新资源政策）
+
+| 维度 | 旧 | **新** |
+|---|---|---|
+| Flash 增量约束 | 受 P3 合计增量 ceiling（剩余 636 B） | **`telemetry v1` 不再受增量预算限制** |
+| 资源检查方式 | 增量对账（delta vs ceiling） | **整体固件安全余量检查**（总占用 vs app 分区） |
+| 适用范围 | — | **仅 `telemetry v1`**；其他 P3 项仍按原增量对账 |
+
+> **Firmware total resource safety remains mandatory.**
+> （**整体固件资源安全仍为强制要求** —— 增量预算的豁免**不等于**资源安全要求的豁免。）
+
+### 4. Guard 护栏（**强制 · 随本裁决生效**）
+
+| ID | 护栏 | 现行实测 | 阈值 / 动作 |
+|---|---|---|---|
+| **G-1** | **Flash 总占用不得接近 partition ceiling** | **66.4 %**（1,393,525 / 2,097,152） | 使用率 **≥ 85 %（余量 < 15 %）⇒ 必须停止新增并重新评估** |
+| **G-2** | **RAM 仍需通过现有检查** | 132,752 / 327,680（**40.5 %**） | 沿用既有 DRAM / 栈 检查，**不放宽** |
+| **G-3** | **后续大型功能增加必须重新评估** | — | 任何新 capability / 新模块上线前**重新执行整体余量评估**；**不得默认继承本豁免** |
+| **G-4** | 不得借此放宽其他冻结约束 | — | PSRAM / 栈 / CPU / MQTT / 网络 / **协议契约** 全部不变 |
+
+### 5. Status（状态）
+
+| 项 | 变更 |
+|---|---|
+| **`H-WP4-FW-08`** | 🟠 `CLOSED WITH GUARD` ⇒ 🟢 **`CLOSED`** |
+| **资源态** | 🔴 `RESOURCE BLOCKED` ⇒ 🟢 **解除**（`telemetry v1` 增量已获批准） |
+| **`CF-2`** | 🔴 `BLOCKED` ⇒ 🔴 **仍 `BLOCKED`** —— **资源 blocker 已移除**；仍受阻于 **`H-WP4-FW-09`** + **`H-WP4C-03 / 04 / 05 / 06`** |
+| `GF_TELEMETRY_ENABLED` | **保持 `0`（默认关闭）** —— 本裁决**不**启用 telemetry；启用属**后续实施任务** |
+
+---
+
+*本文档于 **2026-10-12** 建立、并于同日更新（追加 `## H-WP4-FW-08 Resource Budget Override Decision`），
+为 **`WP4-FW-TELEMETRY` 的人工冻结裁决记录**；
 **仅留痕，不含任何代码改动、配置变更或实现**。
-基线 = 固件仓 HEAD **`baeb177`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
-所有 `file:line` 与 Flash 数字取自基线实测，可逐条回查。*
+建立基线 = 固件仓 HEAD **`baeb177`**；**本次更新基线 = `9dfc7b5`**（A+B+E 实施后）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
+所有 `file:line` 与 Flash/RAM 数字取自基线实测，可逐条回查。*
