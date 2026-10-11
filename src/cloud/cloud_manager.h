@@ -53,7 +53,8 @@ enum CloudRoute
     CLOUD_ROUTE_LOG = 1
 };
 
-// 向 log Topic 发送二进制（CBOR）负载。
+// 向 log Topic 发送原始字节负载（P3 · WP4-FW-LOG 起 = Cloud Log Envelope JSON）。
+// 本层**不解释**负载内容（不解析 JSON、不解码 CBOR）—— 只做 transport。
 // 离线 / 未连接时返回 false（**不排队、不落盘** —— 由 LogManager 负责重试）。
 bool cloud_send_log(const uint8_t* data, size_t length);
 

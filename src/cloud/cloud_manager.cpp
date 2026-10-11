@@ -2494,12 +2494,14 @@ bool cloud_send_up(const char* message)
 }
 
 // =====================================================
-// P1.4：Log Topic 上行（二进制 CBOR，独立于 up / down）
+// P1.4：Log Topic 上行（独立于 up / down）
 //
 // - 复用现有 cloud_mqtt_publish_binary()，不改动它
+// - P3 · WP4-FW-LOG：载荷 = **Cloud Log Envelope JSON**（逐条，count=1）；
+//   本层**不解释**载荷（不解析 JSON / 不解码 CBOR）—— 只做 transport
 // - 离线时返回 false：保留记录 / 退避重试由 LogManager 负责
 //   （CloudManager 不为 Log 建立任何 TX 队列）
-// - 不做字段压缩、不分片：Batch 上界 LOG_BATCH_MAX_PAYLOAD = 4096 B
+// - 不做字段压缩、不分片：上界 LOG_BATCH_MAX_PAYLOAD = 4096 B
 // =====================================================
 bool cloud_send_log(const uint8_t* data, size_t length)
 {
