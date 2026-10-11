@@ -5,11 +5,11 @@
 > - **不做**：不改 EMQX · 不执行 remote migration · 不部署 · 不改 `src/` · 不改 migration · 不改 `DT:WP-4` / `DT:WP-1/2/3` 冻结文档 · **不 push**。
 > - **前置事实**：`DT:WP-4 = FROZEN`（`2097c4e`）· **`WP-4 = IMPLEMENTED`**（`9b25203`，见 `P3-WP4-Implementation-Completion.md`）。
 > - **本文档定位**：把「已实现的代码 + 已落地的本地 schema」推进到「线上可用」所需的**集成动作计划**。
-> - **⚠️ 开工前必须先读 §5（集成阻塞发现）** —— 其中 **CF-1 / CF-2 为硬阻塞**，**须人工裁决后方可开工**。
+> - **⚠️ 开工前必须先读 §5（集成阻塞发现）** —— 其中 **CF-1 / CF-2 为硬阻塞**；**治理裁决已下达**（`H-WP4C-01` / `02` = `CLOSED`，**修复责任在固件侧**），但**固件产出器落地前仍不得开工**（见 §5 · §8）。
 
 | 项 | 值 |
 |---|---|
-| **状态** | **`Phase C = PLANNED`（未开工）** |
+| **状态** | **`Phase C = PLANNED / BLOCKED`（未开工 · 受阻于 CF-1 / CF-2）** |
 | **Gate** | **未改动**：`G-1 HUMAN_REQUIRED` · `G-2 PASS` · `G-3 PASS` · `G-4 BLOCKED` · `G-5 PASS` |
 | **`P3`** | **`NOT STARTED / PLANNED`** |
 | **三级子计划** | **C-1** EMQX HTTP Action 迁移 · **C-2** 远端 D1 migration · **C-3** 固件兼容性核对 |
@@ -154,19 +154,19 @@
 
 ---
 
-## §5 ★ 集成阻塞发现（**须人工裁决后方可开工**）
+## §5 ★ 集成阻塞发现（**裁决已下达 · 阻塞未解 · 开工前必读**）
 
 > **纪律**：**发现设计冲突不自行解决** —— 以下**仅记录 + 提出建议**，**不修改任何冻结文档**。
 
-| ID | 级别 | 发现 | 影响 | 建议 |
-|---|---|---|---|---|
-| **CF-1** | **🔴 硬阻塞** | **log 域信封无法产出**：`DT:WP-4` 冻结要求 log 信封**明文携带** `boot_seq`/`seq`（`H-WP4-16`）+ `payload_base64`；但固件**只发二进制 CBOR**（F-5/F-8/F-9），键字段**埋在 128 B packed 记录内部**。⇒ 三条既有约束**互斥**：① EMQX 规则引擎**无法解码 CBOR**；② **Worker 被明令禁止解码**（`H-WP4-05`）；③ 固件**当前不发 JSON 信封**。 | **log 域 ingest 无法真实跑通**（V-3 无法 `PASS`） | **三选一（人工裁决）**：(a) **固件侧**新增 JSON 信封发布（`payload_base64` + 明文键字段）—— 属固件工作流，**超出 WP-4**；(b) 在 EMQX 前加**独立解码中间层**（新组件，需新裁决）；(c) 重新裁决 `DT:WP-4` log 承载方式（**会触碰冻结设计，须人工**） |
-| **CF-2** | **🔴 硬阻塞** | **telemetry 域无数据源**：固件**不存在** telemetry 发布者；`/up` 今日只跑**命令结果 / registry**（旧协议短键，F-6/F-7）⇒ 接入 `/up` 的 telemetry 记录会**全部 `rejected`**（缺 `ts`/`type`/`value`/`seq`）。 | **telemetry 域 ingest 无从验证**（V-2 无法 `PASS`） | 人工裁决：**telemetry 上行由哪一阶段实现**（固件侧 telemetry policy 落地 = WP-1 的实施）⇒ 建议**独立工作流**先行，Phase C 的 telemetry 项**顺延** |
-| **CF-3** | **🟠 需裁决** | **`/down` 回投语义变化**：规则覆盖 `guo_feeder/#`（**含 `/down`**），现状把下行 publish **回投给 Worker** 记账（`credential_set` 帧，`mqtt_messages` #2289）。若 Action 切到 `/api/history/ingest`，`/down` 会命中新端点 ⇒ **`400 unknown_topic`**（无副作用但**噪声**），且**既有记账中断**。 | V-4 的「隔离」看似满足（新端点不写 `mqtt_messages`），但**旧记账能力被换掉** | 人工裁决：**(a)** 规则 SQL **收敛为** `guo_feeder/+/up` + `guo_feeder/+/log`（**推荐**，语义最干净）；**(b)** 保留 `#` 并接受 400 噪声；**(c)** 旧 Action 保留给 `/down`、新 Action 专责 `/up`+`/log`（双 Action，需接受**双投**风险 R3） |
-| **CF-4** | **🟢 已登记** | **口径分歧**：`计划:WP-3` 记 Action → `/api/ingest`，`DT:WP-4` 冻结改指 `/api/history/ingest` | 无（**以冻结设计为准**） | 无需裁决；已在 C-1 §2.1 显式留痕 |
+| ID | 状态 | 级别 | 发现 | 影响 | 建议 |
+|---|---|---|---|---|---|
+| **CF-1** | **`BLOCKED`**（`H-WP4C-01` = `CLOSED`：**修复责任归固件侧**，产出器未落地 ⇒ **阻塞不解**） | **🔴 硬阻塞** | **log 域信封无法产出**：`DT:WP-4` 冻结要求 log 信封**明文携带** `boot_seq`/`seq`（`H-WP4-16`）+ `payload_base64`；但固件**只发二进制 CBOR**（F-5/F-8/F-9），键字段**埋在 128 B packed 记录内部**。⇒ 三条既有约束**互斥**：① EMQX 规则引擎**无法解码 CBOR**；② **Worker 被明令禁止解码**（`H-WP4-05`）；③ 固件**当前不发 JSON 信封**。 | **log 域 ingest 无法真实跑通**（V-3 无法 `PASS`） | **三选一（人工裁决）**：(a) **固件侧**新增 JSON 信封发布（`payload_base64` + 明文键字段）—— 属固件工作流，**超出 WP-4**；(b) 在 EMQX 前加**独立解码中间层**（新组件，需新裁决）；(c) 重新裁决 `DT:WP-4` log 承载方式（**会触碰冻结设计，须人工**） |
+| **CF-2** | **`BLOCKED`**（`H-WP4C-02` = `CLOSED`：**修复责任归固件侧**，发布器未落地 ⇒ **阻塞不解**） | **🔴 硬阻塞** | **telemetry 域无数据源**：固件**不存在** telemetry 发布者；`/up` 今日只跑**命令结果 / registry**（旧协议短键，F-6/F-7）⇒ 接入 `/up` 的 telemetry 记录会**全部 `rejected`**（缺 `ts`/`type`/`value`/`seq`）。 | **telemetry 域 ingest 无从验证**（V-2 无法 `PASS`） | 人工裁决：**telemetry 上行由哪一阶段实现**（固件侧 telemetry policy 落地 = WP-1 的实施）⇒ 建议**独立工作流**先行，Phase C 的 telemetry 项**顺延** |
+| **CF-3** | **`OPEN`**（方向已定 = 建议 (a)；正式裁决待 `H-WP4C-03`） | **🟠 需裁决** | **`/down` 回投语义变化**：规则覆盖 `guo_feeder/#`（**含 `/down`**），现状把下行 publish **回投给 Worker** 记账（`credential_set` 帧，`mqtt_messages` #2289）。若 Action 切到 `/api/history/ingest`，`/down` 会命中新端点 ⇒ **`400 unknown_topic`**（无副作用但**噪声**），且**既有记账中断**。 | V-4 的「隔离」看似满足（新端点不写 `mqtt_messages`），但**旧记账能力被换掉** | 人工裁决：**(a)** 规则 SQL **收敛为** `guo_feeder/+/up` + `guo_feeder/+/log`（**推荐**，语义最干净）；**(b)** 保留 `#` 并接受 400 噪声；**(c)** 旧 Action 保留给 `/down`、新 Action 专责 `/up`+`/log`（双 Action，需接受**双投**风险 R3） |
+| **CF-4** | **`CLOSED`**（已留痕 · 无需裁决） | **🟢 已登记** | **口径分歧**：`计划:WP-3` 记 Action → `/api/ingest`，`DT:WP-4` 冻结改指 `/api/history/ingest` | 无（**以冻结设计为准**） | 无需裁决；已在 C-1 §2.1 显式留痕 |
 
-**⇒ 结论**：**C-1 的 V-2（telemetry）与 V-3（log）在 CF-1 / CF-2 裁决前无法开工**；
-**C-2 不受 CF-1/CF-2 阻塞**（schema 与数据源无关），**可先行**。
+**⇒ 结论**：**C-1 的 V-2（telemetry）与 V-3（log）维持 `NOT RUN / BLOCKED`** —— **治理裁决已下达**（`H-WP4C-01` / `02` = `CLOSED`，**修复责任在固件侧**），但**固件产出器落地前 Phase C 不得开工**（**⚠️ 裁决 `CLOSED` ≠ 阻塞解除 ≠ 实施完成**）；
+**C-2 不受 CF-1/CF-2 阻塞**（schema 与数据源无关），**可先行**（仍需 `H-WP4C-04` 授权）。
 
 ---
 
@@ -183,32 +183,39 @@
 
 ---
 
-## §7 HUMAN_REQUIRED 清单
+## §7 HUMAN_REQUIRED 清单（**含裁决状态回填**）
 
-| ID | 问题 | 关联 |
-|---|---|---|
-| **`H-WP4C-01`** | **log 域信封产出方式**（固件 JSON 信封 / 独立解码层 / 重裁 `DT:WP-4` 承载） | **CF-1（硬阻塞）** |
-| **`H-WP4C-02`** | **telemetry 上行何时/由谁实现**（固件侧 telemetry policy 落地），Phase C 的 telemetry 项是否顺延 | **CF-2（硬阻塞）** |
-| **`H-WP4C-03`** | **EMQX 规则 SQL 范围**（`#` 保留 / 收敛 `+/up`+`+/log` / 双 Action） | CF-3 |
-| **`H-WP4C-04`** | **是否授权执行远端 `0003`**（`--remote`）· 是否需前置导出 | §3.2 |
-| **`H-WP4C-05`** | **是否授权切换 EMQX Action**· 变更窗口 / 回退触发条件 | §2.3 |
-| **`H-WP4C-06`** | **部署顺序确认**（`0003` → Worker → Action，且**不同批抢跑**） | §1 依赖 |
+> **权威来源**：裁决原文见 **`## Human Decisions`**（本文档）。本节仅做**状态汇总**。
+
+| ID | 状态 | 问题 / 裁决 | 关联 |
+|---|---|---|---|
+| **`H-WP4C-01`** | **`CLOSED`** | **log 域信封产出方式** → **固件 `LogManager` 增加 Cloud Log Envelope producer**；**Worker 保持 CBOR-blind**（信封：`device_id` / `boot_seq` / `seq` / `ts` / `level` / `payload_base64`） | **CF-1（`BLOCKED`）** |
+| **`H-WP4C-02`** | **`CLOSED`** | **telemetry 上行何时/由谁实现** → **新增 Firmware Telemetry Publisher**；**不复用 command uplink（`/up`）充作 telemetry** | **CF-2（`BLOCKED`）** |
+| **`H-WP4C-03`** | **`OPEN`** | **EMQX 规则 SQL 范围**（`#` 保留 / 收敛 `+/up`+`+/log` / 双 Action）—— 方向 = **收敛并排除 `down`**，**待正式裁决** | CF-3（`OPEN`） |
+| **`H-WP4C-04`** | **`OPEN`** | **是否授权执行远端 `0003`**（`--remote`）· 是否需前置导出 —— **remote D1 migration 需后续审批** | §3.2 |
+| **`H-WP4C-05`** | **`OPEN`** | **是否授权切换 EMQX Action**· 变更窗口 / 回退触发条件 —— **未裁决** | §2.3 |
+| **`H-WP4C-06`** | **`OPEN`** | **部署顺序确认**（`0003` → Worker → Action，且**不同批抢跑**）—— **未裁决** | §1 依赖 |
+
+> **⚠️ 状态口径**：`H-WP4C-01` / `02` 的 `CLOSED` **仅指「治理决策已定」**（责任落到**固件侧**）—— **Phase C 的执行阻塞（CF-1 / CF-2）与 `V-2` / `V-3` 的 `NOT RUN / BLOCKED` 均未改变**。
 
 ---
 
 ## §8 验收（四态严格区分 · **规划口径**）
 
-| 项 | 目标态 | 判定者 |
-|---|---|---|
-| C-2（远端 schema） | `PASS`（两表 + 5 索引 + `0001/0002` 未变） | 静态 + 回读断言 |
-| C-1 V-1（endpoint change） | `PASS` | 控制台快照 + 观测 |
-| C-1 V-5（authentication unchanged） | `PASS` | 401/400 行为断言 |
-| C-1 V-4（`mqtt_messages` isolation） | `PASS`（**且 CF-3 已裁决**） | D1 计数 |
-| C-1 V-2 / V-3 | **`BLOCKED`**（CF-1 / CF-2 未裁决前**不得**声称通过） | — |
-| 固件 telemetry publisher | **`NOT RUN`** | — |
-| 固件 log JSON 信封 | **`NOT RUN`** | — |
+| 项 | 目标态 | 判定者 | 当前（**状态回填**） |
+|---|---|---|---|
+| C-2（远端 schema） | `PASS`（两表 + 5 索引 + `0001/0002` 未变） | 静态 + 回读断言 | **`NOT RUN`**（**未授权** · `H-WP4C-04` = `OPEN`） |
+| C-1 V-1（endpoint change） | `PASS` | 控制台快照 + 观测 | **`NOT RUN`** |
+| C-1 V-5（authentication unchanged） | `PASS` | 401/400 行为断言 | 端点侧**已验证**（真实 D1 48/48 中 2 项）· **EMQX 侧 `NOT RUN`** |
+| C-1 V-4（`mqtt_messages` isolation） | `PASS`（**且 CF-3 已裁决**） | D1 计数 | **`NOT RUN`**（受阻 CF-3 · `H-WP4C-03` = `OPEN`） |
+| **C-1 V-2（telemetry path）** | **`BLOCKED`** | — | **`NOT RUN / BLOCKED`** —— 裁决 `H-WP4C-02` = `CLOSED`（**修复责任在固件侧**），**产出器未落地 ⇒ 阻塞不解** |
+| **C-1 V-3（log path）** | **`BLOCKED`** | — | **`NOT RUN / BLOCKED`** —— 裁决 `H-WP4C-01` = `CLOSED`（**修复责任在固件侧**），**产出器未落地 ⇒ 阻塞不解** |
+| 固件 telemetry publisher | `NOT RUN` | — | **`NOT RUN`**（**裁决已下发 · 实施未开始**） |
+| 固件 log JSON 信封（Cloud Log Envelope） | `NOT RUN` | — | **`NOT RUN`**（**裁决已下发 · 实施未开始**） |
+| **Phase C 整体** | **`PLANNED / BLOCKED`** | — | **`PLANNED / BLOCKED`**（**未开工**） |
 
-> **⚠️ 术语铁律**：`NOT RUN` / `BLOCKED` / `HUMAN_REQUIRED` **一律 ≠ `PASS`**。
+> **⚠️ 术语铁律**：`NOT RUN` / `BLOCKED` / `HUMAN_REQUIRED` / **裁决 `CLOSED`** **一律 ≠ `PASS`**。
+> **⚠️ 阻塞守恒**：`H-WP4C-01` / `02` 的 `CLOSED` **不改变** CF-1 / CF-2 = `BLOCKED`、C-1 V-2 / V-3 = `NOT RUN / BLOCKED`、Phase C = `PLANNED / BLOCKED`。
 
 ---
 
@@ -223,8 +230,35 @@
 
 ---
 
-> **Phase C = PLANNED（NOT STARTED）. No EMQX change. No remote migration. No deploy. No push.**
-> **C-1 V-2 / V-3 = BLOCKED by CF-1 / CF-2（须人工裁决）.**
+## Human Decisions
+
+> **性质**：**人工裁决留痕**（2026-10-11）—— 记录 `DT:WP-4` Phase C 的裁决结果。
+> **纪律**：本节**只记录裁决**，**不触发任何执行** —— **固件改动未开始 · EMQX 改动未开始 · remote migration 未执行 · 未部署 · 未 push**。
+
+| ID | 状态 | Decision |
+|---|---|---|
+| **`H-WP4C-01`** | **`CLOSED`** | **Firmware LogManager must add Cloud Log Envelope producer.**<br>**Worker remains CBOR-blind.**<br>**Required envelope**：`device_id` · `boot_seq` · `seq` · `ts` · `level` · `payload_base64` |
+| **`H-WP4C-02`** | **`CLOSED`** | **Add Firmware Telemetry Publisher.**<br>**Do not reuse command uplink as telemetry.** |
+| **`H-WP4C-03`** | **`OPEN`** | **EMQX rule scope review required.**<br>**Only ingest**：`guo_feeder/<device_id>/up` · `guo_feeder/<device_id>/log`<br>**Exclude**：`down` |
+| **`H-WP4C-04`** | **`OPEN`** | **Remote D1 migration requires later approval.** |
+
+> **未列入本节的项**：**`H-WP4C-05`**（Action 切换授权）· **`H-WP4C-06`**（部署顺序确认）**未产生裁决** ⇒ **仍为 `OPEN`**（见 §7）。
+
+### 对本计划的影响（**解读，非执行**）
+
+| 项 | 解读 |
+|---|---|
+| **`H-WP4C-01` = `CLOSED`** | **CF-1 的修复路径已定 = 固件侧新增 Cloud Log Envelope 产出器**（`LogManager`），信封含 `device_id`/`boot_seq`/`seq`/`ts`/`level`/`payload_base64`；**Worker 保持 CBOR-blind**（即 `H-WP4-05` 禁令**维持不变**，无需触碰冻结设计）。<br>⚠️ **该产出器属固件工作流 · 超出 Phase C 范围** ⇒ **CF-1 对 Phase C 的阻塞在固件落地前依然成立** ⇒ **C-1 的 V-3 维持 `NOT RUN / BLOCKED`** |
+| **`H-WP4C-02` = `CLOSED`** | **CF-2 的修复路径已定 = 新增固件 Telemetry Publisher**，且**明令不得复用命令上行（`/up` 现状载荷）充作 telemetry**（与 §4.2 F-6/F-7 判断一致）。<br>⚠️ 同样**属固件工作流 · 超出 Phase C 范围** ⇒ **CF-2 对 Phase C 的阻塞在固件落地前依然成立** ⇒ **C-1 的 V-2 维持 `NOT RUN / BLOCKED`** |
+| **`H-WP4C-03` = `OPEN`** | 裁决**方向已明确**（只 ingest `+/up` 与 `+/log`，**排除 `down`**），与 **§5 CF-3 建议 (a)** 一致 ⇒ **`/down` 回投记账中断问题获得既定处置方向**；但正式裁决为 `OPEN` ⇒ **§2.3 步 2 仍未解锁** |
+| **`H-WP4C-04` = `OPEN`** | 远端 `0003` 应用**仍需后续授权** ⇒ **C-2 保持「可先行但未授权」** |
+
+> **✅ 同步状态（已收口）**：**§5 / §7 / §8 已同步本节** —— 全文档状态口径统一为：**`H-WP4C-01` / `02` = `CLOSED`**（仅指**治理决策已定**，修复责任在**固件侧**、**实施未开始**）· **`H-WP4C-03` / `04` / `05` / `06` = `OPEN`**；同时**保守量不变**：**CF-1 / CF-2 = `BLOCKED`** · **C-1 V-2 / V-3 = `NOT RUN / BLOCKED`** · **Phase C = `PLANNED / BLOCKED`**。**裁决 `CLOSED` 不解除阻塞、不代表实施完成。**
+
+---
+
+> **Phase C = PLANNED / BLOCKED（NOT STARTED）. No EMQX change. No remote migration. No deploy. No push.**
+> **C-1 V-2 / V-3 = BLOCKED by CF-1 / CF-2（治理裁决已下达 = 修复责任在固件侧；产出器落地前阻塞不解）.**
 > **C-2 is not blocked and may proceed first.**
 > **No Gate changed. P3 remains NOT STARTED / PLANNED.**
 
