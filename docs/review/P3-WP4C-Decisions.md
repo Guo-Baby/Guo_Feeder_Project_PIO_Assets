@@ -14,6 +14,10 @@
 >
 > > **英文冻结声明**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
 > > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.*
+>
+> **🔄 更新记录（2026-10-12 · 第二阶段）**：新增 **§6A `Human Decisions` —— 实施阶段授权** ⇒
+> **`H-WP4C-04` / `05` / `06` / `07` / `08` 全部 `CLOSED`**（授权已下达，**≠ 执行完成**）；
+> `CF-2` **仍 `BLOCKED`**（判据改为 **`V-1…V-7` 通过**）。执行约束见 `docs/review/P3-WP4C-Implementation-Discipline.md`（`BINDING`）。
 
 ---
 
@@ -228,6 +232,59 @@
 
 ---
 
+## §6A `Human Decisions` —— 实施阶段授权（**2026-10-12**）
+
+> **性质**：**人工裁决留痕（权威）** —— 关闭 `H-WP4C-04…08`，**授权进入实施阶段**。
+> **执行约束**：实施纪律见 **`docs/review/P3-WP4C-Implementation-Discipline.md`**（📌 `BINDING`）。
+
+### `H-WP4C-04` —— 远端 migration `0003_p3_history_tables.sql` 执行授权
+
+| 项 | 内容 |
+|---|---|
+| **裁决** | 🔒 **`CLOSED`** |
+| **允许执行** | `wrangler d1 migrations apply guofeeder --remote` |
+| **要求** | **执行前**记录当前 migration 状态 · **执行后**确认 `0003` applied · **记录执行时间与结果** |
+
+### `H-WP4C-05` —— EMQX Action 切换授权
+
+| 项 | 内容 |
+|---|---|
+| **裁决** | 🔒 **`CLOSED`** |
+| **允许** | **新增** telemetry history rule · **收窄**旧 `mqtt_messages` rule · 执行 Action 切换 |
+| **必须遵守** | **新 Rule 与旧 Rule 修改必须作为同一变更窗口** · **不允许只新增 Rule** · **不允许产生 telemetry 双投** |
+
+### `H-WP4C-06` —— 部署顺序确认
+
+| 项 | 内容 |
+|---|---|
+| **裁决** | 🔒 **`CLOSED`** |
+| **确认顺序** | `0003 migration` → `Worker deployment` → `EMQX Rule change` → `Validation` |
+| **禁止** | **调整顺序** |
+
+### `H-WP4C-07` —— EMQX Console 执行人与配置导出责任
+
+| 项 | 内容 |
+|---|---|
+| **裁决** | 🔒 **`CLOSED`** |
+| **实施前必须完成** | **Rule SQL 导出** · **Action 配置导出** · **Connector 配置导出** |
+| **敏感信息（禁止入仓）** | **webhook key** · **secret** |
+| **仅保存** | **secret 存在性** · **配置结构** · **非敏感 metadata** |
+
+### `H-WP4C-08` —— Worker 部署授权
+
+| 项 | 内容 |
+|---|---|
+| **裁决** | 🔒 **`CLOSED`** |
+| **允许部署** | CF 仓 **`9b25203`** |
+| **目标** | 包含 **`POST /api/history/ingest`** |
+| **部署后必须确认** | **deployment version** · **时间** · **endpoint 可访问性** |
+
+> **★ 阻塞守恒（重要）**：以上 `CLOSED` = **授权已下达**，**不等于**执行完成。
+> 其中 **`H-WP4C-07` 的导出动作**受平台限制（EMQX 数据集成 API **`403`** · 无 CLI）**只能人工在控制台完成**；
+> 若实际执行时无法完成导出，须 **`STOP` + 新 `HUMAN_REQUIRED`**（**不得跳过** —— 见纪律 §3 禁止项 3）。
+
+---
+
 ## §7 状态
 
 ### 7.1 状态变更表
@@ -235,9 +292,11 @@
 | ID | 主题 | **本记录前** | **本记录后** | 依据 |
 |---|---|---|---|---|
 | **`H-WP4C-03`** | EMQX Rule 分流机制（rule scope） | 🔴 `OPEN`（design proposal 就绪） | 🔒 **`CLOSED`** | 本文档 §2–§5 |
-| `H-WP4C-04` | 远端 `0003` migration 授权 | 🔴 `OPEN` | 🔴 `OPEN`（不变） | — |
-| `H-WP4C-05` | EMQX Action 切换授权 | 🔴 `OPEN` | 🔴 `OPEN`（不变） | — |
-| `H-WP4C-06` | 部署顺序 | 🔴 `OPEN` | 🔴 `OPEN`（不变） | — |
+| `H-WP4C-04` | 远端 `0003` migration 授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许 `wrangler d1 migrations apply guofeeder --remote`） | §6A |
+| `H-WP4C-05` | EMQX Action 切换授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 新增 + 收窄**须同一变更窗口**，禁双投） | §6A |
+| `H-WP4C-06` | 部署顺序 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— `0003` → Worker → EMQX → Validation，**禁调整**） | §6A |
+| `H-WP4C-07` | EMQX Console 执行人 + 配置导出责任 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 实施前须导出 Rule SQL / Action / Connector；**secret 禁入仓**） | §6A |
+| `H-WP4C-08` | Worker 部署授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许部署 `9b25203`） | §6A |
 | `H-WP4-FW-05` | 信封 v1 schema | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-06` | `mqtt.json.telemetry` 配置 | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `CLOSED` | `CLOSED`（不变） | — |
@@ -248,13 +307,14 @@
 
 | 项 | 值 |
 |---|---|
-| **`CF-2`** | 🔴 **`BLOCKED`（仍 `BLOCKED`）** —— **资源 blocker 已移除** · **`H-WP4-FW-09` 已关闭** · **`H-WP4C-03` 本轮关闭** |
-| **仍受阻于** | **`H-WP4C-04`**（远端 migration 授权）· **`H-WP4C-05`**（Action 切换授权）· **`H-WP4C-06`**（部署顺序）—— 均为**实施阶段**项 |
+| **`CF-2`** | 🔴 **`BLOCKED`（仍 `BLOCKED`）** —— **资源 blocker 已移除** · **`H-WP4C-03` 已关闭** · **`H-WP4C-04…08` 授权已下达（§6A）** |
+| **仍受阻于** | **实施尚未完成** —— `0003` 未落表 · Worker `9b25203` 未部署 · EMQX 规则未建 · **`V-1…V-7` 全 `NOT RUN`** |
 | **`CF-1`** | 🟢 `RESOLVED`（保持） |
 | **其他 Gate** | `DT:WP-4 = FROZEN` · `Phase C = PLANNED / BLOCKED` · `G-4 = BLOCKED`（**均不变**） |
 
-> **★ 重要**：`H-WP4C-03 = CLOSED` **只表示设计已冻结**，**不等于** `CF-2` 解除、**不等于**实施完成、**不等于**管线打通。
-> 实施（控制台建规则 + 收窄既有规则 + Pages 中转 + 端到端验证）**仍待** `H-WP4C-04/05/06` 授权。
+> **★ 重要**：`H-WP4C-03 = CLOSED` **只表示设计已冻结**；`H-WP4C-04…08 = CLOSED` **只表示授权已下达**。
+> **两者均不等于** `CF-2` 解除、**不等于**实施完成、**不等于**管线打通。
+> `CF-2` 的解除**判据 = `V-1…V-7` 通过**（端到端 telemetry / log 落库验证）。
 
 ---
 
@@ -262,16 +322,16 @@
 
 | ID | 主题 | 状态 | 阻塞对象 |
 |---|---|---|---|
-| **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔴 `OPEN` | CF 侧 |
-| **`H-WP4C-05`** | EMQX Action 切换授权 | 🔴 `OPEN` | 端到端链路 |
-| **`H-WP4C-06`** | 部署顺序 | 🔴 `OPEN` | 端到端链路 |
-| **`H-WP4C-07`** | EMQX Console 执行人 + 配置导出责任（**新增** —— 因 API `403` / 无 CLI，实施须人工；含变更前导出 `B-1/2/3` + 变更后回写存档） | 🔴 `OPEN` | 人工作业 |
-| **`H-WP4C-08`** | Worker 部署授权（**新增** —— 线上 `846384cd` 早于 `9b25203` ⇒ 含 `/api/history/ingest` 的版本未部署） | 🔴 `OPEN` | CF 侧 |
+| **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔒 **`CLOSED`**（§6A） | CF 侧 |
+| **`H-WP4C-05`** | EMQX Action 切换授权 | 🔒 **`CLOSED`**（§6A） | 端到端链路 |
+| **`H-WP4C-06`** | 部署顺序 | 🔒 **`CLOSED`**（§6A） | 端到端链路 |
+| **`H-WP4C-07`** | EMQX Console 执行人 + 配置导出责任（因 API `403` / 无 CLI，导出须人工） | 🔒 **`CLOSED`**（§6A） | 人工作业 |
+| **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
 | **`R-WP4C-8` / `9`** | D1 写入吞吐 / 成本量化 | 🟠 待**实施前**评估 | 放量前置 |
 | `R-FRZ-2` | `seq` 不持久化 × `ts=0` 的跨 boot 幂等碰撞面 | 🟠 实施细节 | `H-WP4-FW-06` / 实施细化 |
 
-> ✅ **已关闭**：**`H-WP4C-03`**（设计冻结）—— 不再列为剩余项。
-> ⚠️ **全部 `H-WP4C-04…08` 保持 `OPEN`**（人工授权 / 决策 / 作业项，**代理无权关闭**）。
+> ✅ **已关闭**：**`H-WP4C-03`**（设计冻结）· **`H-WP4C-04…08`**（实施阶段授权，§6A）—— 均不再列为剩余 `HUMAN_REQUIRED`。
+> ⚠️ **`CLOSED` ≠ 执行完成**：`H-WP4C-04…08` 仅代表**授权已下达**；**执行**仍须按 `P3-WP4C-Implementation-Discipline.md` 的固定顺序逐步推进，**每步产出报告**。
 > 实施前准备清单与基线采集流程见 **`docs/review/P3-WP4C-Pre-Implementation-Checklist.md`**。
 
 ---
