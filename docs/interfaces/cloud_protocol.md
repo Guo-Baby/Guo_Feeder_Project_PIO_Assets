@@ -110,6 +110,10 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 
 > **★ 第二条命名空间**：自 P2 起设备**同时**在 `homie/5/<device_id>/#` 上做 **Homie 5 投影**（与上表并存，非替代）。
 > 完整契约见 **§12**；**第三条上行 `log`（`guo_feeder/<device_id>/log`）已于 P3 落地**（§8.2）。
+>
+> **★ `/up` 上并存三类载荷**：命令结果 / 上线通知（§4.1–§4.4）· **telemetry v1（§4.5）**。
+> 三者**共用同一 topic**（`guo_feeder/<device_id>/up`，**不新增 topic**）⇒ **分流责任在 EMQX Rule 层**
+> （`H-WP4C-03`；**Worker 不解析 payload，firmware 不改 topic**）。
 
 ### 1.4 连接生命周期
 
@@ -211,6 +215,10 @@ bool compact = !doc["c"].isNull();    // cloud_manager.cpp:1154
 **其余未列出的字段原样保留**（`cloud_compress_uplink()` 末尾会遍历复制）。
 
 **Registry 查询结果走特化分支**（见 §4.3），字段为 `{c, i, s, r, v, n, cs, d}`。
+
+> **⚠️ telemetry（§4.5）不经本节映射** —— `cloud_send_telemetry()` 把信封 JSON **原文**直接发往 `up`，
+> **不经过 `cloud_compress_uplink()`**、**不做字段缩写**（同理，`/log` 的 Cloud Log Envelope 亦不经缩写，见 §8.2）。
+> ⇒ 云端**不得**对 telemetry 报文套用本表解缩写。
 
 ---
 
@@ -458,7 +466,119 @@ cloud_send_set("{\"cmd\":\"system\",\"id\":\"online\",\"src\":\"device\"}")
 
 注意它走的是 `cloud_send_set()`，但**同样发到 `up` Topic**。
 
-### 4.5 上行路径小结
+### 4.5 Telemetry（遥测上行 · **已冻结 v1**）
+
+> **状态**：**schema 已冻结**（`H-WP4-FW-05` / `06` / `07` / `08` = **`CLOSED`**）· **固件已实现 publisher**
+> （`src/services/telemetry_publisher.*`，冻结对齐 `d45f7c3` → 优化 `9dfc7b5`）· **默认 runtime disabled**。
+> 权威：`docs/review/P3-WP4-Firmware-Telemetry-Decisions.md`（冻结裁决）·
+> `docs/review/P3-WP4-Firmware-Telemetry-Design-Freeze-Review.md`（设计评审）。
+> ⚠️ **端到端尚未联调**（EMQX Rule 分流未落地 ⇒ `H-WP4C-03`，见 `docs/review/P3-WP4C-EMQX-Rule-Design.md`）。
+
+**Topic（与业务上行共用 · 未新增）**：`guo_feeder/<device_id>/up`（模板 `GF_TOPIC_TPL_UP`）
+
+#### 4.5.1 Payload contract（v1 · **5 字段** · 字段顺序即契约）
+
+```json
+{
+  "ts": 1785514668,
+  "type": "climate.temperature",
+  "value": 25.3,
+  "seq": 42,
+  "schema_version": 1
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `ts` | **number** | Unix **秒** |
+| `type` | **string** | 类型标识符（T1 点分命名空间；**封闭词表 · 追加式演进 · 永不改名**） |
+| `value` | **number \| string \| boolean** | 观测值（编码规则见 §4.5.2） |
+| `seq` | **number** | `uint32` · **boot lifetime 计数**（见 §4.5.3） |
+| `schema_version` | **number** | **v1 = `1`** |
+
+**🔴 明确不进入 payload**：
+
+| 不发送 | 原因 |
+|---|---|
+| **`device_id`** | **身份来源 = MQTT topic**（`guo_feeder/<device_id>/up` 的**第 2 段**）—— payload 内**不重复** |
+| **`source`** | 来源由 `type` 的域名前缀隐含（`climate.*` / `weight.*`） |
+| `boot_seq` | v1 不使用（`seq` 语义见 §4.5.3） |
+
+> ⇒ **设备身份必须从 topic 提取**（对齐 `DT:WP-4` `ID-3`：payload 内 `device_id` **永远忽略**）。
+> 云端 `telemetry_history.device_id` 由**服务端**按 topic / auth 上下文填充。
+
+#### 4.5.2 `value` 编码规则（冻结 · **三态**）
+
+| 逻辑类型 | JSON 形态 | 例 |
+|---|---|---|
+| **number** | **JSON number** | `25.3` · `1042.0` |
+| **state** | **JSON string** | `"ready"` |
+| **boolean** | **JSON boolean** | `true` / `false` |
+
+**🔴 禁止**：
+
+| 禁止项 | 说明 |
+|---|---|
+| **bool 使用 `0` / `1`** | 布尔值**必须**是 JSON `true` / `false`，**不得**用数字编码 |
+| **自定义字符串 bool** | 不得用 `"true"` / `"false"` / `"yes"` / `"on"` 等字符串代替 JSON boolean |
+
+> **单位不进载荷** —— 单位绑定在 `type` 上（`climate.temperature` = °C · `climate.humidity` = %RH · `weight.value` = g）。
+> 小数位：定点 **2 位**、去尾零（由设备侧 `type` 语义决定）。
+
+#### 4.5.3 `seq` 语义（冻结）
+
+| 项 | 冻结值 |
+|---|---|
+| 形态 | **`uint32`** |
+| 生命周期 | **boot lifetime 单调计数**（每次开机归零） |
+| 持久化 | **不持久化**（不写 NVS、不落盘） |
+| 与 log 的关系 | **不复用 log `seq`**（不借用 `boot_seq` / `seq`） |
+
+**云端幂等键** = **`(device_id, type, ts, seq)`**（`ux_th_dedup`，`migrations/0003_p3_history_tables.sql`）。
+
+#### 4.5.4 时间有效性（**implementation constraint** · 非配置项）
+
+| 条件 | 行为 |
+|---|---|
+| **`ts` 无效**（时间未同步） | **telemetry value sample 不发送** ⇒ **不产生 `ts = 0` 的历史数据** |
+| `ts` 有效 | 正常上报（`ts` = Unix 秒） |
+
+**为什么**：`telemetry_history` 是时间序列（查询路径 `ix_th_device_ts`）；`ts = 0` 的行**无查询价值**；
+且 `seq` 不持久化 ⇒ 跨 boot 的 `(device_id, type, 0, seq)` 会**碰撞并被幂等静默吸收**。
+
+> ⚠️ 本条是 **implementation constraint**，**不是配置项**（不进 `mqtt.json`）。
+> ⚠️ **实现状态**：当前 publisher **尚未**执行该抑制（仍按 `ts = 0` 上报）⇒ 属**待实施项**（残留 `R-FRZ-2`）。
+
+#### 4.5.5 配置与门禁（**两道门**）
+
+| 门 | 层 | 默认 |
+|---|---|---|
+| **`GF_TELEMETRY_ENABLED`** | **编译期** | **`0`（关闭）** —— 代码**不进入镜像**（零成本空实现） |
+| **`mqtt.json` → `telemetry.enable`** | **运行时** | **`false`** —— 已编译但**不发送** |
+
+> **有效发送 = 两者皆真**。另：`telemetry.interval_ms` 默认 **`300000`**（5 min）。
+> 权威：`docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` §`H-WP4-FW-06 Telemetry Configuration Freeze`。
+
+#### 4.5.6 消费路径（规划）
+
+```
+设备 ──MQTT──► guo_feeder/<device_id>/up
+                    │
+                    ├─(命令结果 / 上线通知)──► 既有 command 链路
+                    └─(telemetry v1)─────────► EMQX Rule 分流 ──► POST /api/history/ingest ──► telemetry_history
+```
+
+> ⚠️ **分流尚未落地**：命令结果与 telemetry **共用 `/up`** ⇒ 需 **EMQX Rule 层分流**（`H-WP4C-03`）。
+> **Worker 不解析 telemetry · firmware 不改 topic · 不改 `/up`**。
+
+#### 4.5.7 首版范围（v1 **KEEP**）
+
+`climate.temperature` · `climate.humidity` · `weight.value`
+
+**DEFER**（**不删除能力**，后续启用无需重新冻结协议）：
+`valve.state` · `wifi.state` · `online.state` · `time.valid` · `weight.error`
+
+### 4.6 上行路径小结
 
 ```
 业务模块 / CommandManager
@@ -471,6 +591,11 @@ on_command_result(json) ──► cloud_send_up(json)
                         cloud_mqtt_publish_text(up, ...)
                                   ▼
                         esp_mqtt_client_enqueue(qos=1, store=true)
+
+telemetry_publisher ──► cloud_send_telemetry(json 原文)
+                                  │  ★ 不经 cloud_compress_uplink（§4.5）
+                                  ▼
+                        cloud_mqtt_publish_binary(up, ...)   ← 同一 up Topic
 ```
 
 ⚠️ **离线时 `cloud_send_up()` 直接返回 false，不排队、不落盘**。
@@ -983,6 +1108,14 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 「逐条 Cloud Log Envelope JSON」；**未新增 protocol version**，命令协议与 telemetry 协议**未改动**。
 依据 `docs/review/P3-WP4-Firmware-Log-Implementation.md`（实施规格）与
 `docs/review/P3-WP4-Firmware-Integration-Design-Review.md`（§9 人工裁决）。*
+
+*§4.5（Telemetry 遥测上行）于 **2026-10-12** 依 P3 `WP4-FW-TELEMETRY` 冻结同步补入：**telemetry v1 schema
+已冻结**（信封 **5 字段** `{ts,type,value,seq,schema_version}`；**`device_id` 由 MQTT topic 承载、`source` 不发送**；
+`value` **三态编码**且**禁止数字编码 bool**；`seq` = **boot lifetime 计数、不持久化**），**固件 publisher 已实现但默认关闭**
+（`GF_TELEMETRY_ENABLED=0` · `telemetry.enable=false`）。**未新增 topic、未新增 protocol version、未改命令协议**。
+依据 `docs/review/P3-WP4-Firmware-Telemetry-Decisions.md`（冻结裁决）与
+`docs/review/P3-WP4-Firmware-Telemetry-Design-Freeze-Review.md`（设计评审）。
+⚠️ **分流未落地**（`H-WP4C-03`）⇒ 见 `docs/review/P3-WP4C-EMQX-Rule-Design.md`。*
 
 *§12（Homie 5 投影协议）于 **2026-10-10** 依 P2 收口补入。该节**只摘要**
 `docs/architecture/P2-0-architecture-review-and-design-freeze.md` 的冻结契约（§8/§10–§14/§16/§17.2.1），

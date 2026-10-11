@@ -16,8 +16,9 @@
 > **🔄 更新记录（2026-10-12）**：
 > · **`H-WP4-FW-08 Resource Budget Override Decision`** —— 资源预算覆盖 ⇒ **`H-WP4-FW-08` = `CLOSED`**，**资源 blocker 解除**（`CF-2` 其余 blocker 保留）。
 > · **`H-WP4-FW-06 Telemetry Configuration Freeze`** —— 配置模型冻结 ⇒ **`H-WP4-FW-06` = `CLOSED`**。
+> · **`H-WP4-FW-09`** —— telemetry uplink 契约同步至 `docs/interfaces/cloud_protocol.md` **§4.5** ⇒ **`H-WP4-FW-09` = `CLOSED`**（本轮 commit `docs(p3-wp4): sync telemetry uplink protocol freeze`）。
 >
-> **⇒ 本轮更新后：`H-WP4-FW-05` / `06` / `07` / `08` 全部 `CLOSED`。**
+> **⇒ 本轮更新后：`H-WP4-FW-05` / `06` / `07` / `08` / `09` 全部 `CLOSED`。**
 
 ---
 
@@ -211,7 +212,7 @@ RESOURCE BLOCKED
 | `H-WP4-FW-06` | `mqtt.json.telemetry` 字段集与默认值 | `OPEN` | 🟢 **`CLOSED`**（`## H-WP4-FW-06 Telemetry Configuration Freeze`；仅 2 键 + 明确 Non-goals） |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `OPEN` | 🟢 **`CLOSED`**（§3，方案 A） |
 | `H-WP4-FW-08` | Flash 预算处置 | `CLOSED WITH GUARD`（🔴 `RESOURCE BLOCKED`） | 🟢 **`CLOSED`**（A+B+E 后仍超 ⇒ **资源预算 Override 已批准**；见 `## H-WP4-FW-08 Resource Budget Override Decision`） |
-| `H-WP4-FW-09` | `/up` telemetry 载荷形态文档同步 | `OPEN` | 🔴 **`OPEN`**（§1 已给冻结 schema ⇒ 可同步，但**本轮未做**） |
+| `H-WP4-FW-09` | `/up` telemetry 载荷形态文档同步 | `OPEN` | 🟢 **`CLOSED`**（`cloud_protocol.md` **§4.5 Telemetry（已冻结 v1）** 已补入（本轮 commit `docs(p3-wp4): sync telemetry uplink protocol freeze`）) |
 | `H-WP4C-03` | EMQX Rule 分流机制（rule scope） | `OPEN` | 🔴 **`OPEN`**（§6 已定"责任方 = EMQX Rule"，**具体 scope 未定**） |
 | `H-WP4C-04` / `05` / `06` | migration 授权 / Action 切换 / 部署顺序 | `OPEN` | 🔴 **`OPEN`**（不变） |
 
@@ -247,8 +248,7 @@ RESOURCE BLOCKED
 
 | ID | 主题 | 状态 | 阻塞对象 |
 |---|---|---|---|
-| **`H-WP4-FW-09`** | `/up` telemetry 载荷形态文档同步 | 🔴 `OPEN` | 文档一致性（可立即做） |
-| **`H-WP4C-03`** | EMQX Rule 分流（rule scope / 谓词） | 🔴 `OPEN` | 端到端链路 |
+| **`H-WP4C-03`** | EMQX Rule 分流（rule scope / 谓词） | 🔴 `OPEN` | 端到端链路（**design proposal 已就绪** ⇒ `docs/review/P3-WP4C-EMQX-Rule-Design.md`，待人工 freeze） |
 | **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔴 `OPEN` | CF 侧 |
 | **`H-WP4C-05`** | EMQX Action 切换授权 | 🔴 `OPEN` | 端到端链路 |
 | **`H-WP4C-06`** | 部署顺序 | 🔴 `OPEN` | 端到端链路 |
@@ -256,7 +256,8 @@ RESOURCE BLOCKED
 > ✅ **已解除（2026-10-12）**：
 > · **`H-WP4-FW-08`（余项）** —— 优化后仍超预算，已由 `## H-WP4-FW-08 Resource Budget Override Decision` 裁决（`H-WP4-FW-08 = CLOSED`）。
 > · **`H-WP4-FW-06`** —— 配置模型已由 `## H-WP4-FW-06 Telemetry Configuration Freeze` 冻结（`H-WP4-FW-06 = CLOSED`）。
-> ⇒ 两者**不再列为剩余项**。**`R-FRZ-2`（`ts` 无效时的上报策略）不改判为配置项**，仍按**实施细节**跟踪（见 `## H-WP4-FW-06 Telemetry Configuration Freeze` §Status）。
+> · **`H-WP4-FW-09`** —— telemetry uplink 契约已同步至 `docs/interfaces/cloud_protocol.md` **§4.5**（`H-WP4-FW-09 = CLOSED`）。
+> ⇒ 三者**不再列为剩余项**。**`R-FRZ-2`（`ts` 无效时的上报策略）不改判为配置项**，仍按**实施细节**跟踪（见 `## H-WP4-FW-06 Telemetry Configuration Freeze` §Status）。
 
 ---
 
@@ -350,7 +351,7 @@ RESOURCE BLOCKED
 |---|---|
 | **`H-WP4-FW-08`** | 🟠 `CLOSED WITH GUARD` ⇒ 🟢 **`CLOSED`** |
 | **资源态** | 🔴 `RESOURCE BLOCKED` ⇒ 🟢 **解除**（`telemetry v1` 增量已获批准） |
-| **`CF-2`** | 🔴 `BLOCKED` ⇒ 🔴 **仍 `BLOCKED`** —— **资源 blocker 已移除**；仍受阻于 **`H-WP4-FW-09`** + **`H-WP4C-03 / 04 / 05 / 06`** |
+| **`CF-2`** | 🔴 `BLOCKED` ⇒ 🔴 **仍 `BLOCKED`** —— **资源 blocker 已移除**、**`H-WP4-FW-09` 已关闭**；仍受阻于 **`H-WP4C-03`**（EMQX Rule 分流）+ **`H-WP4C-04 / 05 / 06`** |
 | `GF_TELEMETRY_ENABLED` | **保持 `0`（默认关闭）** —— 本裁决**不**启用 telemetry；启用属**后续实施任务** |
 
 ---
