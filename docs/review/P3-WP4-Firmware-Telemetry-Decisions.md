@@ -1,0 +1,281 @@
+# P3 · `WP4-FW-TELEMETRY` —— **冻结裁决记录**（Freeze Decision Record）
+
+> ## 🟢 `FROZEN INPUT` · **仅文档 · 未改动任何 `src/`**
+>
+> | 项 | 值 |
+> |---|---|
+> | **本文档性质** | **人工裁决留痕** —— 使 `WP4-FW-TELEMETRY` 由 **`PROVISIONAL`** 进入 **`FROZEN INPUT`** |
+> | **基线** | 固件仓 HEAD = **`baeb177`**（工作树 clean） |
+> | **输入** | `docs/review/P3-WP4-Firmware-Telemetry-Design-Freeze-Review.md`（评审 `8385125`） |
+> | **本记录的角色** | **后续实施任务的冻结输入**（`schema` / `value` 编码 / `seq` / 范围 / 路由） |
+> | **本文档不做的** | ❌ 不改 `src/` · ❌ 不改 Cloud/Worker · ❌ 不改 EMQX · ❌ 不改 migration · ❌ 不改冻结设计文档 · ❌ 不启用 `GF_TELEMETRY_ENABLED` · ❌ 不 push |
+>
+> **⚠️ 本记录中的裁决为权威**。若与评审文档的建议冲突（评审 §3.3/§3.4 曾**建议** `schema_version` 保留、`seq` **持久化**），**以本记录为准**。
+> `DT:WP-4 = FROZEN` · `CF-1 = RESOLVED` · `CF-2 = BLOCKED`（本轮**不变**）· `Phase C = PLANNED / BLOCKED`（**不变**）。
+
+---
+
+## §0 裁决总览
+
+| 裁决项 | 结论 | 状态 |
+|---|---|---|
+| **`H-WP4-FW-05`** — Envelope schema + `value` 编码 | **冻结**（字段裁减 + 三态编码） | 🟢 **`CLOSED`** |
+| **`H-WP4-FW-07`** — telemetry `seq` 语义 | **冻结**（boot lifetime · 不持久化 · 不复用 log seq） | 🟢 **`CLOSED`** |
+| **`H-WP4-FW-08`** — Flash 预算处置 | **允许优化实施**（方向 A/B/E；禁 C/D） | 🟠 **`CLOSED WITH GUARD`**（资源态仍 `RESOURCE BLOCKED`） |
+| **首版 telemetry 范围** | **KEEP** = temperature / humidity / weight；**DEFER** = valve / wifi / online / time.valid | 🟢 **冻结** |
+| **`/up` 路由** | topic **保持** `guo_feeder/<device_id>/up`；**分流责任 = EMQX Rule** | 🟢 **冻结** |
+| **`H-WP4-FW-06`** — `mqtt.json.telemetry` 字段与默认值 | **本轮未裁决** | 🔴 **`OPEN`**（不变） |
+
+---
+
+## §1 `H-WP4-FW-05` —— Envelope schema 冻结
+
+**裁决**：冻结 Envelope schema 为 **5 字段**：
+
+```json
+{ "ts":…, "type":"…", "value":…, "seq":…, "schema_version":… }
+```
+
+| 处理 | 字段 | 说明 |
+|---|---|---|
+| **保留** | `ts` | Unix 秒 |
+| **保留** | `type` | 观测类型标识符（见 §1.2） |
+| **保留** | `value` | 观测值（编码规则见 §2） |
+| **保留** | `seq` | 序号（语义见 §3） |
+| **保留** | `schema_version` | 解码版本锚点（v1 = `1`） |
+| **🔴 删除** | ~~`device_id`~~ | **改用 MQTT topic identity**（`guo_feeder/<device_id>/up` 的第 2 段） |
+| **🔴 删除** | ~~`source`~~ | 不再随信封发送 |
+
+**说明（裁决定义）**：
+
+1. **`device_id` 使用 MQTT topic identity** —— 设备身份**只由 topic 承载**，信封内**不重复**。
+   - 与 `DT:WP-4` `ID-3`（`device_id` 由 topic 第 2 段提取、payload 内**忽略**）**对齐**；
+   - 与云端 `telemetry_history.device_id NOT NULL` **不冲突** —— 该列由**服务端**按 topic/auth 上下文填充；
+   - ⇒ **关闭**评审发现 `F-WP4-FW-TR-2`（信封多发 `device_id`）。
+2. **`source` 删除** —— 来源信息由 `type` 的前缀域（`climate.*` / `weight.*`）**隐含**，不另设字段。
+3. **信封不含 `boot_seq`** —— `seq` 语义见 §3（**boot lifetime**）。
+
+### 1.1 Envelope v1 冻结形态（字段顺序即契约）
+
+```
+{"ts":<uint32>,"type":"<id>","value":<number|string|boolean>,"seq":<uint32>,"schema_version":<uint32>}
+```
+
+### 1.2 `type` 标识符
+
+- 形态沿用评审 §3.1 的 **T1（点分命名空间）**：`<domain>.<metric>`，字符集 `[a-z0-9_]`，长度 ≤ 32。
+- **v1 首版实际取值** = §5 的 **KEEP 集**：`climate.temperature` / `climate.humidity` / `weight.value`。
+- **追加式演进**：新 `type` 只可新增，**永不改名、永不删除**（因云端幂等键含 `type`，`ux_th_dedup`）。
+- 本记录**不另行变更** `type` 标识符字符串；如需改名须新裁决。
+
+### 1.3 `schema_version` 保留
+
+**保留**（拒绝评审 §3.3 的"v1 期省略"变体）：理由 = 云端 `telemetry_history.schema_version` 列存在（`NOT NULL DEFAULT 1`）+ `WP2:§3.3` 将 `value` 逻辑类型的解释权交给它 ⇒ 它是唯一前向兼容锚点。**v1 恒为 `1`**。
+
+---
+
+## §2 Value Encoding 冻结
+
+**裁决**：**三态编码**，按 `value` 的**逻辑类型**决定 JSON 形态：
+
+| 逻辑类型 | JSON 形态 | 适用 | 例 |
+|---|---|---|---|
+| **number** | **JSON number** | 物理量 | `23.50` · `1042.0` · `61.25` |
+| **state** | **JSON string** | 多态枚举 | `"ready"`（词表由 `type` 绑定） |
+| **boolean** | **JSON boolean** | 真/假 | `true` · `false` |
+
+**🔴 明令禁止**：**用数字编码 boolean**（即禁止 `1.0` / `0.0` 表示真/假）。
+
+⇒ **关闭**评审发现 `F-WP4-FW-TR-3`（原实现 `tele_emit_bool()` 出数字 `1.0/0.0`，与字符串编码自相矛盾）。
+
+**配套约束**：
+
+1. **单位不进载荷** —— 单位绑定在 `type` 上（如 `climate.temperature` = °C、`weight.value` = g），随 `type` 冻结。
+2. **number 的小数位** —— 沿用 2 位小数 + 去尾零（评审 §3.2 描述，实现侧 `te_fixed2`）；若为整数语义则输出整数形。
+3. **落库映射** —— 云端 `telemetry_history.value` 为**物理 `TEXT`**：JSON number → 十进制文本；JSON string → 原文；JSON boolean → `"true"`/`"false"` 文本。**逻辑类型由 `schema_version` 解释**（`WP2:§3.3` 不变）。
+4. **v1 实际使用**：因 §5 的 KEEP 集**全为 number**，**v1 首版只会产生 `number` 与 `schema_version=1`**；`state` / `boolean` 编码规则**先行冻结**以备后续 `type` 启用。
+
+---
+
+## §3 `H-WP4-FW-07` —— `seq` 语义冻结
+
+**裁决**：
+
+| 项 | 冻结值 |
+|---|---|
+| **形态** | **boot lifetime `uint32` counter** |
+| **持久化** | **不持久化**（不在 NVS / 不落盘） |
+| **跨 boot** | **每次开机归零**（`telemetry_publisher_init()` 置 `0`） |
+| **与 log 的关系** | **不复用 log `seq`**（不借用 LogManager 的 `boot_seq`/`seq`） |
+
+> **⚠️ 本裁决为方案 A**（评审 §3.4 曾**推荐****方案 B = NVS 持久化单调计数**）。**按本记录执行方案 A。**
+
+**派生后果（须显式知晓，见 §8 残留风险）**：
+
+1. **`ts` 有效时安全** —— 云端幂等键 `(device_id, type, ts, seq)` 中 `ts` 为真实 Unix 秒，跨 boot 的 `ts` 不同 ⇒ 不碰撞。
+2. **`ts` 无效（未同步，`ts = 0`）时存在碰撞面** —— 同一 `(device_id, type)` 在**不同 boot**、且均在**未同步状态**发出的第 `n` 条，会产生相同的 `(dev, type, 0, n)` ⇒ 后到者被 `INSERT OR IGNORE` **静默吸收**（评审 `R-WP4-FW-7`）。
+3. ⇒ **`ts` 无效时的上报策略成为关键**：建议 **取值类在 `ts` 无效时不上报**（由 `H-WP4-FW-06` / 实施任务细化），以**规避**上述碰撞面。**本记录不单独裁决该项**，仅登记为前置约束。
+
+---
+
+## §4 `H-WP4-FW-08` —— 资源裁决
+
+**记录当前资源状态**：
+
+```
+RESOURCE BLOCKED
+  实测：telemetry 门禁增量 +2,496 B；剩余预算 636 B ⇒ 超 1,860 B
+  （ceiling 14,336 B = P2-7 12,548 + LOG 1,152 + telemetry …）
+```
+
+**裁决**：**允许优化实施**（即：允许按下列方向改动 `src/`，以尝试消解超预算）。
+
+**授权优化方向**：
+
+| 方向 | 内容 | 评审依据 |
+|---|---|---|
+| **A** | **remove `device_id`**（+ `source`） | 评审 §2.3-A / §1.2（`F-WP4-FW-TR-2`） |
+| **B** | **publisher optimization**（表驱动派发 / 删未用访问器 / 与既有工具共址） | 评审 §2.3-B |
+| **E** | **首版减少非核心 telemetry capability** | 评审 §2.3-E / §5 范围冻结 |
+
+**🔴 明令禁止**：
+
+| 禁止项 | 说明 |
+|---|---|
+| **ArduinoJson replacement** | 禁止用 ArduinoJson 替换手写 JSON 构建（评审 §2.3-C） |
+| **CBOR protocol replacement** | 禁止将 telemetry payload 改为 CBOR / 二进制定长（评审 §2.3-D） |
+
+⇒ ⇒ 评审候选 **C** 与 **D** 均**被禁止**。**payload 保持 JSON 文本形态**。
+
+**状态**：`H-WP4-FW-08` = **`CLOSED WITH GUARD`**（**资源态仍为 `RESOURCE BLOCKED`**；guard 解禁 = 仅限 A/B/E 三项优化）。
+
+> ⚠️ **若 A/B/E 优化后实测仍超预算** ⇒ 须**再次人工裁决**（重裁 ceiling 或进一步削减）。见 §8。
+
+---
+
+## §5 首版 telemetry 范围冻结
+
+| 处置 | 观测 | 逻辑类型 | `type`（T1） |
+|---|---|---|---|
+| ✅ **KEEP** | **temperature** | number | `climate.temperature` |
+| ✅ **KEEP** | **humidity** | number | `climate.humidity` |
+| ✅ **KEEP** | **weight** | number | `weight.value` |
+| ⏸️ **DEFER** | valve | boolean | `valve.state` |
+| ⏸️ **DEFER** | wifi | boolean | `wifi.state` |
+| ⏸️ **DEFER** | online | state | `online.state` |
+| ⏸️ **DEFER** | time.valid | boolean | `time.valid` |
+
+**含义**：
+
+1. 首版 `telemetry_task()` **只保留 3 个取值类分支**（temperature / humidity / weight，含阈值 + 抽样兜底）。
+2. **5 个边沿/状态类分支全部 DEFER** ⇒ 首版**不产生** `state` / `boolean` 值（与 §2 的"v1 实际只用 number"一致）。
+3. **DEFER ≠ 删除**：相关编码规则（§2）与词表（§1.2）**已冻结**，后续启用**无需重新冻结协议**，仅需恢复对应 capability。
+4. ⇒ **关闭/收敛**评审发现 `F-WP4-FW-TR-4`（未接 EventManager）—— 首版明确不含事件类。
+
+---
+
+## §6 `/up` 路由冻结
+
+**裁决**：
+
+| 项 | 冻结值 |
+|---|---|
+| **上行 topic** | **保持** `guo_feeder/<device_id>/up`（**零改动**） |
+| **分流责任** | **EMQX Rule** |
+| **Worker** | **不负责** command / telemetry 判断；**不解析 payload** 分流 |
+| **固件** | 不新增 topic；不改 topic renderer |
+
+**说明**：
+
+- 命令结果 / registry 结果 / telemetry **继续共用** `/up`；
+- 因 topic 不变且共用，**分离只能发生在 EMQX Rule 层** ⇒ 与评审 §4.3 的 **A1（Rule 层谓词分流）** 一致；A2/A3（topic 拆分）**被"topic 保持"排除**。
+- 具体的 **EMQX Rule 范围 / 谓词**未在本记录展开 ⇒ 仍归 **`H-WP4C-03 = OPEN`**。
+- 与已 `CLOSED` 的 `H-WP4-FW-01`（方案 A：双 Action 分流 / EMQX Rule 层 / Worker 不解析）**一致**。
+
+---
+
+## §7 裁决状态汇总（回填）
+
+| ID | 主题 | 本记录前 | **本记录后** |
+|---|---|---|---|
+| `H-WP4-FW-05` | `type` 词表 + `value` 编码 + `schema_version` | `OPEN` | 🟢 **`CLOSED`**（§1 + §2） |
+| `H-WP4-FW-06` | `mqtt.json.telemetry` 字段集与默认值 | `OPEN` | 🔴 **`OPEN`**（本轮未裁决） |
+| `H-WP4-FW-07` | telemetry `seq` 语义 | `OPEN` | 🟢 **`CLOSED`**（§3，方案 A） |
+| `H-WP4-FW-08` | Flash 预算处置 | `CLOSED WITH GUARD`（🔴 `RESOURCE BLOCKED`） | 🟠 **`CLOSED WITH GUARD`**（+ 优化授权 A/B/E；禁 C/D） |
+| `H-WP4-FW-09` | `/up` telemetry 载荷形态文档同步 | `OPEN` | 🔴 **`OPEN`**（§1 已给冻结 schema ⇒ 可同步，但**本轮未做**） |
+| `H-WP4C-03` | EMQX Rule 分流机制（rule scope） | `OPEN` | 🔴 **`OPEN`**（§6 已定"责任方 = EMQX Rule"，**具体 scope 未定**） |
+| `H-WP4C-04` / `05` / `06` | migration 授权 / Action 切换 / 部署顺序 | `OPEN` | 🔴 **`OPEN`**（不变） |
+
+**评审发现收敛**：`F-WP4-FW-TR-2` ✅ 关闭（删 `device_id`）· `F-WP4-FW-TR-3` ✅ 关闭（禁数字编码 bool）· `F-WP4-FW-TR-4` ✅ 收敛（首版 DEFER 事件类）· `F-WP4-FW-TR-1` / `-TR-5` ⏸️ 不变（延续）。
+
+---
+
+## §8 对后续实施任务的净影响（冻结输入 → 待办）
+
+> 本节仅**登记**；**本轮不实施**（禁止修改 `src/`）。
+
+| # | 变更 | 目标文件 | 依据 |
+|---|---|---|---|
+| **I-1** | 信封**删除 `device_id`** 字段 | `telemetry_envelope.h`（struct + 组包） | §1 |
+| **I-2** | 信封**删除 `source`** 字段 | 同上 | §1 |
+| **I-3** | `value` 编码改为三态；**bool 出 JSON boolean**（禁 1/0） | `telemetry_envelope.h`（新增 bool 写出）+ `telemetry_publisher.cpp`（`tele_emit_bool`） | §2 |
+| **I-4** | `telemetry_task()` **删 4 个 DEFER 分支**（valve/wifi/online/time.valid），仅留 3 个取值类 | `telemetry_publisher.cpp` | §5 |
+| **I-5** | `online.state` 相关（`tp_online_should_emit` / `tp_online_state_name` / `TP_ONLINE_*`）随之**暂不接线** | `telemetry_policy.h` | §5 |
+| **I-6** | `seq` **保持** boot lifetime（**已符合** ⇒ 无需改码） | `telemetry_publisher.cpp` | §3 |
+| **I-7** | 优化方向 **A / B** 叠加实施 | `telemetry_envelope.h` / `telemetry_publisher.cpp` | §4 |
+| **I-8** | **保持** JSON 文本 payload；**不得**引入 ArduinoJson / CBOR | 全局 | §4 |
+| **I-9** | 文档：`cloud_protocol.md §4` 同步 telemetry 上行形态（5 字段冻结 schema） | `docs/interfaces/cloud_protocol.md` | `H-WP4-FW-09` |
+
+**预期效果（粗估，须实测）**：I-4（E）≈ −600 B · I-1/I-2（A）≈ −60…−120 B · I-7（B）≈ −350…−450 B ⇒ 合计 ≈ **−1,000…−1,200 B**。
+
+> 🔴 **残留风险 `R-FRZ-1`（重要）**：即使执行全部授权优化，增量预计仍 ≈ **1,300…1,500 B > 636 B 预算** ⇒ **很可能仍判 `RESOURCE BLOCKED`**。届时须再次人工裁决（重裁 ceiling / 进一步削减 capability）。**本记录不预先授权任何额外削减。**
+
+> 🟠 **残留风险 `R-FRZ-2`**：§3 方案 A（`seq` 不持久化）+ `ts` 无效 ⇒ 幂等碰撞面（§3 派生后果 2）。建议实施时**在 `ts` 无效时不上报取值类**以规避；**该项待 `H-WP4-FW-06` 或实施任务确认**。
+
+---
+
+## §9 剩余 `HUMAN_REQUIRED`
+
+| ID | 主题 | 状态 | 阻塞对象 |
+|---|---|---|---|
+| **`H-WP4-FW-06`** | `mqtt.json.telemetry` 字段集与默认值（含 `ts` 无效时的上报策略） | 🔴 `OPEN` | 实施 + `R-FRZ-2` |
+| **`H-WP4-FW-09`** | `/up` telemetry 载荷形态文档同步 | 🔴 `OPEN` | 文档一致性（可立即做） |
+| **`H-WP4-FW-08`（余项）** | 优化后若仍超预算 ⇒ 重裁 | 🟠 `CLOSED WITH GUARD` | 实施后实测 |
+| **`H-WP4C-03`** | EMQX Rule 分流（rule scope / 谓词） | 🔴 `OPEN` | 端到端链路 |
+| **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔴 `OPEN` | CF 侧 |
+| **`H-WP4C-05`** | EMQX Action 切换授权 | 🔴 `OPEN` | 端到端链路 |
+| **`H-WP4C-06`** | 部署顺序 | 🔴 `OPEN` | 端到端链路 |
+
+---
+
+## §10 边界核对（**零违规**）
+
+| 禁止项 | 状态 |
+|---|---|
+| 修改 `src/` | ✅ **未改** |
+| 修改 Cloud / Worker | ✅ **未改** |
+| 修改 EMQX | ✅ **未改** |
+| 修改 migration | ✅ **未改** |
+| 修改冻结设计文档 | ✅ **未改** |
+| 启用 `GF_TELEMETRY_ENABLED` | ✅ **未改**（保持默认 0） |
+| 改 `DT:WP-4` / topic | ✅ **未改** |
+| 新增文档 | ✅ **唯一** = `docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` |
+
+---
+
+## §11 与本记录的关联文档
+
+| 文档 | 关系 |
+|---|---|
+| `docs/review/P3-WP4-Firmware-Telemetry-Design-Freeze-Review.md`（`8385125`） | **输入**（评审 + 建议 A/B/C/D/E） |
+| `docs/review/P3-WP4-Firmware-Telemetry-Implementation.md`（`baeb177`） | 被冻结对象的实施记录（`RESOURCE BLOCKED` 出处） |
+| `docs/review/P3-WP4-Firmware-Integration-Design-Review.md` | `H-WP4-FW-*` 清单与 §9 裁决留痕 |
+| `docs/architecture/P3-WP1-Telemetry-Policy-Final.md` | 设备侧策略权威（阈值不冻结） |
+| `Cloudflare_Assets/guo-feeder-api/migrations/0003_p3_history_tables.sql` | 云端表结构 + `ux_th_dedup` 幂等键 |
+
+---
+
+*本文档于 **2026-10-12** 建立，为 **`WP4-FW-TELEMETRY` 的人工冻结裁决记录**；
+**仅留痕，不含任何代码改动、配置变更或实现**。
+基线 = 固件仓 HEAD **`baeb177`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
+所有 `file:line` 与 Flash 数字取自基线实测，可逐条回查。*
