@@ -7,6 +7,10 @@
 // ★ 非阻塞：本文件**无 delay / 无 while 死等 / 无动态分配**
 // ★ 不创建 Task：由 main.cpp 的 loop() 每轮调用 telemetry_task()
 // ★ 不复用 command uplink：绝不经 cloud_compress_uplink()
+//
+// ★ v1 首版 capability 范围（E · 冻结）：只发取值类
+//     KEEP  = temperature / humidity / weight
+//     DEFER = valve / wifi / online / time.valid / weight.error（**不删除能力**）
 // =====================================================
 
 #include "services/telemetry_publisher.h"
@@ -52,17 +56,13 @@ namespace
 
 bool            s_ready  = false;
 uint32_t        s_seq    = 0u;
-uint32_t        s_last_edge_ms = 0u;
 TelemetryStats  s_stats  = { 0u, 0u, 0u, 0u };
 
-// ---- 边沿基线 ----
-bool s_valve     = false;
-bool s_wifi      = false;
-bool s_timevalid = false;
-bool s_werror    = false;
-int  s_online    = (int)TP_ONLINE_INIT;
-
 // ---- 取值基线（含上次采样时刻）----
+//   ★ v1 首版范围（E · 已冻结）：**只保留取值类** temperature / humidity / weight。
+//   ★ DEFER（**不删除能力，仅首版不产生**）：valve / wifi / online / time.valid / weight.error。
+//     其 `value` 编码（state / boolean）与词表已在 Envelope（commit 1）冻结，
+//     后续启用**无需重新冻结协议**，只需恢复对应分支。
 float    s_temp     = 0.0f;
 float    s_humid    = 0.0f;
 float    s_weight   = 0.0f;
@@ -135,20 +135,10 @@ void telemetry_publisher_init()
 {
     // 只记录基线，**不发**（避免上电即产生无意义样本）
     s_seq           = 0u;
-    s_last_edge_ms  = 0u;
     s_stats.emitted = 0u;
     s_stats.transport_fail = 0u;
     s_stats.build_fail = 0u;
     s_stats.skipped_offline = 0u;
-
-    s_valve     = state_get_bool(STATE_VALVE_STATUS);
-    s_wifi      = state_get_bool(STATE_WIFI_STATUS);
-    s_timevalid = state_get_bool(STATE_TIME_VALID);
-    s_werror    = state_get_bool(STATE_WEIGHT_ERROR);
-
-    s_online = state_get_bool(STATE_MQTT_STATUS)
-                   ? (int)TP_ONLINE_READY
-                   : (int)TP_ONLINE_DISCONNECTED;
 
     s_temp   = state_get_float(STATE_MI_THERMO_TEMP);
     s_humid  = state_get_float(STATE_MI_THERMO_HUMID);
@@ -177,72 +167,11 @@ void telemetry_task()
 
     const uint32_t now = millis();
 
-    const bool tf_valid = state_get_bool(STATE_TIME_VALID);
-    const bool werror   = state_get_bool(STATE_WEIGHT_ERROR);
-    const bool valve    = state_get_bool(STATE_VALVE_STATUS);
-    const bool wifi     = state_get_bool(STATE_WIFI_STATUS);
-    const int  online   = state_get_bool(STATE_MQTT_STATUS)
-                              ? (int)TP_ONLINE_READY
-                              : (int)TP_ONLINE_DISCONNECTED;
-
-    // ---- (1) 边沿类：状态迁移 / 布尔翻转（每轮最多一条）----
-    // 共用 s_last_edge_ms 做去抖（边沿是稀有事件，1 s 粒度足够）
-
-    if ((online != s_online) &&
-        tp_online_should_emit(s_online, online) &&
-        tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
-    {
-        if (tele_emit_str("online.state", tp_online_state_name(online)))
-        {
-            s_online = online;
-            s_last_edge_ms = now;
-            return;
-        }
-    }
-
-    if ((tf_valid != s_timevalid) &&
-        tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
-    {
-        if (tele_emit_bool("time.valid", tf_valid))
-        {
-            s_timevalid = tf_valid;
-            s_last_edge_ms = now;
-            return;
-        }
-    }
-
-    if ((werror != s_werror) &&
-        tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
-    {
-        if (tele_emit_bool("weight.error", werror))
-        {
-            s_werror = werror;
-            s_last_edge_ms = now;
-            return;
-        }
-    }
-
-    if ((valve != s_valve) &&
-        tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
-    {
-        if (tele_emit_bool("valve.state", valve))
-        {
-            s_valve = valve;
-            s_last_edge_ms = now;
-            return;
-        }
-    }
-
-    if ((wifi != s_wifi) &&
-        tp_edge_accept(now, s_last_edge_ms, TP_EDGE_MIN_GAP_MS))
-    {
-        if (tele_emit_bool("wifi.state", wifi))
-        {
-            s_wifi = wifi;
-            s_last_edge_ms = now;
-            return;
-        }
-    }
+    // ★ v1 首版范围（E · 已冻结）：**只发取值类**。
+    //   原「(1) 边沿类」5 条（online / time.valid / weight.error / valve / wifi）
+    //   已按裁决 **DEFER**（首版不产生这些 telemetry）；
+    //   ⚠️ **不是删除能力** —— System State 侧读取与 Envelope 编码（state/boolean）均保留，
+    //   后续启用只需恢复分支（`tele_emit_str` / `tele_emit_bool` 仍在下方可用）。
 
     // ---- (2) 取值类：变化阈值优先，其次抽样兜底 ----
 
