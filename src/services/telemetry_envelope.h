@@ -5,13 +5,19 @@
 //   （见 test/telemetry_host/probe_telemetry.cpp）。
 //   刻意**不用** snprintf / ArduinoJson / String ⇒ 代码小、无动态分配。
 //
-// Envelope（字段顺序即契约 · 逐字见任务冻结清单）：
-//   { "device_id":…, "ts":…, "type":…, "value":…,
-//     ["source":…,] "seq":…, "schema_version":… }
+// Envelope **v1（已冻结）** —— 权威：`docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` §1
 //
-// ⚠️ **PROVISIONAL（草案，未冻结）** —— `type` 词表 / `value` 编码 /
-//    `schema_version` 初值 = `H-WP4-FW-05`（**OPEN**）；`seq` 语义 = `H-WP4-FW-07`（**OPEN**）。
-//    本文件只提供**可运行草案**，不构成云端契约。
+//   { "ts":…, "type":"…", "value":…, "seq":…, "schema_version":… }
+//
+//   ★ 字段顺序即契约；**5 字段**。
+//   ★ **无 `device_id`** —— 设备身份由 MQTT topic 承载（`guo_feeder/<device_id>/up` 第 2 段）。
+//   ★ **无 `source`** —— 来源由 `type` 的域名前缀隐含。
+//
+// value 编码（已冻结 · 同文档 §2）：
+//   number  -> JSON **number**   例 `25.3`
+//   state   -> JSON **string**   例 `"ready"`（词表由 type 绑定）
+//   boolean -> JSON **boolean**  例 `true` / `false`
+//   🔴 **禁止**用 `0` / `1` 数字编码 boolean。
 //
 // ★ 不复用 command uplink：本信封**绝不**经过 `cloud_compress_uplink()`，
 //   也**不得**被包成 `{"cmd":"result",…}`（H-WP4C-02）。
@@ -22,23 +28,33 @@
 
 #include <stdint.h>
 
-// envelope JSON 上界（实测最大约 216 B，留余量）
-#define TELEM_ENV_MAX_BYTES 320u
+// envelope JSON 上界（v1 最坏情形 ≈ 147 B：uint32 满值 + type/value 各 32 字符）
+#define TELEM_ENV_MAX_BYTES 192u
 
-// ⚠️ PROVISIONAL：`schema_version` 初值（H-WP4-FW-05 = OPEN）
-#define TELEM_SCHEMA_VERSION_PROVISIONAL 1u
+// ★ 冻结：schema_version v1 恒为 1
+//   （云端 `telemetry_history.schema_version INTEGER NOT NULL DEFAULT 1`；
+//    `WP2:§3.3` 把 `value` 的逻辑类型解释权交给它 ⇒ 前向兼容锚点）
+#define TELEM_SCHEMA_VERSION 1u
 
-// 一条观测
+// value 的逻辑类型（决定 JSON 形态 · 冻结三态）
+enum TeValueKind
+{
+    TE_VAL_NUM  = 0,   // JSON number
+    TE_VAL_STR  = 1,   // JSON string
+    TE_VAL_BOOL = 2    // JSON boolean（true / false —— 禁止 0/1）
+};
+
+// 一条观测（v1 信封 · 5 字段）
 struct TelemetryEnvelope
 {
-    const char *device_id;      // 必须与 /up topic 的 <device_id> 同源
-    uint32_t    ts;             // Unix 秒；0 = 时间未同步（按原值上报）
-    const char *type;           // ⚠️ PROVISIONAL 词表
-    float       value_num;      // 数值形态（value_str == nullptr 时使用）
-    const char *value_str;      // 非 nullptr ⇒ `value` 以 JSON string 输出
-    const char *source;         // 可 nullptr（省略该字段）
-    uint32_t    seq;            // ⚠️ PROVISIONAL 语义（H-WP4-FW-07 = OPEN）
-    uint32_t    schema_version;
+    uint32_t     ts;              // Unix 秒；0 = 时间未同步（按原值上报）
+    const char  *type;            // 类型标识符（T1 点分命名空间；追加式演进）
+    TeValueKind  kind;            // value 的逻辑类型（决定 JSON 形态）
+    float        value_num;       // kind == TE_VAL_NUM 时使用
+    const char  *value_str;       // kind == TE_VAL_STR 时使用（须 JSON 安全）
+    bool         value_bool;      // kind == TE_VAL_BOOL 时使用
+    uint32_t     seq;             // boot lifetime 计数（不持久化）
+    uint32_t     schema_version;  // v1 = 1
 };
 
 // ---- 有界 JSON 写出器（无动态分配）----
@@ -132,7 +148,7 @@ static inline void te_fixed2(TeJsonOut &o, float v)
     }
 }
 
-// JSON 安全字符集（不实现转义 ⇒ 非法即拒绝）
+// JSON 安全标识符（type / value 字符串共用 · 不实现转义 ⇒ 非法即拒绝）
 static inline bool te_id_safe(const char *s)
 {
     if (s == nullptr)
@@ -164,9 +180,10 @@ static inline bool te_id_safe(const char *s)
     return n > 0u;
 }
 
-static inline bool te_word_safe(const char *s)
+// JSON boolean 字面量（**不是** 数字 0/1）
+static inline void te_bool(TeJsonOut &o, bool v)
 {
-    return te_id_safe(s);   // 词表 / source 使用同一安全字符集
+    te_str(o, v ? "true" : "false");
 }
 
 // 组包：成功返回 JSON 长度（不含结尾 '\0'），失败返回 0。
@@ -178,17 +195,12 @@ static inline uint32_t telemetry_envelope_build(const TelemetryEnvelope &e,
         return 0u;
     }
 
-    if (!te_id_safe(e.device_id) || !te_word_safe(e.type))
+    if (!te_id_safe(e.type))
     {
         return 0u;
     }
 
-    if (e.value_str != nullptr && !te_word_safe(e.value_str))
-    {
-        return 0u;
-    }
-
-    if (e.source != nullptr && !te_word_safe(e.source))
+    if (e.kind == TE_VAL_STR && !te_id_safe(e.value_str))
     {
         return 0u;
     }
@@ -199,32 +211,26 @@ static inline uint32_t telemetry_envelope_build(const TelemetryEnvelope &e,
     o.n = 0u;
     o.ok = true;
 
-    te_str(o, "{\"device_id\":\"");
-    te_str(o, e.device_id);
-
-    te_str(o, "\",\"ts\":");
+    te_str(o, "{\"ts\":");
     te_u32(o, e.ts);
 
     te_str(o, ",\"type\":\"");
     te_str(o, e.type);
 
     te_str(o, "\",\"value\":");
-    if (e.value_str != nullptr)
+    if (e.kind == TE_VAL_STR)
     {
         te_ch(o, '"');
         te_str(o, e.value_str);
         te_ch(o, '"');
     }
+    else if (e.kind == TE_VAL_BOOL)
+    {
+        te_bool(o, e.value_bool);
+    }
     else
     {
         te_fixed2(o, e.value_num);
-    }
-
-    if (e.source != nullptr)
-    {
-        te_str(o, ",\"source\":\"");
-        te_str(o, e.source);
-        te_ch(o, '"');
     }
 
     te_str(o, ",\"seq\":");

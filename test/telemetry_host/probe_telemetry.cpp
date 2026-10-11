@@ -9,18 +9,23 @@
 //           -Wl,--no-entry -Wl,--export-all -o probe_telemetry.wasm
 //   node run_wasm_probe.js probe_telemetry.wasm
 //
+// ↑ 冻结后 Envelope 权威：
+//   docs/review/P3-WP4-Firmware-Telemetry-Decisions.md §1（5 字段）/ §2（value 三态）
+//
 // 验证点：
 //   [1] policy 阈值判定（含边界 = / < / >）
 //   [2] policy 抽样周期（含回绕 / period=0）
 //   [3] policy 边沿去抖（首次 / 间隔内 / 间隔外）
 //   [4] policy $state 迁移（lost 不可自报告）
-//   [5] envelope 字段完整性（7 个冻结字段，各恰好一次）
-//   [6] envelope JSON 结构合法性（大括号 / 引号配对 / 无 NaN）
-//   [7] envelope 数值定点输出（正/负/零/两位小数/去尾零）
-//   [8] envelope 字符串值模式
-//   [9] envelope seq 行为（透传；不同 seq ⇒ 输出不同）
-//   [10] envelope 负向保护（device_id / type / source / 容量）
-//   [11] regression：telemetry 信封**不得**具备 command uplink 形态
+//   [5] envelope 字段完整性（5 个冻结字段，各恰好一次）
+//   [6] envelope **字段不存在检查**（device_id / source 必须缺席）
+//   [7] envelope JSON 结构合法性（大括号 / 引号配对 / 无 NaN）
+//   [8] envelope value 类型 · **number**（定点输出 正/负/零/两位小数/去尾零）
+//   [9] envelope value 类型 · **string**
+//   [10] envelope value 类型 · **boolean**（须 true/false 字面量，**禁** 0/1）
+//   [11] envelope seq 行为（透传；不同 seq ⇒ 输出不同）
+//   [12] envelope 负向保护（type / value_str / 容量）
+//   [13] regression：telemetry 信封**不得**具备 command uplink 形态
 // =====================================================
 
 #include <stdint.h>
@@ -114,7 +119,7 @@ static bool has_sub(const char *hay, const char *needle)
     return count_sub(hay, needle) > 0;
 }
 
-// JSON 合法性（本信封只允许平铺对象 + 数字 / 字符串，无嵌套 / 无转义）
+// JSON 合法性（本信封只允许平铺对象 + 数字 / 字符串 / true|false，无嵌套 / 无转义）
 static bool json_flat_object(const char *s)
 {
     const unsigned n = slen(s);
@@ -147,16 +152,17 @@ static bool json_flat_object(const char *s)
     return depth == 0 && !in_str && (quotes % 2u) == 0u;
 }
 
+// v1 信封（5 字段）—— 冻结基线样本
 static void make_env(TelemetryEnvelope &e)
 {
-    e.device_id      = "aabbccddeeff";
     e.ts             = 1700000000u;
     e.type           = "climate.temperature";
+    e.kind           = TE_VAL_NUM;
     e.value_num      = 25.3f;
     e.value_str      = nullptr;
-    e.source         = "mi_thermo";
+    e.value_bool     = false;
     e.seq            = 1u;
-    e.schema_version = TELEM_SCHEMA_VERSION_PROVISIONAL;
+    e.schema_version = TELEM_SCHEMA_VERSION;
 }
 
 extern "C" int probe_run()
@@ -205,7 +211,7 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
-    // [4] policy $state 迁移
+    // [4] policy $state 迁移（v1 DEFER online，但词表与规则**保留**）
     // ---------------------------------------------------------
     {
         check(tp_online_should_emit(TP_ONLINE_INIT, TP_ONLINE_READY) == true,
@@ -225,7 +231,7 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
-    // [5] envelope 字段完整性
+    // [5]/[6] envelope 字段完整性 + 字段不存在（v1 = 5 字段）
     // ---------------------------------------------------------
     TelemetryEnvelope e;
     make_env(e);
@@ -243,35 +249,38 @@ extern "C" int probe_run()
     check(slen(buf) == n, "returned length == strlen");
     check(buf[n] == '\0', "NUL terminated");
 
-    check(count_sub(buf, "\"device_id\":") == 1,      "field device_id x1");
-    check(count_sub(buf, "\"ts\":") == 1,             "field ts x1");
-    check(count_sub(buf, "\"type\":") == 1,           "field type x1");
-    check(count_sub(buf, "\"value\":") == 1,          "field value x1");
-    check(count_sub(buf, "\"source\":") == 1,         "field source x1");
-    check(count_sub(buf, "\"seq\":") == 1,            "field seq x1");
-    check(count_sub(buf, "\"schema_version\":") == 1, "field schema_version x1");
+    // [5] 冻结的 5 字段，各恰好一次
+    check(count_sub(buf, "\"ts\":") == 1,             "v1 field ts x1");
+    check(count_sub(buf, "\"type\":") == 1,           "v1 field type x1");
+    check(count_sub(buf, "\"value\":") == 1,          "v1 field value x1");
+    check(count_sub(buf, "\"seq\":") == 1,            "v1 field seq x1");
+    check(count_sub(buf, "\"schema_version\":") == 1, "v1 field schema_version x1");
+
+    // [6] 已裁减字段必须**缺席**
+    check(count_sub(buf, "device_id") == 0, "v1 absent: device_id (topic identity)");
+    check(count_sub(buf, "source") == 0,    "v1 absent: source");
+    check(count_sub(buf, "\"boot_seq\"") == 0, "v1 absent: boot_seq");
 
     // ---------------------------------------------------------
-    // [6] JSON 结构合法性 + 精确内容
+    // [7] JSON 结构合法性 + 精确内容
     // ---------------------------------------------------------
     {
         check(json_flat_object(buf), "json: flat object, braces/quotes balanced");
         check(!has_sub(buf, "nan") && !has_sub(buf, "inf"), "json: no nan/inf tokens");
 
-        const char *pfx = "{\"device_id\":\"aabbccddeeff\",\"ts\":1700000000,"
-                          "\"type\":\"climate.temperature\",\"value\":25.3,";
+        const char *pfx = "{\"ts\":1700000000,\"type\":\"climate.temperature\","
+                          "\"value\":25.3,";
         check(memcmp(buf, pfx, slen(pfx)) == 0, "json: exact prefix (order + values)");
 
-        check(has_sub(buf, ",\"source\":\"mi_thermo\",\"seq\":1,\"schema_version\":1}"),
-              "json: exact suffix (source/seq/schema_version)");
+        check(has_sub(buf, ",\"seq\":1,\"schema_version\":1}"),
+              "json: exact suffix (seq/schema_version)");
     }
 
     // ---------------------------------------------------------
-    // [7] 数值定点输出
+    // [8] value 类型 · number（定点输出）
     // ---------------------------------------------------------
     {
         TelemetryEnvelope t = e;
-        t.source = nullptr;
 
         struct Case { float v; const char *want; };
         const Case cases[] = {
@@ -291,27 +300,56 @@ extern "C" int probe_run()
             const bool ok = (m > 0u) && has_sub(b2, cases[i].want);
             check(ok, cases[i].want);
         }
+
+        // number 不得被引号包裹
+        char b3[TELEM_ENV_MAX_BYTES];
+        telemetry_envelope_build(t, b3, sizeof(b3));
+        check(!has_sub(b3, "\"value\":\""), "number kind: value NOT quoted");
     }
 
     // ---------------------------------------------------------
-    // [8] 字符串值模式
+    // [9] value 类型 · string
     // ---------------------------------------------------------
     {
         TelemetryEnvelope t = e;
         t.type = "online.state";
+        t.kind = TE_VAL_STR;
         t.value_str = "ready";
-        t.source = "mqtt";
 
         char b3[TELEM_ENV_MAX_BYTES];
         const uint32_t m = telemetry_envelope_build(t, b3, sizeof(b3));
 
         check(m > 0u && has_sub(b3, "\"value\":\"ready\""),
-              "string value: \\\"value\\\":\\\"ready\\\"");
-        check(m > 0u && json_flat_object(b3), "string value: json still valid");
+              "string kind: \\\"value\\\":\\\"ready\\\"");
+        check(m > 0u && json_flat_object(b3), "string kind: json still valid");
     }
 
     // ---------------------------------------------------------
-    // [9] seq 行为（透传；不同 seq ⇒ 不同输出）
+    // [10] value 类型 · boolean（**禁** 0/1 数字编码）
+    // ---------------------------------------------------------
+    {
+        TelemetryEnvelope t = e;
+        t.type = "time.valid";
+        t.kind = TE_VAL_BOOL;
+
+        char b4[TELEM_ENV_MAX_BYTES];
+        t.value_bool = true;
+        check(telemetry_envelope_build(t, b4, sizeof(b4)) > 0u &&
+              has_sub(b4, "\"value\":true"), "boolean kind: true literal");
+
+        char b5[TELEM_ENV_MAX_BYTES];
+        t.value_bool = false;
+        check(telemetry_envelope_build(t, b5, sizeof(b5)) > 0u &&
+              has_sub(b5, "\"value\":false"), "boolean kind: false literal");
+
+        check(!has_sub(b4, "\"value\":1") && !has_sub(b5, "\"value\":0"),
+              "boolean kind: NOT numeric 0/1 (frozen rule)");
+        check(json_flat_object(b4) && json_flat_object(b5),
+              "boolean kind: json valid");
+    }
+
+    // ---------------------------------------------------------
+    // [11] seq 行为（透传；不同 seq ⇒ 不同输出）
     // ---------------------------------------------------------
     {
         TelemetryEnvelope a = e;
@@ -335,29 +373,30 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
-    // [10] 负向保护
+    // [12] 负向保护
     // ---------------------------------------------------------
     {
         TelemetryEnvelope t = e;
         char o[TELEM_ENV_MAX_BYTES];
 
-        t.device_id = nullptr;
-        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "null device_id -> 0");
-        t.device_id = "";
-        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "empty device_id -> 0");
-        t.device_id = "aa\"bb";
-        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "device_id with quote -> 0");
-
-        t = e;
         t.type = nullptr;
         check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "null type -> 0");
+        t.type = "";
+        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "empty type -> 0");
         t.type = "bad type";
         check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "type with space -> 0");
+        t.type = "aa\"bb";
+        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "type with quote -> 0");
 
+        // string kind：value_str 非法 ⇒ 拒绝
         t = e;
-        t.source = "bad\"source";
-        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "source with quote -> 0");
+        t.kind = TE_VAL_STR;
+        t.value_str = nullptr;
+        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "string kind null value -> 0");
+        t.value_str = "bad\"value";
+        check(telemetry_envelope_build(t, o, sizeof(o)) == 0u, "string kind bad value -> 0");
 
+        // 容量不足
         t = e;
         char tiny[16];
         check(telemetry_envelope_build(t, tiny, sizeof(tiny)) == 0u,
@@ -367,7 +406,7 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
-    // [11] regression：**不是** command uplink 形态
+    // [13] regression：**不是** command uplink 形态
     // ---------------------------------------------------------
     {
         // 命令结果走 cloud_compress_uplink() ⇒ 短键 {"c":"result","i":…,"s":…}
@@ -382,8 +421,7 @@ extern "C" int probe_run()
               "regression: has ts/type/value/seq (ingest-acceptable shape)");
 
         // 冻结常量透传（本轮不得改动 command / log 侧契约）
-        check(TELEM_SCHEMA_VERSION_PROVISIONAL == 1u,
-              "provisional: schema_version draft == 1 (H-WP4-FW-05 OPEN)");
+        check(TELEM_SCHEMA_VERSION == 1u, "frozen: schema_version == 1");
         check(TP_MAX_EMIT_PER_TASK == 1u, "budget: <= 1 emit per task iteration");
     }
 

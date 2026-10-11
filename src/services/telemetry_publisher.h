@@ -15,8 +15,12 @@
 // 依据：docs/review/P3-WP4-Firmware-Integration-Design-Review.md §3.2/§3.3
 //       docs/architecture/P3-WP1-Telemetry-Policy-Final.md
 //
-// ⚠️ `type` 词表 / `value` 编码 / `seq` 语义 = **PROVISIONAL**
-//    （`H-WP4-FW-05` / `06` / `07` 均为 `OPEN`）
+// ✅ Envelope v1 = **已冻结**（`H-WP4-FW-05` / `07` = `CLOSED`）
+//    权威：docs/review/P3-WP4-Firmware-Telemetry-Decisions.md
+//      · 信封 5 字段 {ts,type,value,seq,schema_version}（无 device_id / source）
+//      · value 三态编码（number | string | boolean；**禁**数字编码 bool）
+//      · seq = boot lifetime 计数（不持久化）
+// ⚠️ 仍 `OPEN`：`H-WP4-FW-06`（`mqtt.json.telemetry` 字段集与默认值，本轮未使用配置）
 // =====================================================
 
 #ifndef TELEMETRY_PUBLISHER_H
