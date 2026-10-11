@@ -278,7 +278,7 @@ MQTT
 - 云端可在不中断业务的前提下单独停掉日志订阅。
 
 > **完整协议（连接参数 / 报文外壳 / 字段缩写 / 命令翻译 / ACK / 分片 / 错误码 /
-> Log Topic 预留规范）见 `docs/interfaces/cloud_protocol.md`，本节不重复展开。**
+> `log` Topic 上行契约）见 `docs/interfaces/cloud_protocol.md`（§8.2 **已实现**），本节不重复展开。**
 
 # 2.6 Log Manager
 
