@@ -17,10 +17,12 @@
 > 本评审的待裁项**已由人工裁决**，权威记录见 **`docs/review/P3-WP4-Firmware-Telemetry-Decisions.md`**：
 > **`H-WP4-FW-05` = `CLOSED`**（信封裁减为 5 字段，**删 `device_id`/`source`**；`value` 三态编码，**禁数字编码 bool**）·
 > **`H-WP4-FW-07` = `CLOSED`**（`seq` = **boot lifetime 计数，不持久化**）·
-> **`H-WP4-FW-08` = `CLOSED WITH GUARD`**（**允许优化 A/B/E；禁 C[D] ArduinoJson/CBOR**）·
+> **`H-WP4-FW-08` = `CLOSED`**（优化授权 A/B/E；禁 C[D] ArduinoJson/CBOR ⇒ **已实测 A+B+E 用尽后仍超预算，人工批准资源预算 Override**）·
+> **`H-WP4-FW-06` = `CLOSED`**（配置模型冻结：`mqtt.json.telemetry` 仅 `enable` + `interval_ms`，默认 `false` / `300000`）·
 > **首版范围** = KEEP {temperature, humidity, weight} / DEFER {valve, wifi, online, time.valid} ·
 > **`/up` 路由** = topic 保持，分流责任 = EMQX Rule。
 > ⚠️ 本评审 §3.3「`schema_version` 建议保留」**被采纳**，但 §3.4「`seq` 建议持久化」**被否决**（改采方案 A）；**以 `…Decisions.md` 为准**。
+> **⇒ `H-WP4-FW-05` / `06` / `07` / `08` 均已 `CLOSED`。**
 
 ---
 

@@ -15,6 +15,9 @@
 >
 > **🔄 更新记录（2026-10-12）**：
 > · **`H-WP4-FW-08 Resource Budget Override Decision`** —— 资源预算覆盖 ⇒ **`H-WP4-FW-08` = `CLOSED`**，**资源 blocker 解除**（`CF-2` 其余 blocker 保留）。
+> · **`H-WP4-FW-06 Telemetry Configuration Freeze`** —— 配置模型冻结 ⇒ **`H-WP4-FW-06` = `CLOSED`**。
+>
+> **⇒ 本轮更新后：`H-WP4-FW-05` / `06` / `07` / `08` 全部 `CLOSED`。**
 
 ---
 
@@ -27,7 +30,7 @@
 | **`H-WP4-FW-08`** — Flash 预算处置 | **允许优化实施**（方向 A/B/E；禁 C/D）⇒ **A+B+E 用尽后实测仍超** ⇒ **人工批准资源预算覆盖（Override）** | 🟢 **`CLOSED`**（见 `## H-WP4-FW-08 Resource Budget Override Decision`） |
 | **首版 telemetry 范围** | **KEEP** = temperature / humidity / weight；**DEFER** = valve / wifi / online / time.valid | 🟢 **冻结** |
 | **`/up` 路由** | topic **保持** `guo_feeder/<device_id>/up`；**分流责任 = EMQX Rule** | 🟢 **冻结** |
-| **`H-WP4-FW-06`** — `mqtt.json.telemetry` 字段与默认值 | **本轮未裁决** | 🔴 **`OPEN`**（不变） |
+| **`H-WP4-FW-06`** — `mqtt.json.telemetry` 字段与默认值 | **冻结配置模型**（`enable` + `interval_ms`，仅 2 键） | 🟢 **`CLOSED`**（见 `## H-WP4-FW-06 Telemetry Configuration Freeze`） |
 
 ---
 
@@ -205,7 +208,7 @@ RESOURCE BLOCKED
 | ID | 主题 | 本记录前 | **本记录后** |
 |---|---|---|---|
 | `H-WP4-FW-05` | `type` 词表 + `value` 编码 + `schema_version` | `OPEN` | 🟢 **`CLOSED`**（§1 + §2） |
-| `H-WP4-FW-06` | `mqtt.json.telemetry` 字段集与默认值 | `OPEN` | 🔴 **`OPEN`**（本轮未裁决） |
+| `H-WP4-FW-06` | `mqtt.json.telemetry` 字段集与默认值 | `OPEN` | 🟢 **`CLOSED`**（`## H-WP4-FW-06 Telemetry Configuration Freeze`；仅 2 键 + 明确 Non-goals） |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `OPEN` | 🟢 **`CLOSED`**（§3，方案 A） |
 | `H-WP4-FW-08` | Flash 预算处置 | `CLOSED WITH GUARD`（🔴 `RESOURCE BLOCKED`） | 🟢 **`CLOSED`**（A+B+E 后仍超 ⇒ **资源预算 Override 已批准**；见 `## H-WP4-FW-08 Resource Budget Override Decision`） |
 | `H-WP4-FW-09` | `/up` telemetry 载荷形态文档同步 | `OPEN` | 🔴 **`OPEN`**（§1 已给冻结 schema ⇒ 可同步，但**本轮未做**） |
@@ -244,14 +247,16 @@ RESOURCE BLOCKED
 
 | ID | 主题 | 状态 | 阻塞对象 |
 |---|---|---|---|
-| **`H-WP4-FW-06`** | `mqtt.json.telemetry` 字段集与默认值（含 `ts` 无效时的上报策略） | 🔴 `OPEN` | 实施 + `R-FRZ-2` |
 | **`H-WP4-FW-09`** | `/up` telemetry 载荷形态文档同步 | 🔴 `OPEN` | 文档一致性（可立即做） |
 | **`H-WP4C-03`** | EMQX Rule 分流（rule scope / 谓词） | 🔴 `OPEN` | 端到端链路 |
 | **`H-WP4C-04`** | 远端 `0003` migration 授权 | 🔴 `OPEN` | CF 侧 |
 | **`H-WP4C-05`** | EMQX Action 切换授权 | 🔴 `OPEN` | 端到端链路 |
 | **`H-WP4C-06`** | 部署顺序 | 🔴 `OPEN` | 端到端链路 |
 
-> ✅ **已解除（2026-10-12）**：**`H-WP4-FW-08`（余项）** —— 优化后仍超预算，已由 `## H-WP4-FW-08 Resource Budget Override Decision` 裁决（`H-WP4-FW-08 = CLOSED`），**不再列为剩余项**。
+> ✅ **已解除（2026-10-12）**：
+> · **`H-WP4-FW-08`（余项）** —— 优化后仍超预算，已由 `## H-WP4-FW-08 Resource Budget Override Decision` 裁决（`H-WP4-FW-08 = CLOSED`）。
+> · **`H-WP4-FW-06`** —— 配置模型已由 `## H-WP4-FW-06 Telemetry Configuration Freeze` 冻结（`H-WP4-FW-06 = CLOSED`）。
+> ⇒ 两者**不再列为剩余项**。**`R-FRZ-2`（`ts` 无效时的上报策略）不改判为配置项**，仍按**实施细节**跟踪（见 `## H-WP4-FW-06 Telemetry Configuration Freeze` §Status）。
 
 ---
 
@@ -350,7 +355,90 @@ RESOURCE BLOCKED
 
 ---
 
-*本文档于 **2026-10-12** 建立、并于同日更新（追加 `## H-WP4-FW-08 Resource Budget Override Decision`），
+## H-WP4-FW-06 Telemetry Configuration Freeze
+
+> **裁决日期**：2026-10-12 · **性质**：**配置模型冻结** —— `H-WP4-FW-06` 由 `OPEN` → `CLOSED`。
+> **本节仅记录裁决**：❌ 不改 `src/` · ❌ 不改 `data/config/` · ❌ 不改 `ConfigManager` · ❌ 不启用 `GF_TELEMETRY_ENABLED`。
+
+### Frozen fields（冻结字段）
+
+`mqtt.json` 新增对象 **`telemetry`**，**恰含 2 个键**（无其他键，无嵌套）：
+
+| 键 | 类型 | 语义 |
+|---|---|---|
+| **`telemetry.enable`** | `bool` | **telemetry capability 是否运行** |
+| **`telemetry.interval_ms`** | `uint32` | **周期采样间隔（毫秒）** |
+
+**冻结形态（逐字）**：
+
+```json
+{
+  "telemetry": {
+    "enable": false,
+    "interval_ms": 300000
+  }
+}
+```
+
+### Default value（默认值）
+
+| 键 | **冻结默认值** |
+|---|---|
+| `telemetry.enable` | **`false`** |
+| `telemetry.interval_ms` | **`300000`**（= 5 min = `5 × 60 × 1000`） |
+
+> 缺键行为：**等同默认值**（`enable` 缺省 ⇒ `false` ⇒ **不发送**）。⚠️ 注意既知坑：**配置字段只对"读过该字段的固件"生效** ⇒ 配置仅在**已含 telemetry 的固件**上有意义。
+
+### Runtime behavior（运行行为）
+
+| 条件 | 行为 |
+|---|---|
+| **`telemetry.enable = false`**（默认） | **telemetry publisher 不发送** —— 不产生任何上行报文（`telemetry_task()` 直接返回） |
+| **`telemetry.enable = true`** | 按**已冻结 schema** 发送：§1 Envelope v1（5 字段）+ §2 `value` 三态编码 + §5 首版范围（temperature / humidity / weight）；周期采样按 **`interval_ms`** |
+| **修改配置** | **遵循 `ConfigManager` restart policy** —— `config_set` 只改 RAM + 置 dirty + 排 5 min 重启；`config_save` 落盘并**安全重启**（10 s）。漏发 `save` 也会 5 min 后自动 save + 重启 |
+
+**★ 两道门的关系（必须区分，勿混淆）**：
+
+| 门 | 层 | 作用 | 默认 |
+|---|---|---|---|
+| **`GF_TELEMETRY_ENABLED`** | **编译期**（`platformio.ini` / `-D`） | 决定 telemetry **代码是否存在于镜像**（`0` = 空实现、0 Flash/RAM 成本） | **`0`（关闭）** |
+| **`telemetry.enable`** | **运行时配置**（`mqtt.json`） | 在**已编译进镜像**的前提下，决定**是否实际发送** | **`false`（关闭）** |
+
+> ⇒ **有效发送条件 = `GF_TELEMETRY_ENABLED == 1` __且__ `telemetry.enable == true`**（两者皆需成立）。
+
+### Non-goals（v1 **明确不支持**）
+
+| 不支持项 | 说明 |
+|---|---|
+| **cloud dynamic telemetry configuration** | 云端**不得**下发 / 修改 telemetry 配置（无对应下行命令） |
+| **per-channel enable** | **无逐通道开关**（KEEP 集整体启停） |
+| **threshold tuning** | **阈值不入配置** —— 设备侧 policy 保持**固件权威**（`WP1` 明令不冻结阈值） |
+| **type list customization** | `type` **封闭词表不可配置**（追加式演进，永不改名） |
+| value mapping 配置 | **不引入** |
+| dynamic capability 配置 | **不引入** |
+
+### 理由（设计意图）
+
+1. **`type` / `value` schema 已冻结**（§1 / §2）⇒ 配置面**不应**再暴露这些维度（否则出现两套权威）。
+2. **设备侧 policy 保持固件权威**（`WP1`）⇒ 阈值 / 周期语义**不由云端调参**。
+3. **保持简单**：v1 只暴露 **1 个开关 + 1 个周期**，避免配置爆炸，并避免"配置字段只对读过该字段的固件生效"这一既知坑被放大。
+
+### 实施映射（**细节 · 非协议 · 不改本冻结**）
+
+> ⚠️ v1 固件当前使用**编译期常量**：`TP_CLIMATE_PERIOD_MS`（5 min）与 `TP_WEIGHT_PERIOD_MS`（15 min）。
+> `interval_ms`（**单一整数**）与这两条周期的映射方式（统一取代 / 派生 / 分层）由**实施任务确定**，**不改变本冻结的字段集与默认值**。
+
+### Status
+
+| 项 | 变更 |
+|---|---|
+| **`H-WP4-FW-06`** | 🔴 `OPEN` ⇒ 🟢 **`CLOSED`** |
+| **未覆盖项（显式声明）** | **`ts` 无效（未同步）时的上报策略** —— 本冻结**仅覆盖配置模型**；该策略**不是配置字段**，按**实施细节**跟踪（残留 `R-FRZ-2`），**不阻塞本项关闭**。 |
+| `GF_TELEMETRY_ENABLED` | **保持 `0`（默认）** —— 配置冻结**不**启用 telemetry |
+
+---
+
+*本文档于 **2026-10-12** 建立、并于同日更新（追加 `## H-WP4-FW-08 Resource Budget Override Decision` 与 `## H-WP4-FW-06 Telemetry Configuration Freeze`），
 为 **`WP4-FW-TELEMETRY` 的人工冻结裁决记录**；
 **仅留痕，不含任何代码改动、配置变更或实现**。
 建立基线 = 固件仓 HEAD **`baeb177`**；**本次更新基线 = `9dfc7b5`**（A+B+E 实施后）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
