@@ -58,6 +58,20 @@ enum CloudRoute
 // 离线 / 未连接时返回 false（**不排队、不落盘** —— 由 LogManager 负责重试）。
 bool cloud_send_log(const uint8_t* data, size_t length);
 
+// =====================================================
+// P3 · WP4-FW-TELEMETRY：Telemetry 独立上行 transport（纯新增）
+//
+// 语义（`H-WP4C-02`）：
+//   · **不复用 command uplink** —— 本函数**不**经过 `cloud_compress_uplink()`，
+//     也**不**把载荷包成 `{"cmd":"result",…}`；
+//   · 载荷 = **Telemetry Envelope JSON**（由 services/telemetry_publisher 组包），
+//     CloudManager **不解释**其内容（不知道 `type` 语义）；
+//   · Topic = `mqtt_pub_topic`（`guo_feeder/<device_id>/up`）—— **topic 零改动**
+//     （`H-WP4-FW-01`：分流职责在 EMQX Rule 层，设备侧不新增 topic）；
+//   · 不排队、不落盘、不重试（fire-and-forget）—— 与 telemetry 的语义一致。
+// =====================================================
+bool cloud_send_telemetry(const char* json);
+
 // log_ack 回调（P1.5）：收到的下行 ACK 区间
 typedef void (*CloudLogAckCallback)(
     uint32_t boot_seq,
