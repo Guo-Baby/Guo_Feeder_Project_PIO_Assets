@@ -33,6 +33,13 @@
 // P1.5：ACK / Retry / Offline 的纯决策逻辑（独立头文件，可主机编译验证）
 #include "log/log_ack.h"
 
+// P3 · WP4-FW-LOG：Cloud Log Envelope Producer（独立模块，可主机编译验证）
+//   —— /log 上行载荷由「原始 CBOR 批次」改为「JSON envelope（逐条，count=1）」
+#include "log/log_envelope.h"
+
+// envelope 的 device_id 必须与 topic 同源 ⇒ 取设备身份（只读调用）
+#include "services/device_identity.h"
+
 #include "services/time_manager.h"
 
 // =====================================================
@@ -2210,8 +2217,13 @@ static void cloud_queue_push(const LogRecord &rec)
 
 // ---- 组批 ----
 
-// 取队首 ≤LOG_BATCH_MAX_RECORDS 条；**同一批次必须是同一个 boot_seq**
-// （批次头只有 1 个 boot_seq 字段），遇到 boot_seq 变化即停止。
+// 取队首 **LOG_ENV_RECORDS_PER_MSG（= 1）** 条。
+//
+// P3 · WP4-FW-LOG（H-WP4-FW-02 / 04 冻结）：
+//   1 个 MQTT log message = 1 条 log_history record ⇒ 组批上界由
+//   LOG_BATCH_MAX_RECORDS(16) 收敛为 LOG_ENV_RECORDS_PER_MSG(1)。
+//   ★ 仅改**上界**：boot_seq 分组语义、绝对基准 s_cloud_tx_rd_base、
+//     ACK / 重试 / 水位 / 段回收逻辑**一字不动**。
 static uint8_t cloud_collect_batch()
 {
     uint8_t n = 0;
@@ -2227,7 +2239,7 @@ static uint8_t cloud_collect_batch()
         s_cloud_tx_rd_base = s_cloud_q_rd;
     }
 
-    while (n < LOG_BATCH_MAX_RECORDS && n < used)
+    while (n < LOG_ENV_RECORDS_PER_MSG && n < used)
     {
         const uint32_t slot = (s_cloud_q_rd + n) % LOG_CLOUD_QUEUE_SLOTS;
 
@@ -2245,55 +2257,56 @@ static uint8_t cloud_collect_batch()
     return n;
 }
 
-// 组装 CBOR 批次，返回字节数
-static uint32_t cloud_build_cbor(uint8_t n)
+// 组装 Cloud Log Envelope（逐条 · count = 1），返回 JSON 字节数
+//
+// P3 · WP4-FW-LOG：把「原始 CBOR 批次」替换为「JSON envelope」。
+//   · 载荷 = log_envelope_encode_record()（内部仍走冻结的 log_cbor_encode_batch，
+//     count = 1 ⇒ payload_base64 = 188 B CBOR，格式零改动）
+//   · 侧信道计数（drop_* / flags）继续留在 CBOR 批次头（键值不变），随载荷承载
+//   · 事务描述符 s_cloud_tx_* 的推进语义与旧实现**逐字一致**（仅 first == last）
+static uint32_t cloud_build_envelope(uint8_t n)
 {
-    const LogRecord &first = s_cloud_batch[0];
-    const LogRecord &last = s_cloud_batch[n - 1];
+    if (n != LOG_ENV_RECORDS_PER_MSG)
+    {
+        // 冻结：每次仅 1 条；上界由 cloud_collect_batch() 保证
+        return 0u;
+    }
 
-    uint32_t drop_ring = 0;
-    uint32_t drop_overflow = 0;
-    uint32_t drop_unacked = 0;
-    uint32_t degraded = 0;
-    uint32_t flags = 0;
+    const LogRecord &rec = s_cloud_batch[0];
+
+    LogEnvelopeMeta meta;
+    meta.drop_ring = 0;
+    meta.drop_overflow = 0;
+    meta.drop_unacked = 0;
+    meta.self_degraded = 0;
+    meta.flags = 0;
 
     portENTER_CRITICAL(&s_mux);
     // 增量：自上次上报以来新增的丢弃计数（§17 侧信道）
-    drop_ring = s_stats.ring_drop - s_cloud_rep_ring;
-    drop_overflow = s_stats.cloud_q_drop - s_cloud_rep_overflow;
-    drop_unacked = s_stats.cloud_flash_drop - s_cloud_rep_unacked;
-    degraded = s_stats.self_degraded - s_cloud_rep_degraded;
+    meta.drop_ring = s_stats.ring_drop - s_cloud_rep_ring;
+    meta.drop_overflow = s_stats.cloud_q_drop - s_cloud_rep_overflow;
+    meta.drop_unacked = s_stats.cloud_flash_drop - s_cloud_rep_unacked;
+    meta.self_degraded = s_stats.self_degraded - s_cloud_rep_degraded;
 
     if (s_seq_reliable)
     {
-        flags |= LOG_BATCH_FLAG_SEQ_RELIABLE;
+        meta.flags |= LOG_BATCH_FLAG_SEQ_RELIABLE;
     }
 
-    s_cloud_tx_boot = first.boot_seq;
-    s_cloud_tx_from = first.seq;
-    s_cloud_tx_to = last.seq;
-    s_cloud_tx_count = n;
-    s_cloud_flags = (uint8_t)flags;
+    s_cloud_tx_boot = rec.boot_seq;
+    s_cloud_tx_from = rec.seq;
+    s_cloud_tx_to = rec.seq;
+    s_cloud_tx_count = LOG_ENV_RECORDS_PER_MSG;
+    s_cloud_flags = (uint8_t)meta.flags;
     portEXIT_CRITICAL(&s_mux);
 
-    // 批次编码交给 src/log_cbor.h（可在主机上字节级验证）
-    LogCborBatchHeader h;
-    h.fmt = LOG_BATCH_FMT;
-    h.event_dict_ver = LOG_RECORD_VERSION;
-    h.boot_seq = first.boot_seq;
-    h.seq_from = first.seq;
-    h.seq_to = last.seq;
-    h.count = n;
-    h.drop_ring = drop_ring;
-    h.drop_overflow = drop_overflow;
-    h.drop_unacked = drop_unacked;
-    h.self_degraded = degraded;
-    h.flags = flags;
-
-    return log_cbor_encode_batch(
-        h,
-        s_cloud_batch,
-        s_cloud_cbor,
+    // 信封 / Base64 编码交给 src/log/log_envelope.h（可在主机上字节级验证）。
+    // device_id 必须与 /log topic 同源 ⇒ 只读调用 device_id()。
+    return log_envelope_encode_record(
+        rec,
+        meta,
+        device_id(),
+        (char *)s_cloud_cbor,
         LOG_BATCH_MAX_PAYLOAD);
 }
 
@@ -2742,7 +2755,7 @@ static void cloud_replay_step()
 // 编码 + 发送一批；成功才置在途
 static bool cloud_try_send_batch(uint8_t n)
 {
-    const uint32_t len = cloud_build_cbor(n);
+    const uint32_t len = cloud_build_envelope(n);
 
     if (len == 0 || len > LOG_BATCH_MAX_PAYLOAD)
     {

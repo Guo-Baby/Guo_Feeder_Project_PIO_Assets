@@ -19,6 +19,8 @@ Log 契约测试运行器（离线，无需硬件/Arduino 框架/MQTT 对端）
     [2] 负向探针 probe_bad.cpp   → 必须编译失败（证明断言真的被执行）
     [3] CBOR 探针 probe_cbor.cpp → wasm32 真跑：P1.4 批次编码逐字节验证
     [4] ACK  探针 probe_ack.cpp  → wasm32 真跑：P1.5 ACK/退避/放弃/段可删性
+    [5] ENV  探针 probe_envelope.cpp → wasm32 真跑：P3 WP4-FW-LOG
+        Cloud Log Envelope（字段完整性 / payload_base64 可逆 / count=1 CBOR 回归）
 
 只用 [1] 是不够的：若头文件的断言被某种方式跳过，[1] 也会"通过"。
 [2] 的存在使 Contract Test 具备"可证伪性"。
@@ -46,7 +48,11 @@ HOST_CXX_CANDIDATES = [
     r"C:\MinGW\bin\g++.exe",
 ]
 
-CXXFLAGS = ["-std=gnu++11", "-fsyntax-only", "-I" + SRC]
+# 探针以**裸头文件名**包含（"log_events.h" 等）；头文件现位于 src/log/
+# ⇒ 除 -I src 外还要 -I src/log，否则整套契约测试无法编译。
+SRC_LOG = os.path.join(SRC, "log")
+
+CXXFLAGS = ["-std=gnu++11", "-fsyntax-only", "-I" + SRC, "-I" + SRC_LOG]
 
 
 def find_gxx():
@@ -118,14 +124,17 @@ def run(gxx, cpp, expect_ok, label):
     return passed
 
 
-def run_wasm_probe(stem, label, pass_msg):
+def run_wasm_probe(stem, label, pass_msg, extra_sources=None):
     """把 freestanding 探针编到 wasm32 并用 node **真实执行**。
     返回 True/False/None(跳过)。
 
     为什么绕道 wasm32：本机 clang 没有 MSVC/CRT 库（libcmt.lib 等缺失），
     链接不了原生控制台程序；而 wasm32 只要编译器自带内建头，零依赖。
-    log_cbor.h / log_ack.h 都是 freestanding 的，所以这条路可行 ——
-    于是 CBOR 字节格式与 ACK 状态机都能在**没有开发板**时被真实验证。
+    log_cbor.h / log_ack.h / log_envelope.{h,cpp} 都是 freestanding 的，
+    所以这条路可行 —— CBOR 字节格式、ACK 状态机、Log Envelope 都能在
+    **没有开发板**时被真实验证。
+
+    extra_sources: 需要一起编译进 wasm 的额外 freestanding .cpp（相对项目根）。
     """
     cxx = find_host_cxx()
     node = find_node()
@@ -145,8 +154,10 @@ def run_wasm_probe(stem, label, pass_msg):
         os.makedirs(out_dir, exist_ok=True)
 
     wasm = os.path.join(out_dir, "probe_%s.wasm" % stem)
+    extra = [os.path.join(ROOT, p) for p in (extra_sources or [])]
     cmd = [cxx, "--target=wasm32", "-std=gnu++11", "-nostdlib", "-fno-builtin",
-           "-O1", "-I" + SRC, os.path.join(HERE, "probe_%s.cpp" % stem),
+           "-O1", "-I" + SRC, "-I" + SRC_LOG,
+           os.path.join(HERE, "probe_%s.cpp" % stem)] + extra + [
            "-Wl,--no-entry", "-Wl,--export-all", "-o", wasm]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -194,22 +205,27 @@ def main():
 
     ok1 = ok2 = None
     if gxx is not None:
-        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/4 positive")
-        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/4 negative")
+        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/5 positive")
+        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/5 negative")
     else:
-        print("[1/4 positive] SKIP : 未找到 xtensa 交叉编译器")
-        print("[2/4 negative] SKIP : 同上")
+        print("[1/5 positive] SKIP : 未找到 xtensa 交叉编译器")
+        print("[2/5 negative] SKIP : 同上")
 
     ok3 = run_wasm_probe(
-        "cbor", "3/4 cbor    ",
+        "cbor", "3/5 cbor    ",
         "21 B 头逐字节匹配 + records 130 B/条 + 越界/上界保护")
 
     ok4 = run_wasm_probe(
-        "ack", "4/4 ack     ",
+        "ack", "4/5 ack     ",
         "IGNORE/DUPLICATE/ACCEPT/PARTIAL 分类 + 覆盖前缀 + 段可删性 + 退避 + 放弃门槛")
 
+    ok5 = run_wasm_probe(
+        "envelope", "5/5 envelope",
+        "6 字段完整性 + payload_base64 可逆 + count=1 CBOR 与冻结编码器逐字节一致",
+        extra_sources=[os.path.join("src", "log", "log_envelope.cpp")])
+
     print("-" * 56)
-    results = [ok1, ok2, ok3, ok4]
+    results = [ok1, ok2, ok3, ok4, ok5]
     if any(r is False for r in results):
         print("CONTRACT TEST: FAIL")
         return 1
