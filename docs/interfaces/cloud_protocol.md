@@ -109,7 +109,7 @@ V1.0 描述的是一套**从未落地**的设计，与当前代码存在系统�
 **都指向同一个上行 Topic**，区别只在串口日志标签。云端不应依赖这个区分。
 
 > **★ 第二条命名空间**：自 P2 起设备**同时**在 `homie/5/<device_id>/#` 上做 **Homie 5 投影**（与上表并存，非替代）。
-> 完整契约见 **§12**；`log` topic 仍为预留（§8.2）。
+> 完整契约见 **§12**；**第三条上行 `log`（`guo_feeder/<device_id>/log`）已于 P3 落地**（§8.2）。
 
 ### 1.4 连接生命周期
 
@@ -573,7 +573,7 @@ on_command_result(json) ──► cloud_send_up(json)
 
 ---
 
-## 8. Topic 规划与扩展（含 Log Topic 预留）
+## 8. Topic 规划与扩展（`log` Topic **已实现**）
 
 ### 8.1 当前实现
 
@@ -583,60 +583,91 @@ MQTT
 └── up     guo_feeder/up      Device → Cloud   ACK / Result / Registry / 上线通知
 ```
 
-### 8.2 🔒 预留：`log` Topic（规划中，**尚未实现**）
+### 8.2 ✅ `log` Topic（**已实现** · P3 · `WP4-FW-LOG`）
 
-> 本节为**前瞻性规范**，代码当前**未实现**。
-> 完整设计见 `docs/archive/log/LogManager详细设计规划0915.md`。
+> **状态**：**固件侧已实现**（Committish `dae7966` · 2026-10-11）。
+> 实施规格见 `docs/review/P3-WP4-Firmware-Log-Implementation.md`；
+> 设计评审与人工裁决留痕见 `docs/review/P3-WP4-Firmware-Integration-Design-Review.md`（§9）。
+> ⚠️ **软件侧已就绪，端到端 `NOT RUN`**（未部署 / 未联调；EMQX Action 切换尚未授权）。
 
-**目标形态**：
+**Topic（未变）**：
 
 ```
 MQTT
 ├── down   guo_feeder/down    命令 + log_ack
 ├── up     guo_feeder/up      业务上行（语义不变）
-└── log    guo_feeder/log     ★ 仅 LogManager 的结构化日志批次
+└── log    guo_feeder/<device_id>/log   ★ LogManager 结构化日志上行
 ```
 
-**为什么独立成 Topic**：
+> `log_topic` 配置键的默认值为 **`guo_feeder/<device_id>/log`**（模板 `GF_TOPIC_TPL_LOG`）。
 
-| 理由 | 说明 |
+#### 8.2.1 上行载荷契约（**已变更**）
+
+| | 变化前 | **变化后（当前实现）** |
+|---|---|---|
+| `/log` 载荷 | 设备直接发送 **CBOR payload**（批次，≤16 条记录） | 设备发送 **Cloud Log Envelope JSON**（逐条，`count = 1`） |
+
+**Cloud Log Envelope（JSON · 字段顺序即契约）**：
+
+```json
+{
+  "device_id":      "<12 位小写 hex，必须与 topic 中的 <device_id> 一致>",
+  "boot_seq":       <uint32>,
+  "seq":            <uint32>,
+  "ts":             <uint32>,
+  "level":          <uint8>,
+  "payload_base64": "<Base64>"
+}
+```
+
+**`payload_base64` 的确切定义**：
+
+```
+payload_base64 = Base64( 完整 log_cbor_encode_batch(count = 1) 的 CBOR bytes )
+               = Base64( 12 项定序数组 + 1 × bstr(128) )
+```
+
+- **不是**裸 128 B `LogRecord`；**不做**二次 JSON 化 / 字段映射 / 截断 / 自定义信封内部字段。
+- 字节数随记录内容浮动（`seq` / `ts` 的 CBOR 整数长度决定），**上限 = `log_cbor_batch_max_size(1)` = `188 B`**。
+- 逐条语义：**1 个 MQTT log message = 1 条 `log_history` record**（`count = 1`）。
+
+#### 8.2.2 边界与不变量（**冻结**）
+
+| 项 | 约定 |
 |---|---|
-| 不污染既有 `up` 契约 | `cloud_compress_uplink()` 是按字段名映射的缩写器，日志批次结构完全不同 |
-| 消费路径不同 | 业务上行进"命令 / 状态"链路；日志进"时序 / 告警"链路 |
-| 流量特征不同 | 业务上行是偶发突发；日志是**可抑制的批量流**，需要独立限流 |
-| 离线补偿不同 | 只有日志有"补发历史"需求；混入 `up` 会让"补发"变成"重放业务消息" |
-| 可独立关闭 | 云端可在不中断业务的前提下停掉日志订阅 |
+| **Worker remains CBOR-blind** | 云端 ingest **不解析 `payload_base64`**：只做 Base64 承载，按**不透明字符串**原样落库 |
+| **Worker 不解析 `payload_base64`** | 同上；Worker 侧不存在任何 CBOR 解码路径 |
+| **CBOR schema ≠ cloud envelope schema** | **两层，互不隶属**：外层 = 本节的 envelope JSON（cloud 契约）；内层 = 冻结的 LogManager CBOR 批次（`src/log/log_cbor.h`，键值 `0..11`）。**内层不属于 cloud envelope schema**，其消费者是 LogManager 语义层，不是 ingest |
+| **LogRecord binary format unchanged** | 128 B packed 布局**逐字未改**（`src/log/log_events.h`） |
+| **topic unchanged** | `guo_feeder/<device_id>/log`；**不新增 topic / 不新增 ACL**（P2 的 5/5 覆盖已含 `/log`） |
+| **protocol version unchanged** | **不新增 protocol version**；命令协议与 telemetry 协议**均未改动** |
+| **侧信道计数** | `drop_*` / `flags.seq_reliable` 仍置于 **CBOR 批次头**（键值不变），随 `payload_base64` 承载 |
 
-**规划要点**（实现时以设计文档为准）：
+#### 8.2.3 传输参数（实现值）
 
-| 项 | 规划值 |
+| 项 | 值 |
 |---|---|
-| 新增配置 | `data/config/mqtt.json` 增加 `log_topic`（默认 `guo_feeder/log`） |
-| 载荷编码 | **CBOR**（定序数组），批 ≤16 条记录，单条 ≤4096 B，不启用分片 |
-| 记录格式 | 128 B 定长：`version / level / flags / param_count / seq / boot_seq / event_id / uptime_ms / timestamp / blob / params[8] / crc32` |
-| 落盘级别 | 仅 WARN / ERROR / CRITICAL（INFO 不落 Flash） |
-| QoS / store | QoS1，**store=0**（耐久性由设备自身的 Flash 段环保证，避免双重持久化） |
-| ACK | **批次级**，走 **`down`** Topic：`{"c":"log_ack","p":{"b":<boot_seq>,"f":<seq_from>,"t":<seq_to>}}`<br>在 `cloud_process_rx_message()` 里像 `change_msg_limit` 一样**旁路 CommandManager**（§3.4）<br>**`i` 可选**（FIX-4）：`log_ack` 由 `b/f/t` 自描述；且它**不参与命令去重缓存** —— 否则高频 ACK 会把 10 项/30 s 的缓存刷满、挤掉真实命令的 id，并使 QoS1 重投的同一 ACK 被误判为重复命令。重复 ACK 由设备侧 `log_ack_classify()` 判为 `DUPLICATE`（幂等），无需云端配合 |
+| 配置键 | `data/config/mqtt.json` → `log_topic` |
+| QoS / store | QoS1，**store=0**（耐久性由设备自身 Flash 段环保证，避免双重持久化） |
+| 分片 | **不启用**（单条信封远小于 4096 B 上界） |
+| 编码位置 | `src/log/log_envelope.{h,cpp}`（freestanding · 可在主机 wasm32 字节级验证） |
+| 发送入口 | `cloud_send_log()`（**CloudManager 只做 transport，不解释载荷**） |
+| 新增订阅 | **无**。设备对 `log` 只发布不订阅 |
+| ACK | 设计为**批次级**、走 **`down`** Topic（`{"c":"log_ack",…}`，旁路 CommandManager）—— ⚠️ **见 §8.2.4：`log_ack` 尚未实现** |
 | 去重键 | 云端用 `(device_id, boot_seq, seq)` 幂等；重传时 `seq` 不变 |
-| 新增订阅 | **无**。设备对 `log` 只发布不订阅；`log_ack` 复用已有的 `down` 订阅 |
 
-**CloudManager 侧的最小改造（4 处纯新增，现有函数签名 0 改动）**：
+#### 8.2.4 ⚠️ 已知遗留（**登记，未修复**）
 
-```c
-enum CloudRoute { CLOUD_ROUTE_UP = 0, CLOUD_ROUTE_LOG = 1 };
+| 项 | 说明 |
+|---|---|
+| **`log_ack` 未实现** | 属 `计划:WP-5`（受 `G-4`）⇒ 设备侧 Flash 段环**无回收路径**，容量**硬上限 496 条** |
+| **吞吐上限** | `count = 1` + `LOG_TX_MIN_INTERVAL_MS = 500 ms` ⇒ 上行 **≤ 2 msg/s** |
+| **端到端未验证** | 设备未烧录、EMQX Action 未切换、Worker 未联调 ⇒ `NOT RUN` |
 
-bool cloud_send_route(CloudRoute route, const uint8_t* data, size_t len);
-
-typedef void (*CloudLogAckCallback)(uint16_t boot_seq, uint32_t from, uint32_t to);
-void cloud_set_log_ack_callback(CloudLogAckCallback cb);
-```
-
-依赖注入在 `main.cpp` 完成：**LogManager 不 include `cloud_manager.h`，
-CloudManager 也不 include `log_manager.h`**（避免循环依赖）。
-
-**⚠️ 上线前置条件**：需确认 EMQX 的 ACL 允许用户 `GuoFeederDevice` 发布到
-`guo_feeder/log`。若被拒，表现为 `cloud_send_route` 返回 false（串口打
-`[Cloud] publish FAIL guo_feeder/log`），而业务 `up` 完全正常。
+> **历史沿革**：本节原为「`log` Topic 预留（规划中，尚未实现）」，描述的是 CBOR 批次 + 批次级 ACK 的规划形态。
+> 该规划中的 **CBOR 编码器**（`log_cbor.h`）与 **128 B 记录格式**均已按原样实现且**未变更**；
+> 仅**上行承载形态**由「原始 CBOR 批次」改为「逐条 Cloud Log Envelope JSON」。
+> 更早的完整设计见 `docs/archive/log/LogManager详细设计规划0915.md`。
 
 ### 8.3 新增 Topic 的通用规范
 
@@ -938,7 +969,7 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 | Registry | `query_action/trigger/workflow_registry` / `c:"registry"` | 本文档 §4.3 |
 | 协议级 | `change_msg_limit` | 本文档 §3.4 |
 | Workflow 管理 | `workflow.sync_info / list / get / create / set / delete / save` | **`workflow_cloud_interface.md`** |
-| 日志（规划） | `log_ack`（下行） | 本文档 §8.2 |
+| 日志 | `log_ack`（下行）—— ⚠️ **尚未实现**（`计划:WP-5`，受 `G-4`；见 §8.2.4） | 本文档 §8.2 |
 
 ---
 
@@ -947,6 +978,11 @@ python test/serial_batch.py <COM> <日志文件> <用例文件> [每条等待秒
 
 *§11（Control Plane API）于 **2026-10-04** 依 P1-5 实现补入。控制面契约变更须同步更新
 `docs/architecture/P1-5-Final-Review.md`；设备协议部分（§1–§10）不受其影响。*
+
+*§8.2（`log` Topic）于 **2026-10-12** 依 P3 `WP4-FW-LOG` 实现同步：载荷形态由「原始 CBOR 批次」改为
+「逐条 Cloud Log Envelope JSON」；**未新增 protocol version**，命令协议与 telemetry 协议**未改动**。
+依据 `docs/review/P3-WP4-Firmware-Log-Implementation.md`（实施规格）与
+`docs/review/P3-WP4-Firmware-Integration-Design-Review.md`（§9 人工裁决）。*
 
 *§12（Homie 5 投影协议）于 **2026-10-10** 依 P2 收口补入。该节**只摘要**
 `docs/architecture/P2-0-architecture-review-and-design-freeze.md` 的冻结契约（§8/§10–§14/§16/§17.2.1），
