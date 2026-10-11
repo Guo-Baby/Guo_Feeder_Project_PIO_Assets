@@ -9,7 +9,7 @@
 > | **本轮改动的文件** | **仅本文件（新增）** —— **未修改任何既有文件**（`src/` · 文档 · 配置 · 迁移 **零改动**） |
 > | **前置基线** | `DT:WP-4 = FROZEN`（`2097c4e`）· **`WP-4 = IMPLEMENTED`**（`9b25203`，Worker 侧 `POST /api/history/ingest` 已落地 + 真实 D1 48/48）· Phase C 两项固件裁决 **已下达**（`0badf9e` / `4b6f6ed`） |
 > | **上游裁决** | **`H-WP4C-01` = `CLOSED`**（Firmware **LogManager** 增加 **Cloud Log Envelope producer**；**Worker remains CBOR-blind**）· **`H-WP4C-02` = `CLOSED`**（新增 **Firmware Telemetry Publisher**；**不复用 command uplink**） |
-> | **本文档不做的** | ❌ 不改 firm/Worker/EMQX · ❌ 不建 migration · ❌ 不改冻结设计文档 · ❌ 不 **commit** · ❌ 不 **push** · ❌ 不实施 |
+> | **本文档不做的** | ❌ 不改 firm/Worker/EMQX · ❌ 不建 migration · ❌ 不改冻结设计文档 · ❌ 不实施 · ❌ 不 **push**（**本文件已作为 review artifact 提交**：`b813022` = 设计评审基线；**`§9` = 人工裁决留痕轮** ⇒ **实施仍未开始**） |
 > | **术语铁律** | `PASS` / `NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` / `DEFERRED` / `CLOSED` —— **本文档所有判定均为「设计期判定」，不构成实现验证**；**`NOT RUN` / `HUMAN_REQUIRED` / `BLOCKED` 一律 ≠ `PASS`** |
 > | **引用规范** | `DT:WP-n` = 设计轨 · `计划:WP-n` = `P3-History-D1-Plan.md` · `WP1:§n` / `WP2:§n` / `WP3:§n` = 三份冻结文档 · `proto:§n` = `cloud_protocol.md` · `file:line` = 固件源码证据 |
 
@@ -551,17 +551,121 @@
 | **`H-WP4-FW-08`** | **Flash 预算处置** —— 若 `S7` 实测超 `≤14 KiB`：① 重裁 ceiling（**架构级变更**）② 拆 WP 分阶段 ③ 削减功能（如暂不做 telemetry） | **不得由实施方自行决定**（P2-0.2 属冻结架构条款） | `R-WP4-FW-1` |
 | **`H-WP4-FW-09`** | **文档与消费者清单** —— ① `cloud_protocol.md §8.2` 是否更新（**载荷形态已变**）② `/log` 是否有第三方订阅者 ③ `log_ack` 产生方（`计划:WP-5`）何时补齐 ④ INFO 的历史出口是否优化（`F-WP4-FW-9`） | 跨文档/跨组件；`log_ack` 涉及 `G-4` | `F-WP4-FW-1`/`8`/`9` · `R-WP4-FW-3`/`11` |
 
+### 8.1 裁决状态回填（2026-10-11）
+
+| ID | 主题 | 裁决状态 | 留痕 |
+|---|---|---|---|
+| **`H-WP4-FW-01`** | `/up` 混流处置 | **`CLOSED`** | §9.1 |
+| **`H-WP4-FW-02`** | Log Envelope 粒度 | **`CLOSED`** | §9.2 |
+| **`H-WP4-FW-03`** | `payload_base64` 边界 | **`CLOSED`** | §9.3 |
+| **`H-WP4-FW-04`** | 缓冲数量 | **`CLOSED`** | §9.4 |
+| `H-WP4-FW-05` | telemetry `type` 词表 / `value` 编码 | **`OPEN`** | 未裁决 |
+| `H-WP4-FW-06` | `mqtt.json.telemetry` 字段与默认值 | **`OPEN`** | 未裁决 |
+| `H-WP4-FW-07` | telemetry `seq` 语义 | **`OPEN`** | 未裁决 |
+| **`H-WP4-FW-08`** | Flash 预算处置 | **`CLOSED WITH GUARD`** | §9.5 |
+| `H-WP4-FW-09` | 文档与消费者清单 | **`OPEN`** | 未裁决 |
+
+> **★ 状态口径**：`CLOSED` = **治理 / 设计决策已定**，**≠ 阻塞解除 ≠ 实施完成**；`CLOSED WITH GUARD` = **允许实施，但附带强制资源门禁**（§9.5）。**`05` / `06` / `07` / `09` 仍为 `OPEN`（`HUMAN_REQUIRED`）**。
+
 ---
 
-> **本轮 = `DESIGN REVIEW ONLY`（未实施 · 未提交）。**
-> **No firmware change. No Worker change. No EMQX change. No migration. No DDL. No deploy. No commit. No push.**
-> **`WP4-FW-LOG` = `CONDITIONAL`（3 项硬前置）· `WP4-FW-TELEMETRY` = `CONDITIONAL`（4 项硬前置）。**
+## §9 Human Decisions（人工裁决留痕 · 2026-10-11）
+
+> **性质**：**人工裁决留痕** —— 记录 `WP4-FW` 设计评审（`b813022`）的裁决结果，形成**实施前冻结输入**。
+> **⚠️ 本轮仅记录裁决**：**未改任何 `src/` · 未改 Worker · 未改 EMQX · 未建 migration**；**未改变 `Phase C` 状态、未改变任何 Gate、未进入固件实现**。
+
+### 9.1 `H-WP4-FW-01` —— `/up` 混流处置 = **`CLOSED`**
+
+**Decision**：**采用方案 A：双 Action 分流。**
+
+**冻结规则**：
+- **MQTT topic / domain separation 优先于 payload inspection。**
+- **Worker 不负责 command / telemetry 判断。**
+- **Worker 不解析 payload 进行分流。**
+- **EMQX Rule 层负责根据 topic / message metadata 分流。**
+- **不新增 Worker policy。**
+- **不改变 `DT:WP-4` ingestion contract。**
+
+**状态**：`H-WP4-FW-01 = CLOSED`
+
+> **承接提示**：本裁决冻结「**分流职责在 EMQX Rule 层、Worker 不解析 payload**」；telemetry 与命令结果的**分离所依据的 topic / domain 边界**由 Phase C 的 EMQX Rule 设计承接（`H-WP4C-03` = `OPEN`）。关联 `F-WP4-FW-2` · `R-WP4-FW-2`。
+
+### 9.2 `H-WP4-FW-02` —— Log Envelope 粒度 = **`CLOSED`**
+
+**Decision**：**采用 `L-A`：逐条 Cloud Log Envelope。**
+
+**冻结规则**：
+- **一个 MQTT log message 对应一个 `log_history` record。**
+- **`payload_base64` = 单条 `LogRecord` CBOR bytes 的 Base64。**
+- **不做 batch。**
+- **不新增字段。**
+- **不修改 Worker。**
+
+**状态**：`H-WP4-FW-02 = CLOSED`
+
+### 9.3 `H-WP4-FW-03` —— `payload_base64` 边界 = **`CLOSED`**
+
+**Decision**：**冻结**：`payload_base64` = **完整 CBOR `LogRecord` bytes**。
+
+**禁止**：
+- **二次 JSON 化**
+- **字段映射**
+- **截断**
+- **自定义 envelope 内部字段**
+
+**状态**：`H-WP4-FW-03 = CLOSED`
+
+### 9.4 `H-WP4-FW-04` —— 缓冲数量 = **`CLOSED`**
+
+**Decision**：**首版采用 `count = 1`。**
+
+**原因**：
+- **无 `log_ack`**
+- **Flash 回收机制未完成**
+- **首版优先闭环可靠性**
+
+**状态**：`H-WP4-FW-04 = CLOSED`
+
+### 9.5 `H-WP4-FW-08` —— Flash budget = **`CLOSED WITH GUARD`**
+
+**Decision**：**允许进入实施，但增加资源门禁。**
+
+**冻结规则**：
+- **实施过程中必须执行 firmware size report。**
+- **若 Flash 增量超过预算，必须停止并请求人工裁决。**
+- **禁止自行删除功能。**
+- **禁止修改冻结协议。**
+- **禁止降低日志可靠性。**
+
+**状态**：`H-WP4-FW-08 = CLOSED WITH GUARD`
+
+> **门禁落点**：对接 §7.1 的 **`S7`（资源对账）** —— `≤ 14,336 B` 判 `PASS`；**超限即「停下报告」**，**不得自行改 ceiling / 删功能 / 降可靠性**。
+
+### 9.6 裁决后的残留（`HUMAN_REQUIRED`）
+
+| 项 | 说明 |
+|---|---|
+| **`H-WP4-FW-05`** | telemetry `type` 封闭词表 + `value` 编码 + `schema_version` 初值（`OPEN`） |
+| **`H-WP4-FW-06`** | `mqtt.json.telemetry` 字段集与默认值（`OPEN`） |
+| **`H-WP4-FW-07`** | telemetry `seq` 语义（跨 boot 持久化？`ts` 无效时上报 `0` 或不发）（`OPEN`） |
+| **`H-WP4-FW-09`** | 文档同步 / 第三方订阅者 / `log_ack` 补齐 / INFO 出口（`OPEN`） |
+| **`log_ack`** | 属 `计划:WP-5`，受 `G-4`（仍缺） |
+| **`H-WP4C-03/04/05/06`** | EMQX Rule 范围 / 远端 `0003` 授权 / Action 切换授权 / 部署顺序（`OPEN`） |
+
+> **Gate 未变**：`G-1 HUMAN_REQUIRED` · `G-2 PASS` · `G-3 PASS` · `G-4 BLOCKED` · `G-5 PASS`。
+
+---
+
+> **`§9` = 人工裁决留痕（2026-10-11）**：**`H-WP4-FW-01` / `02` / `03` / `04` = `CLOSED`** · **`H-WP4-FW-08` = `CLOSED WITH GUARD`** ⇒ **实施前冻结输入已形成**。
+> **本轮 = `DESIGN REVIEW ONLY`（未实施）。** **No firmware change. No Worker change. No EMQX change. No migration. No DDL. No deploy. No push.**
+> **`WP4-FW-LOG` = `CONDITIONAL`**（裁决后 **`01` / `08` 已 `CLOSED`**；**残留硬前置 = `log_ack`（`计划:WP-5` · 受 `G-4`）**）**· `WP4-FW-TELEMETRY` = `CONDITIONAL`**（裁决后 **`/up` 混流已 `CLOSED`**；**残留 = `H-WP4-FW-05` / `06` / `07`**）。
 > **`CF-1` / `CF-2` = `BLOCKED` · `C-1 V-2` / `V-3` = `NOT RUN / BLOCKED` · `Phase C` = `PLANNED / BLOCKED`（均未变）。**
 > **No Gate changed. `P3` remains `NOT STARTED / PLANNED`.**
 
 ---
 
 *本文档于 **2026-10-11** 建立，为 **`DT:WP-4` 的固件侧实施前设计评审**（`WP4-FW-LOG` + `WP4-FW-TELEMETRY`）；
-只做**分析、影响评估、风险登记与计划**，**不含任何代码改动、配置变更或提交**。
-基线 = 固件仓 HEAD **`4b6f6ed`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
+`§1–§8` 只做**分析、影响评估、风险登记与计划**，**不含任何代码 / 配置改动**（评审基线 commit = `b813022`）。
+`§9` = **人工裁决留痕**（在 `b813022` 之后追加），形成**实施前冻结输入**，仍**不含任何实现**。
+基线 = 固件仓 HEAD **`b813022`**（`src/` 与 `4b6f6ed` 一致，工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
 所有 `file:line` 引用均取自基线，可逐条回查。*
