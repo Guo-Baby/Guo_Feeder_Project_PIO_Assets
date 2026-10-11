@@ -18,6 +18,12 @@
 > **🔄 更新记录（2026-10-12 · 第二阶段）**：新增 **§6A `Human Decisions` —— 实施阶段授权** ⇒
 > **`H-WP4C-04` / `05` / `06` / `07` / `08` 全部 `CLOSED`**（授权已下达，**≠ 执行完成**）；
 > `CF-2` **仍 `BLOCKED`**（判据改为 **`V-1…V-7` 通过**）。执行约束见 `docs/review/P3-WP4C-Implementation-Discipline.md`（`BINDING`）。
+>
+> **🔄 更新记录（2026-10-12 · 第三阶段 —— 实施前裁决补充）**：**`H-WP4C-09` 已拆分**为
+> **`H-WP4C-09-A`（EMQX Console Operator · 🔴 `OPEN`）** + **`H-WP4C-09-B`（EMQX Rule Implementation · 🔴 `BLOCKED`）**；
+> 并**登记 `H-WP4C-10-A`**（Action Target 形态裁决 · 🔴 `OPEN`，明细见 `docs/review/P3-WP4C-Action-Target-Decision.md`）。
+> **`H-WP4C-04…08` 保持 `CLOSED`（不变）** · **`CF-2` 仍 `BLOCKED`** · 新增 **§6B**（拆分与登记）+ **§7.3**（实施门禁 Checklist）。
+> **本阶段零生产变更**（仅 `docs/`）；EMQX 控制台边界规则见纪律 **§6A `EMQX Console Boundary Rule`**。
 
 ---
 
@@ -32,7 +38,10 @@
 | **D-5** | **验证计划** | 🔒 **冻结 `V-1…V-7`** |
 | **D-6** | **新增风险登记** | 🔒 **新增 `R-WP4C-7` / `R-WP4C-8` / `R-WP4C-9`** |
 | — | **`H-WP4C-03` 状态** | 🔒 **`CLOSED`** |
-| — | **`CF-2` 状态** | 🔴 **仍 `BLOCKED`**（不变；受 `H-WP4C-04/05/06` 阻塞） |
+| — | **`H-WP4C-04…08` 状态** | 🔒 **`CLOSED`**（§6A —— 实施阶段授权，**≠ 执行完成**） |
+| — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= 🔴 `OPEN`** · **`-09-B`（Rule Implementation）= 🔴 `BLOCKED`**（§6B） |
+| — | **`H-WP4C-10` / `H-WP4C-10-A` 状态** | 🔴 **`OPEN`**（Action 目标形态待裁决 · 见 `P3-WP4C-Action-Target-Decision.md`） |
+| — | **`CF-2` 状态** | 🔴 **仍 `BLOCKED`**（不变；判据 = `V-1…V-7` 通过） |
 
 ---
 
@@ -285,6 +294,51 @@
 
 ---
 
+## §6B `Human Decisions` —— **实施前裁决补充**（**2026-10-12 · 第三阶段**）
+
+> **性质**：**人工裁决留痕（权威）** —— 依 `WP4C` 实施准备阶段要求，**拆分 `H-WP4C-09`** 并**登记 `H-WP4C-10` 的子裁决 `H-WP4C-10-A`**。
+> **状态纪律**：**`H-WP4C-09` 不关闭**（**只拆分**）；`H-WP4C-04…08` **保持 `CLOSED`（不变）**；**不新增任何授权**（本阶段**零生产变更**）。
+> **执行约束**：`docs/review/P3-WP4C-Implementation-Discipline.md` **§6A `EMQX Console Boundary Rule`**（**同期新增**）。
+> **不做**：❌ 不创建 / 不修改 EMQX Rule · Action · Connector · ❌ 不部署代码 · ❌ 不改冻结设计。
+
+### `H-WP4C-09-A` —— **EMQX Console Operator**（拆自 `H-WP4C-09` · **人工作业**）
+
+| 项 | 内容 |
+|---|---|
+| **主题** | **EMQX Console Operator** —— 取得 **`V-0` 基线**的**唯一**合法路径 |
+| **需要人工完成** | ① **登录 EMQX Console** ② **导出 Rule SQL** ③ **导出 Action 配置** ④ **导出 Connector 配置** ⑤ **保存 `V-0` 基线** ⑥ **脱敏后回写** `EMQX_Assets` |
+| **脱敏要求** | **`X-Webhook-Key` / secret 的值禁入仓** —— 仅记录「已配置 / 未配置」与轮换方式（`H-WP4C-07`） |
+| **回写位置** | `EMQX_Assets/config/data-integration/README.md`（沿用该目录既有做法 · `R-WP4C-6` / `R-WP4C-13`） |
+| **判据** | 三份快照（Rule SQL / Action / Connector）**全文归档**且 **secret 已脱敏** |
+| **状态** | 🔴 **`OPEN`** |
+| **完成后解锁** | **`H-WP4C-09-B`**（由 `BLOCKED` → 可执行，**仍须** `H-WP4C-10-A` 已裁决） |
+
+### `H-WP4C-09-B` —— **EMQX Rule Implementation**（拆自 `H-WP4C-09` · **受依赖阻塞**）
+
+| 项 | 内容 |
+|---|---|
+| **主题** | **EMQX Rule Implementation** —— 落地纪律 §3 的 ④⑤（= 纪律 §6A.3 的 `V-2` / `V-4`） |
+| **依赖** | 🔴 **`H-WP4C-09-A = CLOSED`**（**无 `V-0` 基线不得变更**）· **且 `H-WP4C-10-A` 已裁决**（Action 目标形态） |
+| **允许动作** | **新增** `guo_feeder_history_ingest` · **修改** 既有 `guo_feeder/#` Rule 的 **WHERE** |
+| **强制** | **两步同批**（新增 + 收窄）· **禁**只新增 · **禁**双投 · **禁**第 3 条规则 / 双 Action |
+| **状态** | 🔴 **`BLOCKED`**（依赖 `H-WP4C-09-A` + `H-WP4C-10-A`） |
+
+### `H-WP4C-10` / `H-WP4C-10-A` —— **Action 目标形态裁决**（**人工决策**）
+
+| 项 | 内容 |
+|---|---|
+| **`H-WP4C-10`** | **主题**：Action 目标形态（`Pages Proxy` vs `Worker Direct`）· **状态**：🔴 **`OPEN`**（**父项保持开启**，由 `-A` 承载裁决） |
+| **`H-WP4C-10-A`** | **主题**：**等待人工决定** `Action Target = Pages Proxy` **或** `Action Target = Worker Direct` · **状态**：🔴 **`OPEN`** |
+| **代理立场** | **不选择 · 不推荐 · 不预设默认值**（纪律 §6A.2） |
+| **明细文档** | **`docs/review/P3-WP4C-Action-Target-Decision.md`**（方案 A / B 形态 · 优点 / 风险 · 证据对照 · 必答清单） |
+| **解锁对象** | 纪律 §6A.3 的 **`V-1`（确认目标 Action 可达）** ⇒ 进而解锁 `H-WP4C-09-B` |
+
+> **★ 为何必须拆分 `H-WP4C-09`**：原项把**两种性质截然不同**的作业压在一项内 ——
+> **`-A` = 只读导出（人工作业，可立即开工）**；**`-B` = 生产变更（受 `V-0` 与 Action 形态双重前置阻塞）**。
+> 拆分后**责任与依赖各自闭环**：`-A` 完成**不构成** `-B` 的开工许可（`-B` 仍须 `H-WP4C-10-A`）。
+
+---
+
 ## §7 状态
 
 ### 7.1 状态变更表
@@ -297,6 +351,11 @@
 | `H-WP4C-06` | 部署顺序 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— `0003` → Worker → EMQX → Validation，**禁调整**） | §6A |
 | `H-WP4C-07` | EMQX Console 执行人 + 配置导出责任 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 实施前须导出 Rule SQL / Action / Connector；**secret 禁入仓**） | §6A |
 | `H-WP4C-08` | Worker 部署授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许部署 `9b25203`） | §6A |
+| `H-WP4C-09` | EMQX 控制台人工执行（纪律 §3 的 ③④⑤） | 🔴 `OPEN` | 🟠 **已拆分（不关闭）** ⇒ 由 `-09-A` / `-09-B` 承载 | §6B |
+| `H-WP4C-09-A` | EMQX Console Operator（导出并回写 `V-0` 基线） | —（本轮新增） | 🔴 **`OPEN`**（人工作业，可立即开工） | §6B |
+| `H-WP4C-09-B` | EMQX Rule Implementation（新增 + 收窄，**同批**） | —（本轮新增） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 `-10-A` 已裁决） | §6B |
+| `H-WP4C-10` | Action 目标形态裁决（**父项**） | 🔴 `OPEN` | 🔴 **`OPEN`**（**保持开启**，由 `-A` 承载裁决） | §6B |
+| `H-WP4C-10-A` | `Action Target = Pages Proxy` / `Worker Direct` | —（本轮新增） | 🔴 **`OPEN`**（**人工待决 · 代理不选择**） | §6B |
 | `H-WP4-FW-05` | 信封 v1 schema | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-06` | `mqtt.json.telemetry` 配置 | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `CLOSED` | `CLOSED`（不变） | — |
@@ -308,13 +367,33 @@
 | 项 | 值 |
 |---|---|
 | **`CF-2`** | 🔴 **`BLOCKED`（仍 `BLOCKED`）** —— **资源 blocker 已移除** · **`H-WP4C-03` 已关闭** · **`H-WP4C-04…08` 授权已下达（§6A）** |
-| **仍受阻于** | **实施尚未完成** —— `0003` 未落表 · Worker `9b25203` 未部署 · EMQX 规则未建 · **`V-1…V-7` 全 `NOT RUN`** |
+| **仍受阻于** | **实施未闭环** —— ✅ `0003` **已落表** · ✅ Worker **已部署（`99e6d937`）** · ❌ EMQX 规则**未建**（基线未导出 `H-WP4C-09-A` · Action 形态未裁决 `H-WP4C-10-A`）· **`V-1…V-7` 全 `BLOCKED`** |
 | **`CF-1`** | 🟢 `RESOLVED`（保持） |
 | **其他 Gate** | `DT:WP-4 = FROZEN` · `Phase C = PLANNED / BLOCKED` · `G-4 = BLOCKED`（**均不变**） |
 
 > **★ 重要**：`H-WP4C-03 = CLOSED` **只表示设计已冻结**；`H-WP4C-04…08 = CLOSED` **只表示授权已下达**。
 > **两者均不等于** `CF-2` 解除、**不等于**实施完成、**不等于**管线打通。
 > `CF-2` 的解除**判据 = `V-1…V-7` 通过**（端到端 telemetry / log 落库验证）。
+
+### 7.3 实施门禁 Checklist（`WP4C-IMPL` 命名空间 · 当前状态 · `2026-10-12`）
+
+> **★ 命名空间声明（防混淆）**：本表 `C-1…C-7` 属 **`WP4C-IMPL` 命名空间** ——
+> **不同于** `P3-WP4C-Pre-Implementation-Checklist.md` §0「边界约束 `C-1…C-8`」与 §1.4「配置门 `C-1…C-7`」，
+> 也**不同于** `P3-WP4-PhaseC-Integration-Plan.md` 的「`C-1` / `C-2` / `C-3`」子计划。
+> **引用时须写全**（如 `WP4C-IMPL:C-4`）。**编号不代表执行顺序** —— 执行顺序以纪律 **§3** / **§6A.3** 为准。
+
+| ID | 门禁项 | 判据 | 状态 |
+|---|---|---|---|
+| `C-1` | **授权门** | `H-WP4C-04…08` 全部 `CLOSED`（§6A） | ✅ **`PASS`** |
+| `C-2` | **Worker 部署** | 生产版本 = `99e6d937-4408-47b7-8170-4bfa71c9dfec`；`POST /api/history/ingest` 无 key ⇒ **`401`** | ✅ **`PASS`** |
+| `C-3` | **D1 migration** | 远端 `0003` **applied**；`telemetry_history` / `log_history` 存在；**恰好 5 索引**；列对齐 `DT:WP-2` | ✅ **`PASS`** |
+| `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | 🔴 **`BLOCKED`** —— API `403` ⇒ **须人工**（`H-WP4C-09-A`） |
+| `C-5` | **Rule deployment（`V-2` + `V-4`）** | 新规则**已启用** **且** 旧规则**已收窄**（**同批**） | 🔴 **`BLOCKED`** —— 依赖 `C-4` + `H-WP4C-10-A`（`H-WP4C-09-B`） |
+| `C-6` | **验证 `V-1…V-7`** | 冻结验证集**全项 `PASS`** | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
+| `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
+
+> **汇总**：`PASS = 3`（`C-1` / `C-2` / `C-3`）· `BLOCKED = 4`（`C-4` / `C-5` / `C-6` / `C-7`）· `FAIL = 0`。
+> **下一步唯一前置** = **`C-4`（`H-WP4C-09-A`）** —— **`C-5` 另须 `H-WP4C-10-A` 已裁决**。
 
 ---
 
@@ -327,12 +406,19 @@
 | **`H-WP4C-06`** | 部署顺序 | 🔒 **`CLOSED`**（§6A） | 端到端链路 |
 | **`H-WP4C-07`** | EMQX Console 执行人 + 配置导出责任（因 API `403` / 无 CLI，导出须人工） | 🔒 **`CLOSED`**（§6A） | 人工作业 |
 | **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
+| **`H-WP4C-09`** | EMQX 控制台人工执行（③④⑤） —— **已拆分**（**不关闭**） | 🟠 **已拆分** ⇒ `-09-A` / `-09-B`（§6B） | 拆分项 |
+| **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | 🔴 **`OPEN`**（§6B · **人工作业 · 唯一可立即开工项**） | **`WP4C-IMPL:C-4`** · 解锁 `-09-B` |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🔴 **`BLOCKED`**（§6B · 依赖 `-09-A` 且 `-10-A` 已裁决） | **`WP4C-IMPL:C-5`** |
+| **`H-WP4C-10`** | Action 目标形态裁决（**父项 · 保持开启**） | 🔴 **`OPEN`**（§6B） | `-10-A` |
+| **`H-WP4C-10-A`** | **Action Target = `Pages Proxy` 或 `Worker Direct`**（人工决策 · **代理不选择**） | 🔴 **`OPEN`**（§6B · 明细 `P3-WP4C-Action-Target-Decision.md`） | `WP4C-IMPL:C-5` · 准入 `V-1` |
 | **`R-WP4C-8` / `9`** | D1 写入吞吐 / 成本量化 | 🟠 待**实施前**评估 | 放量前置 |
 | `R-FRZ-2` | `seq` 不持久化 × `ts=0` 的跨 boot 幂等碰撞面 | 🟠 实施细节 | `H-WP4-FW-06` / 实施细化 |
 
 > ✅ **已关闭**：**`H-WP4C-03`**（设计冻结）· **`H-WP4C-04…08`**（实施阶段授权，§6A）—— 均不再列为剩余 `HUMAN_REQUIRED`。
 > ⚠️ **`CLOSED` ≠ 执行完成**：`H-WP4C-04…08` 仅代表**授权已下达**；**执行**仍须按 `P3-WP4C-Implementation-Discipline.md` 的固定顺序逐步推进，**每步产出报告**。
-> 实施前准备清单与基线采集流程见 **`docs/review/P3-WP4C-Pre-Implementation-Checklist.md`**。
+> 🟠 **`H-WP4C-09` 已拆分（不关闭）**：**`-A`（只读导出 · `OPEN`）** 与 **`-B`（生产变更 · `BLOCKED`）** 责任分离，**`-A` 完成 ≠ `-B` 可开工**（§6B）。
+> 🔴 **`H-WP4C-10-A` 保持 `OPEN`**：**Action 目标形态未裁决** ⇒ 纪律 §6A.4 **`STOP` 条件 1 成立**，**EMQX 侧一切变更持续 `STOP`**。
+> 实施前准备清单与基线采集流程见 **`docs/review/P3-WP4C-Pre-Implementation-Checklist.md`**；控制台边界规则见纪律 **§6A**。
 
 ---
 
@@ -350,10 +436,25 @@
 | 启用 `GF_TELEMETRY_ENABLED` | ✅ **未启用**（保持 `0`） |
 | `push` / 部署 | ✅ **未 push · 未部署** |
 | 新增 / 修改文档 | ✅ **仅 `docs/`**（见 §10） |
+| **本轮（第三阶段）生产侧操作** | ✅ **零操作** —— 未向 EMQX 发起任何请求 · 未调用 `wrangler` · 未部署 · 未执行 migration |
 
 ---
 
 ## §10 修改文件
+
+### 10.1 本轮（**第三阶段 · 实施前裁决补充**）
+
+| 文件 | 性质 |
+|---|---|
+| `docs/review/P3-WP4C-Implementation-Discipline.md` | **增补** —— **§6A `EMQX Console Boundary Rule`**（控制台边界定性 · 代理禁止清单 · 准入序列 `V-0…V-5` · `STOP` 条款）+ §7 关联文档 + 页脚 |
+| `docs/review/P3-WP4C-Action-Target-Decision.md` | **新增** —— `H-WP4C-10` / `H-WP4C-10-A` **待裁决记录**（方案 A / B · 优点 / 风险 · 证据对照 · 必答清单 · **不选择**） |
+| `docs/review/P3-WP4C-Decisions.md` | **更新** —— 本文件（banner · §1 总览 · **§6B 裁决补充** · §7.1 状态 · §7.2 `CF-2` · **§7.3 实施门禁 Checklist** · §8 剩余 `HUMAN_REQUIRED`） |
+| `docs/review/P3-WP4C-Implementation-Record.md` | **回填** —— §5 `H-WP4C-09` / `10` 登记同步为**拆分后形态**（跨文档一致性必需） |
+| `docs/README.md` | **索引** —— 新增 `Action-Target-Decision` 条目；更新纪律 / 裁决条目的状态词 |
+
+> **★ 边界**：以上**全部为 `docs/`** —— 零 EMQX 写操作 · 零 Worker 部署 · 零 migration · 零 firmware 修改 · 零 `push`。
+
+### 10.2 前序阶段（留存）
 
 | 文件 | 性质 |
 |---|---|
@@ -368,3 +469,5 @@
 **仅留痕，不含任何配置改动、规则创建或实施**。
 基线 = 固件仓 HEAD **`cdcc766`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
 所有 `file:line` 与平台事实取自基线，可逐条回查。*
+*`2026-10-12` **第三阶段增补**：§6B（`H-WP4C-09` 拆分 + `H-WP4C-10-A` 登记）· §7.3（实施门禁 Checklist，`PASS 3 / BLOCKED 4`）；
+**仍为零生产变更**（仅 `docs/`），**未关闭任何 `HUMAN_REQUIRED`**。*

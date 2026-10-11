@@ -12,6 +12,10 @@
 > | **步骤进度** | **① D1 `0003` migration = ✅ 完成并验证** · **② Worker deployment = ✅ 完成并验证** · **③ EMQX baseline export = 🛑 `STOPPED`（不可执行）** · ④⑤⑥⑦ = ⛔ 未开始 |
 > | **操作者** | **代理**（经 `wrangler` OAuth 会话 `wyl94@foxmail.com`），**依人工授权执行** |
 > | **时区** | 时间以 **UTC** 记录（本地 = UTC+8） |
+>
+> **🔄 回填（`2026-10-12` · 实施前裁决补充）**：`H-WP4C-09` **已拆分**（`-09-A` / `-09-B`）· `H-WP4C-10` 的裁决由 **`-10-A`** 承载（见 §5）。
+> 权威登记 = `docs/review/P3-WP4C-Decisions.md` **§6B** · 哨兵规则 = 纪律 **§6A `EMQX Console Boundary Rule`** · 待裁明细 = `docs/review/P3-WP4C-Action-Target-Decision.md`。
+> **本文档不新增任何生产变更**（回填仅改 `docs/`）。
 
 ---
 
@@ -135,13 +139,19 @@
 ## §5 新增 `HUMAN_REQUIRED`
 
 > 均为**本轮新登记**（`H-WP4C-04…08` 已于 §6A 授权关闭）。
+> **🔄 回填（`2026-10-12` · 实施前裁决补充）**：`H-WP4C-09` **已拆分**为 `-09-A` / `-09-B`；`H-WP4C-10` 的裁决由 **`-10-A`** 承载。
+> 权威登记见 `docs/review/P3-WP4C-Decisions.md` **§6B** · 明细见 `docs/review/P3-WP4C-Action-Target-Decision.md`。
 
 | ID | 主题 | 类型 | 内容 | 状态 |
 |---|---|---|---|---|
-| **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🔴 **`OPEN`** |
-| **`H-WP4C-10`** | **Action 目标形态裁决（Pages 中转 vs `*.workers.dev`）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`）⇒ 须**裁定 Action URL 形态**并按需建立中转 | 🔴 **`OPEN`** |
+| **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🟠 **已拆分（不关闭）** ⇒ `-09-A` / `-09-B` |
+| **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | 🔴 **`OPEN`**（**唯一可立即开工项**） |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **新增** `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE（**禁双投**） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 `-10-A` 已裁决） |
+| **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔴 **`OPEN`**（由 `-10-A` 承载裁决） |
+| **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | **等待人工决定** Action 目标形态并按需建立中转（**代理不选择 · 不推荐 · 不预设**） | 🔴 **`OPEN`** |
 
-> **★ `H-WP4C-09` 是继续实施的唯一前置**；`H-WP4C-10` 决定 ④ 的 Action URL 写法（不解决则 ④ 可能投递失败）。
+> **★ `H-WP4C-09-A` 是继续实施的唯一前置**（取得 `V-0` 基线）；**`H-WP4C-10-A` 决定 ④ 的 Action URL 写法**（不解决则 ④ 可能投递失败）。
+> **两者皆未闭合前，纪律 §6A.4 的 `STOP` 持续生效**（`STOP` 条件 1：Action endpoint 未确认；条件 2：Rule baseline 未保存）。
 
 ---
 
@@ -235,7 +245,8 @@
 | `docs/review/P3-WP4C-Decisions.md` **§6A** | 授权来源 |
 | `docs/review/P3-WP4C-EMQX-Rule-Design.md` | 🔒 冻结设计（④⑤ 的依据） |
 | `docs/review/P3-WP4C-Pre-Implementation-Checklist.md` | 检查清单 / 基线采集 `B-1…B-5` |
-| `EMQX_Assets/config/data-integration/README.md` | 控制台配置**回写目标**（`H-WP4C-09` 内） |
+| `docs/review/P3-WP4C-Action-Target-Decision.md` | **`H-WP4C-10-A` 待裁决记录**（Action 目标形态 · 方案 A / B） |
+| `EMQX_Assets/config/data-integration/README.md` | 控制台配置**回写目标**（`H-WP4C-09-A` 内） |
 
 ---
 
