@@ -1,15 +1,20 @@
-# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（Design Proposal）
+# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN）
 
-> ## 🟠 `DESIGN ONLY` · **未实施 · 未改动任何 `src/` · 未创建任何 EMQX 规则**
+> ## 🔒 `FROZEN` · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **设计提案（scope proposal）** —— 供人工 freeze；**不含实施** |
-> | **基线** | 固件仓 HEAD = **`e551d1e`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`** |
+> | **本文档性质** | **冻结设计（唯一实施依据）** —— 后续 EMQX 实施（控制台）**只能**依此执行 |
+> | **冻结依据** | 本仓 `docs/review/P3-WP4C-Decisions.md`（`H-WP4C-03` 人工裁决） |
+> | **基线** | 固件仓 HEAD = **`cdcc766`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`** |
 > | **上游依据** | `H-WP4-FW-01`（**已 `CLOSED`**：方案 A 双 Action 分流）· `DT:WP-4` §9.1（端点 = `POST /api/history/ingest`）· `cloud_protocol.md` §4.5（telemetry uplink 已冻结） |
 > | **本文档不做的** | ❌ 不创建 / 修改 EMQX 规则或连接器 · ❌ 不改 Worker · ❌ 不改 migration · ❌ 不改 firmware · ❌ 不改 `/up` · ❌ 不部署 |
 >
-> **`H-WP4C-03` 状态 = `OPEN`（不变）** —— 本文档只提交 **scope proposal**，**等待人工 freeze**。
+> **`H-WP4C-03` 状态 = `CLOSED`（本轮冻结）** —— 设计已冻结，**实施本身仍属后续工作包**。
+> **`CF-2` 保持 `BLOCKED`**（本文档**不解除**任何 Gate / CLOSED 事实；见 §9）。
+>
+> > **英文冻结声明**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
+> > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.*
 
 ---
 
@@ -19,9 +24,11 @@
 |---|---|---|
 | C-1 | **EMQX Rule 是唯一分流责任方** | `H-WP4-FW-01`（`CLOSED`） |
 | C-2 | **Worker 不解析 telemetry、不做 command/telemetry 判断** | `H-WP4-FW-01` · `DT:WP-4` §5.1.1 |
-| C-3 | **firmware 不得修改 topic** | `H-WP4C-03` 任务约束 · `DT:WP-4` 入口族冻结 |
+| C-3 | **firmware 不得修改 topic** | `H-WP4C-03` 冻结约束 · `DT:WP-4` 入口族冻结 |
 | C-4 | **不得修改 `/up`**（frozen topic） | `DT:WP-4` 冻结 · P2 ACL 5/5 覆盖 |
 | C-5 | 分流**不得**引入 Worker policy | `DT:WP-4` §5.1.1（"禁止"清单） |
+| C-6 | **不得依赖 MQTT v5 metadata / user property** | 真机 `proto_ver = 4`（§6 `D-5`） |
+| C-7 | **不得新增 telemetry topic** | `H-WP4C-03` 冻结约束（§3 方案 C 已排除） |
 
 ---
 
@@ -46,7 +53,7 @@ device ──MQTT──► guo_feeder/<device_id>/up
 |---|---|---|
 | P-1 | `DT:WP-4` 的 ingest 对"缺 `ts`/`type`/`value`/`seq`"的记录**逐条 `rejected`** | 若命令结果被投到 history 端点 ⇒ **逐条 4xx**（噪声 + 重试） |
 | P-2 | telemetry 若被投到**命令端点** ⇒ 进入 `mqtt_messages` 记账 | 污染记账链路、放大写量 |
-| P-3 | **既有消息规则 `guo_feeder/#` 同样匹配 `/up` 与 `/log`** | ⇒ **telemetry 会被既有规则一并捕获**（见 §4.3 的关键推论） |
+| P-3 | **既有消息规则 `guo_feeder/#` 同样匹配 `/up` 与 `/log`** | ⇒ **telemetry 会被既有规则一并捕获**（见 §5 的关键推论） |
 
 ### 1.3 分流目标（一句话）
 
@@ -55,35 +62,30 @@ device ──MQTT──► guo_feeder/<device_id>/up
 
 ---
 
-## §2 设计候选
+## §2 设计候选（评估留痕）
 
 > 三个候选**均不修改 `/up`**（C-4）。差别在"判别依据"与"改动落在哪一层"。
+> 本节保留评估过程；**冻结结论见 §3**。
 
 ### 2.1 方案 A —— **payload schema 判断**（EMQX Rule SQL 谓词）
 
-**判别依据**：报文的 **payload 字段集合**。
-
-```
-telemetry  ⟺  has(ts) ∧ has(type) ∧ has(value) ∧ has(seq) ∧ has(schema_version)
-              ∧ ¬has(c) ∧ ¬has(cmd)
-其他       ⟺  ¬(上式)   → 命令链路
-```
+**判别依据**：报文的 **payload 字段集合**（见 §4 冻结谓词）。
 
 **实现形态**：EMQX Rule 的 `WHERE` 子句做字段存在性判断（JSON 解码后）。**两条规则 + 非重叠谓词**：
 
 | 规则 | FROM | WHERE | Action |
 |---|---|---|---|
-| `guo_feeder_history_ingest`（**新增**） | `guo_feeder/+/up` | **telemetry 谓词**（上式） | `POST …/api/history/ingest` |
-| 既有消息 ingest 规则（**修改 WHERE**） | `guo_feeder/#` | **`¬` telemetry 谓词**（见 §4.3） | 既有端点（不变） |
+| `guo_feeder_history_ingest`（**新增**） | `guo_feeder/+/up` | **telemetry 谓词**（§4） | `POST …/api/history/ingest` |
+| 既有消息 ingest 规则（**修改 WHERE**） | `guo_feeder/#` | **`¬` telemetry 谓词**（见 §5） | 既有端点（不变） |
 
 | 维度 | 评估 |
 |---|---|
 | **改动范围** | EMQX 侧：**1 新增规则 + 1 既有规则 WHERE 收窄**（控制台操作）；firmware / Worker / D1 **零改动** |
-| **backward compatibility** | ✅ **命令链路零改动**（谓词只做"排除"，不改变其余报文的路由）；⚠️ 既有规则的 WHERE 一旦写错会**误伤命令结果** ⇒ 须按 §6 验证 |
+| **backward compatibility** | ✅ **命令链路零改动**（谓词只做"排除"，不改变其余报文的路由）；⚠️ 既有规则的 WHERE 一旦写错会**误伤命令结果** ⇒ 须按 §7 验证 |
 | **firmware impact** | ✅ **零** |
-| **cloud complexity** | 中：EMQX 谓词需在**真实版本**上验证语法与语义（§6 V-1/V-2） |
+| **cloud complexity** | 中：EMQX 谓词需在**真实版本**上验证语法与语义（§7 V-1 / V-4） |
 
-### 2.2 方案 B —— **metadata / header 判断**
+### 2.2 方案 B —— **metadata / header 判断**（🔴 已排除）
 
 **判别依据**：MQTT **user property**（v5）或其它消息元数据。
 
@@ -92,12 +94,12 @@ telemetry  ⟺  has(ts) ∧ has(type) ∧ has(value) ∧ has(seq) ∧ has(schema
 | **可行性** | 🔴 **不可行（证据级）** —— 真机 `proto_ver = 4`（**MQTT 3.1.1**，见 EMQX 仓 §6.10 实测）⇒ **无 user property 概念**。要启用需**同时**升级 firmware MQTT 客户端到 v5 **并**确认 broker / ACL 兼容 |
 | **改动范围** | firmware（`esp-mqtt` v5 user property 设置）+ 可能 broker 侧配置 |
 | **backward compatibility** | ⚠️ 协议层升级影响**全部**上行/下行报文（远超本议题） |
-| **firmware impact** | 🔴 **高**（违反 C-3 精神 + 违反"优先不修改 firmware"要求） |
+| **firmware impact** | 🔴 **高**（违反 C-3 / C-6 精神） |
 | **cloud complexity** | 低（元数据判别本身简单） |
 
-> ⇒ **B 在本轮被排除**：前提（MQTT v5）当前**不成立**，且改动远超"分流"议题。
+> ⇒ **B 被排除**：前提（MQTT v5）当前**不成立**，且改动远超"分流"议题。**冻结为禁止项（C-6）。**
 
-### 2.3 方案 C —— **topic extension**
+### 2.3 方案 C —— **topic extension**（🔴 已排除）
 
 **判别依据**：独立 topic（如 `guo_feeder/<device_id>/up/telemetry` 或 `guo_feeder/<device_id>/telemetry`）。
 
@@ -108,7 +110,7 @@ telemetry  ⟺  has(ts) ∧ has(type) ∧ has(value) ∧ has(seq) ∧ has(schema
 | **firmware impact** | 🔴 **高** —— 违反 **C-3（firmware 不得修改 topic）** ⇒ **需先解冻** |
 | **cloud complexity** | 低（topic 匹配最干净、零 payload 解析） |
 
-> ⇒ **C 域隔离最彻底，但代价最高**：它同时触发 **firmware 改动 + ACL 扩张 + 冻结文档修正** 三项。
+> ⇒ **C 被排除**（**冻结为禁止项 C-7**）：域隔离最彻底，但代价最高 —— 它同时触发 **firmware 改动 + ACL 扩张 + 冻结文档修正**三项。
 
 ### 2.4 对比矩阵
 
@@ -121,131 +123,283 @@ telemetry  ⟺  has(ts) ∧ has(type) ∧ has(value) ∧ has(seq) ∧ has(schema
 | 迁移成本 | **最低** | 高（协议升级） | 中高（三项联动） |
 | payload inspection | ⚠️ 有（EMQX 层） | ✅ 无 | ✅ 无 |
 | 对 `/up` 混合的容忍 | 需谓词可靠 | — | 根除 |
-| 当前可行 | ✅ **是** | 🔴 **否**（proto_ver 4） | ⚠️ 需解冻 |
+| 当前可行 | ✅ **是** | 🔴 **否**（proto_ver 4） | ⚠️ 需解冻 ⇒ **禁** |
 
 ---
 
-## §3 推荐方案 = **A（payload schema 判断）**
+## §3 🔒 冻结分流方案 = **A（EMQX Rule Engine payload predicate routing）**
 
-### 3.1 推荐理由
+### 3.1 冻结原文
 
-1. **唯一同时满足三项硬要求**（任务书"优先选择"）：**不修改 firmware** ✅ · **不修改 frozen topic** ✅ · **最小迁移成本** ✅。
+> **冻结分流方案 = EMQX Rule Engine payload predicate routing（方案 A）。**
+>
+> **禁止**：
+> - ❌ firmware topic 修改
+> - ❌ MQTT v5 metadata 依赖
+> - ❌ Worker telemetry parsing
+> - ❌ 新增 telemetry topic
+
+### 3.2 冻结架构
+
+```
+                          MQTT
+                           │
+              guo_feeder/<device_id>/up
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ EMQX Rule Engine│   ← 唯一分流责任方（C-1）
+                  └────────┬────────┘
+                           │  payload predicate（§4）
+              ┌────────────┴────────────┐
+              │                         │
+   telemetry 谓词为真           telemetry 谓词为假
+              │                         │
+              ▼                         ▼
+    POST /api/history/ingest     既有 ingest 端点
+              │                         │
+              ▼                         ▼
+      telemetry_history           mqtt_messages
+```
+
+### 3.3 冻结理由
+
+1. **唯一同时满足三项硬要求**：**不修改 firmware** ✅ · **不修改 frozen topic** ✅ · **最小迁移成本** ✅。
 2. **C-1/C-2 合规**：分流**完全在 EMQX 层**发生；Worker 仍只做"收到即写"（`DT:WP-4` §5.1.1 的 structural validation 边界**不变**）。
-3. **B 当前不可行**（`proto_ver = 4`），C 需解冻 —— 二者都不是"本轮可落地"的选项。
+3. **B 当前不可行**（`proto_ver = 4`），C 被 C-7 禁止 —— 二者都不是可落地选项。
 4. **可逆性最好**：谓词是纯"路由选择"，**不改变任何 payload 语义**；回滚 = 停用新规则 + 恢复既有 WHERE。
 
-### 3.2 ⚠️ 与 `H-WP4-FW-01` "topic/domain 分离优先" 的张力（**须人工知晓**）
+### 3.4 ★ 与 `H-WP4-FW-01` "topic/domain 分离优先" 的张力 —— **已由本裁决消解**
 
 `H-WP4-FW-01` 的冻结原文含 **"topic / domain separation 优先于 payload inspection"**。
 **但在 `/up` 共用且冻结不变的前提下，纯 topic 分离在数学上不可能** —— 判别信息**只能**来自 payload 或元数据。
-因此：
 
-| 读法 | 结论 |
-|---|---|
-| "优先" = **偏好**（在可选时优先 topic 分离） | ⇒ **A 合规**：topic 分离当前**不可选**（C 需解冻），A 是次优但唯一可行项 |
-| "优先" = **禁令**（任何情况下不得 payload inspection） | ⇒ **A 不合规**，必须走 **C**（先解冻 `DT:WP-4` 入口族 + ACL 扩张 + firmware 改 topic） |
+**本裁决的读法（冻结）**：「**优先**」= **偏好**（在**可选**时优先 topic 分离）。
+⇒ 当前 topic 分离**不可选**（方案 C 被 C-7 禁止、方案 B 前提不成立）⇒ **A 是唯一可落地项，合规。**
+并已确认：`H-WP4-FW-01` 的"Worker 不解析 payload"禁令**针对 Worker**；A 的谓词发生在 **EMQX Rule**，**不违反** C-2 的字面。
 
-> ⇒ **本节是本次 scope proposal 最需要人工裁决的一点**（见 §8 `H-WP4C-03-S1`）。
-> 注意：`H-WP4-FW-01` 的"Worker 不解析 payload"禁令针对 **Worker**；A 的谓词发生在 **EMQX Rule**，**不违反** C-2 的字面。
+> 本节替代原 `scope proposal` 的待裁点 `H-WP4C-03-S1`（**已由人工裁决关闭**）。
 
-### 3.3 谓词设计（判别子）
+---
 
-**telemetry 谓词（要求 5 项齐备 + 2 项排除）**：
+## §4 🔒 冻结 telemetry 判别条件（Rule predicate）
 
-| 判据 | 理由 |
-|---|---|
-| `has(type)` | v1 必填 |
-| `has(seq)` | v1 必填 |
-| `has(ts)` | v1 必填 |
-| `has(value)` | v1 必填（**含 `0` / `false` 也必须算"存在"** —— 用"键存在"而非"值非空"判断） |
-| **`has(schema_version)`** | ★ **最强判别子** —— 命令结果 / 上线通知**从不**携带该字段，且业务对象内极少出现 |
-| `¬has(c)` | 命令结果经缩写后必有 `c` |
-| `¬has(cmd)` | 上线通知 / 错误结果含 `cmd` |
+### 4.1 冻结原文
 
-**为什么不能只用 `type`**：命令结果的 `o`（object）内可能含业务 `type` 字段（如 workflow / action 对象）
-⇒ **单字段判别会产生假阳性** ⇒ 必须以 **`schema_version` + `seq` + `ts` + `type` + `value` 的合取**为准。
+> **Rule predicate 必须同时满足：**
 
-### 3.4 反例守卫（**默认落入命令链路**）
+```
+telemetry  ⟺  (
+                 schema_version 存在
+             AND seq            存在
+             AND ts             存在
+             AND type           存在
+             AND value          存在
+              )
+             AND NOT command envelope
+             AND NOT command result envelope
+```
+
+形式化为：
+
+```
+telemetry  ⟺  ( schema_version ∧ seq ∧ ts ∧ type ∧ value )
+             ∧ ¬ c
+             ∧ ¬ cmd
+```
+
+### 4.2 逐条判据与理由
+
+| 判据 | 角色 | 理由 |
+|---|---|---|
+| `schema_version` 存在 | **必填** | ★ **最强判别子** —— 命令结果 / 上线通知**从不**携带该字段 |
+| `seq` 存在 | **必填** | v1 必填 |
+| `ts` 存在 | **必填** | v1 必填 |
+| `type` 存在 | **必填** | v1 必填 |
+| `value` 存在 | **必填**（**含 `0` / `false` 也必须算"存在"** —— 用"**键存在**"而非"值非空"判断） | v1 必填 |
+| `¬ c` | 排除 | 命令结果经缩写后**必有** `c` |
+| `¬ cmd` | 排除 | 上线通知 / 错误结果**含** `cmd` |
+
+### 4.3 🔒 冻结禁止项（判别条件）
+
+> **禁止**：
+> - ❌ 仅判断 `type`
+> - ❌ 仅判断 `value`
+> - ❌ 仅判断 topic
+>
+> **原因**：**command payload 内可能出现业务字段** —— 命令结果的 `o`（object）内可能含业务 `type` 字段（如 workflow / action 对象）
+> ⇒ **单字段判别会产生假阳性** ⇒ 必须以 **`schema_version` + `seq` + `ts` + `type` + `value` 的合取 + 两个排除项**为准。
+
+> **★ 语义注记（实现级）**：`value` 的存在性判断**必须**用"键存在"语义（`has` / `is_not_null` 一类），
+> **不得**写成"值非空 / 值 ≠ 0"（否则 `value=0`、`value=false` 的合法样本会被漏判 ⇒ 假阴性）。
+> 谓词**不涉及** `device_id` —— 身份**只**来自 topic（与 `cloud_protocol.md` §4.5 一致：`device_id` 不进 payload）。
+
+### 4.4 反例守卫（**默认落入命令链路**）
 
 **未匹配 telemetry 谓词的一切报文 → 命令链路**（保持既有行为）。
 ⇒ 未来的新上行类型**默认不会被误判为 telemetry**（fail-safe 方向正确：宁可命令链路多收，不可污染历史表）。
 
+### 4.5 SQL 形态草稿（**非冻结契约 · 以 §7 V-1 在真实版本上验证为准**）
+
+> ⚠️ 具体函数名（`has` / `is_not_null` / `json_decode` 等）与语法**以部署的 EMQX 版本控制台实测为准**；
+> 本节只给**结构**，**不构成冻结语法**。**冻结的是 §4.1 的逻辑谓词。**
+
+```
+SELECT
+  json_encode(map_put('topic', topic,
+  map_put('clientid', clientid,
+  map_put('payload', payload, map_new())))) AS body
+FROM
+  "guo_feeder/+/up"
+WHERE
+      payload.schema_version  != 'undefined'
+  AND payload.seq             != 'undefined'
+  AND payload.ts              != 'undefined'
+  AND payload.type            != 'undefined'
+  AND payload.value           != 'undefined'
+  AND payload.c               == 'undefined'
+  AND payload.cmd             == 'undefined'
+```
+
+（既有消息规则 WHERE 取**上式之否定**，见 §5。）
+
 ---
 
-## §4 部署约束（**实测事实，直接影响落地**）
+## §5 🔒 冻结旧 Rule 处理策略（`-S2`）
 
-| # | 约束 | 来源 | 影响 |
-|---|---|---|---|
-| D-1 | **EMQX Cloud Serverless 的规则 / 连接器 / 动作只能控制台配置**（API `GET /rule_engine/*`、`/connectors`、`/actions` **全 403**） | EMQX 仓 `config/data-integration/README.md` §1 | ⇒ 本设计**无法脚本化落地**，须**控制台人工操作 + 仓库存档** |
-| D-2 | **EMQX 打不通 `*.workers.dev`**（连接被拒），但可达 `*.pages.dev` | EMQX 仓 §6.0.1 | ⇒ telemetry 的 HTTP Action **不应直指 Worker 域名**，须经 **Pages 中转**（或在验证后确认可达性） |
-| D-3 | 数据集成**按动作执行次数计费**；`guo_feeder/#` 规则当前覆盖 `…/up` | EMQX 仓 §6.4 | ⇒ 谓词必须**精确**，避免把命令结果引流到历史端点造成无谓计费 |
-| D-4 | EMQX 把**非 2xx 视为失败并重试** | EMQX 仓 §6.4 | ⇒ 分流错误会**放大**为持续重试（与 `DT:WP-4` §7.4 的失败模型相互印证） |
-| D-5 | 真机 **`proto_ver = 4`**（MQTT 3.1.1） | EMQX 仓 §6.10 | ⇒ **方案 B 不可用**（§2.2） |
-
-### 4.3 ★ 关键推论：**必须同时收窄既有规则，否则会产生双投**
+### 5.1 ★ 关键推论：**必须同时收窄既有规则，否则会产生双投**
 
 既有消息规则 FROM = **`guo_feeder/#`** ⇒ 它**已经**匹配 `/up` 上的 telemetry 与 `/log`。
 若只"新增一条 history 规则"而**不动既有规则**，则 telemetry 报文会**同时**：
 - 投递到 `POST /api/history/ingest`（新规则）✅
 - 投递到既有 ingest 端点（既有规则）❌ ⇒ **进入 `mqtt_messages` 记账**
 
-⇒ **A 的完整落地 = ① 新增 history 规则 ② 把既有规则的 `WHERE` 收窄为 `¬telemetry 谓词`**。
-**②是不可省略的一步**，且是**本次改动的主要风险点**（写错会误伤命令结果）。
+### 5.2 冻结原文
 
-> ⚠️ **附带观察（不属本议题，仅登记）**：`/log` 自 `dae7966` 起已改为 **JSON 信封**（不再是二进制 CBOR）
-> ⇒ 既有 `guo_feeder/#` 规则**现在也会匹配 `/log`**，将其写入 `mqtt_messages`。
-> 该行为是否可接受**不在 `H-WP4C-03` 范围**（属 log 链路议题），但**应在 freeze 时一并知晓**。
+> **新增 telemetry rule 时：**
+> **旧规则（FROM `guo_feeder/#` → ACTION `mqtt_messages`）不能保持无限匹配。**
+>
+> **冻结策略**：
+> ```
+> mqtt_messages rule  =  guo_feeder/#  AND  NOT telemetry_predicate
+> ```
+> 即：**普通消息进入 `mqtt_messages`；telemetry 只进入 history。**
+
+### 5.3 冻结落地步骤（两步**均强制**，缺一即违规）
+
+| 步 | 动作 | 性质 |
+|---|---|---|
+| **①** | **新增**规则 `guo_feeder_history_ingest`（FROM `guo_feeder/+/up`，WHERE = §4.1 谓词，Action → `POST …/api/history/ingest`） | 新增 |
+| **②** | **收窄**既有消息规则的 `WHERE` 为 **`¬` telemetry 谓词**（`guo_feeder/# AND NOT telemetry_predicate`） | **修改既有生产链路** |
+
+> ⚠️ **②是不可省略的一步**，且是**本次实施的主要风险点**（写错会误伤命令结果 ⇒ `R-WP4C-1`）。
+
+### 5.4 冻结动机
+
+> **避免**：duplicate storage（双投）· action 次数增加（白计费）· 后续统计污染。
+
+### 5.5 ⚠️ 附带观察（**不属本议题，仅登记**）
+
+`/log` 自 `dae7966` 起已改为 **JSON 信封**（不再是二进制 CBOR）
+⇒ 既有 `guo_feeder/#` 规则**现在也会匹配 `/log`**，将其写入 `mqtt_messages`。
+该行为是否可接受**不在 `H-WP4C-03` 范围**（属 log 链路议题），但**应在实施时一并知晓**（见 §8 `R-WP4C-10`）。
 
 ---
 
-## §5 验证计划（**全部 `NOT RUN`**）
+## §6 🔒 冻结 EMQX 平台限制说明（**实测事实 · 直接影响实施方式**）
 
-> 未授权创建规则 ⇒ **本轮零执行**。以下为 freeze 后须执行的判据。
-
-| # | 用例 | 期望 | 证据分级 |
+| # | 约束 | 来源 | 影响 |
 |---|---|---|---|
-| **V-1** | **谓词真值表**（离线） | 对 (a) 命令结果 / (b) 上线通知 / (c) telemetry v1 / (d) registry 结果 四类真实样本，谓词取值**全部正确** | `STATIC`（可用仓库内样本离线断言） |
-| **V-2** | **EMQX SQL 语法与语义**（控制台调试） | 谓词在**部署的 EMQX 版本**上可解析；`has()` / JSON 解码行为符合预期 | `LIVE`（须人工控制台） |
-| **V-3** | **既有规则不被误伤** | 命令结果 / 上线通知**仍**进入既有端点（`mqtt_messages` 持续增长、无 4xx） | `LIVE` |
-| **V-4** | **telemetry 正确落库** | 一条 telemetry 报文 ⇒ `telemetry_history` **恰 1 行**；`mqtt_messages` **无新增** | `LIVE` |
-| **V-5** | **无双投** | 同一 `(device_id,type,ts,seq)` 在两条链路中**只出现一次**（历史表） | `LIVE` |
-| **V-6** | **假阳性守卫** | 携带业务 `type` 字段的命令结果**不得**被判为 telemetry | `LIVE` |
-| **V-7** | **Pages 中转可达性** | Action 能到达中转 → 中转能到 Worker（返回 `401`/`200` 而非 502/超时） | `LIVE` |
+| **D-1** | **EMQX Cloud Serverless 的规则 / 连接器 / 动作只能控制台配置**（API `GET /rule_engine/*`、`/connectors`、`/actions` **全 403**） | EMQX 仓 `config/data-integration/README.md` §1 | ⇒ 本设计**无法脚本化落地**，须**控制台人工操作 + 仓库存档** |
+| **D-2** | **EMQX 打不通 `*.workers.dev`**（连接被拒），但可达 `*.pages.dev` | EMQX 仓 §6.0.1 | ⇒ telemetry 的 HTTP Action **不得**直指 Worker 域名，须经 **Pages 中转** |
+| **D-3** | 数据集成**按动作执行次数计费**；`guo_feeder/#` 规则当前覆盖 `…/up` | EMQX 仓 §6.4 | ⇒ 谓词必须**精确**，避免把命令结果引流到历史端点造成无谓计费（`R-WP4C-5` / `R-WP4C-9`） |
+| **D-4** | EMQX 把**非 2xx 视为失败并重试** | EMQX 仓 §6.4 | ⇒ 分流错误会**放大**为持续重试（与 `DT:WP-4` §7.4 的失败模型相互印证） |
+| **D-5** | 真机 **`proto_ver = 4`**（MQTT 3.1.1） | EMQX 仓 §6.10 | ⇒ **方案 B 不可用**（§2.2 / C-6） |
+| **D-6** | Serverless 规则 SQL 为**子集**，函数可用性依版本而异 | EMQX 平台性质 | ⇒ 谓词语法**必须**先在控制台验证再保存（§7 V-1 / `R-WP4C-3` / `R-WP4C-7`） |
 
-> **执行前置**：`D-1`（控制台）+ `D-2`（中转就绪）+ 端点已部署（`H-WP4C-04`/`05`）。
+### 6.1 冻结实施方式（因人工作业而必须固化）
+
+> **当前环境**：EMQX Cloud Serverless。**Rule / Connector / Action 创建需要控制台操作**；**API 自动化不可用（403）**；**Worker 无法作为直接 action endpoint**（D-2）。
+>
+> **因此实施阶段需要**：
+
+```
+Human operation:
+    EMQX Console（创建/收窄规则 + 连接器 + 动作）
+
+   +
+Verification:
+    device publish
+        ↓
+    Rule match
+        ↓
+    D1 history insert
+```
+
+> **★ 配置漂移控制（强制）**：控制台所做的每一处配置（规则 SQL / 连接器 URL / 动作请求头）**必须回写**
+> `EMQX_Assets/config/data-integration/README.md` 存档（沿用该文档既有做法），否则**不可审计、不可重建**（`R-WP4C-6`）。
 
 ---
 
-## §6 风险登记
+## §7 🔒 冻结验证计划（**全部 `NOT RUN`**）
+
+> 未授权创建规则 ⇒ **本轮零执行**。以下为 freeze 后须执行的**判据**，**冻结不可删改**。
+
+| # | 用例 | 输入 / 操作 | 期望 |
+|---|---|---|---|
+| **V-1** | **Rule syntax** | 在控制台保存并启用两条规则（新 history 规则 + 收窄后的既有规则） | 规则**可以保存并启用**（SQL 在部署版本上可解析，无语法/函数错误） |
+| **V-2** | **telemetry positive** | 发送 `{"schema_version":1,"ts":123,"type":"temperature","value":25.5,"seq":1}` | `telemetry_history` **+1**；`mqtt_messages` **+0** |
+| **V-3** | **command negative** | 发送 command（命令结果 / 上线通知） | `telemetry_history` **+0**；`mqtt_messages` **+1** |
+| **V-4** | **mixed payload** | 载荷**包含** `type` + `value`，**但存在** `cmd` | **判定为"不是 telemetry"** ⇒ `telemetry_history` +0；`mqtt_messages` +1 |
+| **V-5** | **multi device isolation** | device A 发 telemetry | **不能**进入 **device B** 的 history（按 `device_id` 隔离，`device_id` 取自 topic） |
+| **V-6** | **reconnect** | 设备 MQTT 重连后重复上行 | Rule **不因 MQTT reconnect 重复写入** |
+| **V-7** | **duplicate** | 相同 `(device_id, type, ts, seq)` 重复投递 | 验证 D1 **unique constraint**（`ux_th_dedup`）生效，落库**恰 1 行** |
+
+**补充前置（STATIC · 离线 · 不计入冻结列表）**：谓词对 (a) 命令结果 / (b) 上线通知 / (c) telemetry v1 / (d) registry
+结果**四类真实样本**的**真值表**校验（可用仓库内样本离线断言）—— 作为 V-1 上线前的**廉价前置筛查**（原提案的 `V-1 真值表` 归入此处）。
+
+**执行前置**：`D-1`（控制台）+ **Pages 中转就绪**（`D-2`）+ 端点已部署（`H-WP4C-04` / `05`）。
+原提案的 `V-7 Pages 中转可达性`（Action 能到达中转 → 中转能到 Worker，返回 `401`/`200` 而非 502/超时）**归入执行前置核查**。
+
+> **编号说明**：本节 `V-1…V-7` 采用**冻结裁决**的定义（与 `P3-WP4C-Decisions.md` 一致）。
+> 原 `scope proposal` 的 7 条编号中，"谓词真值表"→**本补充前置**，"Pages 中转可达性"→**执行前置**，
+> 其余四条（语法 / 正例 / 反例 / 假阳性守卫）**语义已并入** V-1 / V-2 / V-3 / V-4。**实现层面无信息丢失。**
+
+---
+
+## §8 风险登记（含本轮新增）
 
 | ID | 级别 | 风险 | 缓解 |
 |---|---|---|---|
 | `R-WP4C-1` | 🔴 高 | **既有规则 WHERE 写错 ⇒ 命令结果被误投历史端点**（逐条 4xx + 重试 + 命令可观测性断链） | V-3 必测；先在**测试设备**上验证；保留即时回滚（恢复 WHERE） |
-| `R-WP4C-2` | 🟠 中 | **谓词假阴性 ⇒ telemetry 静默丢失**（落入命令链路） | V-1/V-4；谓词取"合取 + 键存在"语义；上线后核对 `telemetry_history` 行数 |
-| `R-WP4C-3` | 🟠 中 | EMQX 版本差异 ⇒ SQL 函数不可用 | V-2 先在控制台验证语法再保存 |
-| `R-WP4C-4` | 🟠 中 | **双投**（遗漏 §4.3 的既有规则收窄） | 把"收窄既有 WHERE"列为**强制步骤**并纳入 V-5 |
-| `R-WP4C-5` | 🟡 低 | 计费放大（谓词不准导致无谓动作执行） | V-1 真值表 + 上线后观测动作计数 |
-| `R-WP4C-6` | 🟡 低 | 控制台配置**无 API 自动化** ⇒ 漂移不可审计 | 按 EMQX 仓既有做法：**控制台配置必须回写仓库存档** |
+| `R-WP4C-2` | 🟠 中 | **谓词假阴性 ⇒ telemetry 静默丢失**（落入命令链路） | 补充前置真值表 + V-2；谓词取"合取 + **键存在**"语义；上线后核对 `telemetry_history` 行数 |
+| `R-WP4C-3` | 🟠 中 | EMQX 版本差异 ⇒ SQL 函数不可用 | V-1 先在控制台验证语法再保存 |
+| `R-WP4C-4` | 🟠 中 | **双投**（遗漏 §5 的既有规则收窄） | 把"收窄既有 WHERE"列为**强制步骤**并纳入 V-2/V-3 |
+| `R-WP4C-5` | 🟡 低 | 计费放大（谓词不准导致无谓动作执行） | 补充前置真值表 + 上线后观测动作计数 |
+| `R-WP4C-6` | 🟡 低 | 控制台配置**无 API 自动化** ⇒ 漂移不可审计 | 按 EMQX 仓既有做法：**控制台配置必须回写仓库存档**（§6.1） |
+| **`R-WP4C-7`** | 🟠 **中** | **★ 新增 —— Rule Engine 限制**：Serverless 规则 SQL 为**子集**（`D-6`），JSON 解码 / 存在性函数（`has` / `is_not_null` / `json_decode`）在**具体版本**上可能**缺失或语义不同**；规则规模 / 单规则字段数亦有上限 | V-1 强制；谓词**结构**保持最小（仅 7 个字段谓词）；**保留纯 topic 兜底**（`guo_feeder/+/up` 已是最小匹配面）；若函数不可用 ⇒ 记录并在实施阶段**回退到可用等价写法**（属实施细化，**不改冻结谓词逻辑**） |
+| **`R-WP4C-8`** | 🟠 **中** | **★ 新增 —— D1 action 限制**：telemetry 为**周期性写入**（与 presence 低频不同）⇒ ① Pages 中转 + Worker + D1 三段链路**增加 RTT**，EMQX Action 超时后**按 `D-4` 重试** ⇒ 重复动作 + 重复计费；② D1**写入吞吐 / 单次请求写量**限制 ⇒ 高频下可能 `d1_batch_failed`（500）⇒ 触发重试 | 上线前用**单台设备**小流量试跑并观测 Action 成功率 / D1 写量；**不新增 batch**（`count=1`，`DT:WP-4` 冻结）；若吞吐不足 ⇒ **上报并暂停放量**（不自行放宽冻结） |
+| **`R-WP4C-9`** | 🟠 **中** | **★ 新增 —— 成本风险**：数据集成**按动作次数计费**（`D-3`）；telemetry 默认 `interval_ms = 300000`（5 min）× **3 个 KEEP 通道**（temperature / humidity / weight，每通道**独立报文**）⇒ 理论 **≈ 864 条/天/设备**（1×288×3），**比 presence（≈ 22 条/天）高约 1–2 个数量级**；阈值触发可能进一步增加 | **登记并要求实施前量化**：以设备台数 × 周期 × 通道数估算日动作次数，与预算比对；如需抑制 ⇒ **只能调 `payload` 侧策略**（改造 `telemetry.interval_ms` / 收敛 KEEP 集 ⇒ 属 `H-WP4-FW-06` / 范围决策），**不得**在本工作包内改冻结协议 |
 
 ---
 
-## §7 `H-WP4C-03` —— **Scope Proposal**（待人工 freeze）
+## §9 状态与边界
 
-| 项 | 内容 |
+### 9.1 `H-WP4C-03` 状态
+
+| 项 | 值 |
 |---|---|
 | **ID** | `H-WP4C-03` |
-| **状态** | 🔴 **`OPEN`** —— **scope proposal 完成，等待人工 freeze** |
-| **推荐方案** | **A（payload schema 判断）**，判别子见 §3.3 |
-| **落地范围** | ① 新增规则 `guo_feeder_history_ingest`（FROM `guo_feeder/+/up`，WHERE telemetry 谓词，Action → `POST …/api/history/ingest`）② **收窄既有消息规则的 WHERE** 为 `¬telemetry 谓词` |
-| **明确不做** | 不新增 topic · 不改 ACL · 不改 firmware · 不改 Worker · 不改 `/up` · 不改 `DT:WP-4` 契约 |
-| **待裁点 `H-WP4C-03-S1`** | §3.2 的 **"分离优先"读法** —— 若裁定为"禁令"，则本提案作废，**改走 C**（需先解冻 `DT:WP-4` 入口族 + ACL 扩张 + firmware 改 topic） |
-| **待裁点 `H-WP4C-03-S2`** | 是否接受**先收窄既有规则**（§4.3 的强制第 ② 步）—— 这是对**既有生产链路**的改动，须显式授权 |
-| **待裁点 `H-WP4C-03-S3`** | Pages 中转（`D-2`）的归属：新建中转函数（`…/api/history/ingest`）属**本工作包**还是**独立工作包** |
-| **与 Gate 的关系** | **不解除任何 Gate**；`CF-2` 仍受 `H-WP4C-04/05/06` 阻塞 |
+| **状态** | 🔒 **`CLOSED`**（设计冻结；**实施本身仍属后续工作包**） |
+| **冻结方案** | **A（EMQX Rule Engine payload predicate routing）** |
+| **冻结谓词** | `( schema_version ∧ seq ∧ ts ∧ type ∧ value ) ∧ ¬ c ∧ ¬ cmd`（§4） |
+| **冻结旧 Rule 策略** | `mqtt_messages rule = guo_feeder/# AND NOT telemetry_predicate`（§5 · 两步强制） |
+| **冻结平台限制** | `D-1…D-6` + 实施方式（§6） |
+| **冻结验证计划** | `V-1…V-7`（§7） |
+| **明确不做** | 不新增 topic · 不改 ACL · 不改 firmware · 不改 Worker · 不改 `/up` · 不改 `DT:WP-4` 契约 · 不创建 EMQX 规则 |
+| **与 Gate 的关系** | **不解除任何 Gate**；`CF-2` **仍 `BLOCKED`**（受 `H-WP4C-04/05/06` 阻塞） |
 
----
-
-## §8 边界核对（**零违规**）
+### 9.2 边界核对（**零违规**）
 
 | 禁止项 | 状态 |
 |---|---|
@@ -253,25 +407,27 @@ telemetry  ⟺  has(ts) ∧ has(type) ∧ has(value) ∧ has(seq) ∧ has(schema
 | 修改 EMQX 配置 / 连接器 / ACL | ✅ **未改** |
 | 修改 Worker | ✅ **未改** |
 | 修改 D1 migration | ✅ **未改** |
-| 修改 `src/` / `/up` | ✅ **未改** |
-| 新增文档 | ✅ **唯一** = `docs/review/P3-WP4C-EMQX-Rule-Design.md` |
+| 修改 `src/` / `/up` / topic | ✅ **未改** |
+| 修改冻结设计文档（`P2-0-…freeze.md` / `DT:WP-4`） | ✅ **未改** |
+| 新增文档 | ✅ `docs/review/P3-WP4C-EMQX-Rule-Design.md`（本文件，冻结升级）+ `docs/review/P3-WP4C-Decisions.md`（裁决记录） |
 
 ---
 
-## §9 关联文档
+## §10 关联文档
 
 | 文档 | 关系 |
 |---|---|
+| **`docs/review/P3-WP4C-Decisions.md`** | **★ 本设计的冻结裁决记录（权威）** |
 | `docs/interfaces/cloud_protocol.md` **§4.5** | telemetry uplink 冻结契约（**输入**） |
 | `docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` | 冻结裁决（信封 / 值编码 / seq / 范围 / 路由） |
 | `docs/review/P3-WP4-Firmware-Integration-Design-Review.md` §9 | `H-WP4-FW-01` 裁决留痕（方案 A 双 Action 分流） |
 | `docs/architecture/P3-DT-WP4-History-Ingestion-Design.md` §9.1 | 端点定稿 = `POST /api/history/ingest`（选择 B） |
-| `EMQX_Assets/config/data-integration/README.md` | 既有规则 / 连接器存档 + 部署约束（`D-1…D-5`） |
-| `EMQX_Assets/config/acl-rules.v3.json` | 现行 ACL（`deviceRuleTemplate` 3 条） |
+| `EMQX_Assets/config/data-integration/README.md` | 既有规则 / 连接器存档 + 部署约束（`D-1…D-5`）· **控制台配置回写目标** |
+| `EMQX_Assets/config/acl-rules.v3.json` | 现行 ACL（`deviceRuleTemplate` 3 条，本轮**未改**） |
 
 ---
 
-*本文档于 **2026-10-12** 建立，为 **`H-WP4C-03` 的 EMQX Rule telemetry 分流设计提案**；
-**只做设计、影响评估与 scope proposal**，**不含任何配置改动或实施**。
-基线 = 固件仓 HEAD **`e551d1e`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
+*本文档于 **2026-10-12** 由 **`scope proposal`** 升级为 **`FROZEN DESIGN`**（`H-WP4C-03` 冻结）；
+**只做设计冻结与环境事实登记**，**不含任何配置改动或实施**。
+基线 = 固件仓 HEAD **`cdcc766`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
 所有 `file:line` 与平台事实均取自基线，可逐条回查。*
