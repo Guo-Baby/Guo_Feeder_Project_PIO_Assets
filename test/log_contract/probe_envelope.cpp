@@ -435,6 +435,75 @@ extern "C" int probe_run()
               "base64 cap too small -> 0");
     }
 
+    // ---------------------------------------------------------
+    // [7] Regression —— 既有 log storage / log path **无变化**
+    //
+    // 本轮只替换「/log 上行载荷的编码」（CBOR 批次 → JSON envelope），
+    // **不得**触碰 LogRecord 布局、段环常量与 CBOR 批次 schema/编码器。
+    // 下面对**冻结常量**与**冻结编码器对原始 16 条批次的输出**做回归断言。
+    // ---------------------------------------------------------
+    {
+        // (a) log storage 冻结常量
+        check(LOG_RECORD_SIZE == 128u, "storage: LOG_RECORD_SIZE == 128 (unchanged)");
+        check(LOG_RECORDS_PER_SEGMENT == 31u, "storage: LOG_RECORDS_PER_SEGMENT == 31");
+        check(LOG_SEGMENT_SIZE == 3984u, "storage: LOG_SEGMENT_SIZE == 3984");
+        check(LOG_SEGMENT_COUNT == 16u, "storage: LOG_SEGMENT_COUNT == 16");
+        check(LOG_SEGMENT_CAPACITY == 496u, "storage: LOG_SEGMENT_CAPACITY == 496");
+
+        // (b) LogRecord 冻结偏移（128 B packed 布局未动）
+        check(LOG_OFF_SEQ == 4u && LOG_OFF_BOOT_SEQ == 8u &&
+              LOG_OFF_TIMESTAMP == 20u && LOG_OFF_CRC32 == 108u,
+              "storage: LogRecord offsets unchanged");
+
+        // (c) CBOR 批次冻结常量
+        //     ★ 本轮**未**下调 LOG_BATCH_MAX_RECORDS(16)：只把
+        //       cloud_collect_batch() 的**取批上界**收敛为 LOG_ENV_RECORDS_PER_MSG(1)。
+        check(LOG_CBOR_BATCH_ITEMS == 12u, "logpath: CBOR batch still 12 items");
+        check(LOG_BATCH_FMT == 2u, "logpath: LOG_BATCH_FMT == 2");
+        check(LOG_BATCH_MAX_RECORDS == 16u, "logpath: LOG_BATCH_MAX_RECORDS still 16 (frozen)");
+        check(LOG_BATCH_MAX_PAYLOAD == 4096u, "logpath: LOG_BATCH_MAX_PAYLOAD == 4096");
+
+        // (d) 冻结编码器对**原始 16 条批次**仍原样工作 ⇒ 证明 encoder 未被修改
+        static LogRecord many[16];
+        for (uint32_t i = 0; i < 16u; i++)
+        {
+            make_rec(many[i], 0x11223344u + i, 1700000000u + i);
+        }
+
+        LogCborBatchHeader hb;
+        hb.fmt = LOG_BATCH_FMT;
+        hb.event_dict_ver = LOG_RECORD_VERSION;
+        hb.boot_seq = 7u;
+        hb.seq_from = 0x11223344u;
+        hb.seq_to = 0x11223344u + 15u;
+        hb.count = 16u;
+        hb.drop_ring = 1u;
+        hb.drop_overflow = 2u;
+        hb.drop_unacked = 3u;
+        hb.self_degraded = 4u;
+        hb.flags = LOG_BATCH_FLAG_SEQ_RELIABLE;
+
+        static uint8_t big[LOG_BATCH_MAX_PAYLOAD];
+        const uint32_t big_len = log_cbor_encode_batch(hb, many, big, sizeof(big));
+
+        // 21 B 头 + 16 × (2 + 128) = 2101
+        check(big_len == 2101u, "logpath: 16-record batch == 2101 B (unchanged)");
+        check(big[0] == 0x8Cu, "logpath: header still array(12) 0x8C");
+        check(big[20] == 0x90u, "logpath: records still array(16) 0x90");
+        check(big[21] == 0x58u && big[22] == 0x80u,
+              "logpath: record[0] still bstr(128) 0x58 0x80");
+        check(memcmp(&big[23u + 15u * 130u], (const uint8_t *)&many[15], LOG_RECORD_SIZE) == 0,
+              "logpath: record[15] keeps frozen 128 B layout");
+
+        // (e) Level Policy 冻结
+        check(log_level_to_flash(LOG_LVL_DEBUG) == false &&
+              log_level_to_cloud(LOG_LVL_DEBUG) == false &&
+              log_level_to_flash(LOG_LVL_INFO) == false &&
+              log_level_to_cloud(LOG_LVL_INFO) == true &&
+              log_level_to_flash(LOG_LVL_CRITICAL) == true,
+              "logpath: Level Policy unchanged");
+    }
+
     pstr("-----------------------------------------\n");
     pstr(g_fail == 0 ? "ENVELOPE PROBE: ALL PASS\n" : "ENVELOPE PROBE: FAIL\n");
     return g_fail;
