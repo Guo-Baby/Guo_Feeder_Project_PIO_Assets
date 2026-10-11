@@ -2545,6 +2545,48 @@ bool cloud_send_log(const uint8_t* data, size_t length)
     return ok;
 }
 
+// =====================================================
+// P3 · WP4-FW-TELEMETRY：Telemetry 独立上行 transport（纯新增）
+//
+// - **不复用 command uplink**：不调用 cloud_compress_uplink()，不包成
+//   {"cmd":"result",…}（H-WP4C-02）
+// - 本层**不解释**载荷：只当不透明文本发送（不知道 type 语义）
+// - Topic = mqtt_pub_topic（guo_feeder/<device_id>/up）—— **topic 零改动**
+// - 不排队 / 不落盘 / 不重试（fire-and-forget；与 telemetry 语义一致）
+// - 复用现有 cloud_mqtt_publish_binary()，不改动它
+// =====================================================
+bool cloud_send_telemetry(const char* json)
+{
+    if(json == nullptr || json[0] == '\0')
+    {
+        return false;
+    }
+
+    if(mqtt_client == nullptr || !mqtt_connected)
+    {
+        return false;
+    }
+
+    if(mqtt_pub_topic.length() == 0)
+    {
+        // P0-3：兜底改为**渲染后的 V3 模板**（与 cloud_init() 同源）
+        mqtt_pub_topic = cloud_render_topic(String(GF_TOPIC_TPL_UP),
+                                            GF_TOPIC_TPL_UP, "publish_topic");
+
+        if(mqtt_pub_topic.length() == 0)
+        {
+            Serial.println("[Cloud TELEM] no valid up topic, drop");
+            return false;
+        }
+    }
+
+    return cloud_mqtt_publish_binary(
+        mqtt_pub_topic.c_str(),
+        (const uint8_t*)json,
+        strlen(json),
+        1);
+}
+
 // P1.5：由 LogManager 注入 ACK 处理回调（CloudManager 不反向依赖 LogManager）
 void cloud_set_log_ack_callback(CloudLogAckCallback callback)
 {

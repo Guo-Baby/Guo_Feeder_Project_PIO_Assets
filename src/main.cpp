@@ -16,6 +16,7 @@
 #include "services/credential_manager.h"   // Phase D-2：凭据生命周期（gfcred 双 slot）
 #include "services/wifi_module.h"
 #include "services/time_manager.h"
+#include "services/telemetry_publisher.h"   // P3 · WP4-FW-TELEMETRY（默认 GF_TELEMETRY_ENABLED=0）
 #include "cloud/cloud_manager.h"
 #include "app/weight.h"
 #include "app/valve.h"
@@ -597,6 +598,14 @@ void setup()
     // =====================================================
     homie_init();
     // =====================================================
+    // 第七层·附加：Telemetry Publisher（P3 · WP4-FW-TELEMETRY）
+    //
+    // 只记录 System State 基线、**不发送**任何消息；
+    // 首次发送发生在 loop 中检测到 MQTT 已连接之后。
+    // ★ GF_TELEMETRY_ENABLED=0（默认）时为空实现 ⇒ 生产零开销。
+    // =====================================================
+    telemetry_publisher_init();
+    // =====================================================
     // 第八层：启动确认（必须位于 setup 最后）
     //
     // 只有完整走完 setup 才会写入启动标记。
@@ -658,6 +667,10 @@ void loop()
     valve_task();
     computer_reset_task();     // 手动脉冲回收 + GPIO8 安全兜底
     MiThermometer_task();
+    // ---- P3 · WP4-FW-TELEMETRY：遥测上行（非阻塞；每轮最多 1 条）----
+    // 放在 MiThermometer_task() / weight_task() **之后** ⇒ 本轮状态最新；
+    // GF_TELEMETRY_ENABLED=0（默认）时为空实现 ⇒ 主循环行为不变。
+    telemetry_task();
     test_mqtt_task();//测试代码，需要删除
     // ---- LogManager P1.2：消费 RAM 环 + Level → (Flash, Cloud) routing 决策 ----
     // 不创建独立 Task（LittleFS 单写者模型）；每轮最多消费 LOG_DRAIN_MAX_PER_TASK 条。
