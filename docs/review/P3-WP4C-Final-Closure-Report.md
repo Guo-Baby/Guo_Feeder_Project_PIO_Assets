@@ -21,6 +21,7 @@
 - 🟠 **文档滞后**：Record 头部状态块、Record §8 Gate 表、Decisions §7.3 门禁、README 条目内部——四处「权威状态位」仍停在前几轮，需一个 docs commit 修正；
 - 🟡 **未关闭遗留项仅 `/log` 域**（`CF-1` 固件侧已 `RESOLVED`，但设备端到端属 Phase C `V-3`，`NOT RUN`）；
 - 📌 **建议：先修文档 → 回传 presence 新 ID → push 两仓 → 生产观察 1–2 天 → 再打 release tag（现在不打）。**
+- 📌 **执行进展（`2026-10-13` 补记）**：① 文档同步 commit ✅（FW `88d5b11` 9 文件 · EMQX `5ccd744` 2 文件）→ ② 两仓 push ✅（均 FF：FW `a01797d..88d5b11` → 远程 `main` · EMQX `76bd1c9..5ccd744`）→ ③ presence 终态 ID 回填 ✅（`2026-10-13` commit）⇒ **剩余 = 生产观察 1–2 天 → annotated tag**。
 
 ---
 
@@ -96,7 +97,7 @@
 
 ### 5.2 文档完备性项（非功能阻塞 · 建议随修复 commit 一并处理）
 
-1. **presence 删旧建新后的新连接器 / 动作 ID 待人工回传**（代理无 API 权限读不到）⇒ 回写 V2V4 §2.3 + Task Sheet §11；
+1. ~~**presence 删旧建新后的新连接器 / 动作 ID 待人工回传**（代理无 API 权限读不到）⇒ 回写 V2V4 §2.3 + Task Sheet §11~~ ⇒ ✅ **已解决（`2026-10-13`）**：终态 ID 已回填 —— 连接器 `c-n302933b-20ead9` · 规则 `r-n302933b-de1540`(connected)/`r-n302933b-7e8a01`(disconnected) · 动作 `a-n302933b-999c12`/`a-n302933b-0209ad` → `V2V4` **§2.3b** + Task Sheet §11；
 2. Task Sheet §11 新 ID 登记表为空白模板（五个 ID、规则 B 实际采用版本、被删对象统计均未填）；
 3. V2V4 §1 变更窗口 / 操作者 / 丢失消息数、§0-1/0-2 被删对象运行统计 `<待填>`（后者因删除不可逆 = **永久缺失**，建议改标以免误读为待补）；
 4. §6 所列 5 项高优先度文档不一致。
@@ -178,12 +179,14 @@ Task Sheet §7.5.7 证据表 ↔ Record §6 验证表 ↔ V2V4 §4 结果表 ↔
 
 | 理由 | 说明 |
 |---|---|
-| ① 未 push | tag 应标记「已发布」状态；两仓 72 / 14 个提交均在本地 |
-| ② 存档未齐 | presence 新连接器 / 动作 ID 未回填（V2V4 §2.3 / Task Sheet §11 待填）—— 存档是 WP4C 强制回写项 |
+| ① 未 push | ~~tag 应标记「已发布」状态；两仓 72 / 14 个提交均在本地~~ ⇒ ✅ **`2026-10-13` 已 push**（FW `a01797d..88d5b11` → 远程 `main` · EMQX `76bd1c9..5ccd744`，均 FF） |
+| ② 存档未齐 | ~~presence 新连接器 / 动作 ID 未回填（V2V4 §2.3 / Task Sheet §11 待填）—— 存档是 WP4C 强制回写项~~ ⇒ ✅ **`2026-10-13` 已回填**（`V2V4` **§2.3b** + Task Sheet §11）—— 本条**已消除** |
 | ③ 生产观察未做 | 建议观察 1–2 天：两条新规则失败率应与 presence 同量级（非 ≈90%）· 无 `resource down` 反复告警 · 消息流 `mqtt_messages` 正常增长 |
 | ④ `/log` 遗留 | Phase C `V-3` `NOT RUN`（虽不影响 WP4C 收口，但「release」语义上 P3 整体未完） |
 
 **建议顺序**：修文档 commit（§6 的 D-1…D-5 等）→ 回传 presence 新 ID 并回写存档 → push 两仓 → 生产观察 1–2 天 → **观察无异常后打 annotated tag**（双仓同一点位；FW 仓已有 `v1.0` 先例，建议命名如 `wp4c-closure-20261012` 或按项目版本惯例；EMQX 仓目前无 tag，可同建）。
+
+> ✅ **进展（`2026-10-13`）**：①文档 commit ✅ · ②presence ID 回填 ✅ · ③两仓 push ✅ ⇒ **剩余 = ④生产观察 1–2 天 → annotated tag**（命名建议不变）。
 
 > 若只需审计锚点：可立即在本地对 `6502460` / `6c943a9` 打 lightweight tag（不 push），但正式 annotated tag 建议按上述顺序。
 

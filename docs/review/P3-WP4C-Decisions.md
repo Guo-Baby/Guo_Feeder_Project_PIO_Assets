@@ -476,7 +476,7 @@
 | `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | ✅ **`PASS`（带 guard）** —— 连接器 2/2 · 规则 3/3（SQL 全文）· 动作 3/3（含高级设置）· D1 计数 · 回滚已签署；**guard = TLS 明细不可回读**（`R-WP4C-16` · `H-WP4C-09-A` = `CLOSED WITH GUARD`） |
 | `C-5` | **Rule deployment（`R3`：拆除 + 重建）** | 连接器 `CB` **已建** **且** 两条新规则**已启用**（`history` 带谓词 · `message` 带取反谓词） | ✅ **`CLOSED`**（`2026-10-12` 22:20）—— 4 对象已建已启（`c-n302933b-0c1cb0` · `r-n302933b-cf0cf2`/`r-n302933b-f731cf` · `a-n302933b-126ec6`/`a-n302933b-7241e2`）；`R-WP4C-21`/`-22`/`-23` 均已解决（路径对调 + 补头 + 两处 secret 值修正）；**presence 4 对象已删旧建新并全链恢复**（任务单 §14 · §7.5.7 tail 实证）；第五轮 5 请求全 200 |
 | `C-6` | **验证 `V-1…V-7`** | 冻结验证集**全项 `PASS`** | ✅ **`CLOSED`**（`2026-10-12` 22:20）—— **`V-1…V-7` 全部 `PASS`**（probe8/probe9 · 任务单 §7.5.7 结果表 · Record §6）⇒ `CF-2` = `CLOSED` |
-| `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | ✅ **`CLOSED`** —— `V0-EMQX-Baseline` + `V2V4-Config-After` 均已回写（含第四 / 五轮实测更正块）；**presence 删旧建新后的新 ID 待人工回传**（回写 `V2V4` §2.3 + Task Sheet §11） |
+| `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | ✅ **`CLOSED`** —— `V0-EMQX-Baseline` + `V2V4-Config-After` 均已回写（含第四 / 五轮实测更正块）；**presence 删旧建新后的终态 ID 已回填**（`2026-10-13`：连接器 `c-n302933b-20ead9` · 规则 `r-n302933b-de1540`/`r-n302933b-7e8a01` · 动作 `a-n302933b-999c12`/`a-n302933b-0209ad` → `V2V4` **§2.3b** + Task Sheet §11） |
 
 > **汇总（终态 · `2026-10-12` 22:20）**：**`PASS / CLOSED = 7 / 7`**（`C-1`…`C-7` 全部达成）· `FAIL = 0`。（历史汇总：第十一阶段探针诊断后 `PASS 5 / BLOCKED 2` ⇒ 第十二阶段 `C-5` / `C-6` / `C-7` 全部关闭。）
 > **★ 当前状态（`2026-10-12` · 第十一阶段探针诊断后）**：**`H-WP4C-09-B` 已执行完毕**（4 对象已建已启）——
