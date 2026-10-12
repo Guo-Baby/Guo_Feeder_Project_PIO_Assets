@@ -1,23 +1,18 @@
 # P3 · `WP4C` —— **EMQX 控制台施工任务单（`R3.1` · 照抄版）**
 
-> ## 🔄 当前进度（`2026-10-12` · 你已完成 ①–⑤）
+> ## 🔄 当前进度（`2026-10-12` 晚间更新）
 >
 > | 步骤 | 状态 |
 > |---|---|
-> | `1` 抄旧统计 | ✅ **已做**（旧对象已删） |
-> | `2` 删规则 `r-…a01720` | ✅ **已删** |
-> | `3` 删动作 `a-…921e22` | ✅ **已删** |
-> | `4` 删连接器 `c-…b12100` | ✅ **已删** |
-> | `5` 建连接器 `CB` | ✅ **已建 = `c-n302933b-0c1cb0`**（URL 裸主机 · SNI 已填 · 4 个头，**配置逐项正确**） |
-> | `6` 建动作 `MF` | 🟡 进行中（见截图：URL 路径填了 `/api/webhook`、备注写成 `guo_feeder_message_ingest` —— **⚠️ 见 §7.4 重要提醒**） |
-> | `7` 建动作 `HI` | ⬜ 未做 |
-> | `8` 建规则 A | 🛑 **上次卡在 SQL 语法错 ⇒ 已修正，见 §7.0 / §7.1** |
-> | `9` 建规则 B | ⬜ 未做 |
-> | `10` 验证 | ⬜ 未做 |
-> | `11` 回写 ID | ⬜ 未做 |
+> | `1`–`5` 删 3 旧对象 + 建连接器 `CB` | ✅ **已做**（`CB = c-n302933b-0c1cb0` · URL 裸主机 · SNI 已填 · 4 头） |
+> | `6`–`7` 建动作 ×2 | ✅ **已建** —— 但**两个动作的 URL 路径相对规则交叉**（代理探针实锤 ⇒ **§7.5**）：<br>规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/webhook` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/history/ingest` |
+> | `8` 建规则 A | ✅ **已建已启 = `r-n302933b-cf0cf2`**（`guo_feeder/+/up`） |
+> | `9` 建规则 B | ✅ **已建已启 = `r-n302933b-f731cf`**（`guo_feeder/#`） |
+> | `10` 验证 | 🟡 **代理侧端到端探针已跑完**（§7.5）：**规则 SQL 全部正确**；**动作路径交叉**致 telemetry 落错表 ⇒ 按 §7.5.3 修复后复测 |
+> | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表） |
 >
 > **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
-> **连接器、动作、端点、请求体、TLS、`X-Webhook-Key` 的规格全部不变。**
+> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 随 §7.5 修复落到规则 A 的动作层。**
 >
 > ## 📋 一句话总览
 >
@@ -471,6 +466,58 @@ WHERE
 
 ---
 
+### 7.5 【实测诊断 · `2026-10-12` 18:30–19:05】代理侧端到端探针（**无需你操作 · 已完成的测试**）
+
+> **结论先行**：**两条规则的 SQL 都工作正常**；**两个动作的 URL 路径相对规则交叉了**
+> ⇒ telemetry 落进 `mqtt_messages`、非 telemetry 被 `/api/history/ingest` 静默拒绝。
+> **修复 = 对调两个动作的 URL 路径**（§7.5.3）· **规则 SQL 一行不动**。
+
+#### 7.5.1 探针方法（可复现 · 合成数据 · 零设备副作用）
+
+| 手端 | 做法 |
+|---|---|
+| MQTT 合成发布 | 账号 `workbuddy`（ACL `all/allow guo_feeder/#`）· TLS `8883` · 合成 device **`ffffffffffff`**（非真实设备）· QoS1 + **严格 PUBACK 校验** |
+| D1 只读回读 | `wrangler d1 execute guofeeder --remote --config guo-feeder-api/wrangler.toml`（wrangler OAuth） |
+| 端点直击 | `curl` + `X-Webhook-Key`（值只从 `.secrets.local` 读入，**不打印**） |
+
+#### 7.5.2 证据表（生产 D1 实测 · 测试行已全部清除）
+
+| # | 合成报文（topic 均为 `guo_feeder/ffffffffffff/…`） | 应走 | 实际落点 | 判定 |
+|---|---|---|---|---|
+| T1 | `/up` `{"ts":…,"type":"wp4c_probe","value":42,"seq":91021,"schema_version":1}` | 规则 A → HI → `telemetry_history` | **`mqtt_messages` id=2460** | ❌ **规则 A 的动作 = `/api/webhook`**（seq 91031 二次复现 id=2462） |
+| T2 | `/up` 同左但 `value=null`（seq 91022） | 规则 A → HI | **`mqtt_messages` id=2461** | 规则 A **命中**（JSON null 被判「键存在」）· 同样落错表 |
+| T3 | `/up` `{"msg":"hello"}` | 规则 B → MF → `mqtt_messages` | **无** | ❌ **规则 B 的动作不是 `/api/webhook`** |
+| T4 | `/up` `{"c":"system","i":"wp4cprobe","p":{"o":"config_query"}}`（命令回包形态） | 规则 B → MF | **无** | 同上 |
+| T5 | `/down` `{"cmd":"wp4c_probe"}` | 规则 B → MF | **无** | 同上 |
+| T6 | 合法 telemetry **直击** `/api/history/ingest`（带 key） | — | **`{"accepted":1}`** | ✅ **HI 端点 + key 完全健康** ⇒ 问题 100% 在 EMQX 动作 |
+| T7 | `{"msg":"hello"}` 直击 `/api/history/ingest`（带 key） | — | **`{"accepted":0,"rejected":1}`（HTTP 200）** | 非 telemetry 到 HI = **静默拒绝、零落库** ⇒ 解释 T3–T5 为何失踪 |
+| T8 | `/log` **二进制载荷**直击 `/api/webhook` | — | **`Invalid JSON` [400]** | ✅ **旧链路 ≈90% 失败主因实锤**（`R-WP4C-15` H-1/H-2）：CBOR ⇒ 非法 JSON ⇒ 400。修复后 `/log` 仍会 400（与旧链路同款，**已知 parity 风险，不归本包修**） |
+
+> **附带发现 ①**：`test001` 账号探针期间**认证被拒**（`Bad user name or password`，v3.1.1/v5 均拒；同期 `workbuddy` 正常）⇒ 疑被改密 / 禁用 / 闪断封禁。**不影响本包结论**（全部实测已用 `workbuddy` 完成）；后续要用 `test001` 须人工核验重置。
+> **附带发现 ②**：早前一轮探针的 `PUB OK` 曾为 **paho 假阳性**（`wait_for_publish` 超时会静默返回）⇒ 本轮已改用 `is_published()` 严格校验，并以 **D1 落库**为唯一准绳。
+> **卫生**：全部测试行已清除 —— `mqtt_messages` 回到 **2458** · `telemetry_history` **0** · `log_history` **0**（与探针前基线逐项一致）。
+
+#### 7.5.3 修复（**只对调两个动作的 URL 路径**）
+
+**目标态**：
+
+```
+规则 A（guo_feeder/+/up · history）→ 它的动作 ⇒ URL 路径 /api/history/ingest + 头 X-Webhook-Key
+规则 B（guo_feeder/#   · message）→ 它的动作 ⇒ URL 路径 /api/webhook
+```
+
+| 步 | 对象（打开它的编辑页） | 改成 |
+|---|---|---|
+| 1 | 动作 **`a-n302933b-126ec6`**（属规则 A · 备注 `guo_feeder_message_ingest`） | **URL 路径** `/api/webhook` → **`/api/history/ingest`**；**请求头加一行** `X-Webhook-Key` = `<WEBHOOK_SECRET>`（`content-type` 保留） |
+| 2 | 动作 **`a-n302933b-7241e2`**（属规则 B · 备注 `guo_feeder_history_ingest`） | **URL 路径** `/api/history/ingest` → **`/api/webhook`**；请求头**去掉** `X-Webhook-Key`（留着无害，建议去掉） |
+| 3 | 备注（可选） | 若可编辑，改成与规则一致（history 归 A 的动作 / message 归 B 的动作）；不可编辑就维持，**以本表为准** |
+| 4 | 若动作页**不可编辑或保存报错** | **删除该动作 → 从对应规则页重建**（配额：动作 2/4 有富余；请求体三键模板逐字照抄 §5/§6） |
+
+> ⚠️ **不要**为此改规则 SQL / FROM（已实测正确）· **不要**动连接器 `CB`（Serverless 不可编辑，删重建代价大）。
+> **改完告诉我** ⇒ 我重跑 §7.5.1 探针复测，**期望：`telemetry_history` +1 · `mqtt_messages` +4**（T1–T5 全部归位）。
+
+---
+
 ## §8 【验证】4 项快检（做完就有结论）
 
 | # | 检查 | 期望 |
@@ -580,6 +627,101 @@ TLS 段截图存放：   ____________
 | 代理本次做了什么 | **仅写文档**：未创建/修改任何 EMQX 规则 · 动作 · 连接器；未部署；未改 firmware / Worker / D1 |
 | 密钥 | 本文件**不含任何密钥值**（`X-Webhook-Key` 用占位符 `<WEBHOOK_SECRET>`） |
 | 关联文档 | 施工规范与平台依据 → `docs/review/P3-WP4C-Console-Build-Guide-R3.md` · 设计 → `P3-WP4C-EMQX-Rule-Design.md` §10 · 变更前基线 → `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` · 回写目标 → `…/P3-WP4C-V2V4-Config-After.md` |
+
+---
+
+## §14 【追加任务】补回 presence 链路（**连接器 ×1 + 规则 ×2 + 动作 ×2**）
+
+> **背景**：原计划 presence 4 对象「不动」，实际旧 presence 连接器 `c-n302933b-291200` 已被一并删除 ⇒ **presence 全链路消失**。
+> **目标**：按 `V-0` 基线（`P3-WP4C-V0-EMQX-Baseline.md` §3.1–§3.3）**逐字重建等价物**（新 ID）。
+> **配额核算（建成后）**：连接器 **2/2** · 规则 **4/4** · 动作 **4/4** —— **刚好用满；此后任何改动都必须先删后建**。
+> **建议顺序**：先做 §7.5.3 的路径对调修复（避免和 presence 混在一起排查），再做本节。
+
+### 14.1 新建连接器（presence）
+
+| 控制台字段 | **填这个** | 依据 |
+|---|---|---|
+| 连接器类型 | HTTP 服务 | 同旧 |
+| 连接器名称 / 备注 | `guo_feeder_presence_http` | 同旧备注 |
+| **URL** | **`https://guo-feeder-pagesdev.pages.dev/api/presence/event`** | ★ **全路径**（presence 动作的 URL 路径**留空**，与旧链路逐字一致；**勿**学 `CB` 用裸主机） |
+| 请求头 | `X-Webhook-Key` = `<WEBHOOK_SECRET>` · `content-type` = `application/json` | 同旧（与 `CB` 的 4 头不同，**勿混**） |
+| 连接超时 | **`5s`** | 同旧（`CB` 是 `10s`） |
+| HTTP 管道 / 连接池大小 / 连接池类型 / 健康检查间隔 / 启动超时 | `50` / `1` / `random` / `30s` / `5s` | 同旧 |
+| 启用 TLS | **开** | 同旧 |
+| **SNI** | **`guo-feeder-pagesdev.pages.dev`** | 必填（不填握手失败） |
+| 验证服务器证书 / CA 证书 / 客户端证书 / 私钥 | **关 / 空 / 空 / 空** | 同旧 |
+| OAuth2 客户端凭证 | 不开 | 用 `X-Webhook-Key` |
+
+★ **保存前截图 TLS 段**（`R-WP4C-16` guard ①）· 保存后点「测试」期望 **200**；出现 `TLS / certificate / ssl` 字样先查 SNI。
+
+### 14.2 新建规则 ×2（Serverless：**先建规则、后配动作**）
+
+**规则 P-1**（备注 `guo_feeder_presence_connected` · 启用 ✅）：
+
+```sql
+SELECT
+  json_encode(
+    map_put('connected_at', connected_at,
+    map_put('peername', peername,
+    map_put('username', username,
+    map_put('clientid', clientid,
+    map_put('event', 'client_connected',
+      map_new()
+    ))))))
+  ) AS body
+FROM
+  "$events/client_connected"
+```
+
+**规则 P-2**（备注 `guo_feeder_presence_disconnected` · 启用 ✅）：
+
+```sql
+SELECT
+  json_encode(
+    map_put('disconnected_at', disconnected_at,
+    map_put('reason', reason,
+    map_put('peername', peername,
+    map_put('username', username,
+    map_put('clientid', clientid,
+    map_put('event', 'client_disconnected',
+      map_new()
+    ))))))
+  ) AS body
+FROM
+  "$events/client_disconnected"
+```
+
+> 两段 SQL **逐字取自 `V-0` 基线 §3.1（`R-1` / `R-2`）** · **无 WHERE** · 与已删旧规则逐字一致（存档已核验）。
+
+### 14.3 每条规则各配 1 个动作（共 2 个）
+
+| 控制台字段 | **填这个** |
+|---|---|
+| 动作类型 | 数据转发 - HTTP 服务 |
+| 使用连接器 | **§14.1 新建的 presence 连接器** |
+| 请求方法 | `POST` |
+| **URL 路径** | **（空）** ← 端点路径已写死在连接器 URL 里 |
+| **请求体** | **裸 `${body}`**（★ 与消息流 / history 的三键模板**完全不同，切勿混用**） |
+| 动作层请求头（5 条） | `accept` = `application/json` · `cache-control` = `no-cache` · `connection` = `keep-alive` · `content-type` = `application/json` · `keep-alive` = `timeout=5` |
+| 高级设置（7 项） | 重试 `1` · 缓存池 `1` · 超时 `5s` · 健康检查 `30s` · 缓存队列 `4MB` · **异步** · 飞行窗口 `50` |
+
+### 14.4 做完验证 + 回写
+
+- 连接器列表：presence 连接器状态**「已连接」**；
+- 用**任意 MQTT 客户端连接/断开一次**（MQTTX，任意账号均可 —— `$events/client_*` 与身份无关）⇒ 规则 P-1 / P-2 **触发数各 +1**；
+- 把 4 个新 ID 回写到 `EMQX_Assets/config/data-integration/P3-WP4C-V2V4-Config-After.md`（presence 存档节）。
+
+---
+
+## §15 是否还需要新建其他规则？—— **不需要**（presence 那 2 条是「恢复」不是「新建」）
+
+| # | 判断 | 依据 |
+|---|---|---|
+| 1 | **history ingest 不需要更多规则** | 规则 A（`/+/up` + 冻结谓词）与规则 B（`/#` + 谓词之否定）**互斥且完整覆盖** `guo_feeder/#` 全族 ⇒ 无漏投、无双投（本轮探针 T1–T5 实证） |
+| 2 | **presence 2 条 = 恢复旧物** | 见 §14；建成后规则 4/4 用满 |
+| 3 | **不要为 `/log` 加规则 / 改 FROM** | `/log`（CBOR 二进制）修复后仍会经规则 B → `/api/webhook` → `Invalid JSON 400`（T8 实锤 · `R-WP4C-15`）。**修它靠固件侧 Cloud Log Envelope（`CF-1`，固件工作包，未开工）**，不靠新规则；且改 `FROM` 违反冻结设计（`SELECT *` + FROM 不动） |
+| 4 | **未来固件 telemetry publisher 落地后** | 规则 A **自动开始接收**，零规则改动（`CF-2` 的修复在固件侧） |
+| 5 | **未来固件 log 信封（JSON）落地后** | 信封字段（`device_id`/`boot_seq`/`seq`/`ts`/`level`/`payload_base64`）缺 `schema_version`/`type`/`value` ⇒ 会被规则 B 送去 `/api/webhook`（错端点）⇒ **届时需新增一条 log 域规则**（属未来工作包，**现在不建**） |
 
 ---
 
