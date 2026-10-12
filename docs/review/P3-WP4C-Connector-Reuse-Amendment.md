@@ -14,6 +14,18 @@
 > >
 > > **★ 施工请以 → `docs/review/P3-WP4C-Console-Build-Guide-R3.md` 为准**（含逐字段填写值、删除顺序、窗口量化、回滚）。
 >
+> > ## 🔄 **`R3.1` 覆盖声明（`2026-10-12` 追加）** —— **本文档 §6.3 的谓词字面写法（`==` / `'undefined'`）已被控制台实测否决**
+> >
+> > **成因**：人工按 `R3` 规格新建规则 `guo_feeder_history_ingest` 时，控制台保存报 **`11: syntax error before: '='`**
+> > ⇒ 核实官方文档确认：① **EMQX 规则 SQL 的"相等"只有单个 `=`，`==` 不存在**；
+> > ② **"键是否存在"应使用官方内置函数 `is_null()` / `is_not_null()`**（判 `undefined`/未赋值；路径中间字段缺失亦返回 `true`）。
+> >
+> > **处置**：**仅改写法、语义逐字不变** —— 谓词改为 `is_not_null(payload.<五键>)` ∧ `is_null(payload.c)` ∧ `is_null(payload.cmd)`；
+> > `'undefined'` 字符串比较**降级为最后备选**（且必须单 `=`）。§6.3 已就地附修正后写法。
+> >
+> > **★ 仍然有效并继续适用的部分**：§1–§4 机制论证 · §6 请求体定案（`${payload}` 不加引号）· §7 `D-7` · §8 风险 · §9 配额核算
+> > —— **全部不变**（§4.2 / §5 施工清单已由 `R3` 作废，以 `R3` 施工说明为准）。
+>
 > | 项 | 值 |
 > |---|---|
 > | **本文档性质** | **设计修订裁决（Amendment R2）** —— 由**平台配额**（不可调整）强制触发；**不等于**放弃冻结语义 |
@@ -258,7 +270,7 @@ telemetry 域要求 `body.payload` 是**非数组对象**（或数组）；**若
 | **动作请求体** | `{"topic":"${topic}","clientid":"${clientid}","payload": ${payload}}` ← **`${payload}` 不加引号** |
 | **理由** | ① **与已在生产验证的消息流动作同构**（同为 `SELECT *` + 三键体 + 不加引号）② 保证 `payload` 以**对象**落到 Worker ⇒ 满足 `history-ingest.js` 契约 ③ `FROM` 与冻结谓词**逐字不变** |
 
-**冻结谓词（逐字 · 不变）**：
+**冻结谓词（`R2` 原字面写法 · 存档留存）**：
 
 ```
       payload.schema_version  != 'undefined'
@@ -270,9 +282,27 @@ telemetry 域要求 `body.payload` 是**非数组对象**（或数组）；**若
   AND payload.cmd             == 'undefined'
 ```
 
+> 🔄 **`R3.1`（`2026-10-12` · 控制台实测）**：上述**字面写法已被否决** ——
+> ① **`==` 不存在**（EMQX 规则 SQL 的"相等"只有单 `=`）⇒ 保存报 **`11: syntax error before: '='`**；
+> ② "键是否存在"应使用官方内置函数 **`is_null()` / `is_not_null()`**。
+> ⇒ **施工以 `R3.1` 写法为准**（**语义逐字不变**，仅改写法）：
+>
+> ```
+>       is_not_null(payload.schema_version)
+>   AND is_not_null(payload.seq)
+>   AND is_not_null(payload.ts)
+>   AND is_not_null(payload.type)
+>   AND is_not_null(payload.value)
+>   AND is_null(payload.c)
+>   AND is_null(payload.cmd)
+> ```
+>
+> **最后备选**（仅当 `is_null` 报"未知函数"）：回到 `'undefined'` 字符串比较，但**相等必须单 `=`**。
+> 权威施工规格 = `P3-WP4C-Console-Task-Sheet.md`（照抄版）+ `…-Console-Build-Guide-R3.md`；冻结设计 §4.5 / §10.4 已同步。
+
 > **★ 语义铁律不变**：`value` 用「**键存在**」语义（**禁**"值非空 / ≠ 0"）· 谓词**不涉及** `device_id`（身份只来自 topic）· **禁只判 `type`/`value`/`topic`**。
-> ⚠️ **仍未冻结**：函数名 / `'undefined'` 比较写法 / `payload.x` 自动解码 —— **一律以控制台 `V-1` 实测为准**（可能出现必须改用 `json_decode(payload)` 或 `maps:get` 之类的情况）。
-> **若 `V-1` 发现 `payload` 不自动解码 ⇒ 就地改用 `json_decode(payload)` 方案，并回写存档**（属 §4.5 允许范围）。
+> ✅ **`R3.1`（`2026-10-12`）已定稿部分**：函数名 = 官方内置 **`is_null` / `is_not_null`**（控台实测 `==` 报错后核实官方文档定案）；`'undefined'` 字符串比较**降级为最后备选**（必须单 `=`）。
+> ⚠️ **仍待控制台实测确认**：`payload.x` 是否自动解码 —— 规则保存后用页面调试功能试跑（`{"msg":"hello"}` ⇒ 规则 A **不匹配** / 规则 B **匹配**；见 `P3-WP4C-Console-Task-Sheet.md` §7.0）。若 `payload` 不自动解码 ⇒ 就地改用 `json_decode(payload)` 方案，并回写存档（属 §4.5 允许范围）。
 
 ---
 
@@ -327,10 +357,11 @@ telemetry 域要求 `body.payload` 是**非数组对象**（或数组）；**若
 
 | 项 | 变化 |
 |---|---|
-| `P3-WP4C-EMQX-Rule-Design.md` | `FROZEN DESIGN` → **`FROZEN DESIGN R2`**（新增 **§10** 修订节 + `D-7`）→ **`R3` 注** |
-| `P3-WP4C-Implementation-Plan.md` §8 | **规格 v1 作废 → v2**（连接器复用 + 动作路径 + 请求体修正）→ **v3** |
-| `P3-WP4C-Console-Build-Guide-R3.md` | 🟢 **新增** —— **`R3` 施工说明（唯一施工依据）** |
-| `H-WP4C-09-B` | 🟡 `READY` → 🟡 **`READY (R2)`** → 🟡 **`READY (R3)`** —— **施工规格以施工说明为准** |
+| `P3-WP4C-EMQX-Rule-Design.md` | `FROZEN DESIGN` → **`FROZEN DESIGN R2`**（新增 **§10** 修订节 + `D-7`）→ **`R3` 注** → **`R3.1` 注**（§4.5 / §10.4：SQL 写法修正） |
+| `P3-WP4C-Implementation-Plan.md` §8 | **规格 v1 作废 → v2**（连接器复用 + 动作路径 + 请求体修正）→ **v3** → **v3.1**（SQL 谓词写法） |
+| `P3-WP4C-Console-Build-Guide-R3.md` | 🟢 **新增** —— **`R3` 施工说明（唯一施工依据）** → 升级 **`R3.1`**（SQL 三种等价写法） |
+| **`P3-WP4C-Console-Task-Sheet.md`** | 🟢 **新增（照抄版任务单）** → 升级 **`R3.1`**（SQL 用 `is_null`/`is_not_null`） |
+| `H-WP4C-09-B` | 🟡 `READY` → 🟡 **`READY (R2)`** → 🟡 **`READY (R3)`** → 🟡 **`READY (R3.1)`** —— **施工规格以施工说明 + 任务单为准** |
 | `CF-2` | 🔴 仍 `BLOCKED`（判据 = **冻结验证集** `V-1…V-7`） |
 | 冻结验证集 `V-1…V-7` | 🔴 全 **`NOT RUN`**（不变） |
 

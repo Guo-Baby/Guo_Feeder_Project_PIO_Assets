@@ -1,12 +1,12 @@
-# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN **R3**）
+# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN **R3.1**）
 
-> ## 🔒 `FROZEN` **R3** · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
+> ## 🔒 `FROZEN` **R3.1** · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **冻结设计（唯一实施依据 · `R3`）** —— 后续 EMQX 实施（控制台）**只能**依此执行（**形态以 §10 修订节为准**） |
+> | **本文档性质** | **冻结设计（唯一实施依据 · `R3.1`）** —— 后续 EMQX 实施（控制台）**只能**依此执行（**形态以 §10 修订节为准 · 谓词写法以 §4.5 / §10.4 为准**） |
 > | **冻结依据** | 本仓 `docs/review/P3-WP4C-Decisions.md`（`H-WP4C-03` 人工裁决） |
-> | **基线** | 固件仓 HEAD = **`cdcc766`**（R1）→ **`def74f7`**（R2）→ **`1d15104`**（R3）· CF 仓 **`9b25203`** → **`415cd0c`** · EMQX 仓 **`eec9444`** → **`efa117d`** → **`3ea08fe`** |
+> | **基线** | 固件仓 HEAD = **`cdcc766`**（R1）→ **`def74f7`**（R2）→ **`1d15104`**（R3）→ **`4c74d3a`**（R3.1）· CF 仓 **`9b25203`** → **`415cd0c`** · EMQX 仓 **`eec9444`** → **`efa117d`** → **`3ea08fe`** → **`a73968a`** |
 > | **上游依据** | `H-WP4-FW-01`（**已 `CLOSED`**：方案 A 双 Action 分流）· `DT:WP-4` §9.1（端点 = `POST /api/history/ingest`）· `cloud_protocol.md` §4.5（telemetry uplink 已冻结） |
 > | **本文档不做的** | ❌ 不创建 / 修改 EMQX 规则或连接器 · ❌ 不改 Worker · ❌ 不改 migration · ❌ 不改 firmware · ❌ 不改 `/up` · ❌ 不部署 |
 >
@@ -41,9 +41,26 @@
 > >
 > > **施工规格（唯一依据）** → **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。
 >
-> > **英文冻结声明**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
+> ---
+>
+> ### 🔄 **`R3.1` 修订（`2026-10-12`）—— 控制台实测 `==` 语法错 ⇒ 修正「SQL 谓词写法」（**语义零变更**）**
+>
+> > **成因**：控制台保存规则时报 **`11: syntax error before: '='`**；解析器 trace 显示
+> > `payload.c == 'undefined'` 被词法拆成**两个** `=` token ⇒ **EMQX 规则 SQL 的"相等"只有单个 `=`，`==` 不存在**。
+> > 且"键是否存在"应当用**官方内置函数** `is_null()` / `is_not_null()`（而非 `!= 'undefined'` 字符串比较）。
+> >
+> > **处理**：**仅改写法** —— 谓词改为 `is_not_null(payload.<五键>)` ∧ `is_null(payload.c)` ∧ `is_null(payload.cmd)`；旧规则取反 = 之德摩根展开（只用 `OR`/`AND`/`is_*`）。
+> > **新增强制验证步**：保存前必须用规则页 **「启用调试 + 发送测试消息」** 跑两条样例（见 §10.4）。
+> >
+> > **★ 语义仍逐字不变**（§4.1 的**逻辑谓词**未动；本节属 §4.5「非冻结契约」范围内修正）。
+> > **明细** → **§10.4** · **风险登记** → **`R-WP4C-20`**。
+> >
+> > **英文冻结声明（R3.1）**：*`R3.1` corrects the SQL predicate **syntax** only (`==` is invalid; use `is_null`/`is_not_null`).
+> > The frozen routing **semantics** are unchanged.*
+>
+> > **英文冻结声明（总）**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
 > > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.
-> > **R2 changes the connector topology only — not the routing semantics.***
+> > **R2/R3 change the connector topology / build method only — not the routing semantics.***
 
 ---
 
@@ -268,16 +285,36 @@ telemetry  ⟺  ( schema_version ∧ seq ∧ ts ∧ type ∧ value )
 **未匹配 telemetry 谓词的一切报文 → 命令链路**（保持既有行为）。
 ⇒ 未来的新上行类型**默认不会被误判为 telemetry**（fail-safe 方向正确：宁可命令链路多收，不可污染历史表）。
 
-### 4.5 SQL 形态草稿（**非冻结契约 · 以 §7 V-1 在真实版本上验证为准**）
+### 4.5 SQL 形态草稿（**非冻结契约 · `R3.1` 已按控制台实测修正**）
 
-> ⚠️ 具体函数名（`has` / `is_not_null` / `json_decode` 等）与语法**以部署的 EMQX 版本控制台实测为准**；
-> 本节只给**结构**，**不构成冻结语法**。**冻结的是 §4.1 的逻辑谓词。**
+> ⚠️ **`R3.1`（`2026-10-12`）修正**：本节的 `!= 'undefined'` 形态**已被控制台实测否决**（两处错误）：
+> ① **`==` 不存在** —— EMQX 规则 SQL 的"相等"只有**单个 `=`** ⇒ `payload.c == 'undefined'` 报 **`syntax error before: '='`**（控制台实测）；
+> ② **"键是否存在"应使用官方内置函数 `is_null()` / `is_not_null()`**（`is_null(Term)` = 判 **undefined/未赋值**；`is_not_null(Term)` = 反之；**路径中间字段缺失亦返回 `true`**）。
+> ⇒ 下表为**修正后形态**；`'undefined'` 字符串比较仅作**最后备选**（且必须单 `=`）。
+> **冻结的是 §4.1 的逻辑谓词**（键存在语义），**不是字面写法**。
+
+**首选（`R3.1` 定稿）**：
 
 ```
 SELECT
-  json_encode(map_put('topic', topic,
-  map_put('clientid', clientid,
-  map_put('payload', payload, map_new())))) AS body
+  *
+FROM
+  "guo_feeder/+/up"
+WHERE
+      is_not_null(payload.schema_version)
+  AND is_not_null(payload.seq)
+  AND is_not_null(payload.ts)
+  AND is_not_null(payload.type)
+  AND is_not_null(payload.value)
+  AND is_null(payload.c)
+  AND is_null(payload.cmd)
+```
+
+**最后备选（仅当 `is_null` 报"未知函数" · 注意 `=` 是单等号）**：
+
+```
+SELECT
+  *
 FROM
   "guo_feeder/+/up"
 WHERE
@@ -286,11 +323,14 @@ WHERE
   AND payload.ts              != 'undefined'
   AND payload.type            != 'undefined'
   AND payload.value           != 'undefined'
-  AND payload.c               == 'undefined'
-  AND payload.cmd             == 'undefined'
+  AND payload.c               = 'undefined'
+  AND payload.cmd             = 'undefined'
 ```
 
-（既有消息规则 WHERE 取**上式之否定**，见 §5。）
+> ★ **`SELECT *` 而非 `SELECT json_encode(…) AS body`**：动作体引用 `${topic}` / `${clientid}` / `${payload}`，
+> 若只输出 `body` 一个字段 ⇒ 变量取空 ⇒ 投递失败（`R2` §6.1 已定案）。`SELECT *` 与生产在跑的消息流规则同构。
+
+（既有消息规则 WHERE 取**上式之否定**，见 §5；`R3.1` 下即 `is_null(...) OR ... OR is_not_null(payload.c) OR is_not_null(payload.cmd)`。）
 
 ---
 
@@ -443,11 +483,12 @@ Verification:
 
 ---
 
-## §10 🔄 **`R2` / `R3` 修订 —— 连接器形态（平台约束强制）**
+## §10 🔄 **`R2` / `R3` / `R3.1` 修订 —— 连接器形态 + SQL 写法（平台约束强制）**
 
 > **`R1` 的可实施性依赖「新建独立连接器」；`D-7`（配额 2/2）使其不可能** ⇒ `R2` 改为**复用**；
-> 又因**连接器不可编辑**（仅专有版可编辑）⇒ `R3` 改为**删除重建**。本节为**唯一的形态修正**。
-> **核心语义（方案 A · 冻结谓词 §4 · `-S2` §5 · Pages Proxy · 端点 `/api/history/ingest` · `V-1…V-7`）逐字不变。**
+> 又因**连接器不可编辑**（仅专有版可编辑）⇒ `R3` 改为**删除重建**；
+> 再因**控制台实测 `==` 语法错** ⇒ **`R3.1` 修正谓词写法**。本节为**唯一的形态/写法修正**。
+> **核心语义（方案 A · 冻结谓词 §4 的逻辑 · `-S2` §5 · Pages Proxy · 端点 `/api/history/ingest` · `V-1…V-7`）逐字不变。**
 
 ### 10.1 修订前后对照
 
@@ -501,6 +542,46 @@ Verification:
 > ⚠️ §4.5 的「SQL 形态**非冻结契约**」在此适用；**谓词逻辑本身（§4.1）仍逐字冻结**。
 > 明细与全部候选评估 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。
 
+### 10.4 🔄 **`R3.1` —— SQL 谓词写法修正（控制台实测驱动）**
+
+> **成因**：`R3` 交付的规则 SQL 在控制台**保存失败**，报 **`11: syntax error before: '='`**（用户实测，`2026-10-12`）。
+> 由解析器 trace 定位到 **`payload.c == 'undefined'`** —— 词法阶段被拆成**两个** `=` token（`{'COMPARISON',11,'='},{'COMPARISON',11,'='}`）。
+
+| # | `R3` 的写法 | 事实（EMQX 官方） | `R3.1` 修正 |
+|---|---|---|---|
+| 1 | `payload.c == 'undefined'` | 规则 SQL 的"完全相等"**只有单个 `=`**（Rule SQL Reference: `=` = "Check if the two operands are completely equal"）；**`==` 不存在**。`!=` 合法 | 改用 **`is_null(payload.c)`**（等价语义） |
+| 2 | `payload.x != 'undefined'`（"键存在"判定） | 官方内置函数才是一等公民：**`is_null(Term)` = 判 `undefined`（未赋值）**；**`is_not_null(Term)` = 反之**；**路径中间字段缺失亦返回 `true`**（`is_null(payload.t.field)` on `{"msg":"hello"}` ⇒ `true`，EMQX 维护者原话） | 全部改用 **`is_not_null(...)` / `is_null(...)`** |
+
+**`R3.1` 定稿谓词**（= §4.5 首选形态）：
+
+```
+      is_not_null(payload.schema_version)         ← 正条件 ×5（键存在）
+  AND is_not_null(payload.seq)
+  AND is_not_null(payload.ts)
+  AND is_not_null(payload.type)
+  AND is_not_null(payload.value)
+  AND is_null(payload.c)                          ← 反条件 ×2（键不存在）
+  AND is_null(payload.cmd)
+```
+
+**旧规则（`guo_feeder/#`）取反（`-S2` 目标 · 只含 `OR` / `AND` / `is_*`，无 `NOT`、无括号）**：
+
+```
+      is_null(payload.schema_version)
+   OR is_null(payload.seq)
+   OR is_null(payload.ts)
+   OR is_null(payload.type)
+   OR is_null(payload.value)
+   OR is_not_null(payload.c)
+   OR is_not_null(payload.cmd)
+```
+
+> ★ **语义（§4.1 冻结的逻辑谓词）逐字未变** —— 改的只是**写法**（`R3.1` 属 §4.5「非冻结契约」范围内的修正）。
+> ★ **强制新增验证步**：规则保存前，必须用规则页的 **「启用调试 + 发送测试消息」** 以两条样例验证
+> （`{"msg":"hello"}` ⇒ history 规则**不匹配** / message 规则**匹配**；telemetry 信封 ⇒ 反之），**符合后才保存**。
+> ★ **最后备选**（仅当 `is_null` 报"未知函数"）：回到 `'undefined'` 字符串比较，但**相等必须单 `=`**。
+> 登记风险 → **`R-WP4C-20`**（`P3-WP4C-Implementation-Record.md`）。
+
 ---
 
 ## §11 关联文档
@@ -508,7 +589,8 @@ Verification:
 | 文档 | 关系 |
 |---|---|
 | **`docs/review/P3-WP4C-Decisions.md`** | **★ 本设计的冻结裁决记录（权威）** |
-| **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`** | **★★ `R3` 施工说明（唯一施工依据）** —— 建连接器 / 建动作 / 建规则逐字段 + 删除顺序 + 窗口 + 回滚 |
+| **`docs/review/P3-WP4C-Console-Task-Sheet.md`** | **★★★ 施工任务单（照抄版 · 唯一"照着点"的依据）** —— 旧对象原文 / 删除清单 / 新建逐字段值 / **完整 SQL** |
+| **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`** | **★★ `R3`/`R3.1` 施工说明** —— 建连接器 / 建动作 / 建规则逐字段 + 删除顺序 + 窗口 + 回滚 |
 | `docs/review/P3-WP4C-Connector-Reuse-Amendment.md` | `R2`/`R3` 修订裁决（机制论证 §4.1 · 请求体定案 §6 · 配额核算 §9） |
 | `docs/interfaces/cloud_protocol.md` **§4.5** | telemetry uplink 冻结契约（**输入**） |
 | `docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` | 冻结裁决（信封 / 值编码 / seq / 范围 / 路由） |
@@ -530,4 +612,9 @@ Verification:
 **施工形态**改为 **删除重建**（新连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2 · **presence 链路零接触**）；
 **语义仍逐字不变**，且 **§5.1 双投窗口消失**；新增风险 **`R-WP4C-18b`**（删除不可逆 ⇒ 施工前须抄录运行统计 + 截图配置）。
 施工规格（唯一依据） → **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。*
-规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。最新基线 = 固件仓 **`def74f7`** · CF 仓 **`415cd0c`** · EMQX 仓 **`efa117d`**。*
+规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。
+*`2026-10-12` **升级为 `R3.1`**（成因：**控制台实测 `syntax error before: '='`** —— `R3` 谓词里的 `==` 不被 EMQX SQL 支持）——
+新增 **§10.4**（谓词写法修正：改用官方 **`is_null` / `is_not_null`**）· §4.5 草稿同步修正；
+**语义仍逐字不变**，新增风险 **`R-WP4C-20`**，新增强制验证步（规则页**调试试跑**）。
+施工规格（唯一依据） → **`docs/review/P3-WP4C-Console-Task-Sheet.md`** + `…-Console-Build-Guide-R3.md`。*
+最新基线 = 固件仓 **`4c74d3a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`a73968a`**；**已建对象** = 连接器 `c-n302933b-0c1cb0`。*
