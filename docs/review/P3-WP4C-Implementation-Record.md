@@ -27,7 +27,7 @@
 > **新增并部署** Pages 中转函数 `guo-feeder-pagesdev/functions/api/history/ingest.js`
 > （Pages 新部署 = **`61b4938e-fa2e-42da-b950-f527781f79f9`**；回滚目标 = `5790b3c5-…`）⇒
 > **端到端验证 `PASS 15 / FAIL 0`**（A 段 7/7 · B 段 8/8；D1 落库 `telemetry ×4 + log ×1`，**已定点清理并复核归零**）⇒
-> **`H-WP4C-11` = ✅ `CLOSED`** · **`V-1` = 🟢 `PASS`（带说明）**（§6）· **`H-WP4C-09-B` = 🟡 `READY (R3.1)` ⇒ 施工已执行（连接器 + 规则 ×2 + 动作 ×2 已建已启）· 代理四轮探针：路径交叉（`R-WP4C-21`）⇒ 人工对调 ⇒ key 头缺失（`R-WP4C-22`）⇒ 人工补头 ⇒ **第四轮 tail 实证：头已在对的动作上但值不匹配 401（`R-WP4C-23`）⇒ 规则/路径/body 全对，只差两处密钥值**（§5 / §7）；
+> **`H-WP4C-11` = ✅ `CLOSED`** · **准入 `V-1` = 🟢 `PASS`（带说明）**（§6）· **`H-WP4C-09-B` = ✅ `CLOSED`**（连接器 + 规则 ×2 + 动作 ×2 已建已启 + presence 4 对象删旧建新）· 代理五轮探针 + tail：路径交叉（`R-WP4C-21`）⇒ 人工对调 ⇒ key 头缺失（`-22`）⇒ 补头 ⇒ 值不匹配 401（`-23`）⇒ **人工删旧建新 presence 连接器 + 修正两处 secret 值 ⇒ 第五轮 5 请求全 200 + 冻结验证集 `V-1…V-7` 全 `PASS` ⇒ `CF-2` = ✅ `CLOSED`**（§5 / §6 / §7）；
 > **纪律 §6A.4 `STOP` 条款已无成立条件**；**核查旧连接器收存** ⇒ **确认收到并存储**（`mqtt_messages` **2458** 行且仍在增长）。
 > 记录 → **`docs/review/P3-WP4C-History-Relay-Deployment-Verification.md`**（新增 **`R-WP4C-17`**）。
 >
@@ -167,13 +167,13 @@
 |---|---|---|---|---|
 | **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🟠 **已拆分（不关闭）** ⇒ `-09-A` / `-09-B` |
 | **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（`2026-10-12` —— **连接器 2/2 · 规则 3/3 含 SQL 全文 · 动作 3/3 含高级设置 · D1 计数已采 · 回滚已签署**；**guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**，`R-WP4C-16`） |
-| **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **`R3`：删除** `r-…a01720` → `a-…921e22` → `c-…b12100` ⇒ **新建** 连接器 `CB`（裸主机 base）+ 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**取反谓词**）/`guo_feeder_history_ingest`（**冻结谓词**）；**presence 链路零接触** | 🟡 **`READY (R3.1)`** —— **执行进度**：⏹ 拆除 3 个旧对象 ✅ 已完成；✅ 连接器 **`c-n302933b-0c1cb0`** 已建；🛑 规则 SQL 曾报 **`syntax error before: '='`** ⇒ **`R3.1` 已修正谓词写法（`is_null`/`is_not_null`）**；**仍须人工控制台执行**（代理无控制台 / API 权限）。施工依据 → **`P3-WP4C-Console-Task-Sheet.md`** + `…-Console-Build-Guide-R3.md` |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **`R3`：删除** `r-…a01720` → `a-…921e22` → `c-…b12100` ⇒ **新建** 连接器 `CB`（裸主机 base）+ 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**取反谓词**）/`guo_feeder_history_ingest`（**冻结谓词**）；**presence 链路**（原计划零接触，实际随旧连接器删除而重建 ⇒ §14） | ✅ **`CLOSED`**（`2026-10-12` 22:20）—— **执行进度**：拆除 3 旧对象 ✅ · 连接器 `CB = c-n302933b-0c1cb0` ✅ · 规则 A/B + 动作 ×2 ✅（SQL 谓词经 `R3.1` 修正，五轮探针实证正确）· URL 路径对调 + 两处 `X-Webhook-Key` **值**修正 ✅ · **presence 4 对象删旧建新**（§14，新 ID 待回传）✅ · **第五轮终测全 200 + 冻结验证集 `V-1…V-7` 全 `PASS` ⇒ `CF-2` = `CLOSED`**。施工依据 → `P3-WP4C-Console-Task-Sheet.md`（§7.5/§14） |
 | **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔒 **`CLOSED`**（`2026-10-12` 随 `-10-A` 裁决关闭） |
 | **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | ✅ **裁决 = 方案 A（`Pages Proxy`）**（口径：「裁决仍然使用 pages 代理，workers 无法直连」）⇒ `D-2` 成立 ⇒ `R-WP4C-12` **收敛** | 🔒 **`CLOSED`** |
 | **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署** | **人工授权 · 已执行** | 方案 A 落地前置：新增 `guo-feeder-pagesdev/functions/api/history/ingest.js`（照抄 `presence/event.js` + **`X-Webhook-Key` 透传**）+ 部署 + 实测 | ✅ **`CLOSED`**（`2026-10-12` —— 已部署 `61b4938e-…` · 端到端 **`PASS 15 / FAIL 0`** · 冒烟脚本 `scripts/smoke-history-relay.mjs` 可复现） |
 
 > **★ 原「两条并行前置」均已闭合**：✅ **`H-WP4C-09-A`**（`V-0` 基线，`CLOSED WITH GUARD`）**∥** ✅ **`H-WP4C-11`**（Pages 中转，`CLOSED`）。
-> **⇒ 当前无纪律层面的 `STOP`**；剩余阻塞 = **人工执行能力**（`H-WP4C-09-B` 须在 EMQX 控制台操作，代理无控制台 / API 权限）。
+> **⇒ 当前无纪律层面的 `STOP`**；**`H-WP4C-09-B` 已 `CLOSED`**（人工控制台执行完毕 + 代理五轮探针/tail 实证）。
 
 ---
 
@@ -182,15 +182,15 @@
 | # | 用例 | 状态 | 说明 |
 |---|---|---|---|
 | **`V-0`** | 变更前 EMQX 基线导出 | ✅ **`CLOSED WITH GUARD`** | **已完成**（人工控制台只读导出 + 只读 D1 计数）：连接器 **2/2** · 规则 **3/3（SQL 全文）** · 动作 **3/3（含高级设置）** · **D1 基线**（`th=0` / `lh=0` / **`mm=2458`**，近 24 h **13**）· **回滚已签署**；**guard** = TLS 明细**平台不可回读** ⇒ 新建连接器**保存前截图 + 保存后实测**（`R-WP4C-16`）。明细 → `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` |
-| **`V-1`** | Rule syntax（保存 + 启用） | 🔴 **`BLOCKED`** | 依赖 ③④⑤ |
-| **`V-2`** | telemetry positive（history +1 / `mqtt_messages` +0） | 🔴 **`BLOCKED`** | 同上 |
-| **`V-3`** | command negative（history +0 / `mqtt_messages` +1） | 🔴 **`BLOCKED`** | 同上 |
-| **`V-4`** | mixed payload（含 `cmd` ⇒ 非 telemetry） | 🔴 **`BLOCKED`** | 同上 |
-| **`V-5`** | multi device isolation | 🔴 **`BLOCKED`** | 同上 |
-| **`V-6`** | reconnect（不重复写入） | 🔴 **`BLOCKED`** | 同上 |
-| **`V-7`** | duplicate（D1 unique constraint） | 🔴 **`BLOCKED`** | **索引已就位**（`ux_th_dedup`/`ux_lh_dedup` ✅），但仍需真实投递才能验证 |
+| **`V-1`** | Rule syntax（保存 + 启用） | ✅ **`PASS`** | 两规则均已保存启用且正常触发（§7.5.7 tail 实证） |
+| **`V-2`** | telemetry positive（history +1 / `mqtt_messages` +0） | ✅ **`PASS`** | probe8：A 发 ts1001/seq92001 ⇒ `th(A)+1` · `mm+0` |
+| **`V-3`** | command negative（history +0 / `mqtt_messages` +1） | ✅ **`PASS`** | probe8：`{"cmd":"v3_check"}` ⇒ `th+0` · `mm(A)+1` |
+| **`V-4`** | mixed payload（含 `cmd` ⇒ 非 telemetry） | ✅ **`PASS`** | probe8：telemetry 外形 + `cmd` ⇒ 判**非 telemetry**，落 `mqtt_messages` |
+| **`V-5`** | multi device isolation | ✅ **`PASS`** | probe9：B（`eeeeeeeeeeee`）⇒ `th(B)+1` · A 零增长（身份取自 topic 第 2 段） |
+| **`V-6`** | reconnect（不重复写入） | ✅ **`PASS`** | probe8：同 tuple 重连前后各发一次 ⇒ `th(A)` **恰 1 行** |
+| **`V-7`** | duplicate（D1 unique constraint） | ✅ **`PASS`** | probe8：同 tuple 同连接发两次 ⇒ `th(A)` **恰 1 行**（`ux_th_dedup` 吸收） |
 
-> **⇒ `CF-2` 仍 `BLOCKED`**（判据 = `V-1…V-7` 通过）。
+> **⇒ `CF-2` = ✅ `CLOSED`**（`2026-10-12` 22:20：判据 `V-1…V-7` 全部 `PASS` ⇒ §7.5.7）。
 >
 > **★ 命名空间警示（防误读）**：上表的 **`V-1…V-7` = 冻结验证集**（`P3-WP4C-EMQX-Rule-Design.md`），
 > **不同于**纪律 **§6A.3 的准入序列 `V-0…V-5`**（控制台变更准入流程）。两者**编号重叠但语义不同**。
@@ -219,7 +219,7 @@
 | **`R-WP4C-16`** | 🟠 中 | **★ 连接器 TLS 明细「保存后不可回读」** —— EMQX 控制台在连接器保存后**不再展示 TLS 段（SNI / 验证服务器证书 / CA）**（人工实测，`2026-10-12`）⇒ **`V-0` 的 TLS 项永久无法完整采集**；现有两个连接器仅有人工**回忆值**（SNI 已填 / CA 未设置 / **口径与目标域表述不一致**）。叠加：**健康检查（30 s）会对端点发探测**，其 `resource down` 告警与**真实投递失败在统计上混淆** | **guard ①**：新建连接器时**保存前截图 TLS 段**（唯一可留痕形态）→ 归档 `EMQX_Assets/config/data-integration/assets/wp4c-v2v4/`（打码）· **guard ②**：保存后**实测验收**（「测试连接」到达 **HTTP 层** = TLS 通；出现 `TLS/certificate/ssl` ⇒ 先查 SNI；端点 `POST` 无 key ⇒ `401`）· **禁止**用 `README.md` §6.4 的书写值充当实测基线（§6A.2 第 3 条）· `V-2` 后须**观察 resource down 告警频率** |
 | **`R-WP4C-20`** | 🔴 **高（曾致施工中断）** | **★ 规则 SQL 语法子集**（**`R3.1` 新增** · 控制台实测触发）：`R3` 交付的谓词含 **`==`** ⇒ 控制台报 **`11: syntax error before: '='`**（解析器 trace 显示 `payload.c ==` 被词法拆成**两个** `=` token）。**根因**：EMQX 规则 SQL 的"完全相等"**只有单个 `=`**（官方 *Rule SQL Reference*），**`==` 不存在**；且"键是否存在"**应以内置函数 `is_null` / `is_not_null` 表达**（官方 *Built-in SQL Functions*：`is_null(Term)` = 判 `undefined`/未赋值，**路径中间字段缺失亦返回 `true`**），而非 `!= 'undefined'` 字符串比较。 | ① **`R3.1` 修正**：谓词改用 **`is_not_null(payload.<五键>)` ∧ `is_null(payload.c)` ∧ `is_null(payload.cmd)`**；旧规则取反 = **德摩根展开**（只用 `OR`/`AND`/`is_*`，**无 `NOT`、无括号**，避开子集风险）；② **最后备选**：`'undefined'` 字符串比较（**相等必须单 `=`**）—— 仅当 `is_null` 未知时使用；③ **强制新增验证步**：保存前必须用规则页 **「启用调试 + 发送消息」** 跑两条样例（`{"msg":"hello"}` ⇒ history **不匹配** / message **匹配**；telemetry 信封 ⇒ 反之），**符合才保存**；④ 同批修正 `Implementation-Plan` §8（`v3.1`）· 冻结设计 §4.5/§10.4 · 施工任务单/说明。**教训**：`§4.5` 已声明"语法非冻结"，但 `R1–R3` 仍在**未实测**的情况下把写法写成定稿 ⇒ 今后凡涉 EMQX SQL **必须先控制台试跑再定稿** |
 | **`R-WP4C-21`** | 🔴 **高（功能反向）** | **★ 两个动作的 URL 路径相对规则交叉**（**`2026-10-12` 代理端到端探针实测**）：规则 A（`guo_feeder/+/up` · history）的动作 **`a-n302933b-126ec6`** 实际指向 **`/api/webhook`**；规则 B（`guo_feeder/#` · message）的动作 **`a-n302933b-7241e2`** 实际指向 **`/api/history/ingest`**。**后果**：① 合法 telemetry 三连（seq `91021`/`91022`/`91031`）**全部落进 `mqtt_messages`**（id `2460`/`2461`/`2462`）⇒ `telemetry_history` **零增长** + 旧表被污染；② 非 telemetry 五连**全部失踪**（HI 对非 telemetry 返回 `{"accepted":0,"rejected":1}` **静默拒绝**、HTTP 200 无落库）⇒ **消息流实际断流**（比旧链路 ≈13% 成功率更差）；③ `/log` CBOR 修复后仍会 `400`（`R-WP4C-15` 同款，parity 风险）。**根因**：Serverless「先建规则后配动作」流程下，两个动作**建在了错的规则页**（备注各自正确、路径各自正确、**归属错**）—— 列表快照**看不出** URL 路径。 | **① 修复 = 对调两个动作的 URL 路径**（`a-…126ec6` → `/api/history/ingest` + 加 `X-Webhook-Key`；`a-…7241e2` → `/api/webhook` + 去 key）· **规则 SQL 不动**（探针实证正确：A 命中 telemetry / 排除命令回包）· **连接器 `CB` 不动**（Serverless 不可编辑）；② 修复后**代理重跑探针复测**（期望 `telemetry_history` +1 · `mqtt_messages` +4）；③ **教训**：凡「动作从规则页创建」的流程，**建成后必须端到端探针**，不能只看列表快照；④ 探针方法已固化（任务单 §7.5.1：`workbuddy` 账号 + 合成 device `ffffffffffff` + 严格 PUBACK 校验 + D1 只读回读）；⑤ **附带发现**：`test001` 账号探针期间认证被拒（疑改密/禁用/封禁，`workbuddy` 正常）—— 已记入任务单 §7.5.2 · ⑥ **对调后复测（`2026-10-12` 19:30）**：路径对调**已生效于规则 B 侧**（非 telemetry + 下行正确落 `mqtt_messages` id `2463`/`2464`）；**规则 A 侧仍零落库** ⇒ 派生 **`R-WP4C-22`**（key 头未随路径迁移）|
-| **`R-WP4C-23`** | 🟠 中（改两处值即可 · **本轮实测定位**） | **★ `X-Webhook-Key` 的值与 Worker 密钥不匹配（401）**（**`2026-10-12` 21:50 第四轮 · Worker `wrangler tail` 实证**）：人工补头后，**规则 A 与 presence 两条规则的请求均带 `X-Webhook-Key` 头到达 Worker**（tail 逐字证据：`/api/history/ingest` 163 B · `/api/presence/event` 144 B/168 B），但**全部 401** ⇒ **头在、值错**。**规则 B 侧全链 ✅**（webhook 200 · 落 `mqtt_messages`）。**规则 SQL / URL 路径 / 动作 body / presence 规则+动作全部正确**（推翻 `R-WP4C-22` 的「加错动作」判断—— secret 已在对的动作上）。**根因**：`.secrets.local` 有两把钥匙（`WEBHOOK_SECRET` 40 字符 / `ADMIN_API_TOKEN`），极可能又把 `ADMIN_API_TOKEN` 当成了 webhook 密钥（本项目已犯过同款错误）。 | ① **改两处值**（无中断窗口）：动作 `a-n302933b-126ec6` 的 `X-Webhook-Key` + presence 链（连接器 `c-n302933b-70f9da` 或动作层）的同名头 ⇒ 均改为 `.secrets.local` 的 `WEBHOOK_SECRET` 值（40 字符 · 无引号无空格）；② 第五轮终测期望：T1 ⇒ `telemetry_history` +1 · presence 连接/断开 ⇒ `device_event` online/offline 各 1 行；③ **新诊断通道已创立**：`wrangler tail` 走本机代理 `127.0.0.1:7890` 可用（直连被墙）⇒ 每个请求的 URL/长度/状态码一览，此后排障优先；④ **教训**：密钥类配置回传确认不能只看「头在不在」，要能观测到**状态码**——tail 通道补上了这块盲区 |
+| **`R-WP4C-23`** | 🟠 中（**✅ 已解决 `2026-10-12` 22:20**） | **★ `X-Webhook-Key` 的值与 Worker 密钥不匹配（401）**（**`2026-10-12` 21:50 第四轮 · Worker `wrangler tail` 实证**）：人工补头后，**规则 A 与 presence 两条规则的请求均带 `X-Webhook-Key` 头到达 Worker**（tail 逐字证据：`/api/history/ingest` 163 B · `/api/presence/event` 144 B/168 B），但**全部 401** ⇒ **头在、值错**。**规则 B 侧全链 ✅**（webhook 200 · 落 `mqtt_messages`）。**规则 SQL / URL 路径 / 动作 body / presence 规则+动作全部正确**（推翻 `R-WP4C-22` 的「加错动作」判断—— secret 已在对的动作上）。**根因**：`.secrets.local` 有两把钥匙（`WEBHOOK_SECRET` 40 字符 / `ADMIN_API_TOKEN`），极可能又把 `ADMIN_API_TOKEN` 当成了 webhook 密钥（本项目已犯过同款错误）。 | ① **改两处值**（无中断窗口）：动作 `a-n302933b-126ec6` 的 `X-Webhook-Key` + presence 链（连接器 `c-n302933b-70f9da` 或动作层）的同名头 ⇒ 均改为 `.secrets.local` 的 `WEBHOOK_SECRET` 值（40 字符 · 无引号无空格）；② 第五轮终测期望：T1 ⇒ `telemetry_history` +1 · presence 连接/断开 ⇒ `device_event` online/offline 各 1 行；③ **新诊断通道已创立**：`wrangler tail` 走本机代理 `127.0.0.1:7890` 可用（直连被墙）⇒ 每个请求的 URL/长度/状态码一览，此后排障优先；④ **教训**：密钥类配置回传确认不能只看「头在不在」，要能观测到**状态码**——tail 通道补上了这块盲区。**⑤ 实际修复路径（22:20）**：presence 连接器**无法改头 ⇒ 人工删旧建新**（新 ID 待回传）+ history 动作 secret 值修正 ⇒ 第五轮 5 请求全 200 · `telemetry_history` +1 · `device_event` online/offline 各 1 行 ⇒ 本风险关闭 |
 
 ---
 
@@ -234,7 +234,7 @@
 | **`H-WP4C-10` / `-10-A`** | 🔒 **`CLOSED`** | **★ 本轮变更** —— **裁决 = 方案 A（`Pages Proxy`）** |
 | **`H-WP4C-11`** | ✅ **`CLOSED`** | **★ 本轮变更** —— Pages 中转**已新增并部署**（`61b4938e-…`）+ 端到端 `PASS 15 / FAIL 0` |
 | **准入 `V-0` / `V-1`**（纪律 §6A.3） | ✅ `CLOSED WITH GUARD` / 🟢 **`PASS`（带说明）** | **★ 本轮变更** —— 基线已固化 · 目标可达性由 presence 连接器同 host 生产投递作证 |
-| **`CF-2`** | 🔴 **`BLOCKED`** | **未解除**（判据 = **冻结验证集 `V-1…V-7`**，仍全未跑） |
+| **`CF-2`** | ✅ **`CLOSED`** | **`2026-10-12` 22:20 解除**：冻结验证集 `V-1…V-7` 全部 `PASS`（§6 / Task Sheet §7.5.7） |
 | `CF-1` | 🟢 `RESOLVED` | 未动 |
 | `Phase C` | 🟡 `PLANNED / BLOCKED` | 未动（`C-2` 已完成 → 见下） |
 | `G-1 / G-4` | `HUMAN_REQUIRED` / `BLOCKED` | 未动 |
@@ -343,3 +343,7 @@
 **正确值实锤**：`.secrets.local` 的 `WEBHOOK_SECRET`（40 字符）直击两端点 ⇒ HI `{"accepted":1,"duplicate":0,"rejected":0}` · presence `200 {"ignored":"not_device_identity"}`（鉴权通过）。
 **测试行已全部清除**，D1 基线恢复（`th=0` · `lh=0` · `mm=2458` · `device_event(ffffffffffff)=0` · `last_seen=1791811429`）。
 本轮起点基线 = 固件仓 **`cb3ab23`** · CF 仓 **`415cd0c`** · EMQX 仓 **`12f9f27`**。*
+
+---
+
+*`2026-10-12` **`22:20` 第五轮终测 + 冻结验证集 ⇒ `CF-2` CLOSED**：人工将 presence 连接器**删旧建新**（旧连接器无法修改请求头）并填入正确 secret，history 动作 secret 值同步修正。**第五轮终测**（probe7 · tail 实收 5 请求**全部 200**）：presence 连接 144 B / history/ingest 163 B / webhook 101 B + 108 B / presence 断开 168 B；D1 回读 `telemetry_history` **+1**（seq `91301`）· `device_event` **online/offline 各 1 行**（含 `event_id`/`peername`/`reason`）· `last_seen` 刷新。**冻结验证集 `V-1…V-7` 正式执行**（probe8/probe9）：`V-1` 语法 ✅（两规则保存启用并触发）· `V-2` telemetry 正例 ✅（`th+1`/`mm+0`）· `V-3` 命令反例 ✅（`th+0`/`mm+1`）· `V-4` 混合载荷 ✅（含 `cmd` ⇒ 判非 telemetry 落消息流）· `V-5` 多设备隔离 ✅（B 落 `th(B)`、A 零增长；首跑误用 11 位设备 ID 被 Worker `invalid_device_id` 400 拒——身份格式校验的反向实证——换合法 12 位即 PASS）· `V-6` 重连不重复写入 ✅（同 tuple 重连前后各发 ⇒ 恰 1 行）· `V-7` 重复投递 ✅（同 tuple 发两次 ⇒ 恰 1 行，`ux_th_dedup` 吸收）。⇒ **`CF-2`（判据 = `V-1…V-7` 通过）= ✅ `CLOSED`**；`H-WP4C-09-B` = ✅ `CLOSED`；`R-WP4C-23` = ✅ 已解决。**测试行全部清除**，D1 基线恢复（`th=0` · `lh=0` · `mm=2458` · `device_event=0` · `last_seen=1791811429`）。**待人工回传**：presence 删旧建新后的新连接器/动作 ID（回写 `V2V4-Config-After` 存档）。本轮起点基线 = 固件仓 **`5deae9a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`7f6ea16`**。*
