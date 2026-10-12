@@ -237,6 +237,10 @@ guo_feeder/288485896ce4/up | up | {"s":1,"c":"result","i":"80110","o":"COMPUTER_
 | **`R-WP4C-15`** | 🟠 保持 —— **新增证据**：`…/log` 主题 **0 行**（§6.3），候选机制获支持 |
 | **新增登记** | **`R-WP4C-17`**：`INSERT OR IGNORE` 的**幂等冲突仍消耗 `AUTOINCREMENT`**（§4 注）—— 影响 `id` 连续性，**不影响行数/语义**；若未来按 `id` 增量做对账须注意 |
 
+> 📌 **Historical snapshot at time T（`H-WP4C-11` 部署验证时点 · `2026-10-12`）**。**Final status is recorded in Implementation Record §8**：
+> `WP4C-IMPL:C-5` = ✅ `CLOSED` · **`CF-2` = ✅ `CLOSED`**（`2026-10-12` 22:20）· `H-WP4C-09-B` = ✅ `CLOSED`。
+> 本表为历史快照，**不代表终态**。
+
 ---
 
 ## §9 修改文件

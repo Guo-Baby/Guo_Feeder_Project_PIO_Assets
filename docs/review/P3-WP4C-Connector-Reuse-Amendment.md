@@ -365,6 +365,10 @@ telemetry 域要求 `body.payload` 是**非数组对象**（或数组）；**若
 | `CF-2` | 🔴 仍 `BLOCKED`（判据 = **冻结验证集** `V-1…V-7`） |
 | 冻结验证集 `V-1…V-7` | 🔴 全 **`NOT RUN`**（不变） |
 
+> 📌 **Historical snapshot at time T（`R3.1` 修订时点 · `2026-10-12`）**。**Final status is recorded in Implementation Record §5 / §6 / §8**：
+> `H-WP4C-09-B` = ✅ `CLOSED` · **`CF-2` = ✅ `CLOSED`**（`2026-10-12` 22:20 · 判据 `V-1…V-7` 全 `PASS`）· 冻结验证集 `V-1…V-7` = **全 `PASS`**。
+> 本表为历史快照，**不代表终态**。
+
 ---
 
 ## §11 关联文档
