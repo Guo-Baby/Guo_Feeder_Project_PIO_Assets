@@ -1,12 +1,12 @@
-# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN **R2**）
+# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN **R3**）
 
-> ## 🔒 `FROZEN` **R2** · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
+> ## 🔒 `FROZEN` **R3** · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **冻结设计（唯一实施依据 · `R2`）** —— 后续 EMQX 实施（控制台）**只能**依此执行（**形态以 §11 为准**） |
+> | **本文档性质** | **冻结设计（唯一实施依据 · `R3`）** —— 后续 EMQX 实施（控制台）**只能**依此执行（**形态以 §10 修订节为准**） |
 > | **冻结依据** | 本仓 `docs/review/P3-WP4C-Decisions.md`（`H-WP4C-03` 人工裁决） |
-> | **基线** | 固件仓 HEAD = **`cdcc766`**（R1）→ **`def74f7`**（R2）· CF 仓 **`9b25203`** → **`415cd0c`** · EMQX 仓 **`eec9444`** → **`efa117d`** |
+> | **基线** | 固件仓 HEAD = **`cdcc766`**（R1）→ **`def74f7`**（R2）→ **`1d15104`**（R3）· CF 仓 **`9b25203`** → **`415cd0c`** · EMQX 仓 **`eec9444`** → **`efa117d`** → **`3ea08fe`** |
 > | **上游依据** | `H-WP4-FW-01`（**已 `CLOSED`**：方案 A 双 Action 分流）· `DT:WP-4` §9.1（端点 = `POST /api/history/ingest`）· `cloud_protocol.md` §4.5（telemetry uplink 已冻结） |
 > | **本文档不做的** | ❌ 不创建 / 修改 EMQX 规则或连接器 · ❌ 不改 Worker · ❌ 不改 migration · ❌ 不改 firmware · ❌ 不改 `/up` · ❌ 不部署 |
 >
@@ -24,6 +24,22 @@
 > > **仅变更连接器形态** = **单连接器复用 + 动作级 `URL Path` 分流**。
 > >
 > > **规格全文（配置项 / 施工顺序 / 窗口 / 回滚）** → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**（`DECIDED`）。
+>
+> ---
+>
+> ### 🔄 **`R3` 修订（`2026-10-12`）—— 平台的「连接器不可编辑」强制变更**施工形态**（**语义零变更**）**
+>
+> > **成因**：EMQX Cloud 官方文档明示 —— **「编辑连接器 / 启用禁用连接器：该功能**仅适用于专有版部署**」**
+> > ⇒ **Serverless 连接器创建后不可编辑** ⇒ `R2` 的「改 `c-…b12100` 的 URL」**不可能执行**。
+> >
+> > **处理**：施工手段由「**就地编辑**」改为「**删除重建**」——
+> > 删除 `c-…b12100` + `a-…921e22` + `r-…a01720`，改为**新建** 连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2。
+> >
+> > **★ 语义仍逐字不变**：方案 A · 冻结谓词（§4）· `-S2` 目标（§5）· `Action Target = Pages Proxy` · 端点 `/api/history/ingest` · `V-1…V-7`（§7）。
+> > **★ 且更优**：新消息流规则**一出生即带 `NOT 谓词`** ⇒ §5.1 的**双投窗口消失**。
+> > **★ 代价**：删除**不可逆**（旧 ID 消失）⇒ 施工前必须抄录运行统计 + 截图配置（新增风险 `R-WP4C-18b`）；中断窗口由「≤60 s」变为「拆除→重建 ≤15 min」（**仅消息流 best-effort 链路**）。
+> >
+> > **施工规格（唯一依据）** → **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。
 >
 > > **英文冻结声明**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
 > > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.
@@ -427,22 +443,24 @@ Verification:
 
 ---
 
-## §10 🔄 **`R2` 修订 —— 连接器形态（平台配额 `D-7` 强制）**
+## §10 🔄 **`R2` / `R3` 修订 —— 连接器形态（平台约束强制）**
 
-> **`R1` 的可实施性依赖「新建独立连接器」；`D-7` 使其不可能** ⇒ 本节为**唯一的形态修正**。
+> **`R1` 的可实施性依赖「新建独立连接器」；`D-7`（配额 2/2）使其不可能** ⇒ `R2` 改为**复用**；
+> 又因**连接器不可编辑**（仅专有版可编辑）⇒ `R3` 改为**删除重建**。本节为**唯一的形态修正**。
 > **核心语义（方案 A · 冻结谓词 §4 · `-S2` §5 · Pages Proxy · 端点 `/api/history/ingest` · `V-1…V-7`）逐字不变。**
 
 ### 10.1 修订前后对照
 
-| 项 | `R1`（原冻结） | **`R2`（本次修订）** |
-|---|---|---|
-| 连接器 | **新建** `guo_feeder_history_http`（URL = `…/api/history/ingest`） | **复用既有** `c-n302933b-b12100`，URL 收敛为 **base** = `https://guo-feeder-pagesdev.pages.dev` |
-| 端点定位 | 连接器 URL 含完整路径 | **动作级 `URL Path`**：`/api/webhook`（既有动作）· `/api/history/ingest`（新动作） |
-| 鉴权头 | 新建连接器自带 `X-Webhook-Key` | **补到复用连接器**（`R-WP4C-18`：对 `/api/webhook` 无副作用） |
-| 规则 / 动作 SQL 语义 | 不变 | **不变**（谓词 · `-S2` · 端点 · 3 键体契约） |
-| 动作请求体 | `{"topic":"${topic}","clientid":"${clientid}","payload":"${payload}"}`（**§8.1 原文**） | **修正为不加引号**：`"payload": ${payload}` —— 理由见 §10.3 |
+| 项 | `R1`（原冻结） | `R2` | **`R3`（现行）** |
+|---|---|---|---|
+| 连接器 | **新建** `guo_feeder_history_http`（URL = `…/api/history/ingest`） | **复用既有** `c-n302933b-b12100`，URL 收敛为 **base** | **删除** `c-…b12100` + **新建** `CB`（URL = **裸主机 base** `https://guo-feeder-pagesdev.pages.dev`） |
+| 端点定位 | 连接器 URL 含完整路径 | **动作级 `URL Path`**：`/api/webhook` · `/api/history/ingest` | **同 `R2`**（`MF` → `/api/webhook` · `HI` → `/api/history/ingest`） |
+| 鉴权头 | 新建连接器自带 `X-Webhook-Key` | 补到**复用连接器** | **落在 `HI` 动作层**（动作支持独立请求头 ⇒ 消息流链路**不带**该头） |
+| 消息流规则 | 既有规则**就地收窄** `WHERE` | 同 `R1` | **删除重建**，**直接写成** `WHERE = NOT 谓词` ⇒ **双投窗口消失** |
+| 规则 / 动作 SQL 语义 | 不变 | **不变** | **不变**（谓词 · `-S2` 目标 · 端点 · 3 键体契约） |
+| 动作请求体 | `{"topic":"${topic}","clientid":"${clientid}","payload":"${payload}"}`（**§8.1 原文**） | **修正为不加引号**：`"payload": ${payload}` —— 理由见 §10.3 | **同 `R2`** |
 
-### 10.2 冻结架构（`R2` 形态）
+### 10.2 冻结架构（`R3` 形态 · 语义与 `R2` 等价）
 
 ```
         guo_feeder/<device_id>/up
@@ -453,10 +471,10 @@ Verification:
    telemetry 谓词真 │ 假
         ┌─────────┴─────────┐
         ▼                   ▼
-  动作 <新>            动作 a-…921e22
+  动作 HI（新建）        动作 MF（新建）
   Path /api/history/ingest  Path /api/webhook
         └────────┬──────────┘
-                 │  共用同一连接器 c-…b12100（base = 裸主机）
+                 │  共用同一连接器 CB（新建 · base = 裸主机）
                  ▼
         https://guo-feeder-pagesdev.pages.dev/<path>
                  │
@@ -465,6 +483,10 @@ Verification:
   /api/history/ingest  /api/webhook
    telemetry_history   mqtt_messages
 ```
+
+> **`R3` 对象**：连接器 `CB` · 动作 `MF`（消息流）/ `HI`（history）· 规则 `guo_feeder_message_ingest` / `guo_feeder_history_ingest`
+> —— 取代被删的 `c-…b12100` / `a-…921e22` / `r-…a01720`（**新 ID 施工时登记**）。
+> **presence 链路（1 连接器 + 2 动作 + 2 规则）零接触。**
 
 ### 10.3 同批修正的规格缺陷（**未冻结部分 · 允许修正**）
 
@@ -486,6 +508,8 @@ Verification:
 | 文档 | 关系 |
 |---|---|
 | **`docs/review/P3-WP4C-Decisions.md`** | **★ 本设计的冻结裁决记录（权威）** |
+| **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`** | **★★ `R3` 施工说明（唯一施工依据）** —— 建连接器 / 建动作 / 建规则逐字段 + 删除顺序 + 窗口 + 回滚 |
+| `docs/review/P3-WP4C-Connector-Reuse-Amendment.md` | `R2`/`R3` 修订裁决（机制论证 §4.1 · 请求体定案 §6 · 配额核算 §9） |
 | `docs/interfaces/cloud_protocol.md` **§4.5** | telemetry uplink 冻结契约（**输入**） |
 | `docs/review/P3-WP4-Firmware-Telemetry-Decisions.md` | 冻结裁决（信封 / 值编码 / seq / 范围 / 路由） |
 | `docs/review/P3-WP4-Firmware-Integration-Design-Review.md` §9 | `H-WP4-FW-01` 裁决留痕（方案 A 双 Action 分流） |
@@ -502,4 +526,8 @@ Verification:
 *`2026-10-12` **升级为 `R2`**：新增 **`D-7`（Serverless 数据集成配额，不可调整）** 与 **§10 `R2` 修订节** ——
 **连接器形态**由「新建独立连接器」改为「**复用 `c-…b12100` + 动作级 `URL Path` 分流**」；
 **核心语义（方案 A / 冻结谓词 / `-S2` / Pages Proxy / 端点 `/api/history/ingest` / `V-1…V-7`）逐字不变**。
+*`2026-10-12` **升级为 `R3`**（成因：官方文档确认 **「编辑连接器仅适用于专有版部署」** ⇒ `R2` 的就地改写**不可执行**）——
+**施工形态**改为 **删除重建**（新连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2 · **presence 链路零接触**）；
+**语义仍逐字不变**，且 **§5.1 双投窗口消失**；新增风险 **`R-WP4C-18b`**（删除不可逆 ⇒ 施工前须抄录运行统计 + 截图配置）。
+施工规格（唯一依据） → **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。*
 规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。最新基线 = 固件仓 **`def74f7`** · CF 仓 **`415cd0c`** · EMQX 仓 **`efa117d`**。*
