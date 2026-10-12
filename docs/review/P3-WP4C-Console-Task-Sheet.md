@@ -5,14 +5,14 @@
 > | 步骤 | 状态 |
 > |---|---|
 > | `1`–`5` 删 3 旧对象 + 建连接器 `CB` | ✅ **已做**（`CB = c-n302933b-0c1cb0` · URL 裸主机 · SNI 已填 · 4 头） |
-> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调**：规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/history/ingest` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/webhook`；<br>🔴 **第三轮终测（§7.5.5）：secret 加错了动作**（备注交叉误导）⇒ 规则 A 的 telemetry 仍零落库 ⇒ **按 URL 路径核对两动作请求头** |
+> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调** ✅；**secret 已在对的动作上**（§7.5.6 tail 实证 key 头随请求到达 Worker）—— 🔴 **但值与 Worker 密钥不匹配（401）** ⇒ 按 §7.5.6 修正两处**值** |
 > | `8` 建规则 A | ✅ **已建已启 = `r-n302933b-cf0cf2`**（`guo_feeder/+/up`） |
 > | `9` 建规则 B | ✅ **已建已启 = `r-n302933b-f731cf`**（`guo_feeder/#`） |
-> | `10` 验证 | 🟡 **三轮探针已跑完**（§7.5 + §7.5.4 + §7.5.5）：规则 SQL 全对 · **规则 B 侧已修复**（非 telemetry 正确落 `mqtt_messages`）· **规则 A 侧三轮皆零落库**（端点健康实锤 ⇒ secret 加错动作，按 URL 路径核对）⇒ 待挪对后终测 |
+> | `10` 验证 | 🟡 **四轮探针 + Worker tail 实证**（§7.5–§7.5.6）：规则 SQL 全对 · 规则 B 全链 ✅ · **规则 A 与 presence 两条规则的「规则→动作→中转→Worker」全通，唯一剩余 = `X-Webhook-Key` 值不匹配（401）** ⇒ 按 §7.5.6 改两处值后第五轮终测 |
 > | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表） |
 >
 > **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
-> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 必须在「URL 路径 = `/api/history/ingest`」的那个动作上（即 `a-n302933b-126ec6`，§7.5.5 终测证实加错了地方）。**
+> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 已在「URL 路径 = `/api/history/ingest`」的动作 `a-n302933b-126ec6` 上（§7.5.6 tail 实证头已随请求到达），剩余 = 把**值**改成 `WEBHOOK_SECRET`（§7.5.6）。**
 >
 > ## 📋 一句话总览
 >
@@ -561,6 +561,41 @@ WHERE
 **改完告诉我** ⇒ 再跑一轮（期望 `telemetry_history` +1 · `mqtt_messages` +2）。
 **卫生**：本轮测试行已清除（`mqtt_messages` 2458 · `telemetry_history` 0 · `log_history` 0）。
 
+#### 7.5.6 【第四轮终测 · `2026-10-12` 21:50】★ Worker 实时日志实证（`wrangler tail`）
+
+> **★ 新诊断通道（本轮创立）**：`wrangler tail` **直连被墙**（DNS 投毒），但**走本机代理 `http://127.0.0.1:7890` 可用**：
+> ```bash
+> cd Cloudflare_Assets
+> export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890
+> ./node_modules/.bin/wrangler tail guo-feeder-api --config guo-feeder-api/wrangler.toml --format json
+> ```
+> 输出**每个请求的 URL / 方法 / 内容长度 / 响应状态码**（`x-webhook-key` 显示 REDACTED）—— EMQX 动作到底发没发、发成什么样，**一眼看穿**。此后排障优先用此通道。
+
+本轮探针（probe7）：MQTT 客户端 ID = **`dev_ffffffffffff`**（合成设备，`CLAIM_PENDING`，无真实硬件 ⇒ presence 事件可安全落库再清理）+ T1–T4 四向量 + 连接/断开（触发 presence 两条规则）。
+
+**Worker 实收 5 个请求（tail 逐字证据）**：
+
+| # | 请求 | 长度 | 状态 | 解读 |
+|---|---|---|---|---|
+| 1 | `POST /api/presence/event`（连接事件） | 144 B | **401** | 规则 P-1 ✓ 触发 · body ✓ 渲染 · `X-Webhook-Key` 头 ✓ 在 ⇒ **值不对** |
+| 2 | `POST /api/history/ingest`（T1 telemetry） | 163 B | **401** | 规则 A ✓ 触发 · 信封 ✓ 完整 · key 头 ✓ 在 ⇒ **值不对** |
+| 3 | `POST /`（T2 hello → webhook） | 101 B | **200** | 规则 B 全链 ✅ |
+| 4 | `POST /`（T3 down → webhook） | 108 B | **200** | 规则 B 全链 ✅ |
+| 5 | `POST /api/presence/event`（断开事件） | 168 B | **401** | 规则 P-2 ✓ 触发 · body ✓ 渲染 · key 头 ✓ 在 ⇒ **值不对** |
+
+**结论（★ 推翻 §7.5.5 的「加错动作」判断）**：secret **已经在对的动作上**（key 头随请求到达 Worker）—— **唯一剩余问题 = `X-Webhook-Key` 的值与 Worker 密钥不匹配**。规则 SQL、URL 路径、动作 body 模板、presence 两条规则+动作**全部正确**（头在、body 长度符合预期信封）。
+
+**旁证**：同一把正确值（`Cloudflare_Assets/.secrets.local` 的 `WEBHOOK_SECRET=`，40 字符）直击两端点：HI ⇒ `{"accepted":1,"duplicate":0,"rejected":0}` · presence ⇒ `200 {"ignored":"not_device_identity"}`（鉴权通过、按身份忽略，链路通的铁证）。`.secrets.local` 仅两把钥匙：`WEBHOOK_SECRET` / `ADMIN_API_TOKEN` —— **极可能又把 `ADMIN_API_TOKEN` 当成了 webhook 密钥**（本项目已犯过同款错误）。
+
+**剩余修复（改两处值，无中断窗口）**：
+
+| 位置 | 对象 | 改成 |
+|---|---|---|
+| 动作请求头 | `a-n302933b-126ec6`（规则 A · 路径 `/api/history/ingest`） | `X-Webhook-Key` = `WEBHOOK_SECRET` 的**值**（40 字符，无引号无空格） |
+| 连接器/动作请求头 | presence 链（连接器 `c-n302933b-70f9da`，或动作层，看当时建在哪） | 同上 |
+
+**卫生**：本轮测试行已全部清除，D1 基线恢复（`th=0` · `lh=0` · `mm=2458` · `device_event(ffffffffffff)=0` · `last_seen=1791811429`）。**改完告诉我 ⇒ 我跑第五轮（期望：T1 ⇒ `telemetry_history` +1 · presence 两条 ⇒ `device_event` online/offline 各 1 行）**。
+
 ---
 
 ## §8 【验证】4 项快检（做完就有结论）
@@ -688,10 +723,11 @@ TLS 段截图存放：   ____________
 > |---|---|
 > | 连接器 `c-n302933b-70f9da`（`guo_feeder_presence_http`） | ✅ **已建** —— URL 全路径 / 2 头 / TLS+SNI / 池参数**逐项核对与 §14.1 一致** |
 > | 规则 `guo_feeder_presence_disconnected` = `r-n302933b-88dd1a` | ✅ **已建 · SQL 正确勿动**（括号平衡 8/8；只有 connected 的 SQL 有 bug） |
-> | 动作 `a-n302933b-6981cc`（属 disconnected 规则） | ✅ **已建** —— ⚠️ **请求体必须是裸 `${body}`**（截图里似为**空**，务必填上） |
-> | 规则 `guo_feeder_presence_connected` | ❌ **未建成**（SQL parse 失败）⇒ **用 §14.2 修正版新建**（配额规则 3/4 → 4/4 有位置）+ 配 1 个动作 |
+> | 动作 `a-n302933b-6981cc`（属 disconnected 规则） | ✅ **已建 · body 已填**（§7.5.6 tail 实证断开事件 168 B 正常渲染，含 `reason` 字段 ⇒ 裸 `${body}` 已生效） |
+> | 规则 `guo_feeder_presence_connected` | ✅ **已建**（§14.2 修正版 SQL）—— §7.5.6 tail 实证连接事件 144 B 正常触发并渲染 |
+> | connected 规则的动作 | ✅ **已建 · body 已填**（同上实证） |
 >
-> **★ 只差两处**：① connected 规则用修正版 SQL 新建 + 配动作（body = 裸 `${body}`）② 已建的 disconnected 动作 `a-n302933b-6981cc` **补上请求体 `${body}`**。disconnected 规则本体无需任何改动。
+> **★ presence 侧唯一剩余 = `X-Webhook-Key` 的值**（§7.5.6：两条规则的事件都到达了 Worker 但 401）⇒ 按 §7.5.6 表把连接器 `c-n302933b-70f9da`（或动作层，看当时建在哪）的头值改成 `WEBHOOK_SECRET`。**改完即全链恢复**（期望 `device_event` online/offline 各 1 行 + `last_seen` 刷新）。
 
 ### 14.1 新建连接器（presence）
 
