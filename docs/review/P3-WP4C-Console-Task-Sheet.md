@@ -5,14 +5,14 @@
 > | 步骤 | 状态 |
 > |---|---|
 > | `1`–`5` 删 3 旧对象 + 建连接器 `CB` | ✅ **已做**（`CB = c-n302933b-0c1cb0` · URL 裸主机 · SNI 已填 · 4 头） |
-> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调**（§7.5.3 步骤 1–2 的路径部分）：规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/history/ingest` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/webhook`；<br>🔴 **但 `X-Webhook-Key` 头没跟着路径走** ⇒ 规则 A 的 telemetry 仍不落库（复测实锤 ⇒ **§7.5.4**）|
+> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调**：规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/history/ingest` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/webhook`；<br>🔴 **第三轮终测（§7.5.5）：secret 加错了动作**（备注交叉误导）⇒ 规则 A 的 telemetry 仍零落库 ⇒ **按 URL 路径核对两动作请求头** |
 > | `8` 建规则 A | ✅ **已建已启 = `r-n302933b-cf0cf2`**（`guo_feeder/+/up`） |
 > | `9` 建规则 B | ✅ **已建已启 = `r-n302933b-f731cf`**（`guo_feeder/#`） |
-> | `10` 验证 | 🟡 **两轮探针已跑完**（§7.5 + §7.5.4）：规则 SQL 全对 · **规则 B 侧已修复**（非 telemetry 正确落 `mqtt_messages`）· **规则 A 侧仍不落库**（端点直击证明健康 ⇒ 疑动作缺 `X-Webhook-Key` 头）⇒ 待补头后复测 |
+> | `10` 验证 | 🟡 **三轮探针已跑完**（§7.5 + §7.5.4 + §7.5.5）：规则 SQL 全对 · **规则 B 侧已修复**（非 telemetry 正确落 `mqtt_messages`）· **规则 A 侧三轮皆零落库**（端点健康实锤 ⇒ secret 加错动作，按 URL 路径核对）⇒ 待挪对后终测 |
 > | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表） |
 >
 > **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
-> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 须补到规则 A 的动作 `a-n302933b-126ec6` 请求头里（§7.5.4 复测证实尚未补）。**
+> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 必须在「URL 路径 = `/api/history/ingest`」的那个动作上（即 `a-n302933b-126ec6`，§7.5.5 终测证实加错了地方）。**
 >
 > ## 📋 一句话总览
 >
@@ -538,6 +538,31 @@ WHERE
 
 ---
 
+#### 7.5.5 【终测 · `2026-10-12` 21:20】补头后的第三轮探针
+
+> **你已给两个动作「一个带 secret、一个不带」**；终测结论 = **规则 B 侧仍 ✅ · 规则 A 侧仍 🔴 零落库** ⇒ **secret 加错了动作**（极大概率）。
+
+| # | 合成报文（topic 均为 `guo_feeder/ffffffffffff/…`） | 期望 | 实际 | 判定 |
+|---|---|---|---|---|
+| F1 | `/up` 合法 telemetry（seq 91201） | 规则 A → HI → `telemetry_history` +1 | **无**（`th=0` 持续 35 s+） | 🔴 **HI 动作仍没带上 key** |
+| F2 | `/up` `{"msg":"hello_final"}` | 规则 B → `/api/webhook` → `mqtt_messages` +1 | **id 2465** | ✅ |
+| F3 | `/down` `{"cmd":"wp4c_final_check"}` | 规则 B → `/api/webhook` → `mqtt_messages` +1 | **id 2466** | ✅ |
+
+**诊断**：端点健康已两轮实锤（带 key `{"accepted":1}` · 无 key `401`）⇒ 问题 100% 在动作请求头。
+**最可能原因 = secret 加到了错的动作上**：两个动作的**备注是交叉的**（`a-n302933b-126ec6` 备注 `guo_feeder_message_ingest` 却 serve history；`a-n302933b-7241e2` 备注 `guo_feeder_history_ingest` 却 serve message）—— 按备注找 "history" 就会加错。
+**修复（★ 按 URL 路径认动作，别按备注）**：
+
+| 动作 | 归属规则 | URL 路径（唯一准绳） | `X-Webhook-Key` 应为 |
+|---|---|---|---|
+| `a-n302933b-126ec6` | 规则 A `guo_feeder/+/up` | **`/api/history/ingest`** | **必须有** |
+| `a-n302933b-7241e2` | 规则 B `guo_feeder/#` | **`/api/webhook`** | 不需要（残留无害） |
+
+打开两个动作编辑页**逐一核对「URL 路径 + 请求头」**；把 key 挪到路径 = `/api/history/ingest` 的那个动作上。
+**改完告诉我** ⇒ 再跑一轮（期望 `telemetry_history` +1 · `mqtt_messages` +2）。
+**卫生**：本轮测试行已清除（`mqtt_messages` 2458 · `telemetry_history` 0 · `log_history` 0）。
+
+---
+
 ## §8 【验证】4 项快检（做完就有结论）
 
 | # | 检查 | 期望 |
@@ -657,6 +682,17 @@ TLS 段截图存放：   ____________
 > **配额核算（建成后）**：连接器 **2/2** · 规则 **4/4** · 动作 **4/4** —— **刚好用满；此后任何改动都必须先删后建**。
 > **建议顺序**：先做 §7.5.3 的路径对调修复（避免和 presence 混在一起排查），再做本节。
 
+> ### 🔄 施工进度（`2026-10-12` 21:20 · 据你的截图回传）
+>
+> | 对象 | 状态 |
+> |---|---|
+> | 连接器 `c-n302933b-70f9da`（`guo_feeder_presence_http`） | ✅ **已建** —— URL 全路径 / 2 头 / TLS+SNI / 池参数**逐项核对与 §14.1 一致** |
+> | 规则 `guo_feeder_presence_disconnected` = `r-n302933b-88dd1a` | ✅ **已建 · SQL 正确勿动**（括号平衡 8/8；只有 connected 的 SQL 有 bug） |
+> | 动作 `a-n302933b-6981cc`（属 disconnected 规则） | ✅ **已建** —— ⚠️ **请求体必须是裸 `${body}`**（截图里似为**空**，务必填上） |
+> | 规则 `guo_feeder_presence_connected` | ❌ **未建成**（SQL parse 失败）⇒ **用 §14.2 修正版新建**（配额规则 3/4 → 4/4 有位置）+ 配 1 个动作 |
+>
+> **★ 只差两处**：① connected 规则用修正版 SQL 新建 + 配动作（body = 裸 `${body}`）② 已建的 disconnected 动作 `a-n302933b-6981cc` **补上请求体 `${body}`**。disconnected 规则本体无需任何改动。
+
 ### 14.1 新建连接器（presence）
 
 | 控制台字段 | **填这个** | 依据 |
@@ -676,6 +712,10 @@ TLS 段截图存放：   ____________
 
 ### 14.2 新建规则 ×2（Serverless：**先建规则、后配动作**）
 
+> 🔴 **括号修正（`2026-10-12` 21:20 · 你实测 parse 错误后）**：**只有 connected（P-1）的 SQL 多了一个右括号**（7 开 8 闭）⇒ `1: Missing FROM or WHERE`（`V-0` 存档 §3.1 的 `R-1` 同错，为转录误差）。
+> **P-1 已改为平衡版（7 开 7 闭）**；**P-2（disconnected）括号本就平衡（8 开 8 闭，多一个 `reason` 字段 ⇒ 多一个 `map_put`）—— 你截图里那条是对的，不要动。**
+> **按 `R-WP4C-20` 纪律：保存前必须用规则页调试功能试跑。**
+
 **规则 P-1**（备注 `guo_feeder_presence_connected` · 启用 ✅）：
 
 ```sql
@@ -687,7 +727,7 @@ SELECT
     map_put('clientid', clientid,
     map_put('event', 'client_connected',
       map_new()
-    ))))))
+    )))))
   ) AS body
 FROM
   "$events/client_connected"
@@ -724,6 +764,9 @@ FROM
 | **请求体** | **裸 `${body}`**（★ 与消息流 / history 的三键模板**完全不同，切勿混用**） |
 | 动作层请求头（5 条） | `accept` = `application/json` · `cache-control` = `no-cache` · `connection` = `keep-alive` · `content-type` = `application/json` · `keep-alive` = `timeout=5` |
 | 高级设置（7 项） | 重试 `1` · 缓存池 `1` · 超时 `5s` · 健康检查 `30s` · 缓存队列 `4MB` · **异步** · 飞行窗口 `50` |
+
+> ⚠️ **`2026-10-12` 21:20 实测提醒**：你已建的动作 `a-n302933b-6981cc` 的**请求体在截图里似为空白** —— **必须是裸 `${body}`**（规则 SQL 已用 `json_encode` 产出完整 JSON；空 body ⇒ POST 空体 ⇒ presence 端点收到空数据）。
+> 另：**高级设置 7 项**保存前逐项核对（截图里「高级设置」是折叠的，无法确认）。
 
 ### 14.4 做完验证 + 回写
 
