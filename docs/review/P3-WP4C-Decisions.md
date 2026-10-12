@@ -36,6 +36,10 @@
 > **现场证实**：**两个连接器 + 三个动作全部指向 `*.pages.dev`**（**无一指向 `*.workers.dev`**）⇒ `D-2` / `H-WP4C-10-A` 裁决获现场证据支持；
 > **新增 `R-WP4C-15`**（既有 `guo_feeder/#` 规则 ≈90% 失败 ⇒ **污染 `V-3` 判据**）。
 > 导出记录 → **`EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md`**（本阶段**仍零生产变更**）。
+>
+> **🔄 更新记录（2026-10-12 · 第六阶段 —— `V-0` 收口）**：补齐 **动作高级设置**（重试 `1` / 超时 `5s` / 健康检查 `30s` / 缓存 `4MB` / **异步**）· **`c-…b12100` 请求头全文**（**无任何鉴权头**）· **TLS 明细确定为平台不可回读**（⇒ `R-WP4C-16` + 双 guard）· **D1 计数基线已采**（`th=0` / `lh=0` / `mm=2458`；近 24 h `13`）· **回滚方案已签署**（代理依人工委托拟制，执行仍由人工）。
+> ⇒ **`V-0` = ✅ `CLOSED WITH GUARD`** · **`H-WP4C-09-A` = ✅ `CLOSED WITH GUARD`** · **`C-4` = ✅ `PASS`（带 guard）** ⇒ 门禁 **`PASS 4 / BLOCKED 3`**。
+> **唯一剩余前置 = `H-WP4C-11`**（Pages 中转新增 + 部署）⇒ **EMQX 侧变更继续 `STOP`**（§6A.4 条件 1）。
 
 ---
 
@@ -51,7 +55,7 @@
 | **D-6** | **新增风险登记** | 🔒 **新增 `R-WP4C-7` / `R-WP4C-8` / `R-WP4C-9`** |
 | — | **`H-WP4C-03` 状态** | 🔒 **`CLOSED`** |
 | — | **`H-WP4C-04…08` 状态** | 🔒 **`CLOSED`**（§6A —— 实施阶段授权，**≠ 执行完成**） |
-| — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= 🟠 `PARTIAL`（主体已导出，缺 5 项）** · **`-09-B`（Rule Implementation）= 🔴 `BLOCKED`**（§6B） |
+| — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= ✅ `CLOSED WITH GUARD`** · **`-09-B`（Rule Implementation）= 🔴 `BLOCKED`**（§6B） |
 | — | **`H-WP4C-10` / `H-WP4C-10-A` 状态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（`2026-10-12` · 见 `P3-WP4C-Action-Target-Decision.md` §5.1） |
 | — | **`H-WP4C-11` 状态** | 🔴 **`OPEN`** —— **Pages 中转函数新增 + 部署授权**（方案 A 落地前置 · §6B） |
 | — | **`CF-2` 状态** | 🔴 **仍 `BLOCKED`**（不变；判据 = `V-1…V-7` 通过） |
@@ -323,9 +327,10 @@
 | **脱敏要求** | **`X-Webhook-Key` / secret 的值禁入仓** —— 仅记录「已配置 / 未配置」与轮换方式（`H-WP4C-07`） |
 | **回写位置** | **`EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md`**（`V-0` 导出记录；§3 填写区 · 本次已回填主体） |
 | **判据** | 三份快照（Rule SQL / Action / Connector）**全文归档**且 **secret 已脱敏** |
-| **状态** | 🟠 **`PARTIAL`（进行中 · 不得置为 `CLOSED`）** |
-| **进度（`2026-10-12` 实测）** | ✅ **连接器 2 / 2**（`c-…291200` presence · `c-…b12100` 消息流，均 `*.pages.dev`）· ✅ **规则 3 / 3（含 SQL 全文）** · ✅ **动作 3 / 3**（含请求体 + 动作层请求头）· 🛑 **未取得**：**连接器 TLS 明细（SNI / 验证服务器证书 / CA）** · `c-…b12100` **完整请求头** · **动作高级设置** · **D1 计数** · **回滚方案签署**（清单 → `V0` §3.6） |
-| **附带发现** | **`R-WP4C-15`** —— 既有 `guo_feeder/#` 规则 ≈90% 失败（19k 触发 / 17k 失败）；**污染 `V-3` 判据** ⇒ 须先采计数基线（`V0` §3.7） |
+| **状态** | ✅ **`CLOSED WITH GUARD`**（`2026-10-12`） |
+| **进度（`2026-10-12` 实测）** | ✅ **连接器 2 / 2**（`c-…291200` presence · `c-…b12100` 消息流，均 `*.pages.dev`；**URL / 请求头 / 连接参数全录**）· ✅ **规则 3 / 3（含 SQL 全文）** · ✅ **动作 3 / 3**（请求体 + 请求头 + **高级设置**：重试 `1` / 超时 `5s` / 健康检查 `30s` / 缓存 `4MB` / **异步**）· ✅ **D1 计数基线**（`th=0` · `lh=0` · **`mm=2458`**，近 24 h **13**）· ✅ **回滚方案已签署**（`V0` §5.2） |
+| **guard（2 条）** | ① 连接器 **TLS 明细保存后不可回读** ⇒ **新建连接器必须「保存前截图 + 保存后实测」**（`R-WP4C-16`）② **不得**用 `README.md` §6.4 的书写值充当实测基线（纪律 §6A.2 第 3 条） |
+| **附带发现** | **`R-WP4C-15`** —— 既有 `guo_feeder/#` 链路 ≈90% 失败（19k 触发 / 17k 失败；**D1 交叉印证**：库存仅 2458 且最新记录 ≈1 h 前 ⇒ 低成功率非完全失效）；**污染 `V-3` 判据** ⇒ 已采计数基线 |
 | **完成后解锁** | **`H-WP4C-09-B`**（由 `BLOCKED` → 可执行；**另须** `H-WP4C-11` 已部署） |
 
 ### `H-WP4C-09-B` —— **EMQX Rule Implementation**（拆自 `H-WP4C-09` · **受依赖阻塞**）
@@ -417,15 +422,14 @@
 | `C-1` | **授权门** | `H-WP4C-04…08` 全部 `CLOSED`（§6A） | ✅ **`PASS`** |
 | `C-2` | **Worker 部署** | 生产版本 = `99e6d937-4408-47b7-8170-4bfa71c9dfec`；`POST /api/history/ingest` 无 key ⇒ **`401`** | ✅ **`PASS`** |
 | `C-3` | **D1 migration** | 远端 `0003` **applied**；`telemetry_history` / `log_history` 存在；**恰好 5 索引**；列对齐 `DT:WP-2` | ✅ **`PASS`** |
-| `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | 🟠 **`PARTIAL`** —— **主体已导出**（2 连接器 / 3 规则 SQL / 3 动作）；**缺 TLS 明细 + 完整请求头 + 高级设置 + 计数 + 回滚签署**（`V0` §3.6 · `H-WP4C-09-A`） |
+| `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | ✅ **`PASS`（带 guard）** —— 连接器 2/2 · 规则 3/3（SQL 全文）· 动作 3/3（含高级设置）· D1 计数 · 回滚已签署；**guard = TLS 明细不可回读**（`R-WP4C-16` · `H-WP4C-09-A` = `CLOSED WITH GUARD`） |
 | `C-5` | **Rule deployment（`V-2` + `V-4`）** | 新规则**已启用** **且** 旧规则**已收窄**（**同批**） | 🔴 **`BLOCKED`** —— 依赖 `C-4`（`V-0` 基线）**+ `H-WP4C-11`**（Pages 中转已部署）；执行方 = `H-WP4C-09-B` |
 | `C-6` | **验证 `V-1…V-7`** | 冻结验证集**全项 `PASS`** | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
 | `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
 
-> **汇总**：`PASS = 3`（`C-1` / `C-2` / `C-3`）· `PARTIAL = 1`（`C-4`）· `BLOCKED = 3`（`C-5` / `C-6` / `C-7`）· `FAIL = 0`。
-> **★ 并行两前置（`2026-10-12`）**：**（人）`C-4` = `H-WP4C-09-A`（🟠 `PARTIAL`）** —— 补齐 `V0` §3.6 的 **5 项**（TLS 明细 / 完整请求头 / 高级设置 / D1 计数 / 回滚签署）；
-> **（机）`H-WP4C-11`** —— Pages 中转函数 `/api/history/ingest` 新增 + 部署（`Action Target = Pages Proxy` 已裁决）。
-> **两者闭合后**方可执行 `C-5`（`V-2` + `V-4` 同批）；★ 另须先采 **`V-0` 计数/成功率基线**（`R-WP4C-15` ⇒ 否则 `V-3` 判据被既有故障污染）。
+> **汇总**：`PASS = 4`（`C-1` / `C-2` / `C-3` / **`C-4`（带 guard）**）· `BLOCKED = 3`（`C-5` / `C-6` / `C-7`）· `FAIL = 0`。
+> **★ 唯一剩余前置（`2026-10-12` 收口后）**：**`H-WP4C-11`** —— Pages 中转函数 `/api/history/ingest` **新增 + 部署**（🔴 `OPEN`；`Action Target = Pages Proxy` 已裁决，Pages 工程内**当前无该函数**）。
+> **`H-WP4C-09-A` 已 `CLOSED WITH GUARD`** ⇒ 人工作业侧**已就绪**；`V-0` 基线（含 `V-3` 判据的噪声基线）**已固化**。**未闭合前，EMQX 侧变更继续 `STOP`**（纪律 §6A.4 条件 1：目标不可达）。
 
 ---
 
@@ -439,7 +443,7 @@
 | **`H-WP4C-07`** | EMQX Console 执行人 + 配置导出责任（因 API `403` / 无 CLI，导出须人工） | 🔒 **`CLOSED`**（§6A） | 人工作业 |
 | **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
 | **`H-WP4C-09`** | EMQX 控制台人工执行（③④⑤） —— **已拆分**（**不关闭**） | 🟠 **已拆分** ⇒ `-09-A` / `-09-B`（§6B） | 拆分项 |
-| **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | 🟠 **`PARTIAL`**（§6B · 主体已导出：**2 连接器 / 3 规则 SQL / 3 动作**；**缺 5 项** → `V0` §3.6） | **`WP4C-IMPL:C-4`** · 解锁 `-09-B` |
+| **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（§6B · **guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**） | **`WP4C-IMPL:C-4` = ✅ `PASS`** · 解锁 `-09-B` |
 | **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🔴 **`BLOCKED`**（§6B · 依赖 `-09-A` **且** `H-WP4C-11` 已部署） | **`WP4C-IMPL:C-5`** |
 | **`H-WP4C-10`** | Action 目标形态裁决（**父项**） | 🔒 **`CLOSED`**（§6B · 随 `-A` 裁决关闭） | 已解 |
 | **`H-WP4C-10-A`** | **Action Target 形态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（§6B · §5.1 留痕） | 已解 |
@@ -486,7 +490,7 @@
 | `docs/review/P3-WP4C-Implementation-Record.md` | 固件 | **回填** —— §5 拆分后形态同步 + `R-WP4C-12` 收敛 |
 | `docs/review/P3-WP4C-Implementation-Discipline.md` | 固件 | **状态回填** —— §6A.3 准入序列 `V-1` 的当前状态与解锁条件 |
 | `docs/README.md` | 固件 | **索引** —— 状态词同步（新增 `V-0` 工件指向） |
-| `config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` | EMQX | **新增 + 回填** —— `V-0` **导出记录**（`PARTIAL`）：2 连接器 / 3 规则 SQL / 3 动作 + **待补清单 §3.6** + **异常 §3.7**（`R-WP4C-15`） |
+| `config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` | EMQX | **新增 + 回填 + 收口** —— `V-0` **导出记录**（**`CLOSED WITH GUARD`**）：2 连接器 / 3 规则 SQL / 3 动作（含高级设置）+ D1 计数 + 回滚签署 + **限知项 §3.6**（TLS 不可回读）+ **异常 §3.7**（`R-WP4C-15` / `R-WP4C-16`） |
 | `config/data-integration/P3-WP4C-V2V4-Config-After.md` | EMQX | **新增** —— 变更后（`V-2`/`V-4`）配置**回写模板** |
 | `config/data-integration/README.md` | EMQX | **更新** —— 新增 §7 指向两个 WP4C 工件 |
 
@@ -525,3 +529,6 @@
 `C-5` 依赖改为 **`C-4` + `H-WP4C-11`**。**仍为零生产变更**（固件仓 + EMQX 仓 `docs/`），**未部署任何代码 · 未创建任何 EMQX 配置**。*
 *`2026-10-12` **第五阶段回填**：**`V-0` = 🟠 `PARTIAL`**（连接器 2/2 · 规则 3/3 · 动作 3/3；缺 TLS 明细 / 完整请求头 / 高级设置 / 计数 / 回滚签署）⇒ `H-WP4C-09-A` = 🟠 `PARTIAL` · `C-4` = 🟠 `PARTIAL`；
 **新增 `R-WP4C-15`**（既有链路 ≈90% 失败 ⇒ 污染 `V-3`）。**仍为零生产变更**。*
+*`2026-10-12` **第六阶段收口**：**`V-0` = ✅ `CLOSED WITH GUARD`** · **`H-WP4C-09-A` = ✅ `CLOSED WITH GUARD`** · **`C-4` = ✅ `PASS`（带 guard）**（门禁 `PASS 4 / BLOCKED 3`）；
+**新增 `R-WP4C-16`**（连接器 TLS 明细**保存后不可回读** ⇒ guard = 保存前截图 + 保存后实测）；**D1 基线已采**（`mm=2458`）；**回滚方案已签署**（代理拟制 · 人工执行）。
+**唯一剩余前置 = `H-WP4C-11`**（Pages 中转部署）⇒ EMQX 侧变更继续 `STOP`。**仍为零生产变更**（EMQX 零写 · D1 仅只读 `SELECT`）。*

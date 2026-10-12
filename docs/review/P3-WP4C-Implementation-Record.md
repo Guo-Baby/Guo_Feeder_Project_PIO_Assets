@@ -17,9 +17,11 @@
 > 权威登记 = `docs/review/P3-WP4C-Decisions.md` **§6B** · 哨兵规则 = 纪律 **§6A `EMQX Console Boundary Rule`** · 待裁明细 = `docs/review/P3-WP4C-Action-Target-Decision.md`。
 > **本文档不新增任何生产变更**（回填仅改 `docs/`）。
 >
-> **🔄 回填（`2026-10-12` · `V-0` 部分导出）**：`H-WP4C-10-A` **裁决 = 方案 A（Pages Proxy）**（§5 · §7 `R-WP4C-12` 收敛）；
-> **`V-0` 已部分导出**（§6）⇒ **新增 `R-WP4C-15`**（§7：既有消息链路 ≈90% 失败，**污染 `V-3` 判据**）。
+> **🔄 回填（`2026-10-12` · `V-0` 收口）**：`H-WP4C-10-A` **裁决 = 方案 A（Pages Proxy）**（§5 · §7 `R-WP4C-12` 收敛）；
+> **`V-0` = ✅ `CLOSED WITH GUARD`**（§6）⇒ **`H-WP4C-09-A` = ✅ `CLOSED WITH GUARD`**（§5）；
+> **新增 `R-WP4C-15`**（既有消息链路 ≈90% 失败 · **污染 `V-3` 判据**）· **`R-WP4C-16`**（连接器 TLS 明细保存后不可回读）。
 > 导出记录 → **`EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md`**。
+> **★ 仍卡在 `H-WP4C-11`（Pages 中转未部署）** ⇒ EMQX 侧变更**继续 `STOP`**（纪律 §6A.4 条件 1）。
 
 ---
 
@@ -149,7 +151,7 @@
 | ID | 主题 | 类型 | 内容 | 状态 |
 |---|---|---|---|---|
 | **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🟠 **已拆分（不关闭）** ⇒ `-09-A` / `-09-B` |
-| **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | 🔴 **`OPEN`**（**唯一可立即开工项**） |
+| **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（`2026-10-12` —— **连接器 2/2 · 规则 3/3 含 SQL 全文 · 动作 3/3 含高级设置 · D1 计数已采 · 回滚已签署**；**guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**，`R-WP4C-16`） |
 | **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **新增** `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE（**禁双投**） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 `-10-A` 已裁决） |
 | **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔒 **`CLOSED`**（`2026-10-12` 随 `-10-A` 裁决关闭） |
 | **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | ✅ **裁决 = 方案 A（`Pages Proxy`）**（口径：「裁决仍然使用 pages 代理，workers 无法直连」）⇒ `D-2` 成立 ⇒ `R-WP4C-12` **收敛** | 🔒 **`CLOSED`** |
@@ -164,7 +166,7 @@
 
 | # | 用例 | 状态 | 说明 |
 |---|---|---|---|
-| **`V-0`** | 变更前 EMQX 基线导出 | 🟠 **`PARTIAL`** | EMQX API `403` ⇒ 须人工（`H-WP4C-09-A`）。**已取得**：连接器 **2 / 2** · 规则 **3 / 3**（含 SQL 全文）· 动作 **3 / 3**（含请求体与请求头）；**未取得**：**连接器 TLS 明细（SNI / 验证服务器证书 / CA）· `c-…b12100` 完整请求头 · 动作高级设置 · D1 计数**（明细 → `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` **§3.6**） |
+| **`V-0`** | 变更前 EMQX 基线导出 | ✅ **`CLOSED WITH GUARD`** | **已完成**（人工控制台只读导出 + 只读 D1 计数）：连接器 **2/2** · 规则 **3/3（SQL 全文）** · 动作 **3/3（含高级设置）** · **D1 基线**（`th=0` / `lh=0` / **`mm=2458`**，近 24 h **13**）· **回滚已签署**；**guard** = TLS 明细**平台不可回读** ⇒ 新建连接器**保存前截图 + 保存后实测**（`R-WP4C-16`）。明细 → `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` |
 | **`V-1`** | Rule syntax（保存 + 启用） | 🔴 **`BLOCKED`** | 依赖 ③④⑤ |
 | **`V-2`** | telemetry positive（history +1 / `mqtt_messages` +0） | 🔴 **`BLOCKED`** | 同上 |
 | **`V-3`** | command negative（history +0 / `mqtt_messages` +1） | 🔴 **`BLOCKED`** | 同上 |
@@ -185,7 +187,8 @@
 | **`R-WP4C-12`** | 🟢 **`CLOSED`（收敛）** | **★ 环境差异（已由人工裁决收敛）**：`D-2`（EMQX 打不通 `*.workers.dev`）**经 `H-WP4C-10-A` 确认成立**；存档 §1 的 `workers.dev` 根路径 = **Worker 侧上游目标**（P0 遗留）**反推**所得，**不是** EMQX 侧连接器 URL（既有连接器 `c-n302933b-b12100` 实指 `guo-feeder-pagesdev.pages.dev`）⇒ 二者**不同层**，原"矛盾"消解。 | 结论：**Action Target = Pages 域名**；落地前置 = **`H-WP4C-11`** |
 | **`R-WP4C-13`** | 🟡 低 | **EMQX 配置无 API ⇒ 漂移不可审计**（已在 `R-WP4C-6` 登记；本轮**以证据升级**：读 + 写 API 全 `403`，且 `POST` 亦 `403`）。 | 控制台配置**必须回写** `EMQX_Assets/config/data-integration/`（`H-WP4C-09` 内含） |
 | **`R-WP4C-14`** | 🟡 低 | **端点已上线但无消费方**：`/api/history/ingest` 现已公开可达，当前无规则指向它 ⇒ **无流量**。若被误配指向 ⇒ 会写库。 | 端点为**鉴权端点**（`X-Webhook-Key`，无 key ⇒ `401`）；保密钥 |
-| **`R-WP4C-15`** | 🔴 **高（判据污染）** | **★ 既有消息链路大面积失败（`V-0` 实测发现）**：规则 **`r-n302933b-a01720`（`SELECT * FROM "guo_feeder/#"` · 无 WHERE）** + 动作 **`a-n302933b-921e22`**（连接器 `c-n302933b-b12100` → `…/api/webhook`）**触发 ≈ 19,000+ / 失败 ≈ 17,000+（≈90%）**。候选原因：**H-1** 该动作请求体 **`"payload": ${payload}` 占位符未加引号** ⇒ 非 JSON 对象载荷产生**非法 JSON** ⇒ Pages `functions/api/webhook.js` 的 `request.json()` 抛错 ⇒ **`400 Invalid JSON`**（CF 仓源码已确认该分支）⇒ 依 `D-4` **重试放大**；**H-2** `guo_feeder/#` 覆盖 **`…/log`**（历史固件为**二进制 CBOR**）⇒ 几乎必然非法 JSON；**H-3** Pages/Worker 侧曾有变更导致部分时段整体失败。（见 `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` **§3.7**） | **① 判据**：`V-3`（command negative：`mqtt_messages` +1）**建立在"旧链路正常"之上** ⇒ **必须先采 `V-0` 计数/成功率基线**（`V0:§3.4`），结果按**差分解读**，否则会把**既有故障**误判为**本工作包回归**。**② 范围**：**本工作包不修**（`-S2` 只加 `WHERE`，**不动** `SELECT *` 与动作请求体；改它属 **P1-6-2 / 独立工作包**）。**③ 证据**：需补 `V0:§3.6` 第 4 项（失败明细 / 响应码 / 时间分布）才能定论 |
+| **`R-WP4C-15`** | 🔴 **高（判据污染）** | **★ 既有消息链路大面积失败（`V-0` 实测发现）**：规则 **`r-n302933b-a01720`（`SELECT * FROM "guo_feeder/#"` · 无 WHERE）** + 动作 **`a-n302933b-921e22`**（连接器 `c-n302933b-b12100` → `…/api/webhook`）**触发 ≈ 19,000+ / 失败 ≈ 17,000+（≈90%）**。候选原因：**H-1** 该动作请求体 **`"payload": ${payload}` 占位符未加引号** ⇒ 非 JSON 对象载荷产生**非法 JSON** ⇒ Pages `functions/api/webhook.js` 的 `request.json()` 抛错 ⇒ **`400 Invalid JSON`**（CF 仓源码已确认该分支）⇒ 依 `D-4` **重试放大**；**H-2** `guo_feeder/#` 覆盖 **`…/log`**（历史固件为**二进制 CBOR**）⇒ 几乎必然非法 JSON；**H-3** Pages/Worker 侧曾有变更导致部分时段整体失败。（见 `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` **§3.7**） | **① 判据**：`V-3`（command negative：`mqtt_messages` +1）**建立在"旧链路正常"之上** ⇒ **必须先采 `V-0` 计数/成功率基线**（`V0:§3.4`），结果按**差分解读**，否则会把**既有故障**误判为**本工作包回归**。**② 范围**：**本工作包不修**（`-S2` 只加 `WHERE`，**不动** `SELECT *` 与动作请求体；改它属 **P1-6-2 / 独立工作包**）。**③ 证据（`2026-10-12` 补充）**：`V-0` **D1 基线交叉印证** —— `mqtt_messages` 总库存仅 **2458** 条（**最新记录 ≈采集前 1 h** ⇒ **链路仍在投递，是低成功率非完全失效**）；近 24 h **13** 条 / 近 7 d **191** 条；动作**最大重试 = 1**（非无限重试）· **请求模式 = 异步 + 缓存 4 MB**。人工提供的失败日志形态 = **资源健康告警**（`resource down` / `alarm_is_activated`，**30 s 节奏**）⇒ **资源 down 期间一切投递记失败**（放大效应；**该片段属 `c-…291200`（presence），消息流侧同类告警待证**）。**仍缺**：`a-n302933b-921e22` / `c-…b12100` 的失败明细（`V0:§3.6` 第 2 项）⇒ 归因未定论 |
+| **`R-WP4C-16`** | 🟠 中 | **★ 连接器 TLS 明细「保存后不可回读」** —— EMQX 控制台在连接器保存后**不再展示 TLS 段（SNI / 验证服务器证书 / CA）**（人工实测，`2026-10-12`）⇒ **`V-0` 的 TLS 项永久无法完整采集**；现有两个连接器仅有人工**回忆值**（SNI 已填 / CA 未设置 / **口径与目标域表述不一致**）。叠加：**健康检查（30 s）会对端点发探测**，其 `resource down` 告警与**真实投递失败在统计上混淆** | **guard ①**：新建连接器时**保存前截图 TLS 段**（唯一可留痕形态）→ 归档 `EMQX_Assets/config/data-integration/assets/wp4c-v2v4/`（打码）· **guard ②**：保存后**实测验收**（「测试连接」到达 **HTTP 层** = TLS 通；出现 `TLS/certificate/ssl` ⇒ 先查 SNI；端点 `POST` 无 key ⇒ `401`）· **禁止**用 `README.md` §6.4 的书写值充当实测基线（§6A.2 第 3 条）· `V-2` 后须**观察 resource down 告警频率** |
 
 ---
 
