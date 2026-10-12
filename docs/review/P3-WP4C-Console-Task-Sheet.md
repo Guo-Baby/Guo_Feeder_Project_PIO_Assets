@@ -5,14 +5,14 @@
 > | 步骤 | 状态 |
 > |---|---|
 > | `1`–`5` 删 3 旧对象 + 建连接器 `CB` | ✅ **已做**（`CB = c-n302933b-0c1cb0` · URL 裸主机 · SNI 已填 · 4 头） |
-> | `6`–`7` 建动作 ×2 | ✅ **已建** —— 但**两个动作的 URL 路径相对规则交叉**（代理探针实锤 ⇒ **§7.5**）：<br>规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/webhook` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/history/ingest` |
+> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调**（§7.5.3 步骤 1–2 的路径部分）：规则 A 的动作 `a-n302933b-126ec6` 现指 `/api/history/ingest` · 规则 B 的动作 `a-n302933b-7241e2` 现指 `/api/webhook`；<br>🔴 **但 `X-Webhook-Key` 头没跟着路径走** ⇒ 规则 A 的 telemetry 仍不落库（复测实锤 ⇒ **§7.5.4**）|
 > | `8` 建规则 A | ✅ **已建已启 = `r-n302933b-cf0cf2`**（`guo_feeder/+/up`） |
 > | `9` 建规则 B | ✅ **已建已启 = `r-n302933b-f731cf`**（`guo_feeder/#`） |
-> | `10` 验证 | 🟡 **代理侧端到端探针已跑完**（§7.5）：**规则 SQL 全部正确**；**动作路径交叉**致 telemetry 落错表 ⇒ 按 §7.5.3 修复后复测 |
+> | `10` 验证 | 🟡 **两轮探针已跑完**（§7.5 + §7.5.4）：规则 SQL 全对 · **规则 B 侧已修复**（非 telemetry 正确落 `mqtt_messages`）· **规则 A 侧仍不落库**（端点直击证明健康 ⇒ 疑动作缺 `X-Webhook-Key` 头）⇒ 待补头后复测 |
 > | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表） |
 >
 > **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
-> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 随 §7.5 修复落到规则 A 的动作层。**
+> **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 须补到规则 A 的动作 `a-n302933b-126ec6` 请求头里（§7.5.4 复测证实尚未补）。**
 >
 > ## 📋 一句话总览
 >
@@ -515,6 +515,26 @@ WHERE
 
 > ⚠️ **不要**为此改规则 SQL / FROM（已实测正确）· **不要**动连接器 `CB`（Serverless 不可编辑，删重建代价大）。
 > **改完告诉我** ⇒ 我重跑 §7.5.1 探针复测，**期望：`telemetry_history` +1 · `mqtt_messages` +4**（T1–T5 全部归位）。
+
+#### 7.5.4 【复测 · `2026-10-12` 19:30–19:50】对调后的第二轮探针
+
+> **你已完成 §7.5.3 的 URL 路径对调**；复测结论 = **规则 B 侧修复 ✅ · 规则 A 侧仍不落库 🔴（差 `X-Webhook-Key` 头）**。
+
+| # | 合成报文（topic 均为 `guo_feeder/ffffffffffff/…`） | 期望 | 实际 | 判定 |
+|---|---|---|---|---|
+| R1 | `/up` 合法 telemetry（seq 91101） | 规则 A → HI → `telemetry_history` +1 | **无**（`th=0` · `mqtt_messages` 亦无） | 🔴 **规则 A 的动作没带 `X-Webhook-Key`** ⇒ HI 返 `401` ⇒ 零落库 |
+| R2 | `/up` `{"msg":"hello_swap"}` | 规则 B → `/api/webhook` → `mqtt_messages` +1 | **`mqtt_messages` id=2463** | ✅ **对调生效** |
+| R3 | `/down` `{"cmd":"wp4c_swap_check"}` | 规则 B → `/api/webhook` → `mqtt_messages` +1 | **`mqtt_messages` id=2464** | ✅ **对调生效** |
+| R4 | `/log` 二进制载荷 | 规则 B → `/api/webhook` → 400 | **无落库** | ✅ 符合预期（`Invalid JSON` · `CF-1` 已知，不归本包修） |
+| R5 | 合法 telemetry **直击** HI（带 key） | `{"accepted":1}` | **`{"accepted":1,"duplicate":0,"rejected":0}`**（落 `telemetry_history` id=12，已清） | ✅ **端点 + Worker + D1 全链健康** ⇒ 问题 100% 在动作请求头 |
+| R6 | 直击 HI **无 key** | `401` | **`401`** | ✅ 鉴权按预期拦截 ⇒ **反证 R1 失败原因 = 动作缺 key** |
+
+**修复（只差一步）**：打开动作 **`a-n302933b-126ec6`**（属规则 A `guo_feeder/+/up`）→ 请求头**加一行** `X-Webhook-Key` = `<WEBHOOK_SECRET>`（与 `content-type` 并存）→ 保存。**规则 SQL / 连接器 `CB` / 另一动作都不用动。**
+（`a-n302933b-7241e2` 上若残留 `X-Webhook-Key` 留着无害；想去掉也可。）
+> 若加头后仍不落库 ⇒ 再查该动作是否被禁用 / 请求体三键模板是否完好（§5 逐字对照）。
+**改完告诉我** ⇒ 再跑一轮探针，**期望：`telemetry_history` +1 · `mqtt_messages` +2**（R1 归位 + R2/R3 复现）。
+**卫生**：本轮测试行已全部清除 —— `mqtt_messages` **2458** · `telemetry_history` **0** · `log_history` **0**（与探针前基线逐项一致）。
+> 附注：`mqtt_messages` id 2460–2462 被消耗但无对应行（插入被忽略/失败仍推进行 id，与 `R-WP4C-17` 同机制）—— 不影响结论。
 
 ---
 
