@@ -16,6 +16,10 @@
 > **🔄 回填（`2026-10-12` · 实施前裁决补充）**：`H-WP4C-09` **已拆分**（`-09-A` / `-09-B`）· `H-WP4C-10` 的裁决由 **`-10-A`** 承载（见 §5）。
 > 权威登记 = `docs/review/P3-WP4C-Decisions.md` **§6B** · 哨兵规则 = 纪律 **§6A `EMQX Console Boundary Rule`** · 待裁明细 = `docs/review/P3-WP4C-Action-Target-Decision.md`。
 > **本文档不新增任何生产变更**（回填仅改 `docs/`）。
+>
+> **🔄 回填（`2026-10-12` · `V-0` 部分导出）**：`H-WP4C-10-A` **裁决 = 方案 A（Pages Proxy）**（§5 · §7 `R-WP4C-12` 收敛）；
+> **`V-0` 已部分导出**（§6）⇒ **新增 `R-WP4C-15`**（§7：既有消息链路 ≈90% 失败，**污染 `V-3` 判据**）。
+> 导出记录 → **`EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md`**。
 
 ---
 
@@ -160,7 +164,7 @@
 
 | # | 用例 | 状态 | 说明 |
 |---|---|---|---|
-| **`V-0`** | 变更前 EMQX 基线导出 | 🔴 **`BLOCKED`** | EMQX API `403` ⇒ 须人工（`H-WP4C-09`） |
+| **`V-0`** | 变更前 EMQX 基线导出 | 🟠 **`PARTIAL`** | EMQX API `403` ⇒ 须人工（`H-WP4C-09-A`）。**已取得**：连接器 **2 / 2** · 规则 **3 / 3**（含 SQL 全文）· 动作 **3 / 3**（含请求体与请求头）；**未取得**：**连接器 TLS 明细（SNI / 验证服务器证书 / CA）· `c-…b12100` 完整请求头 · 动作高级设置 · D1 计数**（明细 → `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` **§3.6**） |
 | **`V-1`** | Rule syntax（保存 + 启用） | 🔴 **`BLOCKED`** | 依赖 ③④⑤ |
 | **`V-2`** | telemetry positive（history +1 / `mqtt_messages` +0） | 🔴 **`BLOCKED`** | 同上 |
 | **`V-3`** | command negative（history +0 / `mqtt_messages` +1） | 🔴 **`BLOCKED`** | 同上 |
@@ -181,6 +185,7 @@
 | **`R-WP4C-12`** | 🟢 **`CLOSED`（收敛）** | **★ 环境差异（已由人工裁决收敛）**：`D-2`（EMQX 打不通 `*.workers.dev`）**经 `H-WP4C-10-A` 确认成立**；存档 §1 的 `workers.dev` 根路径 = **Worker 侧上游目标**（P0 遗留）**反推**所得，**不是** EMQX 侧连接器 URL（既有连接器 `c-n302933b-b12100` 实指 `guo-feeder-pagesdev.pages.dev`）⇒ 二者**不同层**，原"矛盾"消解。 | 结论：**Action Target = Pages 域名**；落地前置 = **`H-WP4C-11`** |
 | **`R-WP4C-13`** | 🟡 低 | **EMQX 配置无 API ⇒ 漂移不可审计**（已在 `R-WP4C-6` 登记；本轮**以证据升级**：读 + 写 API 全 `403`，且 `POST` 亦 `403`）。 | 控制台配置**必须回写** `EMQX_Assets/config/data-integration/`（`H-WP4C-09` 内含） |
 | **`R-WP4C-14`** | 🟡 低 | **端点已上线但无消费方**：`/api/history/ingest` 现已公开可达，当前无规则指向它 ⇒ **无流量**。若被误配指向 ⇒ 会写库。 | 端点为**鉴权端点**（`X-Webhook-Key`，无 key ⇒ `401`）；保密钥 |
+| **`R-WP4C-15`** | 🔴 **高（判据污染）** | **★ 既有消息链路大面积失败（`V-0` 实测发现）**：规则 **`r-n302933b-a01720`（`SELECT * FROM "guo_feeder/#"` · 无 WHERE）** + 动作 **`a-n302933b-921e22`**（连接器 `c-n302933b-b12100` → `…/api/webhook`）**触发 ≈ 19,000+ / 失败 ≈ 17,000+（≈90%）**。候选原因：**H-1** 该动作请求体 **`"payload": ${payload}` 占位符未加引号** ⇒ 非 JSON 对象载荷产生**非法 JSON** ⇒ Pages `functions/api/webhook.js` 的 `request.json()` 抛错 ⇒ **`400 Invalid JSON`**（CF 仓源码已确认该分支）⇒ 依 `D-4` **重试放大**；**H-2** `guo_feeder/#` 覆盖 **`…/log`**（历史固件为**二进制 CBOR**）⇒ 几乎必然非法 JSON；**H-3** Pages/Worker 侧曾有变更导致部分时段整体失败。（见 `EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` **§3.7**） | **① 判据**：`V-3`（command negative：`mqtt_messages` +1）**建立在"旧链路正常"之上** ⇒ **必须先采 `V-0` 计数/成功率基线**（`V0:§3.4`），结果按**差分解读**，否则会把**既有故障**误判为**本工作包回归**。**② 范围**：**本工作包不修**（`-S2` 只加 `WHERE`，**不动** `SELECT *` 与动作请求体；改它属 **P1-6-2 / 独立工作包**）。**③ 证据**：需补 `V0:§3.6` 第 4 项（失败明细 / 响应码 / 时间分布）才能定论 |
 
 ---
 
