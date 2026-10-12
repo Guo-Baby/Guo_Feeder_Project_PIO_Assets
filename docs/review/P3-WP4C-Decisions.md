@@ -50,6 +50,15 @@
 > **核查结论（人工指定重点）**：旧连接器**确实被 CF 收到并存储** —— `mqtt_messages` **2458 行**且**仍在增长**（最新 `2026-10-12 06:33:36 UTC`）；
 > **★ 新证据**：`…/log` 主题 **0 行** ⇒ 支持 `R-WP4C-15` 的「`/log` 二进制 CBOR ⇒ `400 Invalid JSON`」候选机制。
 > 记录 → **`docs/review/P3-WP4C-History-Relay-Deployment-Verification.md`**（新增 **`R-WP4C-17`**）。
+>
+> **🔄 更新记录（`2026-10-12` · 第八阶段 —— `R2` 设计修订：Serverless 连接器配额）**：人工核实 **EMQX Cloud Serverless 数据集成配额不可调整**
+> —— **连接器 ≤2（当前 2/2，余量 0）** · 规则 ≤4 · 动作 ≤4 · 单规则动作 =1 ⇒ `R1` 依赖的「**新建独立连接器**」**不可能实现**。
+> ⇒ **新增 `D-7`** · **冻结设计升级为 `R2`**（新增 §10 修订节）· **`Implementation-Plan` §8 规格升版 v2** ·
+> **`H-WP4C-09-B` = 🟡 `READY (R2)`**（施工以 `v2` 规格为准）。
+> **`R2` 形态 = 复用 `c-…b12100`（URL 收敛为 base）+ 动作级 `URL Path` 分流**；
+> **同批修正**：动作请求体 `"payload": ${payload}`（**不加引号**）—— 原 `v1` 的带引号写法会让 Worker 返 `400 unparsable_payload`。
+> **核心语义（方案 A / 冻结谓词 / `-S2` / Pages Proxy / 端点 / `V-1…V-7`）逐字不变**；新增 **`R-WP4C-18`（连接器复用耦合）· `-19`（编辑窗口）**。
+> 明细 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**（**本阶段仍零生产变更**）。
 
 ---
 
@@ -63,6 +72,7 @@
 | **D-4** | **EMQX 平台限制** | 🔒 **冻结登记 `D-1…D-6` + 控制台人工实施方式** |
 | **D-5** | **验证计划** | 🔒 **冻结 `V-1…V-7`** |
 | **D-6** | **新增风险登记** | 🔒 **新增 `R-WP4C-7` / `R-WP4C-8` / `R-WP4C-9`** |
+| **`D-7`** ⭐ **R2 新增** | **平台配额（不可调整）** | 🔒 **连接器 ≤2 · 规则 ≤4 · 动作 ≤4 · 单规则动作 =1** ⇒ **`R2` 修订：单连接器复用 + 动作级 `URL Path` 分流**（冻结设计 **§10** · 明细 → `docs/review/P3-WP4C-Connector-Reuse-Amendment.md`） |
 | — | **`H-WP4C-03` 状态** | 🔒 **`CLOSED`** |
 | — | **`H-WP4C-04…08` 状态** | 🔒 **`CLOSED`**（§6A —— 实施阶段授权，**≠ 执行完成**） |
 | — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= ✅ `CLOSED WITH GUARD`** · **`-09-B`（Rule Implementation）= 🟡 `READY`**（依赖已全部闭合 · **待人工控制台执行**）（§6B） |
@@ -353,7 +363,7 @@
 | **允许动作** | **新增** `guo_feeder_history_ingest` · **修改** 既有 `guo_feeder/#` Rule 的 **WHERE** |
 | **强制** | **两步同批**（新增 + 收窄）· **禁**只新增 · **禁**双投 · **禁**第 3 条规则 / 双 Action |
 | **执行方** | **人工（EMQX 控制台）** —— 代理**无**控制台 / API 权限（EMQX 数据集成 API `403` · 无 CLI，见 `D-4`） |
-| **状态** | 🟡 **`READY`** —— **依赖已全部满足，可开工**；**不等于已执行** |
+| **状态** | 🟡 **`READY (R2)`** —— **依赖已全部满足，可开工**；**施工规格 = `R2` v2**（连接器复用 + 动作级路径）；**不等于已执行** |
 
 ### `H-WP4C-10` / `H-WP4C-10-A` —— **Action 目标形态裁决**（**人工决策 · ✅ 已裁决**）
 
@@ -460,7 +470,7 @@
 | **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
 | **`H-WP4C-09`** | EMQX 控制台人工执行（③④⑤） —— **已拆分**（**不关闭**） | 🟠 **已拆分** ⇒ `-09-A` / `-09-B`（§6B） | 拆分项 |
 | **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（§6B · **guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**） | **`WP4C-IMPL:C-4` = ✅ `PASS`** · 解锁 `-09-B` |
-| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🟡 **`READY`**（§6B · **依赖已全部闭合**：`-09-A` ✅ + `H-WP4C-11` ✅；**执行仍须人工控制台**） | **`WP4C-IMPL:C-5`** |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🟡 **`READY (R2)`**（§6B · **依赖已全部闭合**；**施工规格 = `R2` v2**（连接器复用 + 动作级路径）；**执行仍须人工控制台**） | **`WP4C-IMPL:C-5`** |
 | **`H-WP4C-10`** | Action 目标形态裁决（**父项**） | 🔒 **`CLOSED`**（§6B · 随 `-A` 裁决关闭） | 已解 |
 | **`H-WP4C-10-A`** | **Action Target 形态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（§6B · §5.1 留痕） | 已解 |
 | **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署**（方案 A 落地前置） | ✅ **`CLOSED`**（§6B · 已部署 `61b4938e-…` · 端到端 `PASS 15 / FAIL 0` · 清理已复核） | **`WP4C-IMPL:C-5`** · 准入 `V-1` ✅ |

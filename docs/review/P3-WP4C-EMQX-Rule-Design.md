@@ -1,20 +1,33 @@
-# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN）
+# P3 · `H-WP4C-03` —— **EMQX Rule telemetry 分流设计**（🔒 FROZEN DESIGN **R2**）
 
-> ## 🔒 `FROZEN` · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
+> ## 🔒 `FROZEN` **R2** · **未实施 · 未创建任何 EMQX 规则 · 未改动任何 `src/` / Worker / migration**
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **冻结设计（唯一实施依据）** —— 后续 EMQX 实施（控制台）**只能**依此执行 |
+> | **本文档性质** | **冻结设计（唯一实施依据 · `R2`）** —— 后续 EMQX 实施（控制台）**只能**依此执行（**形态以 §11 为准**） |
 > | **冻结依据** | 本仓 `docs/review/P3-WP4C-Decisions.md`（`H-WP4C-03` 人工裁决） |
-> | **基线** | 固件仓 HEAD = **`cdcc766`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`** |
+> | **基线** | 固件仓 HEAD = **`cdcc766`**（R1）→ **`def74f7`**（R2）· CF 仓 **`9b25203`** → **`415cd0c`** · EMQX 仓 **`eec9444`** → **`efa117d`** |
 > | **上游依据** | `H-WP4-FW-01`（**已 `CLOSED`**：方案 A 双 Action 分流）· `DT:WP-4` §9.1（端点 = `POST /api/history/ingest`）· `cloud_protocol.md` §4.5（telemetry uplink 已冻结） |
 > | **本文档不做的** | ❌ 不创建 / 修改 EMQX 规则或连接器 · ❌ 不改 Worker · ❌ 不改 migration · ❌ 不改 firmware · ❌ 不改 `/up` · ❌ 不部署 |
 >
 > **`H-WP4C-03` 状态 = `CLOSED`（本轮冻结）** —— 设计已冻结，**实施本身仍属后续工作包**。
 > **`CF-2` 保持 `BLOCKED`**（本文档**不解除**任何 Gate / CLOSED 事实；见 §9）。
 >
+> ---
+>
+> ### 🔄 **`R2` 修订（`2026-10-12`）—— 平台配额 `D-7` 强制变更「连接器形态」**
+>
+> > **成因**：EMQX Cloud Serverless **数据集成配额不可调整** —— **连接器 ≤2（当前 2/2，余量 0）** ·
+> > 规则 ≤4 · 动作 ≤4 · 单规则动作 =1。⇒ `R1` 依赖的「**新建独立连接器**」**在配额上不可能实现**。
+> >
+> > **处理**：新增 **§10（`R2` 修订节）** 与 **`D-7`**；**核心语义全部保留**（方案 A · 冻结谓词 · `-S2` · Pages Proxy · 端点 · `V-1…V-7`），
+> > **仅变更连接器形态** = **单连接器复用 + 动作级 `URL Path` 分流**。
+> >
+> > **规格全文（配置项 / 施工顺序 / 窗口 / 回滚）** → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**（`DECIDED`）。
+>
 > > **英文冻结声明**：*`H-WP4C-03` Frozen means the EMQX telemetry routing design is frozen.
-> > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.*
+> > It does not mean the rule has been created, the Worker/migration changed, or the pipeline deployed.
+> > **R2 changes the connector topology only — not the routing semantics.***
 
 ---
 
@@ -316,6 +329,7 @@ WHERE
 | **D-4** | EMQX 把**非 2xx 视为失败并重试** | EMQX 仓 §6.4 | ⇒ 分流错误会**放大**为持续重试（与 `DT:WP-4` §7.4 的失败模型相互印证） |
 | **D-5** | 真机 **`proto_ver = 4`**（MQTT 3.1.1） | EMQX 仓 §6.10 | ⇒ **方案 B 不可用**（§2.2 / C-6） |
 | **D-6** | Serverless 规则 SQL 为**子集**，函数可用性依版本而异 | EMQX 平台性质 | ⇒ 谓词语法**必须**先在控制台验证再保存（§7 V-1 / `R-WP4C-3` / `R-WP4C-7`） |
+| **`D-7`** ⭐ **R2 新增** | **数据集成配额（不可调整）：连接器 ≤2 · 规则 ≤4 · 动作 ≤4 · 单规则动作 = 1** | 控制台实测（人工 · `2026-10-12`）+ EMQX Cloud 文档《数据集成简介》 | ⇒ **"一个端点一个连接器"不可行** ⇒ `R2` 修订：**单连接器复用 + 动作级 `URL Path` 分流**（§10）；**后续任何新增端点都不得再依赖新连接器** |
 
 ### 6.1 冻结实施方式（因人工作业而必须固化）
 
@@ -413,7 +427,61 @@ Verification:
 
 ---
 
-## §10 关联文档
+## §10 🔄 **`R2` 修订 —— 连接器形态（平台配额 `D-7` 强制）**
+
+> **`R1` 的可实施性依赖「新建独立连接器」；`D-7` 使其不可能** ⇒ 本节为**唯一的形态修正**。
+> **核心语义（方案 A · 冻结谓词 §4 · `-S2` §5 · Pages Proxy · 端点 `/api/history/ingest` · `V-1…V-7`）逐字不变。**
+
+### 10.1 修订前后对照
+
+| 项 | `R1`（原冻结） | **`R2`（本次修订）** |
+|---|---|---|
+| 连接器 | **新建** `guo_feeder_history_http`（URL = `…/api/history/ingest`） | **复用既有** `c-n302933b-b12100`，URL 收敛为 **base** = `https://guo-feeder-pagesdev.pages.dev` |
+| 端点定位 | 连接器 URL 含完整路径 | **动作级 `URL Path`**：`/api/webhook`（既有动作）· `/api/history/ingest`（新动作） |
+| 鉴权头 | 新建连接器自带 `X-Webhook-Key` | **补到复用连接器**（`R-WP4C-18`：对 `/api/webhook` 无副作用） |
+| 规则 / 动作 SQL 语义 | 不变 | **不变**（谓词 · `-S2` · 端点 · 3 键体契约） |
+| 动作请求体 | `{"topic":"${topic}","clientid":"${clientid}","payload":"${payload}"}`（**§8.1 原文**） | **修正为不加引号**：`"payload": ${payload}` —— 理由见 §10.3 |
+
+### 10.2 冻结架构（`R2` 形态）
+
+```
+        guo_feeder/<device_id>/up
+                  │
+        ┌─────────┴─────────┐
+        │  EMQX Rule Engine │  ← 唯一分流责任方（**不变**）
+        └─────────┬─────────┘
+   telemetry 谓词真 │ 假
+        ┌─────────┴─────────┐
+        ▼                   ▼
+  动作 <新>            动作 a-…921e22
+  Path /api/history/ingest  Path /api/webhook
+        └────────┬──────────┘
+                 │  共用同一连接器 c-…b12100（base = 裸主机）
+                 ▼
+        https://guo-feeder-pagesdev.pages.dev/<path>
+                 │
+        ┌────────┴────────┐
+        ▼                 ▼
+  /api/history/ingest  /api/webhook
+   telemetry_history   mqtt_messages
+```
+
+### 10.3 同批修正的规格缺陷（**未冻结部分 · 允许修正**）
+
+`R1` 的 `Implementation-Plan` §8.1 存在**两处内部不自洽**（照原样施工 ⇒ **`V-2` 必失败**）：
+
+1. 规则 `SELECT … AS body`（只输出 `body`）↔ 动作体引用 `${topic}/${clientid}/${payload}`（**字段不存在**）；
+2. 动作体 `"payload":"${payload}"`（**带引号**）⇒ payload 变**字符串** ⇒ Worker `history-ingest.js` 的 `extractRecords()` 对 telemetry 返回 `null` ⇒ **`400 unparsable_payload`**。
+
+**`R2` 定案**（与**已在生产验证**的消息流动作同构）：
+**规则** `SELECT * FROM "guo_feeder/+/up" WHERE <冻结谓词>` · **动作体** `{"topic":"${topic}","clientid":"${clientid}","payload": ${payload}}`（**不加引号**）。
+
+> ⚠️ §4.5 的「SQL 形态**非冻结契约**」在此适用；**谓词逻辑本身（§4.1）仍逐字冻结**。
+> 明细与全部候选评估 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。
+
+---
+
+## §11 关联文档
 
 | 文档 | 关系 |
 |---|---|
@@ -431,3 +499,7 @@ Verification:
 **只做设计冻结与环境事实登记**，**不含任何配置改动或实施**。
 基线 = 固件仓 HEAD **`cdcc766`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。
 所有 `file:line` 与平台事实均取自基线，可逐条回查。*
+*`2026-10-12` **升级为 `R2`**：新增 **`D-7`（Serverless 数据集成配额，不可调整）** 与 **§10 `R2` 修订节** ——
+**连接器形态**由「新建独立连接器」改为「**复用 `c-…b12100` + 动作级 `URL Path` 分流**」；
+**核心语义（方案 A / 冻结谓词 / `-S2` / Pages Proxy / 端点 `/api/history/ingest` / `V-1…V-7`）逐字不变**。
+规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。最新基线 = 固件仓 **`def74f7`** · CF 仓 **`415cd0c`** · EMQX 仓 **`efa117d`**。*

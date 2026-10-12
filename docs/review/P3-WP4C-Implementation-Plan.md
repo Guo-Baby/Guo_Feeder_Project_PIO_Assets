@@ -177,10 +177,23 @@
 
 ---
 
-## §8 Console-ready 实施规格（**已按冻结设计转写 · ⚠️ 未执行**）
+## §8 Console-ready 实施规格（**v2 · `R2` 修订后 · ⚠️ 未执行**）
 
 > **用途**：交付人工在 EMQX 控制台照此执行。**本规格不新增任何规则语义**，逐条对应冻结设计 §3–§5。
 > ⚠️ **语法非冻结**（冻结设计 §4.5）：函数名 / JSON 取值写法**以控制台实测（`V-1`）为准**。
+
+### 8.0 🔄 **v2 规格声明（`2026-10-12` · 因 `D-7` 配额强制修订）**
+
+> **`v1` 规格中「新建独立连接器」与「动作请求体三键带引号」两项已作废。**
+
+| 项 | `v1`（作废） | **`v2`（现行）** |
+|---|---|---|
+| 连接器 | **新建** `guo_feeder_history_http`（URL = `…/api/history/ingest`） | **复用 `c-n302933b-b12100`**：URL 收敛为 **base** `https://guo-feeder-pagesdev.pages.dev` + 补 `X-Webhook-Key` |
+| 端点定位 | 连接器 URL 含完整路径 | **动作级 `URL Path`**：既有动作填 `/api/webhook` · 新动作填 `/api/history/ingest` |
+| 规则 SQL | `SELECT json_encode(…) AS body` | **`SELECT *`**（`body` 式与动作体字段不匹配 ⇒ 见 `R2` §6.1） |
+| 动作请求体 | `"payload":"${payload}"`（**带引号**） | **`"payload": ${payload}`（不加引号）** —— 带引号会让 Worker 返 `400 unparsable_payload`（`R2` §6.2） |
+
+> **★ 施工顺序 / 中断窗口 / 回滚 / 配额核算** → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`** **§4/§5/§9**（**必读**）。
 
 ### 8.1 ① 新增规则：`guo_feeder_history_ingest`
 
@@ -188,17 +201,15 @@
 |---|---|
 | **FROM** | `guo_feeder/+/up` |
 | **WHERE（冻结谓词）** | `( schema_version ∧ seq ∧ ts ∧ type ∧ value ) ∧ ¬c ∧ ¬cmd` |
-| **Action** | HTTP `POST` → `https://<中转 Pages 域名>/api/history/ingest`（**不得**直指 `*.workers.dev` —— `D-2`） |
-| **请求头** | `X-Webhook-Key: <WEBHOOK_SECRET>`（**必须**；与 Worker Secret 一致） |
-| **Body** | `{"topic":"${topic}","clientid":"${clientid}","payload":"${payload}"}`（**三键不可改名**） |
+| **Action（`v2`）** | HTTP `POST` → **连接器 `c-n302933b-b12100`**，**`URL Path` = `/api/history/ingest`** ⇒ 生效 URL = `https://guo-feeder-pagesdev.pages.dev/api/history/ingest`（**不得**直指 `*.workers.dev` —— `D-2`） |
+| **请求头（`v2`）** | `X-Webhook-Key: <WEBHOOK_SECRET>` —— **落在连接器 `c-…b12100` 上**（`R2` §4.4；对 `/api/webhook` 无副作用） |
+| **Body（`v2`）** | `{"topic":"${topic}","clientid":"${clientid}","payload": ${payload}}`（三键名不可改；**`${payload}` 不加引号**） |
 
-**SQL 草稿（结构 · 待 `V-1` 验证）**：
+**SQL（`v2` · 结构 · 待 `V-1` 验证）**：
 
 ```
 SELECT
-  json_encode(map_put('topic', topic,
-  map_put('clientid', clientid,
-  map_put('payload', payload, map_new())))) AS body
+  *
 FROM
   "guo_feeder/+/up"
 WHERE
@@ -213,15 +224,39 @@ WHERE
 
 > **★ 语义铁律（冻结）**：`value` 用「**键存在**」语义（**禁**"值非空 / ≠ 0"，否则 `value=0` / `false` 漏判）；
 > 谓词**不涉及** `device_id`（身份**只**来自 topic）；**禁只判 `type` / `value` / `topic`**。
+> ⚠️ **`SELECT *` 是必须的**：动作体引用 `${topic}` / `${clientid}` / `${payload}`，而 `json_encode(…) AS body` 式**只输出 `body`**（`R2` §6.1）。
+
+### 8.1b ①′ 新增动作（`v2` · 第 4 个动作配额）
+
+| 项 | 值 |
+|---|---|
+| 连接器 | **`c-n302933b-b12100`**（复用） |
+| 方法 | `POST` |
+| **`URL Path`** | **`/api/history/ingest`** |
+| 请求体 | 同 §8.1 Body（**不加引号**） |
+| 高级设置 | **照抄**：重试 `1` · 缓存池 `1` · 超时 `5s` · 健康检查 `30s` · 缓存 `4MB` · **异步** · 飞行窗口 `50` |
+| 初始状态 | ✋ **先不启用**（待阶段 2 完成后随规则一起启用） |
+
+### 8.1c ①″ 连接器变更（`v2` · **唯一有中断窗口的一步**）
+
+| 项 | `v1`（不变部分） | **`v2`（新增）** |
+|---|---|---|
+| 连接器 **`c-n302933b-b12100`** URL | — | `https://guo-feeder-pagesdev.pages.dev/api/webhook` → **`https://guo-feeder-pagesdev.pages.dev`** |
+| 连接器 Headers | — | **新增** `X-Webhook-Key: <WEBHOOK_SECRET>` |
+| 连接器 TLS 段 | — | **不得改动**（`R-WP4C-16`：编辑前截图 · 编辑后核对「已启用 TLS」+ 实测） |
+| 既有动作 `a-n302933b-921e22` | — | **`URL Path` = `/api/webhook`**（原为空 ⇒ 生效 URL **逐字不变**） |
+
+> ⚠️ **中断窗口**：连接器 URL 与动作 Path **无法原子更新** ⇒ 二者之间消息流短暂失效（目标 ≤60 s）。
+> **回滚**：动作 Path 清空 + 连接器 URL 复原 + 旧规则 WHERE 清空 + 停用/删除新规则与新动作。
 
 ### 8.2 ② 收窄既有规则（**`-S2` · 强制第 2 步，不可省略**）
 
 | 项 | 值 |
 |---|---|
-| **规则** | 既有消息 ingest 规则 |
-| **FROM** | `guo_feeder/#`（**保持**） |
+| **规则** | 既有消息 ingest 规则 `r-n302933b-a01720` |
+| **FROM** | `guo_feeder/#`（**保持**）· `SELECT *`（**保持**） |
 | **WHERE（改为）** | **`NOT`（§8.1 的 telemetry 谓词）** |
-| **Action** | 既有端点（**不变**） |
+| **Action** | 既有动作 `a-…921e22`（**连接器与 Path 已按 §8.1c 收敛，生效端点不变**） |
 
 > **★ 为何不可省略**：既有规则 FROM = `guo_feeder/#` **本来就匹配 `/up`** ⇒ 只建新规则 ⇒ **telemetry 双投**（新规则进 `telemetry_history` + 既有规则进 `mqtt_messages`）⇒ duplicate storage + 动作次数翻倍 + 统计污染。
 > **⇒ 落地 = ① 新增（§8.1）+ ② 收窄（§8.2），两步缺一即违规。**
@@ -306,3 +341,8 @@ WHERE
 **因执行条件不满足（平台作业面 + 人工授权 + 端点未部署）在 Commit 2 前 `STOPPED`**，
 **未创建任何规则、未改动任何系统、未关闭任何裁决项**。
 基线 = 固件仓 **`f31aabe`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。所有实测值均可逐条回查。*
+*`2026-10-12` **§8 规格升版 `v2`（`R2`）**：因 **`D-7`（Serverless 数据集成配额不可调整：连接器 ≤2 / 规则 ≤4 / 动作 ≤4）**，
+`v1` 的「新建独立连接器」改为「**复用 `c-…b12100` + 动作级 `URL Path` 分流**」；
+同批修正「动作体三键带引号」缺陷（改为 **`"payload": ${payload}` 不加引号**）与规则 `SELECT *`（对齐动作体字段）。
+**核心语义（方案 A / 冻结谓词 / `-S2` / 端点 / `V-1…V-7`）逐字不变**。
+规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。最新基线 = 固件仓 **`def74f7`** · CF 仓 **`415cd0c`** · EMQX 仓 **`efa117d`**。*
