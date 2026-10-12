@@ -27,9 +27,16 @@
 > **新增并部署** Pages 中转函数 `guo-feeder-pagesdev/functions/api/history/ingest.js`
 > （Pages 新部署 = **`61b4938e-fa2e-42da-b950-f527781f79f9`**；回滚目标 = `5790b3c5-…`）⇒
 > **端到端验证 `PASS 15 / FAIL 0`**（A 段 7/7 · B 段 8/8；D1 落库 `telemetry ×4 + log ×1`，**已定点清理并复核归零**）⇒
-> **`H-WP4C-11` = ✅ `CLOSED`** · **`V-1` = 🟢 `PASS`（带说明）**（§6）· **`H-WP4C-09-B` = 🟡 `READY (R3)`**（§5）；
+> **`H-WP4C-11` = ✅ `CLOSED`** · **`V-1` = 🟢 `PASS`（带说明）**（§6）· **`H-WP4C-09-B` = 🟡 `READY (R3.1)`**（§5）；
 > **纪律 §6A.4 `STOP` 条款已无成立条件**；**核查旧连接器收存** ⇒ **确认收到并存储**（`mqtt_messages` **2458** 行且仍在增长）。
 > 记录 → **`docs/review/P3-WP4C-History-Relay-Deployment-Verification.md`**（新增 **`R-WP4C-17`**）。
+>
+> **🔄 回填（`2026-10-12` · 人工施工中 · `R3.1` SQL 修正）**：人工已**拆除 3 个旧对象**（`r-…a01720` / `a-…921e22` / `c-…b12100`）
+> 并**新建连接器 `CB` = `c-n302933b-0c1cb0`**（URL 裸主机 · SNI 已填 · 4 头，**配置逐项正确**）；
+> 但**新建规则 A 时保存失败** ⇒ 控制台报 **`11: syntax error before: '='`** ⇒
+> **根因 = 我方的 SQL 错误**：① **`==` 不存在**（EMQX SQL 相等只有单 `=`）② "键存在"应以官方 **`is_null` / `is_not_null`** 表达。
+> ⇒ **`R3.1` 修正**（**仅改写法，语义不变**）· **新增 `R-WP4C-20`**（§7）· **新增强制验证步**（规则页调试试跑）。
+> 施工依据 → **`P3-WP4C-Console-Task-Sheet.md`**（照抄版）+ `…-Console-Build-Guide-R3.md`。
 
 ---
 
@@ -160,7 +167,7 @@
 |---|---|---|---|---|
 | **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🟠 **已拆分（不关闭）** ⇒ `-09-A` / `-09-B` |
 | **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（`2026-10-12` —— **连接器 2/2 · 规则 3/3 含 SQL 全文 · 动作 3/3 含高级设置 · D1 计数已采 · 回滚已签署**；**guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**，`R-WP4C-16`） |
-| **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **`R3`：删除** `r-…a01720` → `a-…921e22` → `c-…b12100` ⇒ **新建** 连接器 `CB`（裸主机 base）+ 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**直接带 `NOT 谓词`**）/`guo_feeder_history_ingest`（**冻结谓词**）；**presence 链路零接触** | 🟡 **`READY (R3)`**（**依赖已全部闭合**：`-09-A` ✅ + `H-WP4C-11` ✅；**施工规格 = `docs/review/P3-WP4C-Console-Build-Guide-R3.md`**；**执行仍须人工控制台**） |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **`R3`：删除** `r-…a01720` → `a-…921e22` → `c-…b12100` ⇒ **新建** 连接器 `CB`（裸主机 base）+ 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**取反谓词**）/`guo_feeder_history_ingest`（**冻结谓词**）；**presence 链路零接触** | 🟡 **`READY (R3.1)`** —— **执行进度**：⏹ 拆除 3 个旧对象 ✅ 已完成；✅ 连接器 **`c-n302933b-0c1cb0`** 已建；🛑 规则 SQL 曾报 **`syntax error before: '='`** ⇒ **`R3.1` 已修正谓词写法（`is_null`/`is_not_null`）**；**仍须人工控制台执行**（代理无控制台 / API 权限）。施工依据 → **`P3-WP4C-Console-Task-Sheet.md`** + `…-Console-Build-Guide-R3.md` |
 | **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔒 **`CLOSED`**（`2026-10-12` 随 `-10-A` 裁决关闭） |
 | **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | ✅ **裁决 = 方案 A（`Pages Proxy`）**（口径：「裁决仍然使用 pages 代理，workers 无法直连」）⇒ `D-2` 成立 ⇒ `R-WP4C-12` **收敛** | 🔒 **`CLOSED`** |
 | **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署** | **人工授权 · 已执行** | 方案 A 落地前置：新增 `guo-feeder-pagesdev/functions/api/history/ingest.js`（照抄 `presence/event.js` + **`X-Webhook-Key` 透传**）+ 部署 + 实测 | ✅ **`CLOSED`**（`2026-10-12` —— 已部署 `61b4938e-…` · 端到端 **`PASS 15 / FAIL 0`** · 冒烟脚本 `scripts/smoke-history-relay.mjs` 可复现） |
@@ -210,6 +217,7 @@
 | **`R-WP4C-18b`** | 🟠 中 | **★ 连接器不可编辑 ⇒ 删除不可逆**（**`R3` 新增**）：官方文档明示 **「编辑连接器 / 启用禁用连接器：仅适用于专有版部署」** ⇒ `R2` 的"就地改写"**不可执行**；改走**删除重建**后，旧对象 `c-…b12100` / `a-…921e22` / `r-…a01720` 的 **ID 永久消失、无法还原**，其**运行统计**（`R-WP4C-15` 的唯一量化证据）**一并丢失**。 | ① **施工前必须**抄录旧规则/动作运行统计 + 截图配置（施工说明 **§3 采集 6 项** · 回写 **§11.2 存证**）；② 新对象 ID **登记入册**（**§11.1**）；③ 回滚 = **用新 ID 重建等价物**（**施工说明 §10**），**不是**"恢复原样" |
 | **`R-WP4C-19`** | 🟡 低 | **★ 拆除—重建中断窗口**（`R2` 新增"编辑窗口"· `R3` **重定义为拆除窗口**）：`R3` 下窗口 = **「删除规则」→「两条新规则均启用」**（目标 **≤15 min**）⇒ 期间消息流短暂失效。 | ① **§3 采集全部做在前面**（拆除后只剩连点操作）；② 变更前后对 `mqtt_messages` **计数做差分核验**；③ 影响面**仅**消息流一条 **best-effort** 链路（≈4–70 条/天 ⇒ **期望丢 0–1 条**）；④ 不接受零窗口替代（`R-E` 需改端点契约，**违反冻结设计**） |
 | **`R-WP4C-16`** | 🟠 中 | **★ 连接器 TLS 明细「保存后不可回读」** —— EMQX 控制台在连接器保存后**不再展示 TLS 段（SNI / 验证服务器证书 / CA）**（人工实测，`2026-10-12`）⇒ **`V-0` 的 TLS 项永久无法完整采集**；现有两个连接器仅有人工**回忆值**（SNI 已填 / CA 未设置 / **口径与目标域表述不一致**）。叠加：**健康检查（30 s）会对端点发探测**，其 `resource down` 告警与**真实投递失败在统计上混淆** | **guard ①**：新建连接器时**保存前截图 TLS 段**（唯一可留痕形态）→ 归档 `EMQX_Assets/config/data-integration/assets/wp4c-v2v4/`（打码）· **guard ②**：保存后**实测验收**（「测试连接」到达 **HTTP 层** = TLS 通；出现 `TLS/certificate/ssl` ⇒ 先查 SNI；端点 `POST` 无 key ⇒ `401`）· **禁止**用 `README.md` §6.4 的书写值充当实测基线（§6A.2 第 3 条）· `V-2` 后须**观察 resource down 告警频率** |
+| **`R-WP4C-20`** | 🔴 **高（曾致施工中断）** | **★ 规则 SQL 语法子集**（**`R3.1` 新增** · 控制台实测触发）：`R3` 交付的谓词含 **`==`** ⇒ 控制台报 **`11: syntax error before: '='`**（解析器 trace 显示 `payload.c ==` 被词法拆成**两个** `=` token）。**根因**：EMQX 规则 SQL 的"完全相等"**只有单个 `=`**（官方 *Rule SQL Reference*），**`==` 不存在**；且"键是否存在"**应以内置函数 `is_null` / `is_not_null` 表达**（官方 *Built-in SQL Functions*：`is_null(Term)` = 判 `undefined`/未赋值，**路径中间字段缺失亦返回 `true`**），而非 `!= 'undefined'` 字符串比较。 | ① **`R3.1` 修正**：谓词改用 **`is_not_null(payload.<五键>)` ∧ `is_null(payload.c)` ∧ `is_null(payload.cmd)`**；旧规则取反 = **德摩根展开**（只用 `OR`/`AND`/`is_*`，**无 `NOT`、无括号**，避开子集风险）；② **最后备选**：`'undefined'` 字符串比较（**相等必须单 `=`**）—— 仅当 `is_null` 未知时使用；③ **强制新增验证步**：保存前必须用规则页 **「启用调试 + 发送消息」** 跑两条样例（`{"msg":"hello"}` ⇒ history **不匹配** / message **匹配**；telemetry 信封 ⇒ 反之），**符合才保存**；④ 同批修正 `Implementation-Plan` §8（`v3.1`）· 冻结设计 §4.5/§10.4 · 施工任务单/说明。**教训**：`§4.5` 已声明"语法非冻结"，但 `R1–R3` 仍在**未实测**的情况下把写法写成定稿 ⇒ 今后凡涉 EMQX SQL **必须先控制台试跑再定稿** |
 
 ---
 
@@ -220,7 +228,7 @@
 | `DT:WP-4` | `FROZEN` | 未动 |
 | `H-WP4C-03` | 🔒 `CLOSED` | 未动 |
 | `H-WP4C-04…08` | 🔒 `CLOSED` | 未动（授权已下达） |
-| `H-WP4C-09-A` / `-09-B` | ✅ `CLOSED WITH GUARD` / 🟡 **`READY (R3)`** | **★ 本轮变更** —— `-09-B` 依赖已全部闭合（`-09-A` + `H-WP4C-11`），**待人工控制台执行**；**施工形态 = `R3` 删除重建**（规格 → `docs/review/P3-WP4C-Console-Build-Guide-R3.md`） |
+| `H-WP4C-09-A` / `-09-B` | ✅ `CLOSED WITH GUARD` / 🟡 **`READY (R3.1)`** | **★ 本轮变更** —— `-09-B` 依赖已全部闭合（`-09-A` + `H-WP4C-11`）；**施工中**：旧对象 3 个已拆除 · 连接器 `c-n302933b-0c1cb0` 已建 · 规则 SQL 已按 `R3.1` 修正（`is_null`/`is_not_null`） |
 | **`H-WP4C-10` / `-10-A`** | 🔒 **`CLOSED`** | **★ 本轮变更** —— **裁决 = 方案 A（`Pages Proxy`）** |
 | **`H-WP4C-11`** | ✅ **`CLOSED`** | **★ 本轮变更** —— Pages 中转**已新增并部署**（`61b4938e-…`）+ 端到端 `PASS 15 / FAIL 0` |
 | **准入 `V-0` / `V-1`**（纪律 §6A.3） | ✅ `CLOSED WITH GUARD` / 🟢 **`PASS`（带说明）** | **★ 本轮变更** —— 基线已固化 · 目标可达性由 presence 连接器同 host 生产投递作证 |
@@ -300,3 +308,9 @@
 新增 **`R-WP4C-18b`（删除不可逆 ⇒ 施工前必须抄录运行统计 + 截图配置）** · **`R-WP4C-19` 重定义为"拆除—重建窗口 ≤15 min"**。
 ★ **净收益**：**`-S2` 双投窗口彻底消失**（消息流规则一出生即带 `NOT 谓词`）。**施工规格 → `docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。
 **本阶段零生产变更**（仅文档）。最新基线 = 固件仓 **`1d15104`** · CF 仓 **`415cd0c`** · EMQX 仓 **`3ea08fe`**。*
+*`2026-10-12` **`R3.1` 回填（人工施工中反馈驱动）**：人工**已拆除 3 个旧对象**并**新建连接器 `CB = c-n302933b-0c1cb0`**；
+新建规则时控制台报 **`11: syntax error before: '='`** ⇒ 定位为**我方 `R1–R3` 的 SQL 写法错误**（**`==` 不被 EMQX SQL 支持**；
+"键存在"应使用官方 **`is_null` / `is_not_null`**）⇒ **`R3.1` 修正 = 仅改谓词写法，语义逐字不变**。
+新增 **`R-WP4C-20`**（🔴 高 · 曾致施工中断）· **新增强制验证步**（规则保存前必须用规则页调试试跑两条样例）。
+同步：冻结设计 **§4.5 / §10.4** → `R3.1` · `Implementation-Plan` §8 → **`v3.1`** · 施工任务单/说明 → `R3.1` · **`H-WP4C-09-B` = 🟡 `READY (R3.1)`**。
+**本阶段零生产变更**（仅文档）。最新基线 = 固件仓 **`4c74d3a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`a73968a`**。*

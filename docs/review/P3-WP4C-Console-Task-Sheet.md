@@ -1,5 +1,24 @@
-# P3 · `WP4C` —— **EMQX 控制台施工任务单（`R3` · 照抄版）**
+# P3 · `WP4C` —— **EMQX 控制台施工任务单（`R3.1` · 照抄版）**
 
+> ## 🔄 当前进度（`2026-10-12` · 你已完成 ①–⑤）
+>
+> | 步骤 | 状态 |
+> |---|---|
+> | `1` 抄旧统计 | ✅ **已做**（旧对象已删） |
+> | `2` 删规则 `r-…a01720` | ✅ **已删** |
+> | `3` 删动作 `a-…921e22` | ✅ **已删** |
+> | `4` 删连接器 `c-…b12100` | ✅ **已删** |
+> | `5` 建连接器 `CB` | ✅ **已建 = `c-n302933b-0c1cb0`**（URL 裸主机 · SNI 已填 · 4 个头，**配置逐项正确**） |
+> | `6` 建动作 `MF` | 🟡 进行中（见截图：URL 路径填了 `/api/webhook`、备注写成 `guo_feeder_message_ingest` —— **⚠️ 见 §7.4 重要提醒**） |
+> | `7` 建动作 `HI` | ⬜ 未做 |
+> | `8` 建规则 A | 🛑 **上次卡在 SQL 语法错 ⇒ 已修正，见 §7.0 / §7.1** |
+> | `9` 建规则 B | ⬜ 未做 |
+> | `10` 验证 | ⬜ 未做 |
+> | `11` 回写 ID | ⬜ 未做 |
+>
+> **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
+> **连接器、动作、端点、请求体、TLS、`X-Webhook-Key` 的规格全部不变。**
+>
 > ## 📋 一句话总览
 >
 > **删 3 个**（1 规则 + 1 动作 + 1 连接器）→ **建 4 个**（1 连接器 + 2 动作 + 2 规则）。
@@ -9,8 +28,8 @@
 > | 项 | 值 |
 > |---|---|
 > | **执行人** | 你（EMQX 控制台人工）。代理**无**控制台 / 数据集成 API 权限（API 全 `403` · 无 CLI） |
-> | **依据** | 冻结设计 `R3`（`docs/review/P3-WP4C-EMQX-Rule-Design.md` §10）+ 施工规范（`docs/review/P3-WP4C-Console-Build-Guide-R3.md`） |
-> | **不要忘** | ① **删之前先抄旧运行统计**（§2）② **建连接器保存前先截图 TLS 段**（§4）③ **`${payload}` 不加引号**（§5/§6） |
+> | **依据** | 冻结设计 `R3` + **`R3.1` SQL 修正**（`docs/review/P3-WP4C-EMQX-Rule-Design.md` §10/§11）+ 施工规范（`docs/review/P3-WP4C-Console-Build-Guide-R3.md`） |
+> | **不要忘** | ① **`${payload}` 不加引号**（§5/§6）② **规则 SQL 用 `is_null` / `is_not_null`，不要 `==`**（§7.1）③ **保存前用页面调试功能试跑**（§7.0） |
 > | **禁止** | ❌ 不动 presence 的任何对象 ❌ 不新建第 3 个连接器（配额满）❌ 不改 firmware / Worker / D1 ❌ 密钥值不写进任何文件 |
 >
 > **流水账（打勾用）**：
@@ -202,7 +221,7 @@ SELECT * FROM "guo_feeder/#"
 **建完记下新 ID** → 填进 §11 登记表：
 
 ```
-新连接器 CB 的 ID = c-______________________
+新连接器 CB 的 ID = c-n302933b-0c1cb0   ← ✅ 已建（2026-10-12，URL 裸主机 + SNI 已填 + 4 个头）
 ```
 
 ---
@@ -295,7 +314,31 @@ SELECT * FROM "guo_feeder/#"
 | 关联动作 | **`HI`** |
 | 启用 | ✅ **是** |
 
-**SQL（整段复制粘贴）**：
+> ### ⚠️ `R3.1` 修正（`2026-10-12` · **必读：上次报错是我 SQL 写错了**）
+>
+> 你上次保存失败与操作无关，是我提供的 SQL 有 **2 处错误**：
+>
+> | # | 错在哪 | 事实（官方） | 改成 |
+> |---|---|---|---|
+> | 1 | 我写了 **`==`** | EMQX 规则 SQL 的"相等"**只有单个 `=`**（`=` = "Check if the two operands are completely equal"）；**`==` 不存在** ⇒ 被拆成两个 `=` token ⇒ `syntax error before: '='`（正是你贴的报错）。`!=` 是**合法**的 | `c == 'undefined'` → **`is_null(payload.c)`** |
+> | 2 | 我用 **`!= 'undefined'`** 判断"键是否存在" | 官方正确写法是内置函数 **`is_null()` / `is_not_null()`**：`is_null(Term)` = 判断 Term **未赋值 / undefined**；`is_not_null(Term)` = 反之。**路径中间字段缺失也返回 `true`**（EMQX 维护者原话：`is_null(payload.t.field)` 输入 `{"msg":"hello"}` ⇒ `true`） | 全部改用 `is_null` / `is_not_null` |
+>
+> ⇒ 下面 SQL 已全部改用 **`is_null` / `is_not_null`**。**保存前先用页面自带的调试功能试跑**（见 §7.0）。
+
+### 7.0 【试跑】保存前先验证谓词（1 分钟）
+
+规则编辑页打开 **启用调试**，用页面的"发送测试消息"，**每条规则各跑两条**（topic 用 `guo_feeder/ffffffffffff/up`）：
+
+| 测试消息 | 规则 A 期望 | 规则 B 期望 |
+|---|---|---|
+| `{"msg": "hello"}`（**非** telemetry） | **不匹配** | **匹配** |
+| `{"ts":1799999991,"type":"temperature","value":21.5,"seq":1,"schema_version":1}` | **匹配** | **不匹配** |
+
+两条都符合期望 ⇒ 再点"下一步"选动作保存。
+
+---
+
+**SQL（首选写法 · 整段复制粘贴）**：
 
 ```sql
 SELECT
@@ -303,14 +346,17 @@ SELECT
 FROM
   "guo_feeder/+/up"
 WHERE
-      payload.schema_version != 'undefined'
-  AND payload.seq            != 'undefined'
-  AND payload.ts             != 'undefined'
-  AND payload.type           != 'undefined'
-  AND payload.value          != 'undefined'
-  AND payload.c              == 'undefined'
-  AND payload.cmd            == 'undefined'
+      is_not_null(payload.schema_version)
+  AND is_not_null(payload.seq)
+  AND is_not_null(payload.ts)
+  AND is_not_null(payload.type)
+  AND is_not_null(payload.value)
+  AND is_null(payload.c)
+  AND is_null(payload.cmd)
 ```
+
+> ★ `is_not_null(x)` = **x 存在**；`is_null(x)` = **x 不存在**。
+> **不要**改写成 `x != 0` / `x != ''` 之类（否则 `value = 0`、`false` 会被漏掉 —— 冻结铁律 1）。
 
 **建完记下 ID**：
 
@@ -325,7 +371,7 @@ WHERE
 | 名称 / 备注 | `guo_feeder_message_ingest` |
 | **FROM** | `guo_feeder/#` ← **与旧规则逐字相同** |
 | **SELECT** | `*` ← **与旧规则逐字相同** |
-| **WHERE** | **`NOT`（上面那段谓词）** ← ★ 一步到位，这样**不会双投** |
+| **WHERE** | **"非 telemetry"**（= 把 A 的条件整体取反）← ★ 一步到位，这样**不会双投** |
 | 关联动作 | **`MF`** |
 | 启用 | ✅ **是**（建完这一步，**中断窗口结束**） |
 
@@ -337,18 +383,19 @@ SELECT
 FROM
   "guo_feeder/#"
 WHERE
-  NOT (
-        payload.schema_version != 'undefined'
-    AND payload.seq            != 'undefined'
-    AND payload.ts             != 'undefined'
-    AND payload.type           != 'undefined'
-    AND payload.value          != 'undefined'
-    AND payload.c              == 'undefined'
-    AND payload.cmd            == 'undefined'
-  )
+      is_null(payload.schema_version)
+   OR is_null(payload.seq)
+   OR is_null(payload.ts)
+   OR is_null(payload.type)
+   OR is_null(payload.value)
+   OR is_not_null(payload.c)
+   OR is_not_null(payload.cmd)
 ```
 
-**SQL（备用写法 · 万上上面那段报语法错，用这段"德摩根展开"版，含义完全等价）**：
+> **语义**：只要"五个 telemetry 键**有任一缺失**"**或**"出现了命令键 `c` / `cmd`" ⇒ 就不是 telemetry ⇒ 交给消息流动作 `MF`。
+> `AND` 优先级高于 `OR` ⇒ **不需要括号**（也正好避开括号子集风险）。**只用到 `OR` / `AND` / `is_null` / `is_not_null`，全是官方文档列出的写法。**
+
+**SQL（备选写法 · 与上面完全等价 · 仅当你的版本不支持 `OR` 时再试）**：
 
 ```sql
 SELECT
@@ -356,11 +403,30 @@ SELECT
 FROM
   "guo_feeder/#"
 WHERE
-      payload.schema_version == 'undefined'
-   OR payload.seq            == 'undefined'
-   OR payload.ts             == 'undefined'
-   OR payload.type           == 'undefined'
-   OR payload.value          == 'undefined'
+  NOT (
+        is_not_null(payload.schema_version)
+    AND is_not_null(payload.seq)
+    AND is_not_null(payload.ts)
+    AND is_not_null(payload.type)
+    AND is_not_null(payload.value)
+    AND is_null(payload.c)
+    AND is_null(payload.cmd)
+  )
+```
+
+**SQL（最后备选 · 若 `is_null` 报"未知函数"再用这版 · 注意 `=` 是单等号）**：
+
+```sql
+SELECT
+  *
+FROM
+  "guo_feeder/#"
+WHERE
+      payload.schema_version = 'undefined'
+   OR payload.seq            = 'undefined'
+   OR payload.ts             = 'undefined'
+   OR payload.type           = 'undefined'
+   OR payload.value          = 'undefined'
    OR payload.c              != 'undefined'
    OR payload.cmd            != 'undefined'
 ```
@@ -379,8 +445,29 @@ WHERE
 | 2 | 谓词里**不要**出现 `device_id`（设备身份只来自 topic） |
 | 3 | **不要**只判 `type` / `value` / `topic` 中的一两个 —— 那五个正条件缺一不可 |
 
-> ⚠️ 若两条规则都保存失败（提示语法不支持）⇒ **停手**，把控制台的报错原文发我（不同版本 SQL 子集不同，可能需要改用 `json_decode(payload)` 写法）。
-> 若规则 A 成功、规则 B 只在 `NOT` 上报错 ⇒ 直接用上面的**德摩根备用版**（**记得告诉我实际用了哪一版**）。
+> ⚠️ 若规则保存仍报**语法错** ⇒ **停手**，把控制台报错原文发我。
+> 若报的是 **`unknown function is_null`** ⇒ 改用上面的**最后备选版**（`= 'undefined'`，**单等号**），并把"用了哪一版"告诉我。
+> 若报的是 **`NOT` / 括号** 不支持 ⇒ 用**首选版**（首选版不含 `NOT`、不含括号）。
+
+### 7.4 ⚠️ 你在动作页填错了两处（截图已证实 · 必须改正）
+
+你截图里那个动作 **备注 `guo_feeder_message_ingest` · URL 路径 `/api/webhook`**，但它是在**规则 A（`guo_feeder_history_ingest`）**下新建的 ⇒ **归属错了**：
+
+| 字段 | 你填的 | 应该填 | 为什么 |
+|---|---|---|---|
+| **备注** | `guo_feeder_message_ingest` | **`guo_feeder_history_ingest`** | 这是 **`HI`** 动作（history 域），不是消息流那个 |
+| **URL 路径** | `/api/webhook` | **`/api/history/ingest`** | 规则 A 的报文必须进 **`telemetry_history`**；填 `/api/webhook` 会全落进 `mqtt_messages`（**双投 + 分流失效**） |
+
+**正确对应关系**：
+
+```
+规则 A  guo_feeder_history_ingest  →  动作 HI  路径 /api/history/ingest  备注 guo_feeder_history_ingest  （头带 X-Webhook-Key）
+规则 B  guo_feeder_message_ingest  →  动作 MF  路径 /api/webhook         备注 guo_feeder_message_ingest  （头留空）
+```
+
+> **两个动作都在同一个新建流程里做**：先建规则 A → 选连接器 `CB` → 建动作 `HI`（路径 `/api/history/ingest`）→ 保存；
+> 再单独新建规则 B → 选连接器 `CB` → 建动作 `MF`（路径 `/api/webhook`）→ 保存。
+> **别把 `MF` 的路径填到 `HI` 上**（这是上次唯一容易混的地方）。
 
 ---
 
@@ -458,7 +545,7 @@ presence / D1 / Worker / Pages / 设备 MQTT 连接 全部不受影响。
 规则 A (history) = r-______________________
 规则 B (message) = r-______________________
 
-规则 B 实际采用：  [ ] NOT 写法   [ ] 德摩根备用写法
+规则 B 实际采用：  [ ] 首选(is_null + OR)   [ ] 备选(NOT + 括号)   [ ] 最后备选(= 'undefined' 单等号)
 TLS 段截图存放：   ____________
 
 被删对象（存证）：
@@ -475,7 +562,10 @@ TLS 段截图存放：   ____________
 | 建连接器点「测试」报 `TLS handshake` / `certificate` | **SNI 没填或填错** ⇒ 填 `guo-feeder-pagesdev.pages.dev` |
 | 删除连接器被拒 | 它下面还有规则引用 ⇒ 回到 §3 先删规则、再删动作 |
 | 动作生效地址不对 | `URL 路径` 与连接器 URL **拼错** —— 连接器必须是裸主机 `https://guo-feeder-pagesdev.pages.dev` |
-| 规则保存报语法错 | 先换 §7.2 的**德摩根备用写法**；两版都失败 ⇒ **停手**，把报错原文发我 |
+| 规则保存报 **`syntax error before: '='`** | ★ **上次就是这个** —— 原因 = SQL 里写了 **`==`**（EMQX 只有单 `=`）⇒ **改用 §7.1/§7.2 的 `is_null` / `is_not_null` 版** |
+| 规则保存报 `unknown function is_null` | 用 §7.2 的**最后备选版**（`= 'undefined'`，**单等号**） |
+| 规则保存报其它语法错 | 换 §7.2 **备选版**（`NOT` + 括号）；仍失败 ⇒ **停手**，把报错原文发我 |
+| 规则保存成功但调试测试结果和 §7.0 期望不符 | **先别保存**，把"测试消息 + 实际匹配结果"发我 |
 | `/api/history/ingest` 一直被打回 `401` | 动作 `HI` 的 `X-Webhook-Key` 没填 / 值与 Worker 的 `WEBHOOK_SECRET` 不一致 |
 | `mqtt_messages` 增长异常偏少 | 该链路**本就 ≈13% 成功率**（既有问题，本次不修）；看**窗口内增量**并与既有成功率对照 |
 | 全部成功但 `telemetry_history` 仍是 0 | 设备侧 `GF_TELEMETRY_ENABLED` 编译开关 + `telemetry.enable` 运行时开关是**两道门**，需都开才会发 telemetry —— 但**不影响本次规则验证**（可先手工 POST 造一条） |
@@ -493,6 +583,7 @@ TLS 段截图存放：   ____________
 
 ---
 
-*本文档于 **`2026-10-12`** 建立，为 **`R3` 控制台施工任务单（照抄版）**；对应裁决 **`H-WP4C-09-B = 🟡 READY (R3)`**。
-**旧对象原文逐字取自你提供的控制台实测**（转录于 `P3-WP4C-V0-EMQX-Baseline.md`），**新对象规格取自冻结设计 `R3`**。
-基线 = 固件仓 **`1fc9f5a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`1178611`**。*
+*本文档于 **`2026-10-12`** 建立，为 **`R3` 控制台施工任务单（照抄版）**；**同日升级 `R3.1`**（SQL 谓词修正：`==` 非法 ⇒ 改用官方 `is_null` / `is_not_null`），对应裁决 **`H-WP4C-09-B = 🟡 READY (R3.1)`**。
+**旧对象原文逐字取自你提供的控制台实测**（转录于 `P3-WP4C-V0-EMQX-Baseline.md`），**新对象规格取自冻结设计 `R3`**，**SQL 谓词取自 `R3.1`**（依据 EMQX 官方 Rule SQL / Built-in Functions 文档）。
+基线 = 固件仓 **`1fc9f5a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`1178611`**；
+**已建对象**：连接器 `c-n302933b-0c1cb0`（`2026-10-12`）。*

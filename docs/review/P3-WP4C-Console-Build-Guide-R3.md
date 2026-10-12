@@ -1,16 +1,16 @@
-# P3 · `WP4C` —— **EMQX 控制台施工说明（`R3` · 删除重建版）**
+# P3 · `WP4C` —— **EMQX 控制台施工说明（`R3` + `R3.1` SQL 修正 · 删除重建版）**
 
-> ## 🛑 本文件 = **人工控制台施工手册（`R3`）** —— **代理不能执行**（无控制台 / 无数据集成 API 权限）
+> ## 🛑 本文件 = **人工控制台施工手册（`R3` / `R3.1`）** —— **代理不能执行**（无控制台 / 无数据集成 API 权限）
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **施工说明 + `R3` 修订记录** —— 回答三个问题：**如何建连接器 · 如何建动作 · 如何建规则** |
+> | **本文档性质** | **施工说明 + `R3`/`R3.1` 修订记录** —— 回答三个问题：**如何建连接器 · 如何建动作 · 如何建规则** |
 > | **执行方** | **人工**（EMQX Console，`H-WP4C-09-B`） |
-> | **修订成因** | **连接器创建后不可编辑**（官方文档：编辑 / 启停连接器**仅限专有版**）⇒ `R2` 的"就地改写 URL"**不可行** ⇒ 改为 **删除重建** |
-> | **不变的部分（核心语义逐字保留）** | ✅ 方案 A（EMQX Rule payload predicate routing）· ✅ 冻结谓词 `( schema_version ∧ seq ∧ ts ∧ type ∧ value ) ∧ ¬c ∧ ¬cmd` · ✅ `Action Target = Pages Proxy`（不碰 `*.workers.dev`）· ✅ 端点 `/api/history/ingest` · ✅ 验证集 `V-1…V-7` · ✅ 不改 firmware / 不改 topic / Worker 不解析 |
-> | **变更的部分（仅**施工形态**）** | 🔄 **「编辑连接器」→「删除旧连接器 + 新建」**；⇒ **`-S2` 双投窗口彻底消失**（新规则直接建成已收窄态） |
+> | **修订成因** | ① **`R3`**：**连接器创建后不可编辑**（官方文档：编辑 / 启停连接器**仅限专有版**）⇒ `R2` 的"就地改写 URL"**不可行** ⇒ 改为 **删除重建**。② **`R3.1`（`2026-10-12`）**：`R3` 的 SQL 谓词**语法错误**（`==` 不被支持 · 应用官方 `is_null` / `is_not_null`）⇒ **仅改谓词写法**，其余全部不变 |
+> | **不变的部分（核心语义逐字保留）** | ✅ 方案 A（EMQX Rule payload predicate routing）· ✅ 冻结谓词语义 `( schema_version ∧ seq ∧ ts ∧ type ∧ value ) ∧ ¬c ∧ ¬cmd` · ✅ `Action Target = Pages Proxy`（不碰 `*.workers.dev`）· ✅ 端点 `/api/history/ingest` · ✅ 验证集 `V-1…V-7` · ✅ 不改 firmware / 不改 topic / Worker 不解析 |
+> | **变更的部分** | ① **`R3`**：**「编辑连接器」→「删除旧连接器 + 新建」**；⇒ **`-S2` 双投窗口彻底消失**（新规则直接建成已收窄态）。② **`R3.1`**：**谓词写法** = `payload.x != 'undefined'` → **`is_not_null(payload.x)`** / **`is_null(payload.x)`**；**`==` → 禁用**（用 `is_null` 或单 `=`） |
 > | **本文件不做的** | ❌ 未创建 / 修改任何 EMQX Rule · Action · Connector · ❌ 未部署 · ❌ 未改 firmware / Worker / migration · ❌ 不 push |
-> | **基线** | 固件仓 **`1d15104`** · CF 仓 **`415cd0c`** · EMQX 仓 **`3ea08fe`** |
+> | **基线** | 固件仓 **`4c74d3a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`a73968a`**；**已建对象**：连接器 **`c-n302933b-0c1cb0`**（`2026-10-12`） |
 >
 > > ### 📋 **要"照着点"的话，请用 → `docs/review/P3-WP4C-Console-Task-Sheet.md`（施工任务单 · 照抄版）**
 > > 本文件是**施工规范与依据**（平台事实 / 设计裁量 / 窗口量化 / 回滚 / 风险）；
@@ -263,7 +263,33 @@ CB.URL = https://guo-feeder-pagesdev.pages.dev        ← 裸主机（无路径�
 | **动作** | **`HI`**（§6.3） |
 | **启用** | ✅ **是** |
 
-**SQL（控制台粘贴用 · 结构待 `V-1` 实测）**：
+> ### ⚠️ `R3.1` SQL 修正（`2026-10-12` · **BINDING**）
+> `R3` 的 SQL 谓词有 **2 处错误**，已在 `R3.1` 修正：
+> | # | 错 | 事实（EMQX 官方） | 修正 |
+> |---|---|---|---|
+> | 1 | `payload.c == 'undefined'` | 规则 SQL 的"相等"**只有单个 `=`**；**`==` 不存在** ⇒ `syntax error before: '='`（控制台实测报错） | 改用 **`is_null(payload.c)`** |
+> | 2 | 用 `!= 'undefined'` 判断"键存在" | 官方内置函数 **`is_null(Term)`** = 判 **undefined（未赋值）**；**`is_not_null(Term)`** = 反之。中间字段缺失也返回 `true` | 全部改用 `is_null` / `is_not_null` |
+>
+> 来源：EMQX 官方 *Rule SQL Reference*（`=` 说明）与 *Built-in SQL Functions*（`is_null` / `is_not_null` 说明）。
+
+**SQL（首选写法 · 控制台粘贴用）**：
+
+```sql
+SELECT
+  *
+FROM
+  "guo_feeder/+/up"
+WHERE
+      is_not_null(payload.schema_version)
+  AND is_not_null(payload.seq)
+  AND is_not_null(payload.ts)
+  AND is_not_null(payload.type)
+  AND is_not_null(payload.value)
+  AND is_null(payload.c)
+  AND is_null(payload.cmd)
+```
+
+**SQL（最后备选 · 仅当 `is_null` 报"未知函数"才用 · 注意 `=` 单等号）**：
 
 ```sql
 SELECT
@@ -276,8 +302,8 @@ WHERE
   AND payload.ts             != 'undefined'
   AND payload.type           != 'undefined'
   AND payload.value          != 'undefined'
-  AND payload.c              == 'undefined'
-  AND payload.cmd            == 'undefined'
+  AND payload.c              = 'undefined'
+  AND payload.cmd            = 'undefined'
 ```
 
 > **★ `SELECT *` 是必须的**：动作体引用 `${topic}` / `${clientid}` / `${payload}`，
@@ -289,12 +315,29 @@ WHERE
 |---|---|
 | **名称 / 备注** | `guo_feeder_message_ingest` |
 | **FROM** | `guo_feeder/#` ← **与被删规则逐字相同** |
-| **WHERE** | **`NOT`（冻结谓词）** ← ★ **一步到位**（`R3` 的核心收益：**无双投窗口**） |
+| **WHERE** | **把规则 A 的条件整体取反**（= "非 telemetry"）← ★ **一步到位**（`R3` 的核心收益：**无双投窗口**） |
 | **SELECT** | **`*`** ← 与原文逐字相同 |
 | **动作** | **`MF`**（§6.2） |
 | **启用** | ✅ **是** |
 
-**SQL（首选写法 · 用 `NOT`）**：
+**SQL（首选写法 · 只含 `OR` / `AND` / `is_null` / `is_not_null` · 无 `NOT`、无括号）**：
+
+```sql
+SELECT
+  *
+FROM
+  "guo_feeder/#"
+WHERE
+      is_null(payload.schema_version)
+   OR is_null(payload.seq)
+   OR is_null(payload.ts)
+   OR is_null(payload.type)
+   OR is_null(payload.value)
+   OR is_not_null(payload.c)
+   OR is_not_null(payload.cmd)
+```
+
+**SQL（等价写法 · 若你的版本支持 `NOT` + 括号，可读性更好）**：
 
 ```sql
 SELECT
@@ -303,17 +346,17 @@ FROM
   "guo_feeder/#"
 WHERE
   NOT (
-        payload.schema_version != 'undefined'
-    AND payload.seq            != 'undefined'
-    AND payload.ts             != 'undefined'
-    AND payload.type           != 'undefined'
-    AND payload.value          != 'undefined'
-    AND payload.c              == 'undefined'
-    AND payload.cmd            == 'undefined'
+        is_not_null(payload.schema_version)
+    AND is_not_null(payload.seq)
+    AND is_not_null(payload.ts)
+    AND is_not_null(payload.type)
+    AND is_not_null(payload.value)
+    AND is_null(payload.c)
+    AND is_null(payload.cmd)
   )
 ```
 
-**SQL（备选写法 · 若 `NOT` 在 Serverless SQL 子集不可用 ⇒ 用德摩根展开）**：
+**SQL（最后备选 · 仅当 `is_null` 报"未知函数"才用 · 注意 `=` 单等号）**：
 
 ```sql
 SELECT
@@ -321,26 +364,28 @@ SELECT
 FROM
   "guo_feeder/#"
 WHERE
-      payload.schema_version == 'undefined'
-   OR payload.seq            == 'undefined'
-   OR payload.ts             == 'undefined'
-   OR payload.type           == 'undefined'
-   OR payload.value          == 'undefined'
+      payload.schema_version = 'undefined'
+   OR payload.seq            = 'undefined'
+   OR payload.ts             = 'undefined'
+   OR payload.type           = 'undefined'
+   OR payload.value          = 'undefined'
    OR payload.c              != 'undefined'
    OR payload.cmd            != 'undefined'
 ```
 
-> ★ **两种写法必须语义等价**（后者是前者的严格德摩根展开）。**用哪种都行，但必须在回写时记明实际采用哪一种**（§11 / `V2V4-Config-After` §3）。
-> ★ **若两者都被 SQL 子集拒绝** ⇒ **`STOP`**，把控制台报错原文发我（属 `R-WP4C-7`：函数/语法可用性依版本而异）。
+> ★ **三种写法语义完全等价**：只要"五个 telemetry 键有任一缺失"**或**"出现命令键 `c` / `cmd`" ⇒ 不是 telemetry ⇒ 交 `MF`。
+> `AND` 优先级高于 `OR` ⇒ 首选版**无需括号**。**用哪种都行，但必须在回写时记明**（§11 / `V2V4-Config-After` §3）。
+> ★ **若全部被 SQL 子集拒绝** ⇒ **`STOP`**，把控制台报错原文发我（属 `R-WP4C-7` / `R-WP4C-20`）。
 
 ### 7.4 谓词语义铁律（**冻结 · 不得自行改动**）
 
 | # | 铁律 |
 |---|---|
-| 1 | `value` 用「**键存在**」语义 —— **禁**写成"值非空 / ≠ 0"（否则 `value = 0` / `false` 会被漏判） |
+| 1 | `value` 用「**键存在**」语义 —— **禁**写成"值非空 / ≠ 0"（否则 `value = 0` / `false` 会被漏判）；`is_not_null(payload.value)` 即此语义 |
 | 2 | 谓词**不涉及** `device_id`（设备身份**只**来自 topic） |
 | 3 | **禁只判** `type` / `value` / `topic` —— 五个正条件缺一不可 |
-| 4 | ⚠️ **仍未冻结**：`'undefined'` 比较写法 / `payload.x` 是否自动解码 —— **以控制台实测为准**；若必须改用 `json_decode(payload)`，**就地改并回写** |
+| 4 | **`==` 禁用**（`syntax error before: '='` · `R3.1` 实测）；**相等一律单 `=`**，或用 `is_null` / `is_not_null` |
+| 5 | **保存前必须用规则页的「启用调试 + 发送测试消息」试跑**（`{"msg":"hello"}` ⇒ 规则 A **不匹配** / 规则 B **匹配**；telemetry 信封 ⇒ 反之） |
 
 ---
 
@@ -456,19 +501,22 @@ curl -s --noproxy '*' -o /dev/null -w "webhook GET -> %{http_code}\n" "$BASE/api
 
 | 对象 | ID | 备注值 | 创建时间 |
 |---|---|---|---|
-| 连接器 `CB` | `c-<待填>` | `guo_feeder_shared_http` | `<待填>` |
+| 连接器 `CB` | **`c-n302933b-0c1cb0`** ✅ | `guo_feeder_shared_http` | `2026-10-12` |
 | 动作 `MF` | `a-<待填>` | `guo_feeder_message_ingest` | `<待填>` |
 | 动作 `HI` | `a-<待填>` | `guo_feeder_history_ingest` | `<待填>` |
 | 规则（history） | `r-<待填>` | `guo_feeder_history_ingest` | `<待填>` |
 | 规则（message） | `r-<待填>` | `guo_feeder_message_ingest` | `<待填>` |
 
+> ⚠️ **易混提醒**：`HI` 的 **URL 路径 = `/api/history/ingest`**（配规则 A）；`MF` 的 **URL 路径 = `/api/webhook`**（配规则 B）。
+> 两个动作都挂同一个连接器 `CB`。**上次截图里"动作备注 `guo_feeder_message_ingest` + 路径 `/api/webhook`"被建到了规则 A 下面 —— 那是错的**（会双投 + 分流失效）。
+
 ### 11.2 被删对象（**仅存证，不可恢复**）
 
 | 对象 | ID | 删除前运行统计（§3 0-1） |
 |---|---|---|
-| 规则（消息流） | `r-n302933b-a01720` | 触发 `<待填>` / 成功 `<待填>` / 失败 `<待填>` |
-| 动作（消息流） | `a-n302933b-921e22` | 同上 |
-| 连接器（消息流） | `c-n302933b-b12100` | — |
+| 规则（消息流） | `r-n302933b-a01720` | ✅ **已删除**（`2026-10-12`）；统计值 `<待回填>` |
+| 动作（消息流） | `a-n302933b-921e22` | ✅ **已删除**（`2026-10-12`） |
+| 连接器（消息流） | `c-n302933b-b12100` | ✅ **已删除**（`2026-10-12`） |
 
 ### 11.3 本文件施工结果
 
@@ -477,7 +525,9 @@ curl -s --noproxy '*' -o /dev/null -w "webhook GET -> %{http_code}\n" "$BASE/api
 | 窗口（起 → 止） | `<待填>` |
 | 实际窗口时长 | `<待填（目标 ≤15 min）>` |
 | 窗口内丢失消息数（差分推算） | `<待填（期望 0–1）>` |
-| `NOT` 写法 vs 德摩根备选（实际采用） | `<待填>` |
+| 规则 B 实际采用的 SQL 写法 | `<待填：首选(is_null+OR) / 备选(NOT) / 最后备选(= 'undefined')>` |
+| 规则 A 实际采用的 SQL 写法 | `<待填：is_null 版 / 'undefined' 版>` |
+| 规则页调试试跑结果（§7.0 两组） | `<待填：符合 / 不符合>` |
 | TLS 段截图归档路径 | `assets/wp4c-v2v4/<待填>` |
 | 是否发生回滚 | `<是 / 否>` |
 
@@ -499,9 +549,9 @@ curl -s --noproxy '*' -o /dev/null -w "webhook GET -> %{http_code}\n" "$BASE/api
 | 项 | 变化 |
 |---|---|
 | `P3-WP4C-Connector-Reuse-Amendment.md` | `R2` → **`R3`**（`R2` 的 §4.2 / §5 施工清单**作废**，由本文件取代；**分流语义不变**） |
-| `P3-WP4C-EMQX-Rule-Design.md` | `FROZEN DESIGN R2` → **`R3`**（仅**施工形态**注释；语义逐字不变） |
-| `P3-WP4C-Implementation-Plan.md` §8 | 规格 `v2` → **`v3`**（链接本文件） |
-| `H-WP4C-09-B` | 🟡 `READY (R2)` → 🟡 **`READY (R3)`** —— **施工规格以本文件为准** |
+| `P3-WP4C-EMQX-Rule-Design.md` | `FROZEN DESIGN R2` → **`R3`** → **`R3.1`**（`R3`：施工形态注释；`R3.1`：**SQL 谓词写法修正** —— `==` 禁用 / 改用 `is_null`·`is_not_null`。**语义逐字不变**） |
+| `P3-WP4C-Implementation-Plan.md` §8 | 规格 `v2` → **`v3`** → **`v3.1`**（SQL 谓词写法） |
+| `H-WP4C-09-B` | 🟡 `READY (R2)` → `READY (R3)` → 🟡 **`READY (R3.1)`** —— **施工规格以本文件为准** |
 | `CF-2` | 🔴 仍 `BLOCKED`（判据 = **冻结验证集** `V-1…V-7`） |
 
 ---
@@ -520,7 +570,9 @@ curl -s --noproxy '*' -o /dev/null -w "webhook GET -> %{http_code}\n" "$BASE/api
 
 ---
 
-*本文档于 **`2026-10-12`** 建立，为 **`R3` 施工说明**（成因：**连接器创建后不可编辑**，官方文档明示"编辑连接器仅适用专有版部署"）。
-**核心语义（方案 A / 冻结谓词 / `-S2` 目标 / Pages Proxy / 端点 / 验证集）全部保留**；**仅变更施工形态**。
+*本文档于 **`2026-10-12`** 建立，为 **`R3` 施工说明**（成因：**连接器创建后不可编辑**，官方文档明示"编辑连接器仅适用专有版部署"）；
+**同日升级 `R3.1`**（成因：**控制台实测 `syntax error before: '='`** ⇒ `R3` 的 SQL 谓词写法有误，改用官方 `is_null` / `is_not_null`，**仅改写法、语义不变**）。
+**核心语义（方案 A / 冻结谓词 / `-S2` 目标 / Pages Proxy / 端点 / 验证集）全部保留**；**仅变更施工形态与谓词写法**。
 **本文件零生产变更** —— 未创建 / 修改任何 EMQX 配置、未部署、未改 firmware 与 Worker，**不含任何密钥值**。
-基线 = 固件仓 **`1d15104`** · CF 仓 **`415cd0c`** · EMQX 仓 **`3ea08fe`**。所有平台事实均可按 §1 出处逐条回查。*
+基线 = 固件仓 **`4c74d3a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`a73968a`**；**已建对象**：`c-n302933b-0c1cb0`。所有平台事实均可按 §1 出处逐条回查。*
+**平台依据（`R3.1`）**：EMQX *Rule SQL Reference*（`=` = 完全相等；无 `==`）· EMQX *Built-in SQL Functions*（`is_null(Term)` 判 `undefined`；`is_not_null(Term)` 反之）。*

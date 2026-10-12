@@ -82,9 +82,10 @@
 | **D-5** | **验证计划** | 🔒 **冻结 `V-1…V-7`** |
 | **D-6** | **新增风险登记** | 🔒 **新增 `R-WP4C-7` / `R-WP4C-8` / `R-WP4C-9`** |
 | **`D-7`** ⭐ **R2 新增** | **平台配额（不可调整）** | 🔒 **连接器 ≤2 · 规则 ≤4 · 动作 ≤4 · 单规则动作 =1** ⇒ **`R2` 修订：单连接器复用 + 动作级 `URL Path` 分流**；**`R3` 追加**：因**连接器不可编辑（仅专有版）** ⇒ 施工改为 **删除重建**（冻结设计 **§10** · 明细 → `docs/review/P3-WP4C-Connector-Reuse-Amendment.md` · 施工 → `docs/review/P3-WP4C-Console-Build-Guide-R3.md`） |
+| **`D-8`** ⭐ **R3.1 新增** | **EMQX SQL 语法子集（实测）** | 🔒 **① 相等只有单 `=` —— `==` 不存在**（控制台实测 `11: syntax error before: '='`）；**② "键是否存在"用内置函数 `is_null(Term)` / `is_not_null(Term)`**（官方 *Built-in SQL Functions*：判 `undefined`/未赋值，**路径中间字段缺失亦返回 `true`**），而非 `!= 'undefined'` 字符串比较 ⇒ **`R3.1` 修订谓词写法**（冻结设计 **§4.5 / §10.4** · 施工任务单/说明 · `Implementation-Plan` §8 `v3.1`）；**③ 强制**：凡涉 EMQX SQL **必须先控制台试跑再定稿**（风险 **`R-WP4C-20`**） |
 | — | **`H-WP4C-03` 状态** | 🔒 **`CLOSED`** |
 | — | **`H-WP4C-04…08` 状态** | 🔒 **`CLOSED`**（§6A —— 实施阶段授权，**≠ 执行完成**） |
-| — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= ✅ `CLOSED WITH GUARD`** · **`-09-B`（Rule Implementation）= 🟡 `READY (R3)`**（依赖已全部闭合 · **待人工控制台执行 · 规格见 `P3-WP4C-Console-Build-Guide-R3.md`**）（§6B） |
+| — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= ✅ `CLOSED WITH GUARD`** · **`-09-B`（Rule Implementation）= 🟡 `READY (R3.1)`**（依赖已全部闭合 · **待人工控制台执行 · 规格见 `P3-WP4C-Console-Task-Sheet.md`（照抄版）+ `…-Console-Build-Guide-R3.md`**）（§6B） |
 | — | **`H-WP4C-10` / `H-WP4C-10-A` 状态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（`2026-10-12` · 见 `P3-WP4C-Action-Target-Decision.md` §5.1） |
 | — | **`H-WP4C-11` 状态** | ✅ **`CLOSED`**（`2026-10-12` —— **Pages 中转已新增并部署** `61b4938e-…` + 端到端验证 `PASS 15 / FAIL 0`） |
 | — | **纪律 §6A.3 准入序列 `V-0…V-5`** | **`V-0` = ✅ 已完成（`CLOSED WITH GUARD`）** · **`V-1` = 🟢 `PASS`（带说明）** · `V-2…V-5` = 🔴 待人工控制台执行（`H-WP4C-09-B`） |
@@ -373,7 +374,7 @@
 | **强制** | **禁止双投**（靠"消息流规则一出生即带 `NOT 谓词`"保证）· **禁**额外连接器（配额 2/2）· **禁**第 5 条规则 / 第 5 个动作 · **presence 链路零接触**（1 连接器 + 2 动作 + 2 规则） |
 | **施工前必做** | **抄录**旧规则/动作运行统计（`R-WP4C-15` 证据）· **截图**旧连接器与旧动作配置 · **采** D1 计数基线（施工说明 §3） |
 | **执行方** | **人工（EMQX 控制台）** —— 代理**无**控制台 / API 权限（EMQX 数据集成 API `403` · 无 CLI，见 `D-4`） |
-| **状态** | 🟡 **`READY (R3)`** —— **依赖已全部满足，可开工**；**施工规格 = `docs/review/P3-WP4C-Console-Build-Guide-R3.md`**；**不等于已执行** |
+| **状态** | 🟡 **`READY (R3.1)`** —— **依赖已全部满足，可开工**；**施工规格 = `docs/review/P3-WP4C-Console-Task-Sheet.md`（照抄版）+ `docs/review/P3-WP4C-Console-Build-Guide-R3.md`**；**不等于已执行** |
 
 ### `H-WP4C-10` / `H-WP4C-10-A` —— **Action 目标形态裁决**（**人工决策 · ✅ 已裁决**）
 
@@ -422,7 +423,7 @@
 | `H-WP4C-08` | Worker 部署授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许部署 `9b25203`） | §6A |
 | `H-WP4C-09` | EMQX 控制台人工执行（纪律 §3 的 ③④⑤） | 🔴 `OPEN` | 🟠 **已拆分（不关闭）** ⇒ 由 `-09-A` / `-09-B` 承载 | §6B |
 | `H-WP4C-09-A` | EMQX Console Operator（导出并回写 `V-0` 基线） | —（本轮新增） | 🔴 **`OPEN`**（人工作业，可立即开工） | §6B |
-| `H-WP4C-09-B` | EMQX Rule Implementation（**`R3` 删除重建**：删 3 件 → 建 连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2） | —（本轮新增） | 🟡 **`READY (R3)`**（`-09-A` + `H-WP4C-11` **依赖已全部闭合**；**执行仍须人工控制台** —— 代理无 EMQX 控制台 / API 权限；**规格 = `P3-WP4C-Console-Build-Guide-R3.md`**） | §6B |
+| `H-WP4C-09-B` | EMQX Rule Implementation（**`R3` 删除重建**：删 3 件 → 建 连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2） | —（本轮新增） | 🟡 **`READY (R3.1)`** —— **施工中**：旧对象 ✅ 已拆 · `CB = c-n302933b-0c1cb0` ✅ 已建 · 规则 SQL 已按 `R3.1` 修正；**执行仍须人工控制台**（代理无 EMQX 控制台 / API 权限）；**依据 = `P3-WP4C-Console-Task-Sheet.md`** + `…-Console-Build-Guide-R3.md` | §6B |
 | `H-WP4C-10` | Action 目标形态裁决（**父项**） | 🔴 `OPEN` | 🔒 **`CLOSED`**（随 `-A` 裁决关闭） | §6B |
 | `H-WP4C-10-A` | `Action Target = Pages Proxy` / `Worker Direct` | —（本轮新增） | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）** | §6B |
 | `H-WP4C-11` | Pages 中转函数 `/api/history/ingest` 新增 + 部署授权 | —（本轮新增） | ✅ **`CLOSED`**（已部署 `61b4938e-…` + 端到端验证 `PASS 15 / FAIL 0`） | §6B |
@@ -458,13 +459,15 @@
 | `C-2` | **Worker 部署** | 生产版本 = `99e6d937-4408-47b7-8170-4bfa71c9dfec`；`POST /api/history/ingest` 无 key ⇒ **`401`** | ✅ **`PASS`** |
 | `C-3` | **D1 migration** | 远端 `0003` **applied**；`telemetry_history` / `log_history` 存在；**恰好 5 索引**；列对齐 `DT:WP-2` | ✅ **`PASS`** |
 | `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | ✅ **`PASS`（带 guard）** —— 连接器 2/2 · 规则 3/3（SQL 全文）· 动作 3/3（含高级设置）· D1 计数 · 回滚已签署；**guard = TLS 明细不可回读**（`R-WP4C-16` · `H-WP4C-09-A` = `CLOSED WITH GUARD`） |
-| `C-5` | **Rule deployment（`R3`：拆除 + 重建）** | 连接器 `CB` **已建** **且** 两条新规则**已启用**（`history` 带谓词 · `message` 带 `NOT 谓词`） | 🔴 **`BLOCKED`** —— **前置已全部闭合**（`C-4` ✅ · `H-WP4C-11` ✅）；**唯一依赖 = 人工控制台执行 `H-WP4C-09-B`（`R3` 规格）** |
+| `C-5` | **Rule deployment（`R3`：拆除 + 重建）** | 连接器 `CB` **已建** **且** 两条新规则**已启用**（`history` 带谓词 · `message` 带取反谓词） | 🔴 **`BLOCKED`（进行中）** —— **前置已全部闭合**（`C-4` ✅ · `H-WP4C-11` ✅）；**已建 `CB`**；**唯一依赖 = 人工控制台执行 `H-WP4C-09-B`（`R3.1` 规格）** |
 | `C-6` | **验证 `V-1…V-7`** | 冻结验证集**全项 `PASS`** | 🔴 **`BLOCKED`** —— 依赖 `C-5`（**准入序列**的 `V-0` / `V-1` 已完成 —— 见 §1 与纪律 §6A.3；**冻结验证集 `V-1…V-7` 仍未跑**） |
 | `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
 
 > **汇总**：`PASS = 5`（`C-1` / `C-2` / `C-3` / **`C-4`（带 guard）** / **`C-5` 的前置** —— 即 `H-WP4C-11` 中转部署 ✅）· `BLOCKED = 2`（`C-5` 的**执行** / `C-6`）· `FAIL = 0`。
-> **★ 唯一剩余前置（`2026-10-12` · `R3` 施工说明下达后）**：**`H-WP4C-09-B`** —— **人工在 EMQX 控制台**按
-> **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`** 执行：**拆除**旧消息流链路 → **新建** 连接器 `CB` + 动作 `MF`/`HI` + 规则 ×2（`guo_feeder_history_ingest` 带**冻结谓词**；`guo_feeder_message_ingest` 带 **`NOT 谓词`**）。
+> **★ 唯一剩余前置（`2026-10-12` · `R3.1` SQL 修正后）**：**`H-WP4C-09-B`** —— **人工在 EMQX 控制台**按
+> **`docs/review/P3-WP4C-Console-Task-Sheet.md`**（照抄版 · 唯一"照着点"依据）+ **`…-Console-Build-Guide-R3.md`** 执行：
+> 🔄 **进度**：拆除旧消息流链路 ✅ 已完成 · 连接器 `CB = c-n302933b-0c1cb0` ✅ 已建 · 规则 SQL 曾报 `syntax error before: '='` ⇒ **`R3.1` 已修正谓词写法（`is_null`/`is_not_null`）**；
+> ⇒ 余下 = 新建动作 `MF`/`HI` + 规则 ×2（`guo_feeder_history_ingest` 带**冻结谓词**；`guo_feeder_message_ingest` 带**取反谓词**）并**保存前用调试试跑验证**。
 > ⚠️ **`R3` 新增风险 `R-WP4C-18b`**：**删除不可逆**（旧对象 ID 消失）⇒ **施工前必须**抄录旧规则/动作运行统计 + 截图配置（施工说明 §3 / §11.2）。
 > **两侧前置均已就绪**：✅ `V-0` 基线（含 `V-3` 判据的噪声基线）**已固化** · ✅ Pages 中转**已部署并端到端验证**（`PASS 15 / FAIL 0`）。
 > **纪律 §6A.4 的 `STOP` 条件 1（目标不可达）已不再成立**；`STOP` 条件 2（`V-0` 未导出）亦**已于第六阶段解除**。⇒ **当前无纪律层面的 `STOP`**；剩余阻塞是**人工执行能力**（代理无控制台 / API 权限），**不是**设计、授权或环境问题。
@@ -482,7 +485,7 @@
 | **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
 | **`H-WP4C-09`** | EMQX 控制台人工执行（③④⑤） —— **已拆分**（**不关闭**） | 🟠 **已拆分** ⇒ `-09-A` / `-09-B`（§6B） | 拆分项 |
 | **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | ✅ **`CLOSED WITH GUARD`**（§6B · **guard = TLS 明细不可回读 ⇒ 新建连接器保存前截图 + 保存后实测**） | **`WP4C-IMPL:C-4` = ✅ `PASS`** · 解锁 `-09-B` |
-| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— **`R3`：删除** `r-…a01720`/`a-…921e22`/`c-…b12100` ⇒ **新建** 连接器 `CB` + 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**带 `NOT 谓词`**）/`guo_feeder_history_ingest`（**冻结谓词**） | 🟡 **`READY (R3)`**（§6B · **依赖已全部闭合**；**施工规格 = `P3-WP4C-Console-Build-Guide-R3.md`**；**执行仍须人工控制台**） | **`WP4C-IMPL:C-5`** |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— **`R3`：删除** `r-…a01720`/`a-…921e22`/`c-…b12100` ⇒ **新建** 连接器 `CB` + 动作 `MF`（`/api/webhook`）/`HI`（`/api/history/ingest`）+ 规则 `guo_feeder_message_ingest`（**带 `NOT 谓词`**）/`guo_feeder_history_ingest`（**冻结谓词**） | 🟡 **`READY (R3.1)`**（§6B · **依赖已全部闭合**；**施工规格 = `P3-WP4C-Console-Task-Sheet.md` + `P3-WP4C-Console-Build-Guide-R3.md`**；**执行仍须人工控制台**） | **`WP4C-IMPL:C-5`** |
 | **`H-WP4C-10`** | Action 目标形态裁决（**父项**） | 🔒 **`CLOSED`**（§6B · 随 `-A` 裁决关闭） | 已解 |
 | **`H-WP4C-10-A`** | **Action Target 形态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（§6B · §5.1 留痕） | 已解 |
 | **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署**（方案 A 落地前置） | ✅ **`CLOSED`**（§6B · 已部署 `61b4938e-…` · 端到端 `PASS 15 / FAIL 0` · 清理已复核） | **`WP4C-IMPL:C-5`** · 准入 `V-1` ✅ |
@@ -522,7 +525,24 @@
 
 ## §10 修改文件
 
-### 10.1 本轮（**第九阶段 · `R3` 设计修订：连接器不可编辑 ⇒ 删除重建**）
+### 10.0 ★ 本轮（**第十阶段 · `R3.1` SQL 谓词写法修正**）
+
+| 文件 | 仓库 | 性质 |
+|---|---|---|
+| `docs/review/P3-WP4C-Console-Task-Sheet.md` | 固件 | **升级 `R3.1`** —— §7.1/§7.2 SQL 改用 `is_null`/`is_not_null`（保留最后备选单 `=` 版）；§0 增"不要忘"三条；§12 卡点速查补 `syntax error before: '='` 根因表 |
+| `docs/review/P3-WP4C-Console-Build-Guide-R3.md` | 固件 | **升级 `R3.1`** —— §7 规则 A/B 各给三种等价写法（首选 `is_null` / `NOT`+括号 / 最后备选）；§1 平台事实补第 9 条（SQL 语法子集） |
+| `docs/review/P3-WP4C-EMQX-Rule-Design.md` | 固件 | **升级 `R3` → `R3.1`** —— banner + §4.5 谓词草稿修正 + 新增 §10.4；**冻结的是逻辑谓词，不是字面写法** |
+| `docs/review/P3-WP4C-Implementation-Plan.md` | 固件 | **§8 规格 `v3` → `v3.1`** —— 新增 §8.0c 声明 + 写法对照表 |
+| `docs/review/P3-WP4C-Decisions.md` | 固件 | **更新** —— 本文件（§1 新增 **`D-8`** · §6B（`-09-B` → `READY (R3.1)`）· §7.3 `C-5` 进度 · §8 · §10 · 页脚） |
+| `docs/review/P3-WP4C-Implementation-Record.md` | 固件 | **回填** —— 头部状态块 + §8 Gate 表 + 页脚（施工进度：拆 3 旧对象 ✅ · `CB` 已建 ✅ · SQL 修正待重建） |
+| `docs/review/P3-WP4C-Connector-Reuse-Amendment.md` | 固件 | **追加 `R3.1` 覆盖声明** —— §6.3 旧谓词字面写法标注"已被否决"并附定稿写法；§10 状态行追加 |
+| `docs/README.md` | 固件 | **索引** —— 7 条 WP4C 条目状态词同步（`R3.1` / `v3.1`） |
+| `config/data-integration/P3-WP4C-V2V4-Config-After.md` | EMQX | **升级 `R3.1`** —— §2.5 谓词写法修正（+ 最后备选）；头部状态 `READY (R3.1)` + 施工进度行 |
+| `config/data-integration/README.md` | EMQX | **更新** —— §7 工件表 V2V4 行 + §7.1.1 后补 `R3.1` 说明 |
+
+> **★ 边界**：本阶段**零生产变更** —— 纯文档（SQL 谓词写法修正）；**未跑验证 · 未建 / 改任何 EMQX 对象 · 零部署 · 零固件改动 · 零 `push`**；**文档中不含任何密钥值**。
+
+### 10.1 第九阶段（**`R3` 设计修订：连接器不可编辑 ⇒ 删除重建**）
 
 | 文件 | 仓库 | 性质 |
 |---|---|---|
@@ -620,3 +640,9 @@
 ★ **净收益**：**`-S2` 双投窗口消失**（新消息流规则一出生即带 `NOT 谓词`）· 连接器内容**全新且全量留痕**。
 ★ **代价**：删除不可逆 ⇒ **施工前须抄录运行统计 + 截图配置**；中断窗口「≤60 s」→「**拆除→重建 ≤15 min**」（仅消息流 best-effort 链路）。
 **施工规格（唯一依据）** → **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**。**本阶段零生产变更**（EMQX 零写 · 零部署 · 零固件改动）。*
+*`2026-10-12` **第十阶段（`R3.1` SQL 谓词写法修正）**：人工按 `R3` 规格在控制台新建规则 `guo_feeder_history_ingest` 时，
+保存报 **`11: syntax error before: '='`** ⇒ 定位为**我方 SQL 写法错误**（① **`==` 不存在** —— EMQX 规则 SQL 的"相等"只有单 `=`；
+② "键是否存在"应用官方内置函数 **`is_null` / `is_not_null`**）⇒ **`R3.1` = 仅改谓词写法，语义逐字不变**；
+**新增 `D-8`**（SQL 语法子集实测）· **`R-WP4C-20`**（涉 EMQX SQL 必须先控制台试跑再定稿）· **`-09-B` = 🟡 `READY (R3.1)`**。
+**施工进度**：拆除旧消息流 3 对象 ✅ · 连接器 `CB = c-n302933b-0c1cb0` ✅ 已建 · 余下 = 动作 `MF`/`HI` + 规则 ×2（按 `R3.1` SQL 重建）。
+**本阶段零生产变更**（纯文档修正）。*

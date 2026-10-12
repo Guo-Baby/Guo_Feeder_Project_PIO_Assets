@@ -177,10 +177,10 @@
 
 ---
 
-## §8 Console-ready 实施规格（**v3 · `R3` 删除重建版 · ⚠️ 未执行**）
+## §8 Console-ready 实施规格（**v3.1 · `R3` 删除重建 + `R3.1` 谓词写法修正 · ⚠️ 未执行**）
 
 > **用途**：交付人工在 EMQX 控制台照此执行。**本规格不新增任何规则语义**，逐条对应冻结设计 §3–§5。
-> ⚠️ **语法非冻结**（冻结设计 §4.5）：函数名 / JSON 取值写法**以控制台实测（`V-1`）为准**。
+> ⚠️ **语法非冻结**（冻结设计 §4.5）：**函数名 / 运算符写法**以控制台实测为准 —— **已实测：`==` 非法（`syntax error before: '='`），改用 `is_null` / `is_not_null`**（`v3.1`）。
 
 ### 8.0 🔄 **v2 规格声明（`2026-10-12` · 因 `D-7` 配额强制修订）**
 
@@ -209,8 +209,27 @@
 | 中断窗口 | 两次保存之间 ≤60 s | **拆除起点 → 两条新规则启用**（目标 ≤15 min） |
 
 > **★ 施工顺序 / 删除顺序 / 逐字段填写值 / 窗口量化 / 回滚 / 登记表** →
-> **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**（**唯一施工依据 · 必读**）。
+> **`docs/review/P3-WP4C-Console-Task-Sheet.md`**（**任务单 · 照抄版 · 唯一"照着点"依据**）
+> + **`docs/review/P3-WP4C-Console-Build-Guide-R3.md`**（施工规范 · 平台依据 / 必读）。
 > **配额机制论证与定案** → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**（§4.1 机制 / §6 请求体定案 / §9 配额核算）。
+
+### 8.0c 🔄 **v3.1 规格声明（`2026-10-12` · 因控制台实测 SQL 语法错强制修订）**
+
+> **`v3` 规格中 §8.1 的 SQL 谓词（`== 'undefined'`）已被控制台否决。**
+> **成因**：保存规则报 **`11: syntax error before: '='`** —— EMQX 规则 SQL 的"相等"**只有单 `=`**，**`==` 不存在**；
+> 且"键是否存在"应以官方内置函数 **`is_null` / `is_not_null`** 表达。
+
+| 项 | `v2`/`v3`（作废写法） | **`v3.1`（现行）** |
+|---|---|---|
+| 正条件（键存在） | `payload.x != 'undefined'` | **`is_not_null(payload.x)`** |
+| 反条件（键不存在） | `payload.c == 'undefined'` ❌ | **`is_null(payload.c)`** |
+| 相等运算符 | 曾用 `==`（**非法**） | **`is_null` / `is_not_null`**（或最后备选单 `=`） |
+| 旧规则取反 | `NOT (…)` / `==` 展开 | **`is_null(…) OR … OR is_not_null(payload.c) OR is_not_null(payload.cmd)`**（无 `NOT`、无括号） |
+| 语义 | — | **逐字不变**（§4.1 冻结的**逻辑谓词**未动） |
+| 强制新增步 | — | **保存前用规则页「启用调试 + 发送测试消息」试跑**（§8.1） |
+
+> 依据：EMQX 官方 *Rule SQL Reference*（`=`）与 *Built-in SQL Functions*（`is_null` / `is_not_null`）。
+> 登记风险 → **`R-WP4C-20`**。冻结设计 → `P3-WP4C-EMQX-Rule-Design.md` **§4.5 / §10.4**。
 
 ### 8.1 ① 新增规则：`guo_feeder_history_ingest`
 
@@ -222,7 +241,7 @@
 | **请求头（`v3`）** | `X-Webhook-Key: <WEBHOOK_SECRET>` + `content-type: application/json` —— **落在 `HI` 动作层**（动作可独立设请求头 ⇒ 消息流链路不受影响；**首选**。若动作页无该字段 ⇒ 回退到 `CB` 连接器层） |
 | **Body（`v2`）** | `{"topic":"${topic}","clientid":"${clientid}","payload": ${payload}}`（三键名不可改；**`${payload}` 不加引号**） |
 
-**SQL（`v2` · 结构 · 待 `V-1` 验证）**：
+**SQL（`v3.1` · 谓词写法已按控制台实测修正）**：
 
 ```
 SELECT
@@ -230,18 +249,23 @@ SELECT
 FROM
   "guo_feeder/+/up"
 WHERE
-      payload.schema_version  != 'undefined'
-  AND payload.seq             != 'undefined'
-  AND payload.ts              != 'undefined'
-  AND payload.type            != 'undefined'
-  AND payload.value           != 'undefined'
-  AND payload.c               == 'undefined'
-  AND payload.cmd             == 'undefined'
+      is_not_null(payload.schema_version)
+  AND is_not_null(payload.seq)
+  AND is_not_null(payload.ts)
+  AND is_not_null(payload.type)
+  AND is_not_null(payload.value)
+  AND is_null(payload.c)
+  AND is_null(payload.cmd)
 ```
 
+> ⚠️ **`v3.1`（`2026-10-12`）**：`v3` 的 `== 'undefined'` 写法**在控制台报 `syntax error before: '='`**（EMQX SQL 无 `==`）。
+> 现改用官方内置函数 **`is_null` / `is_not_null`**（`is_null(Term)` = 判 `undefined`/未赋值；`is_not_null` 反之）。
+> **最后备选**（仅当 `is_null` 未知）：`payload.x != 'undefined'` / `payload.c = 'undefined'`（**单等号**）。见 **§8.0c**。
+
 > **★ 语义铁律（冻结）**：`value` 用「**键存在**」语义（**禁**"值非空 / ≠ 0"，否则 `value=0` / `false` 漏判）；
-> 谓词**不涉及** `device_id`（身份**只**来自 topic）；**禁只判 `type` / `value` / `topic`**。
+> 谓词**不涉及** `device_id`（身份**只**来自 topic）；**禁只判** `type` / `value` / `topic`。
 > ⚠️ **`SELECT *` 是必须的**：动作体引用 `${topic}` / `${clientid}` / `${payload}`，而 `json_encode(…) AS body` 式**只输出 `body`**（`R2` §6.1）。
+> ⚠️ **保存前必须用规则页「启用调试 + 发送测试消息」试跑**（`{"msg":"hello"}` ⇒ 本规则**不匹配**）。
 
 ### 8.1b ①′ 新增动作（`v3` · 第 4 个动作配额）
 
@@ -274,13 +298,14 @@ WHERE
 
 ### 8.2 ② 收窄既有规则（**`-S2` 目标 · `v3` 下由「删除重建 + 一步到位」实现**）
 
-| 项 | **`v3` 值** |
+| 项 | **`v3` / `v3.1` 值** |
 |---|---|
 | **规则** | **`guo_feeder_message_ingest`（新建）** —— 取代被删的 `r-n302933b-a01720` |
 | **FROM** | `guo_feeder/#`（与被删规则**逐字相同**）· `SELECT *`（**相同**） |
-| **WHERE（直接建成）** | **`NOT`（§8.1 的 telemetry 谓词）** ⇒ ★ **`-S2` 一步到位** |
+| **WHERE（直接建成）** | **§8.1 谓词的取反** ⇒ ★ **`-S2` 一步到位** |
+| **SQL（`v3.1` 定稿 · 无 `NOT`、无括号）** | `is_null(payload.schema_version) OR is_null(payload.seq) OR is_null(payload.ts) OR is_null(payload.type) OR is_null(payload.value) OR is_not_null(payload.c) OR is_not_null(payload.cmd)` |
 | **Action** | **`MF`（新建）** ⇒ 生效 URL = `CB` + `/api/webhook`（**与拆除前逐字相同**） |
-| **备用写法** | 若 `NOT` 在 Serverless SQL 子集不可用 ⇒ 用**德摩根展开**（施工说明 §7.3 备选 SQL），**语义必须等价** |
+| **等价备选** | `NOT ( <§8.1 谓词> )`（若你的版本支持 `NOT` + 括号）；**语义必须等价** |
 
 > **★ 为何必须"收窄"**：既有规则 FROM = `guo_feeder/#` **本来就匹配 `/up`** ⇒ 若新消息流规则不带 `NOT 谓词` ⇒ **telemetry 双投**（新规则进 `telemetry_history` + 旧规则进 `mqtt_messages`）⇒ duplicate storage + 动作次数翻倍 + 统计污染。
 > ✅ **`R3` 的收益**：由于旧规则是**删除后重建**，"收窄"与"新建"**是同一次动作** ⇒ **不存在双投窗口**（`v2` 里那个 ≤30 s 窗口消失）。
@@ -370,4 +395,6 @@ WHERE
 再因**连接器不可编辑**改为「**删除重建（`R3`）**」；
 同批修正「动作体三键带引号」缺陷（改为 **`"payload": ${payload}` 不加引号**）与规则 `SELECT *`（对齐动作体字段）。
 **核心语义（方案 A / 冻结谓词 / `-S2` / 端点 / `V-1…V-7`）逐字不变**。
-规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**。最新基线 = 固件仓 **`def74f7`** · CF 仓 **`415cd0c`** · EMQX 仓 **`efa117d`**。*
+`2026-10-12` **再升版 `v3.1`**：因**控制台实测 `syntax error before: '='`** ⇒ 谓词写法由 `== 'undefined'` 改为官方 **`is_null` / `is_not_null`**（**仅写法**，语义不变）。
+规格全文 → **`docs/review/P3-WP4C-Connector-Reuse-Amendment.md`**；施工任务单 → **`docs/review/P3-WP4C-Console-Task-Sheet.md`**。
+最新基线 = 固件仓 **`4c74d3a`** · CF 仓 **`415cd0c`** · EMQX 仓 **`a73968a`**；**已建对象** = 连接器 `c-n302933b-0c1cb0`。*
