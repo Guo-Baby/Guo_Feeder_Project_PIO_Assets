@@ -554,6 +554,10 @@ curl -s --noproxy '*' -o /dev/null -w "webhook GET -> %{http_code}\n" "$BASE/api
 | `H-WP4C-09-B` | 🟡 `READY (R2)` → `READY (R3)` → 🟡 **`READY (R3.1)`** —— **施工规格以本文件为准** |
 | `CF-2` | 🔴 仍 `BLOCKED`（判据 = **冻结验证集** `V-1…V-7`） |
 
+> 📌 **Historical snapshot at time T（`R3.1` 施工说明时点 · `2026-10-12`）**。**Final status is recorded in Implementation Record §5 / §6 / §8**：
+> `H-WP4C-09-B` = ✅ `CLOSED` · **`CF-2` = ✅ `CLOSED`**（`2026-10-12` 22:20）· 冻结验证集 `V-1…V-7` = **全 `PASS`**。
+> 本说明的施工规格**已被执行完毕**（实证 → 任务单 §7.5.7）。本表为历史快照，**不代表终态**。
+
 ---
 
 ## §13 关联文档

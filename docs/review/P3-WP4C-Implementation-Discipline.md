@@ -213,11 +213,11 @@ V-5  验证 command 不受影响（history +0 / mqtt_messages +1）
 | 步 | 内容 | 判据 | 当前（`2026-10-12`） |
 |---|---|---|---|
 | `V-0` | **人工导出** Rule SQL / Action / Connector **三份基线** | 三份快照**全文入库**（secret 脱敏） | ✅ **已完成**（`2026-10-12` · `H-WP4C-09-A = CLOSED WITH GUARD`）—— 连接器 2/2 · 规则 3/3（SQL 全文）· 动作 3/3（含高级设置）· D1 计数 · 回滚已签署；**guard = TLS 明细不可回读**（`R-WP4C-16`） |
-| `V-1` | **确认目标 Action 可达** | **实测**可达；**不得**以"应该能通"代替 | 🟢 **`PASS`（带说明）**（`2026-10-12`）—— **①** 形态已裁决（方案 A = Pages 域名）· **②** **Pages 中转已部署并验证**（`H-WP4C-11 = CLOSED`；`61b4938e-…`；中转层 + 鉴权边界 **7/7 `PASS`**）· **③** **同 host 由 EMQX 生产投递作证**（既存 presence 连接器 `c-n302933b-291200` → 同一 `*.pages.dev`，`device_event` 近 7 d **114** 次）⇒ **`D-2` / 方案 A 获现场证据**。**尚须补**：**新连接器本身**的可达性须在 `V-2` **保存后实测** |
-| `V-2` | **创建新 Rule** | `guo_feeder_history_ingest` 已保存并**启用** | ⛔ 未开始（依赖 `V-0` + `V-1`） |
-| `V-3` | **验证 telemetry 分流** | `telemetry_history` **+1** 且 `mqtt_messages` **+0** | ⛔ 未开始 |
-| `V-4` | **收窄旧 Rule** | 旧规则 WHERE 已改为 **`NOT`（冻结谓词）** | ⛔ 未开始（**与 `V-2` 同批**） |
-| `V-5` | **验证 command 不受影响** | `telemetry_history` **+0** 且 `mqtt_messages` **+1** | ⛔ 未开始 |
+| `V-1` | **确认目标 Action 可达** | **实测**可达；**不得**以"应该能通"代替 | 🟢 **`PASS`（带说明）**（`2026-10-12`）—— **①** 形态已裁决（方案 A = Pages 域名）· **②** **Pages 中转已部署并验证**（`H-WP4C-11 = CLOSED`；`61b4938e-…`；中转层 + 鉴权边界 **7/7 `PASS`**）· **③** **同 host 由 EMQX 生产投递作证**（既存 presence 连接器 `c-n302933b-291200` → 同一 `*.pages.dev`，`device_event` 近 7 d **114** 次）⇒ **`D-2` / 方案 A 获现场证据**。**✅ 已补齐（`2026-10-12` 22:20 · 第五轮终测）**：新连接器（`CB` + presence 重建体）5 请求全 200（tail 实证） |
+| `V-2` | **创建新 Rule** | `guo_feeder_history_ingest` 已保存并**启用** | ✅ **已完成**（`2026-10-12` · 人工控制台：规则 A/B 已保存并启用 —— `r-n302933b-cf0cf2` / `r-n302933b-f731cf`） |
+| `V-3` | **验证 telemetry 分流** | `telemetry_history` **+1** 且 `mqtt_messages` **+0** | ✅ **已完成**（冻结 `V-2` 实证：`th+1` / `mm+0` · 第五轮 `th+1` seq `91301`） |
+| `V-4` | **收窄旧 Rule** | 旧规则 WHERE 已改为 **`NOT`（冻结谓词）** | ✅ **已完成**（`R3` 形态：规则 B 新建即带 `NOT 谓词` · 与 `V-2` 同批达成） |
+| `V-5` | **验证 command 不受影响** | `telemetry_history` **+0** 且 `mqtt_messages` **+1** | ✅ **已完成**（冻结 `V-3` 实证：`th+0` / `mm+1`） |
 
 > **★ 顺序铁律（与 §3 一致）**：`V-2`（新增）与 `V-4`（收窄）**必须同处一个变更窗口** —— 只做其一 ⇒ **telemetry 双投**。
 
@@ -252,7 +252,7 @@ V-5  验证 command 不受影响（history +0 / mqtt_messages +1）
 | `docs/review/P3-WP4C-Pre-Implementation-Checklist.md` | 检查清单 / 人工操作 / 基线采集 |
 | `docs/review/P3-WP4C-Decisions.md` | 裁决记录（含实施阶段授权 §6A + **实施前裁决补充 §6B**） |
 | `docs/review/P3-WP4C-Action-Target-Decision.md` | **`H-WP4C-10-A` 待裁决记录**（Action 目标形态 · 本页 §6A.3 的 `V-1` 依据） |
-| `docs/review/P3-WP4C-Implementation-Record.md` | 实施记录（步骤 ①② 完成 · ③ `STOPPED`） |
+| `docs/review/P3-WP4C-Implementation-Record.md` | 实施记录（**`FINAL IMPLEMENTATION COMPLETE` · `CF-2` `CLOSED`** · `2026-10-12` 22:20） |
 | `EMQX_Assets/config/data-integration/README.md` | 控制台配置**回写目标**（§6A.1 第 4 条） |
 
 ---
@@ -264,3 +264,4 @@ V-5  验证 command 不受影响（history +0 / mqtt_messages +1）
 *`2026-10-12` **§6A.3 状态回填（`H-WP4C-11` 部署后）**：准入 **`V-0` = ✅ 已完成**（`CLOSED WITH GUARD`）· 准入 **`V-1` = 🟢 `PASS`（带说明）**（中转已部署 + 同 host 由 EMQX presence 连接器生产投递作证）；
 **§6A.4 三个 `STOP` 条件均不再成立** ⇒ **EMQX 侧变更当前无纪律层面阻塞**（剩余阻塞 = 人工执行 `H-WP4C-09-B`）。
 **注意**：`STOP` 解除 **≠** 授权变更；变更仍须按**准入序列**逐步执行，且 `V-2` 与 `V-4` **必须同批**。*
+*`2026-10-12` **§6A.3 准入序列终态回填（第十二阶段）**：准入 **`V-2…V-5` = ✅ 已完成**（随 `H-WP4C-09-B` 施工与冻结验证集 `V-1…V-7` 全 `PASS` 一并达成）· 准入 `V-1` 的「新连接器可达性」已由第五轮终测补齐 ⇒ **准入序列 `V-0…V-5` 全部完成**。**仍为零生产变更**（仅 `docs/` 状态回填）。*
