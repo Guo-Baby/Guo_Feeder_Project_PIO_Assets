@@ -5,11 +5,11 @@
 > | 步骤 | 状态 |
 > |---|---|
 > | `1`–`5` 删 3 旧对象 + 建连接器 `CB` | ✅ **已做**（`CB = c-n302933b-0c1cb0` · URL 裸主机 · SNI 已填 · 4 头） |
-> | `6`–`7` 建动作 ×2 | ✅ **已建**；**URL 路径已对调** ✅；**secret 已在对的动作上**（§7.5.6 tail 实证 key 头随请求到达 Worker）—— 🔴 **但值与 Worker 密钥不匹配（401）** ⇒ 按 §7.5.6 修正两处**值** |
+> | `6`–`7` 建动作 ×2 | ✅ **已建 · 全链修复**（§7.5.7 第五轮终测实证）：secret 值修正后 history/ingest / webhook / presence/event **全部 200** |
 > | `8` 建规则 A | ✅ **已建已启 = `r-n302933b-cf0cf2`**（`guo_feeder/+/up`） |
 > | `9` 建规则 B | ✅ **已建已启 = `r-n302933b-f731cf`**（`guo_feeder/#`） |
-> | `10` 验证 | 🟡 **四轮探针 + Worker tail 实证**（§7.5–§7.5.6）：规则 SQL 全对 · 规则 B 全链 ✅ · **规则 A 与 presence 两条规则的「规则→动作→中转→Worker」全通，唯一剩余 = `X-Webhook-Key` 值不匹配（401）** ⇒ 按 §7.5.6 改两处值后第五轮终测 |
-> | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表） |
+> | `10` 验证 | ✅ **五轮探针 + tail 实证 + 冻结验证集 `V-1…V-7` 全部 `PASS`**（§7.5.7）⇒ **`CF-2` 判据满足 = `CLOSED`** |
+> | `11` 回写 ID | 🟡 新 ID 已登入 `V2V4-Config-After`；**SQL 实际采用版本待你确认**（§11 登记表）· **presence 删旧建新后的新连接器/动作 ID 待你回传**（代理无 API 权限，看不到新对象） |
 >
 > **★ 本次修正（`R3.1`）= 只改 SQL 谓词写法**（`==` → 单 `=` 语义 / 改用官方 `is_null`&nbsp;·&nbsp;`is_not_null`）。
 > **连接器、端点、请求体、TLS 的规格不变；`X-Webhook-Key` 已在「URL 路径 = `/api/history/ingest`」的动作 `a-n302933b-126ec6` 上（§7.5.6 tail 实证头已随请求到达），剩余 = 把**值**改成 `WEBHOOK_SECRET`（§7.5.6）。**
@@ -710,6 +710,42 @@ TLS 段截图存放：   ____________
 
 ---
 
+### 7.5.7 【第五轮终测 + 冻结验证集】`2026-10-12` 22:00–22:20 · **全绿 ⇒ `CF-2` 判据满足**
+
+**背景**：人工将 presence 连接器**删旧建新**（旧连接器无法修改请求头）并填入正确 secret；history 动作的 secret 值同步修正。
+
+**第五轮终测**（probe7 · 合成设备 `dev_ffffffffffff` · tail 实收 5 请求 + D1 回读）：
+
+| # | 请求 | 长度 | 状态 | 解读 |
+|---|---|---|---|---|
+| 1 | `POST /api/presence/event`（连接） | 144 B | **200** | presence 链全通 ✅ |
+| 2 | `POST /api/history/ingest`（telemetry） | 163 B | **200** | 规则 A 历史链全通 ✅ |
+| 3 | `POST /`（hello → webhook） | 101 B | **200** | 规则 B 消息链 ✅ |
+| 4 | `POST /`（down → webhook） | 108 B | **200** | 规则 B 消息链 ✅ |
+| 5 | `POST /api/presence/event`（断开） | 168 B | **200** | presence 链全通 ✅ |
+
+D1 回读：`telemetry_history` **+1**（seq `91301`）· `device_event` **online/offline 各 1 行**（`event_id` = `emqx:dev_ffffffffffff:{connected,disconnected}:<ts>` · 含 `peername`/`reason`）· `last_seen` 刷新。⇒ **两条修复链全部实证恢复**。
+
+**冻结验证集 `V-1…V-7` 正式执行**（probe8/probe9 · `P3-WP4C-EMQX-Rule-Design.md` §7 判据）：
+
+| # | 用例 | 操作 | 实测 | 判定 |
+|---|---|---|---|---|
+| `V-1` | Rule syntax | 两规则保存+启用 | 均已保存启用且正常触发（tail 实证） | ✅ **`PASS`** |
+| `V-2` | telemetry positive | A 发合法 telemetry（ts1001/seq92001） | `th(A)+1` · `mm+0` | ✅ **`PASS`** |
+| `V-3` | command negative | A 发 `{"cmd":...}` | `th+0` · `mm(A)+1` | ✅ **`PASS`** |
+| `V-4` | mixed payload | A 发含 `cmd` 的 telemetry 外形 | 判**非 telemetry** ⇒ `th+0` · `mm(A)+1` | ✅ **`PASS`** |
+| `V-5` | multi device isolation | B（`eeeeeeeeeeee`）发 telemetry | `th(B)+1` · A 的行零增长（身份取自 topic 第 2 段） | ✅ **`PASS`** |
+| `V-6` | reconnect | 同 tuple 重连前后各发一次 | `th(A)` **恰 1 行**（重连不重复写入） | ✅ **`PASS`** |
+| `V-7` | duplicate | 同 tuple 同连接发两次 | `th(A)` **恰 1 行**（`ux_th_dedup` 吸收） | ✅ **`PASS`** |
+
+> **`V-5` 首跑插曲**：probe8 误用 11 位十六进制设备 ID `ffffffffffe` ⇒ Worker `invalid_device_id` 400（身份格式校验生效的反向实证）⇒ 换合法 12 位 `eeeeeeeeeeee` 重跑即 PASS。**测试探针缺陷，非链路缺陷。**
+
+> **⇒ `CF-2`（判据 = `V-1…V-7` 通过）= ✅ `CLOSED`。** 连同 §7.5.6 的端点健康实证，本工作包控制台侧目标全部达成。
+>
+> **卫生**：本轮全部测试行已清除，D1 基线恢复（`th=0` · `lh=0` · `mm=2458` · `device_event=0` · `last_seen=1791811429`）。
+
+---
+
 ## §14 【追加任务】补回 presence 链路（**连接器 ×1 + 规则 ×2 + 动作 ×2**）
 
 > **背景**：原计划 presence 4 对象「不动」，实际旧 presence 连接器 `c-n302933b-291200` 已被一并删除 ⇒ **presence 全链路消失**。
@@ -717,17 +753,17 @@ TLS 段截图存放：   ____________
 > **配额核算（建成后）**：连接器 **2/2** · 规则 **4/4** · 动作 **4/4** —— **刚好用满；此后任何改动都必须先删后建**。
 > **建议顺序**：先做 §7.5.3 的路径对调修复（避免和 presence 混在一起排查），再做本节。
 
-> ### 🔄 施工进度（`2026-10-12` 21:20 · 据你的截图回传）
+> ### 🔄 施工进度（`2026-10-12` 22:20 · 第五轮终测后 = **全部完成**）
 >
 > | 对象 | 状态 |
 > |---|---|
-> | 连接器 `c-n302933b-70f9da`（`guo_feeder_presence_http`） | ✅ **已建** —— URL 全路径 / 2 头 / TLS+SNI / 池参数**逐项核对与 §14.1 一致** |
-> | 规则 `guo_feeder_presence_disconnected` = `r-n302933b-88dd1a` | ✅ **已建 · SQL 正确勿动**（括号平衡 8/8；只有 connected 的 SQL 有 bug） |
-> | 动作 `a-n302933b-6981cc`（属 disconnected 规则） | ✅ **已建 · body 已填**（§7.5.6 tail 实证断开事件 168 B 正常渲染，含 `reason` 字段 ⇒ 裸 `${body}` 已生效） |
-> | 规则 `guo_feeder_presence_connected` | ✅ **已建**（§14.2 修正版 SQL）—— §7.5.6 tail 实证连接事件 144 B 正常触发并渲染 |
+> | 连接器（`guo_feeder_presence_http`） | ✅ **已重建**（旧 `c-n302933b-70f9da` 无法修改请求头 ⇒ 人工删旧建新）—— **secret 值已填**；§7.5.7 tail 实证连接/断开事件均 **200** · **新 ID 待你回传** |
+> | 规则 `guo_feeder_presence_disconnected` | ✅ **已建 · SQL 正确勿动**（括号平衡 8/8）—— §7.5.7 实证断开事件 168 B 正常渲染（含 `reason`） |
+> | disconnected 规则的动作 | ✅ **已建 · body = 裸 `${body}` 已生效**（同上实证） |
+> | 规则 `guo_feeder_presence_connected` | ✅ **已建**（§14.2 修正版 SQL）—— §7.5.7 实证连接事件 144 B 正常触发并渲染 |
 > | connected 规则的动作 | ✅ **已建 · body 已填**（同上实证） |
 >
-> **★ presence 侧唯一剩余 = `X-Webhook-Key` 的值**（§7.5.6：两条规则的事件都到达了 Worker 但 401）⇒ 按 §7.5.6 表把连接器 `c-n302933b-70f9da`（或动作层，看当时建在哪）的头值改成 `WEBHOOK_SECRET`。**改完即全链恢复**（期望 `device_event` online/offline 各 1 行 + `last_seen` 刷新）。
+> **★ presence 链路 = 全链恢复**（§7.5.7：`device_event` online/offline 各 1 行 · `last_seen` 刷新 · 重连 4 事件全部落库）。**剩余事项 = 人工回传新连接器/动作 ID**（回写 `V2V4-Config-After` 存档用）。
 
 ### 14.1 新建连接器（presence）
 
