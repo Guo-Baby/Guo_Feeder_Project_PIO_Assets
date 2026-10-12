@@ -643,6 +643,14 @@ int config_get_mqtt_retry_max();                // 最大快速重试次数
 unsigned long config_get_mqtt_sleep_interval(); // 进入休眠重试间隔(ms)
 int config_get_mqtt_keep_alive();               // MQTT keep alive 秒
 
+// 运行时 telemetry 开关（Phase C-C1 · HD-1）
+//
+// 语义 = H-WP4-FW-06 冻结的 `telemetry.enable`（逐字不变）：
+//   「telemetry capability 是否实际发送」
+// 承载 = mqtt 模块 · 扁平原生键 `telemetry_enable`（方案 A）。
+// fail-closed：缺键 / 模块未加载 / 类型非 bool ⇒ 一律返回 false（不发送）。
+bool config_get_telemetry_enable();
+
 // ==========================
 // WiFi 配置更新
 // ==========================
