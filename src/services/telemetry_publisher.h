@@ -20,7 +20,10 @@
 //      · 信封 5 字段 {ts,type,value,seq,schema_version}（无 device_id / source）
 //      · value 三态编码（number | string | boolean；**禁**数字编码 bool）
 //      · seq = boot lifetime 计数（不持久化）
-// ⚠️ 仍 `OPEN`：`H-WP4-FW-06`（`mqtt.json.telemetry` 字段集与默认值，本轮未使用配置）
+// ✅ `H-WP4-FW-06` 运行时开关已接入（Phase C-C1 · HD-1）：
+//    `telemetry_task()` **最前置**读取 `config_get_telemetry_enable()`
+//    （mqtt 模块 · 键 `telemetry_enable` · 默认 false · fail-closed）
+//    有效发送 = 编译门 `GF_TELEMETRY_ENABLED==1` ∧ 运行时开关 `true`
 // =====================================================
 
 #ifndef TELEMETRY_PUBLISHER_H

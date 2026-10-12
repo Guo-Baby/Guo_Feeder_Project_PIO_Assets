@@ -3752,6 +3752,19 @@ int config_get_mqtt_keep_alive()
     return module_ro(CONFIG_MODULE_MQTT)["mqtt_keep_alive"] | 60;
 }
 
+// 运行时 telemetry 开关（Phase C-C1 · HD-1）
+//
+//   · 承载：mqtt 模块 · 扁平原生键 `telemetry_enable`（默认 false · 方案 A）
+//   · fail-closed：module_ro() 对「模块未加载」返回静态空文档 ⇒ `| false` 得 false；
+//     键缺失 / 类型非 bool 时，ArduinoJson 的 `| 默认值` 同样返回 false
+//     ⇒ **任何不确定情形一律判为「不发送」**（与 H-WP4-FW-06 默认值一致，
+//       不存在「配置异常 ⇒ 意外开启上行」的路径）
+//   · 沿用既有单键 getter 模式（同 config_get_valve_enable / config_get_weight_enable）
+bool config_get_telemetry_enable()
+{
+    return module_ro(CONFIG_MODULE_MQTT)["telemetry_enable"] | false;
+}
+
 // ---------------- WiFi 配置更新 ----------------
 // CommandManager 已通过 command_system_wifi_config 接入本接口。
 bool config_update_wifi(

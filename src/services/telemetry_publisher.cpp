@@ -43,6 +43,7 @@ TelemetryStats telemetry_get_stats()
 #include "services/time_manager.h"
 #include "services/telemetry_policy.h"
 #include "services/telemetry_envelope.h"
+#include "services/config_manager.h"   // Phase C-C1 · HD-1：运行时开关（配置唯一入口）
 
 #include "cloud/cloud_manager.h"
 
@@ -160,6 +161,18 @@ void telemetry_publisher_init()
 
 void telemetry_task()
 {
+    // ★ Phase C-C1 · HD-1：运行时 telemetry 开关（**最前置** · fail-closed）
+    //
+    //   有效发送 = 编译门 GF_TELEMETRY_ENABLED==1 ∧ 运行时开关 true
+    //   关闭时**零副作用**：直接返回 —— 不计入 emitted / transport_fail /
+    //   build_fail / skipped_offline，也不进入通道遍历。
+    //   读取经 ConfigManager（配置唯一入口）；本文件不含键名以外的配置知识、
+    //   不解析 JSON、不持有 JsonDocument（见规格 §6.2 / §9.3 L-2）。
+    if (!config_get_telemetry_enable())
+    {
+        return;
+    }
+
     if (!s_ready)
     {
         return;

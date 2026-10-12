@@ -11,5 +11,6 @@
     "retry_interval": 10000,
     "retry_max": 30,
     "sleep_retry_interval": 1800000,
-    "mqtt_keep_alive": 60
+    "mqtt_keep_alive": 60,
+    "telemetry_enable": false
 }
