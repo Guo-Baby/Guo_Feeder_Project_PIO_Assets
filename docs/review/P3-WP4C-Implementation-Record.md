@@ -147,11 +147,12 @@
 | **`H-WP4C-09`** | **EMQX 控制台人工执行**（= 纪律 §3 的 ③④⑤） | **人工作业** | ① 导出**变更前基线**（Rule SQL / Action / Connector，**secret 禁入仓**）② 新增规则 `guo_feeder_history_ingest` ③ **同批**收窄既有规则 WHERE | 🟠 **已拆分（不关闭）** ⇒ `-09-A` / `-09-B` |
 | **`H-WP4C-09-A`** | **EMQX Console Operator**（拆自 `H-WP4C-09`） | **人工作业** | 登录控制台 → 导出 **Rule SQL / Action / Connector** → 保存 **`V-0` 基线** → **脱敏回写** `EMQX_Assets` | 🔴 **`OPEN`**（**唯一可立即开工项**） |
 | **`H-WP4C-09-B`** | **EMQX Rule Implementation**（拆自 `H-WP4C-09`） | **生产变更** | **新增** `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE（**禁双投**） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 `-10-A` 已裁决） |
-| **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔴 **`OPEN`**（由 `-10-A` 承载裁决） |
-| **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | **等待人工决定** Action 目标形态并按需建立中转（**代理不选择 · 不推荐 · 不预设**） | 🔴 **`OPEN`** |
+| **`H-WP4C-10`** | **Action 目标形态裁决（父项）** | **人工决策** | 冻结设计 `D-2` 称 EMQX **打不通 `*.workers.dev`**、须 **Pages 中转**；但历史存档称现有规则指向 `*.workers.dev` 根路径且「已在线上运行」（**矛盾**，见 `R-WP4C-12`） | 🔒 **`CLOSED`**（`2026-10-12` 随 `-10-A` 裁决关闭） |
+| **`H-WP4C-10-A`** | **`Action Target = Pages Proxy` 或 `Worker Direct`** | **人工决策** | ✅ **裁决 = 方案 A（`Pages Proxy`）**（口径：「裁决仍然使用 pages 代理，workers 无法直连」）⇒ `D-2` 成立 ⇒ `R-WP4C-12` **收敛** | 🔒 **`CLOSED`** |
+| **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署授权** | **人工授权** | 方案 A 落地前置：新增 `guo-feeder-pagesdev/functions/api/history/ingest.js`（照抄 `presence/event.js`）+ 部署 + `401` 实测 | 🔴 **`OPEN`**（**本轮新增**） |
 
-> **★ `H-WP4C-09-A` 是继续实施的唯一前置**（取得 `V-0` 基线）；**`H-WP4C-10-A` 决定 ④ 的 Action URL 写法**（不解决则 ④ 可能投递失败）。
-> **两者皆未闭合前，纪律 §6A.4 的 `STOP` 持续生效**（`STOP` 条件 1：Action endpoint 未确认；条件 2：Rule baseline 未保存）。
+> **★ 继续实施的两条并行前置**：**`H-WP4C-09-A`**（人工导出 `V-0` 基线）**∥ `H-WP4C-11`**（Pages 中转新增 + 部署）。
+> **两者闭合前，纪律 §6A.4 的 `STOP` 持续生效**（条件 1：目标不可达（中转未部署）；条件 2：Rule baseline 未保存）。
 
 ---
 
@@ -177,7 +178,7 @@
 | ID | 级别 | 内容 | 依据 / 缓解 |
 |---|---|---|---|
 | **`R-WP4C-11`** | 🟠 中 | **★ 部署范围超出 WP-4 一项**：为满足 `H-WP4C-08`（部署 `9b25203`），实际带上了其祖先链上的 **`392f181`（`feat(api): add device-scoped Homie ACL to credential template`）** ⇒ 本次部署**同时**改变了**签发凭据时的 Homie ACL 模板**（属 P2-5 范畴，非 WP-4）。 | 部署内容 = **人工授权的 CF 仓 HEAD**，**授权即蕴含**；但**须显式知晓**。缓解：该项为 **P2-5 已验收工作**（`P2-5 Homie ACL` 文档）；如认为不该随批上线 ⇒ 可回滚至 `846384cd` 后按需重部署 |
-| **`R-WP4C-12`** | 🟠 中 | **★ 环境差异（须实测）**：冻结设计 `D-2` 称 **EMQX 打不通 `*.workers.dev`、须 Pages 中转**；但 EMQX 仓存档 §1 称现有规则指向 `https://guo-feeder-api.guobaby.workers.dev/`（根路径）且「**已在线上运行**」—— **两者矛盾**。若 `D-2` 成立，则 ④ 的 Action 直指 `workers.dev` **会投递失败**。 | **未自行裁定**（属环境事实，须实测）。缓解：④ 执行时先用**一条测试规则/测试消息**验证可达性（= `V-1`/`V-7` 的隐含前置）；若不可达 ⇒ 先建 **Pages 中转**（`H-WP4C-10`） |
+| **`R-WP4C-12`** | 🟢 **`CLOSED`（收敛）** | **★ 环境差异（已由人工裁决收敛）**：`D-2`（EMQX 打不通 `*.workers.dev`）**经 `H-WP4C-10-A` 确认成立**；存档 §1 的 `workers.dev` 根路径 = **Worker 侧上游目标**（P0 遗留）**反推**所得，**不是** EMQX 侧连接器 URL（既有连接器 `c-n302933b-b12100` 实指 `guo-feeder-pagesdev.pages.dev`）⇒ 二者**不同层**，原"矛盾"消解。 | 结论：**Action Target = Pages 域名**；落地前置 = **`H-WP4C-11`** |
 | **`R-WP4C-13`** | 🟡 低 | **EMQX 配置无 API ⇒ 漂移不可审计**（已在 `R-WP4C-6` 登记；本轮**以证据升级**：读 + 写 API 全 `403`，且 `POST` 亦 `403`）。 | 控制台配置**必须回写** `EMQX_Assets/config/data-integration/`（`H-WP4C-09` 内含） |
 | **`R-WP4C-14`** | 🟡 低 | **端点已上线但无消费方**：`/api/history/ingest` 现已公开可达，当前无规则指向它 ⇒ **无流量**。若被误配指向 ⇒ 会写库。 | 端点为**鉴权端点**（`X-Webhook-Key`，无 key ⇒ `401`）；保密钥 |
 
@@ -190,6 +191,9 @@
 | `DT:WP-4` | `FROZEN` | 未动 |
 | `H-WP4C-03` | 🔒 `CLOSED` | 未动 |
 | `H-WP4C-04…08` | 🔒 `CLOSED` | 未动（授权已下达） |
+| `H-WP4C-09-A` / `-09-B` | 🔴 `OPEN` / 🔴 `BLOCKED` | 未动（拆分子项） |
+| **`H-WP4C-10` / `-10-A`** | 🔒 **`CLOSED`** | **★ 本轮变更** —— **裁决 = 方案 A（`Pages Proxy`）** |
+| **`H-WP4C-11`** | 🔴 **`OPEN`** | **新增**（Pages 中转部署授权） |
 | **`CF-2`** | 🔴 **`BLOCKED`** | **未解除**（判据 = `V-1…V-7`，全 `BLOCKED`） |
 | `CF-1` | 🟢 `RESOLVED` | 未动 |
 | `Phase C` | 🟡 `PLANNED / BLOCKED` | 未动（`C-2` 已完成 → 见下） |

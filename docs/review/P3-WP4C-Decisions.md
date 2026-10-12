@@ -24,6 +24,11 @@
 > 并**登记 `H-WP4C-10-A`**（Action Target 形态裁决 · 🔴 `OPEN`，明细见 `docs/review/P3-WP4C-Action-Target-Decision.md`）。
 > **`H-WP4C-04…08` 保持 `CLOSED`（不变）** · **`CF-2` 仍 `BLOCKED`** · 新增 **§6B**（拆分与登记）+ **§7.3**（实施门禁 Checklist）。
 > **本阶段零生产变更**（仅 `docs/`）；EMQX 控制台边界规则见纪律 **§6A `EMQX Console Boundary Rule`**。
+>
+> **🔄 更新记录（2026-10-12 · 第四阶段 —— `H-WP4C-10-A` 裁决下达）**：**人工裁决 = 方案 A（`Pages Proxy`）**（裁决口径：「**裁决仍然使用 pages 代理，workers 无法直连**」）
+> ⇒ **`H-WP4C-10` / `H-WP4C-10-A` = 🔒 `CLOSED`**（留痕见 `docs/review/P3-WP4C-Action-Target-Decision.md` **§5.1**）· **`D-2` 确认成立** ⇒ **`R-WP4C-12` 收敛 `CLOSED`**。
+> **新增 `H-WP4C-11`**（Pages 中转函数 `/api/history/ingest` 新增 + 部署授权）= 🔴 **`OPEN`** ⇒ 成为 **`C-5` 的新 GATING 前置**。
+> **`H-WP4C-09-A` 仍 `OPEN` · `-09-B` 仍 `BLOCKED`**；**`CF-2` 仍 `BLOCKED`**；本阶段**仍零生产变更**。
 
 ---
 
@@ -40,7 +45,8 @@
 | — | **`H-WP4C-03` 状态** | 🔒 **`CLOSED`** |
 | — | **`H-WP4C-04…08` 状态** | 🔒 **`CLOSED`**（§6A —— 实施阶段授权，**≠ 执行完成**） |
 | — | **`H-WP4C-09` 状态** | 🟠 **已拆分** ⇒ **`-09-A`（Console Operator）= 🔴 `OPEN`** · **`-09-B`（Rule Implementation）= 🔴 `BLOCKED`**（§6B） |
-| — | **`H-WP4C-10` / `H-WP4C-10-A` 状态** | 🔴 **`OPEN`**（Action 目标形态待裁决 · 见 `P3-WP4C-Action-Target-Decision.md`） |
+| — | **`H-WP4C-10` / `H-WP4C-10-A` 状态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（`2026-10-12` · 见 `P3-WP4C-Action-Target-Decision.md` §5.1） |
+| — | **`H-WP4C-11` 状态** | 🔴 **`OPEN`** —— **Pages 中转函数新增 + 部署授权**（方案 A 落地前置 · §6B） |
 | — | **`CF-2` 状态** | 🔴 **仍 `BLOCKED`**（不变；判据 = `V-1…V-7` 通过） |
 
 ---
@@ -323,15 +329,29 @@
 | **强制** | **两步同批**（新增 + 收窄）· **禁**只新增 · **禁**双投 · **禁**第 3 条规则 / 双 Action |
 | **状态** | 🔴 **`BLOCKED`**（依赖 `H-WP4C-09-A` + `H-WP4C-10-A`） |
 
-### `H-WP4C-10` / `H-WP4C-10-A` —— **Action 目标形态裁决**（**人工决策**）
+### `H-WP4C-10` / `H-WP4C-10-A` —— **Action 目标形态裁决**（**人工决策 · ✅ 已裁决**）
 
 | 项 | 内容 |
 |---|---|
-| **`H-WP4C-10`** | **主题**：Action 目标形态（`Pages Proxy` vs `Worker Direct`）· **状态**：🔴 **`OPEN`**（**父项保持开启**，由 `-A` 承载裁决） |
-| **`H-WP4C-10-A`** | **主题**：**等待人工决定** `Action Target = Pages Proxy` **或** `Action Target = Worker Direct` · **状态**：🔴 **`OPEN`** |
-| **代理立场** | **不选择 · 不推荐 · 不预设默认值**（纪律 §6A.2） |
-| **明细文档** | **`docs/review/P3-WP4C-Action-Target-Decision.md`**（方案 A / B 形态 · 优点 / 风险 · 证据对照 · 必答清单） |
-| **解锁对象** | 纪律 §6A.3 的 **`V-1`（确认目标 Action 可达）** ⇒ 进而解锁 `H-WP4C-09-B` |
+| **`H-WP4C-10`** | **主题**：Action 目标形态（`Pages Proxy` vs `Worker Direct`）· **状态**：🔒 **`CLOSED`**（`2026-10-12` 随 `-A` 裁决一并关闭） |
+| **`H-WP4C-10-A`** | **主题**：**Action Target 形态** · **状态**：🔒 **`CLOSED`** · **裁决 = ✅ 方案 A（`Pages Proxy`）** |
+| **裁决口径** | **「裁决仍然使用 pages 代理，workers 无法直连」**（人工原话 · 见 `P3-WP4C-Action-Target-Decision.md` §5.1） |
+| **收敛** | **`D-2` 确认成立** ⇒ **`R-WP4C-12` 收敛 `CLOSED`**（存档 §1 的 `workers.dev` 记录 = Worker 侧**上游目标**反推，非 EMQX 侧连接器 URL） |
+| **目标端点（结论）** | `POST https://guo-feeder-pagesdev.pages.dev/api/history/ingest`（**EMQX 侧填这个**）；上游 = `…workers.dev/api/history/ingest` |
+| **明细文档** | **`docs/review/P3-WP4C-Action-Target-Decision.md`**（方案 A / B · 证据对照 · 必答清单） |
+| **解锁对象** | 纪律 §6A.3 的 **`V-1`** —— ⚠️ **但须待 `H-WP4C-11` 部署完成后**才能真正判 `V-1` |
+
+### `H-WP4C-11` —— **Pages 中转函数新增 + 部署授权**（**本轮新增 · 由 `H-WP4C-10-A` 裁决派生**）
+
+| 项 | 内容 |
+|---|---|
+| **主题** | **Pages 中转函数 `/api/history/ingest` 的新增与部署** —— 方案 A 的**落地前置** |
+| **原因** | EMQX **不可达 `*.workers.dev`**（`D-2` 已确认）⇒ Action 只能指向 `*.pages.dev` ⇒ **必须有 Pages 侧转发函数**（**当前不存在**：工程内仅 `command.js` / `presence/event.js` / `webhook.js`） |
+| **允许动作（授权后）** | ① **新增** `Cloudflare_Assets/guo-feeder-pagesdev/functions/api/history/ingest.js`（**照抄** `presence/event.js` 的逐字转发模式）② **部署** Pages 工程 ③ **实测**中转可达性（`POST` 无 key ⇒ **`401`** = 通到 Worker） |
+| **禁止** | ❌ 不改 Worker（`guo-feeder-api`）· ❌ 不改 EMQX · ❌ 不改冻结设计 · ❌ 不修改既有 `/api/webhook` / `/api/presence/event` / `/api/command` |
+| **★ 一致性要求** | 须**新增与部署同批完成**，以维持 **CF 仓 HEAD == 线上版本** 的等价关系（当前 HEAD `9b25203` = 线上 `99e6d937`） |
+| **状态** | 🔴 **`OPEN`** |
+| **解锁对象** | `WP4C-IMPL:C-5` 的 **GATING 前置之一**（另一项 = `H-WP4C-09-A` 的 `V-0` 基线） |
 
 > **★ 为何必须拆分 `H-WP4C-09`**：原项把**两种性质截然不同**的作业压在一项内 ——
 > **`-A` = 只读导出（人工作业，可立即开工）**；**`-B` = 生产变更（受 `V-0` 与 Action 形态双重前置阻塞）**。
@@ -353,9 +373,10 @@
 | `H-WP4C-08` | Worker 部署授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许部署 `9b25203`） | §6A |
 | `H-WP4C-09` | EMQX 控制台人工执行（纪律 §3 的 ③④⑤） | 🔴 `OPEN` | 🟠 **已拆分（不关闭）** ⇒ 由 `-09-A` / `-09-B` 承载 | §6B |
 | `H-WP4C-09-A` | EMQX Console Operator（导出并回写 `V-0` 基线） | —（本轮新增） | 🔴 **`OPEN`**（人工作业，可立即开工） | §6B |
-| `H-WP4C-09-B` | EMQX Rule Implementation（新增 + 收窄，**同批**） | —（本轮新增） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 `-10-A` 已裁决） | §6B |
-| `H-WP4C-10` | Action 目标形态裁决（**父项**） | 🔴 `OPEN` | 🔴 **`OPEN`**（**保持开启**，由 `-A` 承载裁决） | §6B |
-| `H-WP4C-10-A` | `Action Target = Pages Proxy` / `Worker Direct` | —（本轮新增） | 🔴 **`OPEN`**（**人工待决 · 代理不选择**） | §6B |
+| `H-WP4C-09-B` | EMQX Rule Implementation（新增 + 收窄，**同批**） | —（本轮新增） | 🔴 **`BLOCKED`**（依赖 `-09-A` 且 **`H-WP4C-11`** 已部署） | §6B |
+| `H-WP4C-10` | Action 目标形态裁决（**父项**） | 🔴 `OPEN` | 🔒 **`CLOSED`**（随 `-A` 裁决关闭） | §6B |
+| `H-WP4C-10-A` | `Action Target = Pages Proxy` / `Worker Direct` | —（本轮新增） | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）** | §6B |
+| `H-WP4C-11` | Pages 中转函数 `/api/history/ingest` 新增 + 部署授权 | —（本轮新增） | 🔴 **`OPEN`**（方案 A 的落地前置） | §6B |
 | `H-WP4-FW-05` | 信封 v1 schema | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-06` | `mqtt.json.telemetry` 配置 | `CLOSED` | `CLOSED`（不变） | — |
 | `H-WP4-FW-07` | telemetry `seq` 语义 | `CLOSED` | `CLOSED`（不变） | — |
@@ -367,7 +388,7 @@
 | 项 | 值 |
 |---|---|
 | **`CF-2`** | 🔴 **`BLOCKED`（仍 `BLOCKED`）** —— **资源 blocker 已移除** · **`H-WP4C-03` 已关闭** · **`H-WP4C-04…08` 授权已下达（§6A）** |
-| **仍受阻于** | **实施未闭环** —— ✅ `0003` **已落表** · ✅ Worker **已部署（`99e6d937`）** · ❌ EMQX 规则**未建**（基线未导出 `H-WP4C-09-A` · Action 形态未裁决 `H-WP4C-10-A`）· **`V-1…V-7` 全 `BLOCKED`** |
+| **仍受阻于** | **实施未闭环** —— ✅ `0003` **已落表** · ✅ Worker **已部署（`99e6d937`）** · ✅ Action 形态**已裁决（方案 A）** · ❌ **Pages 中转未部署**（`H-WP4C-11`）· ❌ EMQX 规则**未建**（基线未导出 `H-WP4C-09-A`）· **`V-1…V-7` 全 `BLOCKED`** |
 | **`CF-1`** | 🟢 `RESOLVED`（保持） |
 | **其他 Gate** | `DT:WP-4 = FROZEN` · `Phase C = PLANNED / BLOCKED` · `G-4 = BLOCKED`（**均不变**） |
 
@@ -388,12 +409,14 @@
 | `C-2` | **Worker 部署** | 生产版本 = `99e6d937-4408-47b7-8170-4bfa71c9dfec`；`POST /api/history/ingest` 无 key ⇒ **`401`** | ✅ **`PASS`** |
 | `C-3` | **D1 migration** | 远端 `0003` **applied**；`telemetry_history` / `log_history` 存在；**恰好 5 索引**；列对齐 `DT:WP-2` | ✅ **`PASS`** |
 | `C-4` | **EMQX baseline（`V-0`）** | **三份基线**（Rule SQL / Action / Connector）已导出并**脱敏**归档 | 🔴 **`BLOCKED`** —— API `403` ⇒ **须人工**（`H-WP4C-09-A`） |
-| `C-5` | **Rule deployment（`V-2` + `V-4`）** | 新规则**已启用** **且** 旧规则**已收窄**（**同批**） | 🔴 **`BLOCKED`** —— 依赖 `C-4` + `H-WP4C-10-A`（`H-WP4C-09-B`） |
+| `C-5` | **Rule deployment（`V-2` + `V-4`）** | 新规则**已启用** **且** 旧规则**已收窄**（**同批**） | 🔴 **`BLOCKED`** —— 依赖 `C-4`（`V-0` 基线）**+ `H-WP4C-11`**（Pages 中转已部署）；执行方 = `H-WP4C-09-B` |
 | `C-6` | **验证 `V-1…V-7`** | 冻结验证集**全项 `PASS`** | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
 | `C-7` | **存档回写** | 控制台配置已回写 `EMQX_Assets/config/data-integration/` | 🔴 **`BLOCKED`** —— 依赖 `C-5` |
 
 > **汇总**：`PASS = 3`（`C-1` / `C-2` / `C-3`）· `BLOCKED = 4`（`C-4` / `C-5` / `C-6` / `C-7`）· `FAIL = 0`。
-> **下一步唯一前置** = **`C-4`（`H-WP4C-09-A`）** —— **`C-5` 另须 `H-WP4C-10-A` 已裁决**。
+> **★ 并行两前置（`2026-10-12` 裁决后）**：**（人）`C-4` = `H-WP4C-09-A`** —— 控制台导出 `V-0` 基线并脱敏回写；
+> **（机）`H-WP4C-11`** —— Pages 中转函数 `/api/history/ingest` 新增 + 部署（`Action Target = Pages Proxy` 已裁决）。
+> **两者闭合后**方可执行 `C-5`（`V-2` + `V-4` 同批）。
 
 ---
 
@@ -408,17 +431,20 @@
 | **`H-WP4C-08`** | Worker 部署授权（线上 `846384cd` 早于 `9b25203`） | 🔒 **`CLOSED`**（§6A） | CF 侧 |
 | **`H-WP4C-09`** | EMQX 控制台人工执行（③④⑤） —— **已拆分**（**不关闭**） | 🟠 **已拆分** ⇒ `-09-A` / `-09-B`（§6B） | 拆分项 |
 | **`H-WP4C-09-A`** | **EMQX Console Operator** —— 登录控制台 · 导出 Rule SQL / Action / Connector · 保存 `V-0` 基线 · **脱敏回写** `EMQX_Assets` | 🔴 **`OPEN`**（§6B · **人工作业 · 唯一可立即开工项**） | **`WP4C-IMPL:C-4`** · 解锁 `-09-B` |
-| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🔴 **`BLOCKED`**（§6B · 依赖 `-09-A` 且 `-10-A` 已裁决） | **`WP4C-IMPL:C-5`** |
-| **`H-WP4C-10`** | Action 目标形态裁决（**父项 · 保持开启**） | 🔴 **`OPEN`**（§6B） | `-10-A` |
-| **`H-WP4C-10-A`** | **Action Target = `Pages Proxy` 或 `Worker Direct`**（人工决策 · **代理不选择**） | 🔴 **`OPEN`**（§6B · 明细 `P3-WP4C-Action-Target-Decision.md`） | `WP4C-IMPL:C-5` · 准入 `V-1` |
+| **`H-WP4C-09-B`** | **EMQX Rule Implementation** —— 新增 `guo_feeder_history_ingest` + **同批**收窄既有 `guo_feeder/#` WHERE | 🔴 **`BLOCKED`**（§6B · 依赖 `-09-A` **且** `H-WP4C-11` 已部署） | **`WP4C-IMPL:C-5`** |
+| **`H-WP4C-10`** | Action 目标形态裁决（**父项**） | 🔒 **`CLOSED`**（§6B · 随 `-A` 裁决关闭） | 已解 |
+| **`H-WP4C-10-A`** | **Action Target 形态** | 🔒 **`CLOSED`** —— **裁决 = 方案 A（`Pages Proxy`）**（§6B · §5.1 留痕） | 已解 |
+| **`H-WP4C-11`** | **Pages 中转函数 `/api/history/ingest` 新增 + 部署授权**（方案 A 落地前置） | 🔴 **`OPEN`**（§6B · 新增 `guo-feeder-pagesdev/functions/api/history/ingest.js` + 部署 + `401` 实测） | **`WP4C-IMPL:C-5`** · 准入 `V-1` |
 | **`R-WP4C-8` / `9`** | D1 写入吞吐 / 成本量化 | 🟠 待**实施前**评估 | 放量前置 |
 | `R-FRZ-2` | `seq` 不持久化 × `ts=0` 的跨 boot 幂等碰撞面 | 🟠 实施细节 | `H-WP4-FW-06` / 实施细化 |
 
 > ✅ **已关闭**：**`H-WP4C-03`**（设计冻结）· **`H-WP4C-04…08`**（实施阶段授权，§6A）—— 均不再列为剩余 `HUMAN_REQUIRED`。
 > ⚠️ **`CLOSED` ≠ 执行完成**：`H-WP4C-04…08` 仅代表**授权已下达**；**执行**仍须按 `P3-WP4C-Implementation-Discipline.md` 的固定顺序逐步推进，**每步产出报告**。
 > 🟠 **`H-WP4C-09` 已拆分（不关闭）**：**`-A`（只读导出 · `OPEN`）** 与 **`-B`（生产变更 · `BLOCKED`）** 责任分离，**`-A` 完成 ≠ `-B` 可开工**（§6B）。
-> 🔴 **`H-WP4C-10-A` 保持 `OPEN`**：**Action 目标形态未裁决** ⇒ 纪律 §6A.4 **`STOP` 条件 1 成立**，**EMQX 侧一切变更持续 `STOP`**。
-> 实施前准备清单与基线采集流程见 **`docs/review/P3-WP4C-Pre-Implementation-Checklist.md`**；控制台边界规则见纪律 **§6A**。
+> ✅ **`H-WP4C-10` / `-10-A` 已由人工裁决关闭**（`2026-10-12`）：**`Action Target = Pages Proxy`**；派生 **`H-WP4C-11`**（Pages 中转部署授权 · 🔴 `OPEN`）。
+> 🔴 **EMQX 侧仍持续 `STOP`**（纪律 §6A.4）：条件 1 = **目标仍不可达**（中转未部署）· 条件 2 = **`V-0` 基线未导出**。
+> 实施前准备清单与基线采集流程见 **`docs/review/P3-WP4C-Pre-Implementation-Checklist.md`**；控制台边界规则见纪律 **§6A**；
+> **导出与回写目标文件**见 **`EMQX_Assets/config/data-integration/P3-WP4C-V0-EMQX-Baseline.md`**（`V-0` 基线）与同目录 **`P3-WP4C-V2V4-Config-After.md`**（变更后存档）。
 
 ---
 
@@ -442,7 +468,22 @@
 
 ## §10 修改文件
 
-### 10.1 本轮（**第三阶段 · 实施前裁决补充**）
+### 10.1 本轮（**第四阶段 · `H-WP4C-10-A` 裁决下达 + `V-0` 导出工件**）
+
+| 文件 | 仓库 | 性质 |
+|---|---|---|
+| `docs/review/P3-WP4C-Action-Target-Decision.md` | 固件 | **裁决回填** —— `DECISION PENDING` → **`DECIDED`（方案 A）**；新增 §1.3（收敛）· §5.1（裁决留痕）；§2/§3 标注采纳 / 排除；§6 转为开工门清单 |
+| `docs/review/P3-WP4C-Decisions.md` | 固件 | **更新** —— banner · §1 · §6B（`-10/-10-A` → `CLOSED` + **新增 `H-WP4C-11`**）· §7.1 · §7.2 · **§7.3（`C-5` 依赖改为 `C-4` + `H-WP4C-11`）** · §8 |
+| `docs/review/P3-WP4C-Implementation-Record.md` | 固件 | **回填** —— §5 拆分后形态同步 + `R-WP4C-12` 收敛 |
+| `docs/review/P3-WP4C-Implementation-Discipline.md` | 固件 | **状态回填** —— §6A.3 准入序列 `V-1` 的当前状态与解锁条件 |
+| `docs/README.md` | 固件 | **索引** —— 状态词同步（新增 `V-0` 工件指向） |
+| `config/data-integration/P3-WP4C-V0-EMQX-Baseline.md` | EMQX | **新增** —— `V-0` 基线**导出操作手册 + 填写区**（人工执行 · 见 `H-WP4C-09-A`） |
+| `config/data-integration/P3-WP4C-V2V4-Config-After.md` | EMQX | **新增** —— 变更后（`V-2`/`V-4`）配置**回写模板** |
+| `config/data-integration/README.md` | EMQX | **更新** —— 新增 §7 指向两个 WP4C 工件 |
+
+> **★ 边界**：**全部为 `docs/`** —— 零 EMQX 写操作 · 零 Worker / Pages 部署 · 零 migration · 零 firmware 修改 · 零 `push`。
+
+### 10.2 第三阶段（实施前裁决补充）
 
 | 文件 | 性质 |
 |---|---|
@@ -454,7 +495,7 @@
 
 > **★ 边界**：以上**全部为 `docs/`** —— 零 EMQX 写操作 · 零 Worker 部署 · 零 migration · 零 firmware 修改 · 零 `push`。
 
-### 10.2 前序阶段（留存）
+### 10.3 前序阶段（第一 / 第二阶段 · 留存）
 
 | 文件 | 性质 |
 |---|---|
@@ -471,3 +512,5 @@
 所有 `file:line` 与平台事实取自基线，可逐条回查。*
 *`2026-10-12` **第三阶段增补**：§6B（`H-WP4C-09` 拆分 + `H-WP4C-10-A` 登记）· §7.3（实施门禁 Checklist，`PASS 3 / BLOCKED 4`）；
 **仍为零生产变更**（仅 `docs/`），**未关闭任何 `HUMAN_REQUIRED`**。*
+*`2026-10-12` **第四阶段增补**：**`H-WP4C-10-A` 人工裁决 = 方案 A（`Pages Proxy`）** ⇒ `H-WP4C-10`/`-10-A` **`CLOSED`** · `D-2` 确认成立 ⇒ `R-WP4C-12` **收敛** · **新增 `H-WP4C-11`**（Pages 中转部署授权，🔴 `OPEN`）；
+`C-5` 依赖改为 **`C-4` + `H-WP4C-11`**。**仍为零生产变更**（固件仓 + EMQX 仓 `docs/`），**未部署任何代码 · 未创建任何 EMQX 配置**。*

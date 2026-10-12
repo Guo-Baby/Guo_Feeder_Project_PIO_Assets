@@ -1,19 +1,21 @@
-# P3 · `H-WP4C-10` —— **Action 目标形态裁决记录**（`DECISION PENDING` · 🛑 **等待人工**）
+# P3 · `H-WP4C-10` —— **Action 目标形态裁决记录**（✅ `DECIDED` · **方案 A = `Pages Proxy`**）
 
-> ## 🛑 `DOC-ONLY` · **待裁决** —— **未创建 / 未修改任何 EMQX Rule · Action · Connector · 未部署任何代码**
+> ## ✅ `DOC-ONLY` · **已裁决（人工）** —— **裁决结果 = 方案 A（`Pages Proxy`）** · **未创建 / 未修改任何 EMQX Rule · Action · Connector · 未部署任何代码**
 >
 > | 项 | 值 |
 > |---|---|
-> | **本文档性质** | **待裁决记录（Decision Pending）** —— 登记 `H-WP4C-10` 的两个候选方案，**等待人工裁决** |
+> | **本文档性质** | **裁决记录（Decision Record）** —— `H-WP4C-10` / `H-WP4C-10-A` 的**人工裁决留痕** |
 > | **裁决编号** | **`H-WP4C-10-A`** —— *Action Target = Pages Proxy 或 Worker Direct* |
-> | **状态** | 🔴 **`OPEN`**（**代理不选择、不推荐、不预设**） |
+> | **状态** | ✅ **`CLOSED`** —— **人工裁决 = 方案 A（`Pages Proxy`）**（`2026-10-12` · 见 §5.1） |
+> | **裁决依据（人工口径）** | **「`workers` 无法直连」** ⇒ 冻结设计 `D-2` **成立**；`R-WP4C-12` 的矛盾**就此收敛**（见 §1.3 / §4） |
 > | **上游依据** | `H-WP4C-10`（实施记录 §5 登记）· 冻结设计 `D-2`（`P3-WP4C-EMQX-Rule-Design.md` §6）· `R-WP4C-12`（实施记录 §7） |
 > | **执行约束** | `docs/review/P3-WP4C-Implementation-Discipline.md` **§6A `EMQX Console Boundary Rule`**（📌 `BINDING`） |
-> | **基线** | 固件仓 HEAD = **`d08927c`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`** |
+> | **基线** | 固件仓 HEAD = **`0c8dc68`**（工作树 clean）· CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`** |
 > | **本文档不做的** | ❌ 不创建 / 修改 EMQX 规则、连接器、动作 · ❌ 不部署 Worker / Pages · ❌ 不改 migration · ❌ 不改冻结设计 · ❌ 不 push |
 >
-> **★ 重要**：本文档**只登记候选与风险**。**方案 A / B 的取舍必须由人工裁决** ——
-> 代理**不得**自行选择、不得以"更合理"为由预设默认值。裁决前，纪律 §6A.4 的 **`STOP` 条件 1 持续成立**。
+> **★ 裁决只决定「Action 的 URL 写成什么形态」** —— **不解除** `CF-2`、**不等于**管线打通、
+> **不等于** `H-WP4C-09-B` 可开工（另有**页面中转部署**前置，`H-WP4C-11`）。
+> 纪律 §6A.4 的 `STOP` 条件 1 由「形态未定」**转为**「**中转未部署 ⇒ 目标仍不可达**」⇒ **EMQX 侧变更继续 `STOP`**。
 
 ---
 
@@ -42,9 +44,19 @@
 > **⇒ 结论**：**这是环境事实问题，不是设计问题**。设计已冻结（`D-2` 倾向中转），**但事实未证**。
 > 依纪律 §6A.2，代理**不得**用历史文档替代实测、**不得**猜测 Action 配置 ⇒ **交由人工裁决**（`H-WP4C-10-A`）。
 
+### 1.3 裁决后的收敛（**`2026-10-12` 更新**）
+
+| # | 项 | 收敛结论 |
+|---|---|---|
+| 1 | **`D-2`（EMQX 打不通 `*.workers.dev`）** | ✅ **确认成立** —— 人工裁决口径：「**`workers` 无法直连**」 |
+| 2 | **`R-WP4C-12`（`D-2` 与存档 §1 矛盾）** | ✅ **收敛（CLOSED）** —— 存档 §1 的 `workers.dev` 根路径是**由 Worker 侧落库反推**的**上游目标**（P0 遗留），**不是** EMQX 侧连接器 URL；二者本就不在同一层 |
+| 3 | **★ 既存实测旁证（最强）** | EMQX 仓 §6.4 记录：**既有连接器 `c-n302933b-b12100`（`guo_feeder/#` → `/api/webhook`）指向 `https://guo-feeder-pagesdev.pages.dev`，且长期可用** ⇒ **Pages 中转账单在本平台已跑在生产**，方案 A **不是新方案，而是既有形态的复制** |
+| 4 | **⇒ 方案选择** | ✅ **方案 A（`Pages Proxy`）** —— 与 `D-2` 一致，且**有生产在跑的先例**（第 3 项） |
+| 5 | **本裁决** | **只解决「EMQX 侧 Action 的 URL 写成 Pages 域名」**；**不解决** Pages 侧是否已有可用的 `/api/history/ingest` 转发函数（见 `H-WP4C-11`） |
+
 ---
 
-## §2 方案 A —— **Pages Proxy**（EMQX Action → Pages 中转 → Worker）
+## §2 方案 A —— **Pages Proxy**（EMQX Action → Pages 中转 → Worker）· ✅ **已采纳**
 
 ### 2.1 形态
 
@@ -70,13 +82,15 @@ D1              telemetry_history / log_history
 | 3 | **便于后续认证控制** | 中转层是**唯一收口点**：将来加 IP 白名单 / 签名校验 / 限流，**不改 EMQX、不改 Worker** |
 | 4 | **已有可复用的先例** | 同 Pages 工程 `/api/presence/event`（P1-6-2）**已长期在用**，实现模式（逐字转发 / 不解析 / 密钥透传 / 上游不可达返 `502`）可直接照抄 |
 
-### 2.3 前置成本（**须知晓**）
+### 2.3 前置成本（**⚠️ 已裁决采纳 A ⇒ 本项成为 GATING 前置**）
 
 | # | 项 | 现状（实测） |
 |---|---|---|
 | 1 | Pages 工程的 `/api/history/ingest` **函数尚不存在** | 工程 `guo-feeder-pagesdev/functions/api/` 下现有 `command.js` · `presence/event.js` · `webhook.js` —— **无** `history/ingest.js` |
-| 2 | ⇒ 采用方案 A **必须先新增该 Pages Function 并部署 Pages 工程** | 属**部署动作**，**不在本阶段范围**（本阶段零部署）⇒ 须作为 `H-WP4C-09-B` 的**前置**另行授权 |
-| 3 | 中转→Worker 连通性需**实测** | 判据同 P1-6-2：`POST` 不带 `X-Webhook-Key` ⇒ **`401`** = 链路通到 Worker；**`502`** = 中转自身转发失败 |
+| 2 | ⇒ 采用方案 A **必须先新增该 Pages Function 并部署 Pages 工程** | 属**部署动作** ⇒ **须另行授权** = **`H-WP4C-11`**（本轮登记） |
+| 3 | 新增文件路径（**待授权后实施**） | `Cloudflare_Assets/guo-feeder-pagesdev/functions/api/history/ingest.js` —— **照抄** `functions/api/presence/event.js` 的逐字转发模式（不解析 / 密钥透传 / 上游不可达返 `502`），仅把上游改为 `…/api/history/ingest` |
+| 4 | 中转→Worker 连通性需**实测** | 判据同 P1-6-2：`POST` 不带 `X-Webhook-Key` ⇒ **`401`** = 链路通到 Worker；**`502`** = 中转自身转发失败；**404 / `200`+HTML** = 路径写错 |
+| 5 | **★ 部署会改变 CF 仓 HEAD ↔ 线上版本的对应关系** | 当前 CF 仓 HEAD `9b25203` **已部署**（= `99e6d937`）⇒ **repo == deployed**。新增 function 后须**同批部署**，以维持该等价关系（避免"仓里有、线上没有"的漂移） |
 
 ### 2.4 方案 A 对应的 Action 配置（**规格草案 · ⚠️ 未执行**）
 
@@ -94,7 +108,7 @@ D1              telemetry_history / log_history
 
 ---
 
-## §3 方案 B —— **Worker Direct**（EMQX Action → `*.workers.dev`）
+## §3 方案 B —— **Worker Direct**（EMQX Action → `*.workers.dev`）· ❌ **未采纳（裁决排除）**
 
 ### 3.1 形态
 
@@ -133,7 +147,7 @@ D1      telemetry_history / log_history
 
 | # | 观测 | 来源 | 可否作证据 | 说明 |
 |---|---|---|---|---|
-| 1 | `D-2`：EMQX 打不通 `*.workers.dev`、可达 `*.pages.dev` | 冻结设计 `P3-WP4C-EMQX-Rule-Design.md` §6 | ⚠️ **仅设计断言** | 出自 2026-10-05 实测记录（P1-6-2），**须在当前平台版本复核** |
+| 1 | `D-2`：EMQX 打不通 `*.workers.dev`、可达 `*.pages.dev` | 冻结设计 `P3-WP4C-EMQX-Rule-Design.md` §6 | ✅ **已被人工裁决确认**（`H-WP4C-10-A` · 「`workers` 无法直连」） | 出自 2026-10-05 实测记录（P1-6-2） |
 | 2 | 存档 §1：历史目标 URL = `https://guo-feeder-api.guobaby.workers.dev/`（根路径） | `EMQX_Assets/config/data-integration/README.md` §1 | ❌ **不可** | 由 Worker 侧 `mqtt_messages` **反推**；存档自认为 **P0 遗留路径**，且 §2 明确其**不可直接迁移使用** |
 | 3 | 存档 §6.0.1：presence 入口**已走 Pages 中转**并**长期在跑** | 同上 §6.0.1 | ✅ **可**（较强） | **同一平台、同一时期、同一类 HTTP Action** 的成功先例 |
 | 4 | Pages 工程**已有**中转函数（`presence/event.js`）实现 | CF 仓 `guo-feeder-pagesdev/functions/api/presence/event.js` | ✅ **可** | 逐字转发 / 不解析 / 密钥透传 / 上游不可达返 `502` —— **模式可直接复用** |
@@ -152,24 +166,43 @@ D1      telemetry_history / log_history
 | **ID** | **`H-WP4C-10-A`** |
 | **主题** | **Action Target 形态裁决** |
 | **待决问题** | **Action Target = `Pages Proxy`（方案 A）或 `Worker Direct`（方案 B）？** |
-| **裁决人** | **人工**（EMQX 控制台责任人 / 项目负责人） |
-| **状态** | 🔴 **`OPEN`** |
-| **代理立场** | **不选择 · 不推荐 · 不预设默认值**（纪律 §6A.2） |
-| **裁决后产出** | ① 明确的目标 URL 形态（写进 `V-0` 归档）② 若选 A：Pages Function 的新增与部署授权（另立授权项）③ 若选 B：§3.3 三项证据齐备 |
-| **解锁对象** | 纪律 §6A.3 的 **`V-1`（确认目标 Action 可达）** ⇒ 进而解锁 `H-WP4C-09-B`（Rule 实施） |
+| **裁决人** | **人工**（项目负责人） |
+| **状态** | ✅ **`CLOSED`** |
+| **裁决结果** | ✅ **方案 A = `Pages Proxy`** |
+| **裁决口径（人工原话）** | **「裁决仍然使用 pages 代理，workers 无法直连」** |
+| **裁决后产出** | ① 目标 URL 形态 = **Pages 域名**（`https://guo-feeder-pagesdev.pages.dev/api/history/ingest`）② **Pages Function 新增 + 部署授权 = `H-WP4C-11`**（本轮登记）③ §3.3 三项证据**无需**（方案 B 已排除） |
+| **解锁对象** | 纪律 §6A.3 的 **`V-1`（确认目标 Action 可达）** —— 但仍**待 `H-WP4C-11` 部署完成**后才能真正判 `V-1` |
+| **下游阻塞项** | `H-WP4C-09-B`（Rule 实施）**仍 `BLOCKED`**（`-09-A` 未完成 + `H-WP4C-11` 未部署） |
+
+### 5.1 裁决留痕（**权威**）
+
+| # | 项 | 值 |
+|---|---|---|
+| 1 | **裁决时间** | **`2026-10-12`**（本地 `GMT+8`） |
+| 2 | **裁决方式** | **人工口头裁决**（对话中下达），由代理**登记留痕** |
+| 3 | **裁决原文** | **「裁决仍然使用 pages 代理，workers 无法直连」** |
+| 4 | **结论** | **Action Target = `Pages Proxy`** ⇒ `D-2` 成立 ⇒ `R-WP4C-12` **收敛 `CLOSED`** |
+| 5 | **状态变更** | `H-WP4C-10` = 🔴 `OPEN` → ✅ **`CLOSED`** · `H-WP4C-10-A` = 🔴 `OPEN` → ✅ **`CLOSED`** |
+| 6 | **裁决**不**解除** | ❌ 不解除 `CF-2`（判据仍是 `V-1…V-7`）· ❌ 不授权 Pages 部署（须 `H-WP4C-11`）· ❌ 不授权 EMQX 变更（须 `H-WP4C-09-A` 完成） |
+| 7 | **目标 URL（结论）** | `POST https://guo-feeder-pagesdev.pages.dev/api/history/ingest` —— **EMQX 侧填这个**；**上游**（EMQX 不要填）= `https://guo-feeder-api.guobaby.workers.dev/api/history/ingest` |
+
+> **★ 记录纪律**：本条为**人工裁决**，代理仅**登记**，**未代作裁决**；与纪律 §6A.2「禁止代理自行选择」不冲突。
+> **★ 参照物**：同一 Pages 域名下的 **`/api/presence/event`** 中转（`presence/event.js`）与**既有连接器 `c-n302933b-b12100`** 均已在生产运行 ⇒ 本次为**同形态复制**。
 
 ---
 
-## §6 裁决前的**必答清单**（人工，逐项）
+## §6 执行前**必答清单**（= `H-WP4C-09-B` 的**开工门** · 逐项）
 
-| # | 问题 | 若答"否" |
-|---|---|---|
-| 1 | 是否已在**当前平台版本**上复核 `D-2`（EMQX 对 `*.workers.dev` 的可达性）？ | **`STOP`** —— 不得选 B（§3.3） |
-| 2 | 若选 **方案 A**：是否已确认 Pages 工程可新增并部署 `/api/history/ingest` Function？ | **`STOP`** —— 目标形态不成立 |
-| 3 | 是否已确认 `<pages 域名>`（**完整端点**，非基础路径 + 追加）？ | **`STOP`** —— 不得配置 Action URL |
-| 4 | 是否已确认 `X-Webhook-Key` 与 Worker Secret **一致**（且**不入仓**）？ | **`STOP`** —— 配置必返 `401` |
-| 5 | 是否已具备**回滚方案**（回切旧端点 / 停用新规则，见纪律 §2.1 / §4）？ | **`STOP`** —— 不得开始变更（纪律 §6A.4 条件 3） |
-| 6 | 是否已取得 **`V-0` 基线**（`H-WP4C-09-A` 完成）？ | **`STOP`** —— 不得变更既有规则（纪律 §6A.4 条件 2） |
+> 裁决已完成；以下转为 **EMQX 变更开工前**必须全部满足的条件（任一"否" ⇒ `STOP`）。
+
+| # | 问题 | 当前状态 | 若否 ⇒ |
+|---|---|---|---|
+| 1 | `D-2` 是否复核确认（EMQX 对 `*.workers.dev` 不可达）？ | ✅ **已确认**（`H-WP4C-10-A` 裁决 · §5.1） | —— |
+| 2 | Pages 工程是否**已新增并部署** `/api/history/ingest` Function？ | 🔴 **未部署**（须 **`H-WP4C-11`** 授权后实施） | **`STOP`** —— 目标不可达，建 Rule 无意义 |
+| 3 | 是否已确认**完整端点**（非基础路径 + 追加）＝ `https://guo-feeder-pagesdev.pages.dev/api/history/ingest`？ | ✅ **已定形**（§5.1 第 7 项）· 部署后须**实测** | **`STOP`** —— 不得配置 Action URL |
+| 4 | 是否已确认 `X-Webhook-Key` 与 Worker Secret **一致**（且**不入仓**）？ | ⏳ 待人工核对（`V-0` 时记录"已配置/未配置"） | **`STOP`** —— 配置必返 `401` |
+| 5 | 是否已具备**回滚方案**（回切旧端点 / 停用新规则，纪律 §2.1 / §4）？ | ⏳ 待人工在 `V-0` 时签署 | **`STOP`** —— 纪律 §6A.4 条件 3 |
+| 6 | 是否已取得 **`V-0` 基线**（`H-WP4C-09-A` 完成）？ | 🔴 **未导出** | **`STOP`** —— 纪律 §6A.4 条件 2 |
 
 ---
 
@@ -177,11 +210,11 @@ D1      telemetry_history / log_history
 
 | # | 约束 |
 |---|---|
-| 1 | **不选择方案** —— 不写"推荐 A / 建议 B"，不设默认值，不以篇幅 / 排版暗示倾向 |
+| 1 | **不代作裁决** —— 本轮裁决由**人工**下达，代理**仅登记**（§5.1）；历史版本中"不选择/不推荐"的立场见 §5.1 说明 |
 | 2 | **不实测可达性** —— 不向 EMQX 发起任何写请求；不重试 `403` 端点；不换凭据试权限 |
-| 3 | **不代填配置** —— 不部署 Pages Function，不修改连接器 / 动作配置 |
-| 4 | **不关闭裁决项** —— `H-WP4C-10` / `H-WP4C-10-A` **保持 `OPEN`** |
-| 5 | **不推进实施** —— 依纪律 §6A.4，`STOP` 条件 1（Action endpoint 未确认）**已成立** ⇒ EMQX 侧**持续 `STOP`** |
+| 3 | **不代填配置** —— 不部署 Pages Function（须 `H-WP4C-11`），不修改连接器 / 动作配置 |
+| 4 | **不关闭未闭合裁决项** —— `H-WP4C-09-A` / `H-WP4C-09-B` / `H-WP4C-11` 状态由人工推进 |
+| 5 | **不推进 EMQX 变更** —— 依纪律 §6A.4，`STOP` 条件 1（**目标仍不可达**：中转未部署）与条件 2（**基线未导出**）**均成立** ⇒ EMQX 侧**持续 `STOP`** |
 
 ---
 
@@ -189,10 +222,11 @@ D1      telemetry_history / log_history
 
 | 裁决结果 | 需要的新增工作 | 影响 |
 |---|---|---|
-| **方案 A（Pages Proxy）** | 新增 `guo-feeder-pagesdev/functions/api/history/ingest.js` + Pages 部署（**须另行授权**） | EMQX 侧配置**无额外风险**；多一跳 RTT（`R-WP4C-8` 已登记） |
-| **方案 B（Worker Direct）** | 无需中转；但须提供 §3.3 三项证据 | 与 `D-2` 冲突**须正式登记**；投递失败风险高（`R-WP4C-12`） |
+| ✅ **方案 A（Pages Proxy）—— 已采纳** | 新增 `Cloudflare_Assets/guo-feeder-pagesdev/functions/api/history/ingest.js` + Pages 部署（**`H-WP4C-11`**，须授权） | EMQX 侧配置**无额外风险**；多一跳 RTT（`R-WP4C-8` 已登记）；**保持 CF 仓 HEAD == 线上版本**的等价关系 |
+| ❌ 方案 B（Worker Direct）—— 未采纳 | —— | 与 `D-2` 冲突；投递必然失败（`R-WP4C-12` **已收敛为 CLOSED**） |
 
-> 两方案**均要求**：**新建独立连接器**（不复用消息流连接器）· **`X-Webhook-Key` 必须配置** · **Body 三键不可改名**。
+> 两方案**均要求**：**新建独立连接器**（不复用消息流连接器 `c-n302933b-b12100`）· **`X-Webhook-Key` 必须配置** · **Body 三键不可改名**。
+> **采纳 A 后的连接器 TLS 段**：**照抄** EMQX 仓 §6.4（启用 TLS · **SNI = `guo-feeder-pagesdev.pages.dev`（必填）** · 验证服务器证书 = 关 · CA 留空）。
 
 ---
 
@@ -205,7 +239,7 @@ D1      telemetry_history / log_history
 | 执行 / 修改 migration | ✅ **未执行 · 未改** |
 | 修改 firmware / `src/` / ACL / topic / `/up` | ✅ **未改**（固件仓仅 `docs/`） |
 | 修改冻结设计（含 `D-2`） | ✅ **未改** |
-| 关闭 `HUMAN_REQUIRED` | ✅ **未关闭**（`H-WP4C-10` / `-10-A` 保持 `OPEN`） |
+| 关闭 `HUMAN_REQUIRED` | ✅ **未自行关闭** —— 本轮 **`H-WP4C-10` / `-10-A` 的 `CLOSED` 源自人工裁决**（§5.1）；**新增 `H-WP4C-11`** 保持 `OPEN` |
 | `push` | ✅ **未 push** |
 
 > **只读声明**：本轮生产侧**零操作**（未发任何 EMQX 请求；未调用 `wrangler`）。本文档事实均取自**基线仓内既有文档与已跟踪源码**，可逐条回查。
@@ -226,6 +260,6 @@ D1      telemetry_history / log_history
 
 ---
 
-*本文档于 **2026-10-12** 建立，为 **`H-WP4C-10-A` 待裁决记录**；
-**零生产变更**，**未选择方案**，**未关闭任何裁决项**。
-基线 = 固件仓 **`d08927c`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。所有事实均可逐条回查。*
+*本文档于 **`2026-10-12`** 建立（**待裁决记录**），同日**由人工裁决后更新为裁决记录** —— **裁决结果 = 方案 A（`Pages Proxy`）**（§5.1）。
+**零生产变更**（本轮仅 `docs/`），**未部署任何代码**，**未创建 / 修改任何 EMQX 配置**。
+基线 = 固件仓 **`0c8dc68`** · CF 仓 **`9b25203`** · EMQX 仓 **`eec9444`**。所有事实均可逐条回查。*

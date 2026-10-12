@@ -213,7 +213,7 @@ V-5  验证 command 不受影响（history +0 / mqtt_messages +1）
 | 步 | 内容 | 判据 | 当前（`2026-10-12`） |
 |---|---|---|---|
 | `V-0` | **人工导出** Rule SQL / Action / Connector **三份基线** | 三份快照**全文入库**（secret 脱敏） | 🔴 `BLOCKED` —— API `403` ⇒ 须人工（`H-WP4C-09-A`） |
-| `V-1` | **确认目标 Action 可达** | **实测**可达；**不得**以"应该能通"代替 | 🔴 `BLOCKED` —— 目标形态未定（`H-WP4C-10-A`） |
+| `V-1` | **确认目标 Action 可达** | **实测**可达；**不得**以"应该能通"代替 | 🔴 `BLOCKED` —— **形态已裁决（方案 A = Pages 域名 · `H-WP4C-10-A` `CLOSED`）**，但 **Pages 中转未部署**（`H-WP4C-11` ⇒ 目标**当前不可达**） |
 | `V-2` | **创建新 Rule** | `guo_feeder_history_ingest` 已保存并**启用** | ⛔ 未开始（依赖 `V-0` + `V-1`） |
 | `V-3` | **验证 telemetry 分流** | `telemetry_history` **+1** 且 `mqtt_messages` **+0** | ⛔ 未开始 |
 | `V-4` | **收窄旧 Rule** | 旧规则 WHERE 已改为 **`NOT`（冻结谓词）** | ⛔ 未开始（**与 `V-2` 同批**） |
@@ -234,7 +234,7 @@ V-5  验证 command 不受影响（history +0 / mqtt_messages +1）
 > **★ 本条 = §6「环境与冻结设计不符 ⇒ `STOP`」在 **EMQX 控制台作业**上的具体化**。
 > `STOP` 后**唯一**合法动作 = **登记 `HUMAN_REQUIRED` + 等待人工**；**禁止**任何形式的绕过或降级。
 
-> **当前实际状态 —— 🛑 `STOP` 条件 1 成立**：Action 目标形态**未裁决**（`H-WP4C-10-A = OPEN`），
+> **当前实际状态 —— 🛑 `STOP` 条件 1 成立**：Action 目标形态**已裁决（方案 A = Pages 域名）**，但 **Pages 中转函数尚未部署**（`H-WP4C-11 = OPEN`）⇒ **目标当前不可达**；
 > 且 `V-0` 基线**未导出**（`H-WP4C-09-A = OPEN`）⇒ **EMQX 侧一切变更持续 `STOP`**。
 
 ---
