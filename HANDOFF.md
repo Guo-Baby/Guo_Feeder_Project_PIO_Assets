@@ -29,12 +29,13 @@
 | 6 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | ★★ **最新审查**：`/log` 端到端缺口 + 待裁决项（**下一步所在**） |
 | 7 | `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | 遥测运行时开关规格（两道门 · 方案 A） |
 | 8 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | 遥测开关**上板验证**（`V-C1-12…19` = 7 PASS / 1 BLOCKED · `ACCEPTED`） |
-| 9 | `docs/review/P3-WP4C-Implementation-Discipline.md` | ★ 生产变更纪律（控制台 = 人工变更 · `STOP` 条款） |
-| 10 | `docs/issues/未修复的问题.md` | 全项目问题权威清单 |
-| 11 | `.workbuddy/memory/MEMORY.md` | **长期铁律 + 当前状态**（★ 优先看「★ 当前状态」块） |
-| 12 | `.workbuddy/memory/2026-10-14.md` | 最近工作日志 |
-| 13 | `AGENTS.md` · 技能 `pio-esp32-windows-workflow` | 构建 / 烧录 / 串口 / MQTT 测试 + 沙箱已知坑 |
-| 14 | `EMQX_Assets/config/data-integration/`（`P3-WP4C-V0-EMQX-Baseline.md` · `P3-WP4C-V2V4-Config-After.md` · `README.md`） | EMQX 存档（`V-0` 基线 / 变更后配置 / 终态对象） |
+| 9 | `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` | **`V-2` telemetry 真实落库**端到端验证（`V-2.1…V-2.6` 全 PASS · D1 `+8` 行 · `ACCEPTED`） |
+| 10 | `docs/review/P3-WP4C-Implementation-Discipline.md` | ★ 生产变更纪律（控制台 = 人工变更 · `STOP` 条款） |
+| 11 | `docs/issues/未修复的问题.md` | 全项目问题权威清单 |
+| 12 | `.workbuddy/memory/MEMORY.md` | **长期铁律 + 当前状态**（★ 优先看「★ 当前状态」块） |
+| 13 | `.workbuddy/memory/2026-10-14.md` | 最近工作日志 |
+| 14 | `AGENTS.md` · 技能 `pio-esp32-windows-workflow` | 构建 / 烧录 / 串口 / MQTT 测试 + 沙箱已知坑 |
+| 15 | `EMQX_Assets/config/data-integration/`（`P3-WP4C-V0-EMQX-Baseline.md` · `P3-WP4C-V2V4-Config-After.md` · `README.md`） | EMQX 存档（`V-0` 基线 / 变更后配置 / 终态对象） |
 
 #### 1.0.3 项目计划（分阶段）
 
@@ -66,11 +67,12 @@
 | **Phase C-C1** 固件遥测发布器 + `HD-1` 运行时门 | ✅ 实施 + **上板验证**（`V-C1-12…19` = **7 PASS / 1 BLOCKED**）· 已 push（FW HEAD `73bf330`） |
 | 文档同步（WP4C 终态 + HD-1 收尾 + presence ID 回填） | ✅ 全部已 push（`a01797d..73bf330`） |
 | **Phase C-C2** `/log` 端到端实施前审查 | ✅ 已出（FW `b61323e` · **未 push**）· 判定 `CONDITIONAL GO / BLOCKED-1` |
+| **Phase C-C1 · `V-2`** telemetry 真实落库 | ✅ **`ACCEPTED`**（`V-2.1…V-2.6` **全 PASS** · 真机 D1 `telemetry_history` **+8 行** · `2026-10-14`）· 验证记录 `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` |
 
 #### 1.0.5 ★ 接下来应该进行的步骤
 
 1. **Phase C 收口 —— 真实数据端到端（两条路径）**
-   - **`V-2`（telemetry 落库）**：D1 `telemetry_history` **仍为 0**；用当前设备开 `telemetry_enable=true` 即可闭合（**无需任何 EMQX 改动**，成本最低）。
+   - **`V-2`（telemetry 落库）**：✅ **已完成 / `ACCEPTED`（`2026-10-14`）** —— 真机开 `telemetry_enable=true` 后，telemetry **→ EMQX 规则 A → Worker `/api/history/ingest` → D1 `telemetry_history`** 全链路闭合（`V-2.1…V-2.6` 全 `PASS` · D1 **+8 行** · 零重烧 · 零 EMQX 改动）。记录 → `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md`。
    - **`V-3`（`/log` 落库）**：**唯一缺口 = EMQX 缺 `/log` 分流，且规则配额 `4/4` 已满** ⇒ **须先人工裁决** `HR-C2-1`（推荐 **B：改规则 A+B · 配额中立**）/ `HR-C2-2` / `HR-C2-3`；EMQX 控制台改动**只能人工**（API 对 rules/actions/connectors 全 `403`）。详见 `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md`。
 2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结、**实施未开始**（`WP4C` 之后第一块未动工的工作包）。
 3. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED`（`BT-1`：云端 `log_ack`）。
