@@ -1,11 +1,85 @@
 # 交接文档 · Guo Feeder Project
 
 > **用途**：跨会话 / 跨人交接。新开会话时**先读本文件**，再按 §1 的清单读对应文档。
-> **最后更新**：2026-10-10（**P2 阶段收口** —— 见 §11）
+> **最后更新**：**2026-10-14**（**P3 实施中** —— 见 **§1.0**；§1.1 与 §2–§11 为 P0/P1/P2 期历史，仅作沿革参考）
 
 ---
 
 ## 1. 给下一个会话的启动指令（直接复制粘贴）
+
+> ★ **最新交接 = §1.0（`2026-10-14` · P3 实施中）**；重建会话请**先读 §1.0**。
+> §1.1（原始启动指令）与 §2–§11 为 **P0 / P1 / P2 期历史记录**，状态已过时，**仅作沿革参考**。
+
+### 1.0 ★ 最新交接（`2026-10-14` · P3 实施中）
+
+#### 1.0.1 一句话背景
+
+**ESP32-S3 N16R8 全自动宠物投喂 / 供水设备**（当前主攻自动猫咪饮水）。设备侧 = 模块化分层 + 非阻塞状态机 + 全局 System State + Event 机制；云端 = **EMQX Serverless** + **Cloudflare Worker / Pages / D1**；协议 = MQTT（JSON 外壳）+ **CBOR**（log 载荷 Base64 承载）。
+**三仓**：固件 `PIO_Assets/Guo_Feeder_Project`（本地分支 `wb` → 远程 `main`）· 云端 `Cloudflare_Assets` · 消息 `EMQX_Assets`。用户是 ESP32 固件开发者，**习惯先读文档再动手，改动前先要方案**。
+
+#### 1.0.2 最新必读清单（按顺序）
+
+| # | 文档 | 为什么读 |
+|---|---|---|
+| 1 | `HANDOFF.md`（本文件） | 交接总入口（§1.0 为最新） |
+| 2 | `docs/README.md` | **文档总索引**（权威导航） |
+| 3 | `docs/architecture/Cloud-APP-Platform-Plan.md` | 云端/APP 架构 v2 = **P0–P6 依据** |
+| 4 | `docs/architecture/P3-History-D1-Plan.md` | ★ **P3 实施计划 + 门禁 `G-1…G-5`**（当前主阶段） |
+| 5 | `docs/review/P3-WP4C-Implementation-Record.md` | ★ **WP4C 权威结论**（EMQX 遥测路由 · §5 / §6 / §8） |
+| 6 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | ★★ **最新审查**：`/log` 端到端缺口 + 待裁决项（**下一步所在**） |
+| 7 | `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | 遥测运行时开关规格（两道门 · 方案 A） |
+| 8 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | 遥测开关**上板验证**（`V-C1-12…19` = 7 PASS / 1 BLOCKED · `ACCEPTED`） |
+| 9 | `docs/review/P3-WP4C-Implementation-Discipline.md` | ★ 生产变更纪律（控制台 = 人工变更 · `STOP` 条款） |
+| 10 | `docs/issues/未修复的问题.md` | 全项目问题权威清单 |
+| 11 | `.workbuddy/memory/MEMORY.md` | **长期铁律 + 当前状态**（★ 优先看「★ 当前状态」块） |
+| 12 | `.workbuddy/memory/2026-10-14.md` | 最近工作日志 |
+| 13 | `AGENTS.md` · 技能 `pio-esp32-windows-workflow` | 构建 / 烧录 / 串口 / MQTT 测试 + 沙箱已知坑 |
+| 14 | `EMQX_Assets/config/data-integration/`（`P3-WP4C-V0-EMQX-Baseline.md` · `P3-WP4C-V2V4-Config-After.md` · `README.md`） | EMQX 存档（`V-0` 基线 / 变更后配置 / 终态对象） |
+
+#### 1.0.3 项目计划（分阶段）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **P0** | 设备身份（`device_id`）+ Topic V3 + ACL 隔离 | ✅ 完成（已上板 · MQTT 端到端验证） |
+| **P1** | 设备生命周期（注册 / 一机一凭据 / 绑定 / 退役）+ 在线状态 | ✅ 完成 |
+| **P2** | Homie Bridge（设备侧 Homie 5 投影） | ✅ **软件收口** · 硬件实物测试**延期** |
+| **P3** ◀ | **历史数据平台（History / D1）—— 当前主阶段** | 🟡 **实施中** |
+| **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） | ⏳ 未开始 |
+| **P5** | Cloudflare Pages 部署 + 安卓 WebView 壳 | ⏳ 未开始 |
+| **P6** | 原生 Android（【可选】） | ⏳ 未开始 |
+
+**P3 工作包**（Plan 轨 ↔ Design 轨双轨，**全文禁裸 `WP-n`**）：
+- `WP-1` 遥测策略 → ✅ **冻结**（`P3-WP1-Telemetry-Policy-Final.md`）
+- `WP-2` D1 schema → ✅ **冻结**（`P3-WP2-History-Data-Model-Design.md` → `0003`）
+- `WP-3`(Plan) EMQX 集成 + `WP-4`(Plan) ingest Worker → ✅ 设计冻结（`DT:WP-4`）+ 已实现 → **EMQX 侧 = `WP4C` ✅ `CLOSED`**
+- `WP-5`(Plan) `log_ack` → 🚫 **受阻于 `G-4`**（`BT-1` 未修）
+- `WP-6`(Plan) 容量验证 → ⏳ `NOT RUN`（需真实流量）
+- `WP-7`(Plan) 保留策略 → ✅ 设计冻结（`DT:WP-3`：retention **90/180 天** · `scheduled cleanup job` · **无附加索引**）· **实施未开始**
+- **Phase C（集成上线）**：`C-2` 远端 D1 migration ✅ · `C-1` EMQX Action 切换 ✅（均随 `WP4C`）· **`V-2` telemetry / `V-3` log 真实落库待验证**
+
+#### 1.0.4 已完成里程碑（近期）
+
+| 里程碑 | 证据 / 锚点 |
+|---|---|
+| **WP4C** EMQX 遥测路由 | ✅ `CLOSED` · 冻结验证集 `V-1…V-7` 全 `PASS` · annotated tag **`wp4c-closure-20261012`**（FW `dd78a29` / EMQX `3165aab`，两仓已 push） |
+| 远端 D1 `0003` + Worker `/api/history/ingest` + Pages 中转 | ✅ 已部署（`99e6d937` / `61b4938e`） |
+| **Phase C-C1** 固件遥测发布器 + `HD-1` 运行时门 | ✅ 实施 + **上板验证**（`V-C1-12…19` = **7 PASS / 1 BLOCKED**）· 已 push（FW HEAD `73bf330`） |
+| 文档同步（WP4C 终态 + HD-1 收尾 + presence ID 回填） | ✅ 全部已 push（`a01797d..73bf330`） |
+| **Phase C-C2** `/log` 端到端实施前审查 | ✅ 已出（FW `b61323e` · **未 push**）· 判定 `CONDITIONAL GO / BLOCKED-1` |
+
+#### 1.0.5 ★ 接下来应该进行的步骤
+
+1. **Phase C 收口 —— 真实数据端到端（两条路径）**
+   - **`V-2`（telemetry 落库）**：D1 `telemetry_history` **仍为 0**；用当前设备开 `telemetry_enable=true` 即可闭合（**无需任何 EMQX 改动**，成本最低）。
+   - **`V-3`（`/log` 落库）**：**唯一缺口 = EMQX 缺 `/log` 分流，且规则配额 `4/4` 已满** ⇒ **须先人工裁决** `HR-C2-1`（推荐 **B：改规则 A+B · 配额中立**）/ `HR-C2-2` / `HR-C2-3`；EMQX 控制台改动**只能人工**（API 对 rules/actions/connectors 全 `403`）。详见 `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md`。
+2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结、**实施未开始**（`WP4C` 之后第一块未动工的工作包）。
+3. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED`（`BT-1`：云端 `log_ack`）。
+4. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
+5. **遗留运维**：MQTT 密码轮换（10 文件含明文）；设备当前 = 「遥测功能构建 + `telemetry_enable=false` 安全态」，是否刷回编译门 OFF 默认镜像待定。
+
+> ⚠️ **硬性纪律（改前必读）**：见 `.workbuddy/memory/MEMORY.md`「★ 硬性规范」与「提交规范 / 文档纪律」—— 零全局裸变量 · 非阻塞（禁 `delay()`）· 配置「`set`+`save`」两步 · 禁 `uploadfs` · `git push` 走代理 `127.0.0.1:7890` + 内联凭据 helper · 提交前 `git diff --cached --name-only` 全量核对 · **批量改文档后立即核对行数/哈希（外部格式化器会改写 .md）**。
+
+### 1.1 原始启动指令（P2 期 · 历史 · 供参考）
 
 ```
 请先读下列文档了解本项目的当前状态，读完先复述你的理解，等我确认后再动手。
