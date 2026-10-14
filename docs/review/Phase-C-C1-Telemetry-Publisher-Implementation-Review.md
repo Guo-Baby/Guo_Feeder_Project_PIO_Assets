@@ -11,6 +11,7 @@
 > | **本轮不做** | ❌ 不开启 `telemetry.enable` · ❌ 不烧录固件 · ❌ 不改 EMQX Rule / Action / Connector · ❌ 不改 Worker · ❌ 不改 D1 schema · ❌ 不改 `src/` |
 > | **审查对象（只读）** | `src/services/telemetry_publisher.{h,cpp}` · `src/services/telemetry_envelope.h` · `src/services/telemetry_policy.h` · `src/cloud/cloud_manager.{h,cpp}`（`cloud_send_telemetry`）· `src/main.cpp`（setup/loop 接线）· `Cloudflare_Assets/guo-feeder-api/src/history-ingest.js` · `migrations/0003_p3_history_tables.sql` |
 > | **判定** | ⚠️ **`CONDITIONAL GO`** —— 设计面完整，但存在 **1 项必须先裁决的阻断项**（`HD-1`：运行时配置门未实现）与 4 项待定/风险项；详见 §10 / §11 |
+> | **📌 终态（`2026-10-14` · 快照指针）** | 本文件为**实施前审查快照**（结论保留不改）。**`HD-1` 已闭环**：裁决 = 方案 A · 实施 = `04aca12` · 规格回填 = `aab59c1`（`…HD1-…-Implementation-Specification.md` §15） · **上板验证 = `ACCEPTED`**（`7 PASS / 1 BLOCKED`）→ `…HD1-Runtime-Verification-Record.md`。⇒ 文中「`HD-1` 开工前必须裁决 / 当前无运行时门」**已不适用**（`HD-2` / `HD-3` / `P-3` 仍待另行处置）。 |
 
 ---
 
