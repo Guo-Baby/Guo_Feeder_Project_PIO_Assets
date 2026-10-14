@@ -116,6 +116,17 @@
 
 > 📌 **冻结 / 历史文档阅读提示（`2026-10-12` 22:20 补）**：上表中 🔒 冻结文档（如 `P3-WP4C-EMQX-Rule-Design.md`）与各阶段历史记录里的「`CF-2` 仍 `BLOCKED`」「`V-1…V-7` 全 `NOT RUN`」「presence 链路零接触」等表述均为**冻结 / 历史时点快照**；**终态 = `CF-2` `CLOSED` · `V-1…V-7` 全 `PASS` · presence 已删旧建新并全链恢复**（权威 = `docs/review/P3-WP4C-Implementation-Record.md` §5 / §6 / §8）。**勿将时点表述当终态读。**
 
+### Phase C · 固件遥测 / 日志 端到端（`2026-10-13` ~ `2026-10-14`）
+
+> **阶段状态**：`Phase C-C1`（固件遥测发布器 + `HD-1` 运行时开关）= ✅ **实施 + 上板验证完成并 push**；`Phase C-C2`（`/log` → `log_history`）= 🟡 **审查已出 · `BLOCKED-1`（EMQX 缺 `/log` 分流 · 规则配额 `4/4`）**。**Phase C 整体未收口**（`C-1` 的 `V-2` telemetry / `V-3` log 真实落库待验证）。
+
+| 文档 | 说明 |
+|---|---|
+| `docs/review/Phase-C-C1-Telemetry-Publisher-Implementation-Review.md` | Phase C-C1 实施前审查（判定 `CONDITIONAL GO`；`HD-1` 运行时门缺口 `F-1…`）· 含终态快照指针 |
+| `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | **`HD-1` 运行时遥测开关实施规格**（方案 A 扁平键 `telemetry_enable` · 编译门 × 运行时门 · `fail-closed` · §15 实施回填） |
+| `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | **`HD-1` 上板验证记录**（固件 `04aca12` · `V-C1-12…19` = **7 PASS / 1 BLOCKED** · 结论 `ACCEPTED`） |
+| `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | **★ `Phase C-C2`（`/log` → `log_history`）实施前审查**（`CONDITIONAL GO / BLOCKED-1`：固件信封 + Worker 已就绪 · **唯一缺口 = EMQX `/log` 分流且规则配额 `4/4`** · 待裁决 `HR-C2-1/2/3`） |
+
 ## interfaces/ 接口 / 协议
 
 > **接入新功能前必读。** 这是对外/对云契约的唯一权威来源。
