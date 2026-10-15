@@ -198,13 +198,23 @@
 | `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | 主键 | 【FDD】 |
 | `device_id` | `TEXT NOT NULL` | 一级隔离字段 | 【FDD】 |
 | `ts` | `INTEGER NOT NULL` | Unix 秒 | 【FDD】 |
-| `level` | `TEXT NOT NULL` | `WARN` / `ERROR` / `CRITICAL`（**云端存储级别 = `WP-1` `F-6` 冻结项**；**与设备 Flash 级别独立**） | 【FDD】 |
+| `level` | `TEXT NOT NULL` | `INFO` / `WARN` / `ERROR` / `CRITICAL`（**云端存储级别**；**与设备 Flash 级别独立**） | 【FDD】 |
 | `code` | `INTEGER` | EventId | 【FDD】 |
 | **`boot_seq`** | **`INTEGER NOT NULL`** | **Boot 序号**（跨重启关联 + **幂等键组成**） | 【FDD】 |
 | **`seq`** | **`INTEGER NOT NULL`** | 设备侧日志序号（**与 `BT-1` ACK 关联** + **幂等键组成**） | 【FDD】 |
 | `message` | `TEXT` | **简要描述**（人读；**截断存储**） | 【FDD】 |
 | `payload` | `TEXT` | **结构化 JSON**（机读；**不建索引**；**须有体积上限**） | 【FDD】 |
 | `created_at` | `INTEGER NOT NULL DEFAULT (unixepoch())` | 写入时间 | 【FDD】 |
+
+> **★ `F-C2-8` 契约统一（`2026-10-15` · 人工授权本次统一冻结文档间的冲突）**：
+> `log_history.level` 的**词表由 3 值扩展为 4 值** —— 增加 **`INFO`**。
+> **依据（事实）**：① 固件 `LOG_LEVEL_POLICY`（`src/log/log_events.h`）**`INFO → cloud = 1`，INFO 确实上传**；
+> ② 云端 ingest 若按 3 值词表校验，则**不止 INFO**，连 `WARN`/`ERROR`/`CRITICAL` 亦因**类型不符**被全数拒收（原缺陷，详见 `F-C2-8`）；
+> ③ `P3-History-D1-Plan.md` 的 `LogHistory.level` 早已列为 **`INFO` / `WARN` / `ERROR` / `CRITICAL`**。
+> ⇒ 本节原「`WP-1` `F-6` 冻结项（3 值 · 无 INFO）」的表述**已与本统一冲突**，按上述裁决**改为 4 值**。
+> **`DEBUG` 不入库**（由上游策略过滤 —— 固件 `DEBUG → cloud = 0` 不上传；Worker 侧亦按 `cloud_protocol.md` §8.2.1 作**策略过滤**，**不**计入 `rejected`）。
+> **列类型不变**（仍 `TEXT NOT NULL`）⇒ **无 schema 变更 / 无 migration**。
+> 契约权威 = `docs/interfaces/cloud_protocol.md` §8.2.1（数值 → 字符串映射）· 裁决留痕 = `docs/review/F-C2-8-Log-Level-Contract-Assessment.md`。
 
 > **★ R2 明确**：`log_history` **保留 `boot_seq` 与 `seq`**（二者构成幂等键 `(device_id, boot_seq, seq)`）。
 > **★ R4 冻结**：**`log_history.payload` 存储格式 = `TEXT(JSON)`** —— 物理类型 `TEXT`，内容为 **JSON 字符串**（**`H-WP2-3 = CLOSED`**，与 R2 既定 `payload TEXT` 一致，**字段未改**）。
