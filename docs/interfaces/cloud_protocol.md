@@ -745,6 +745,25 @@ MQTT
 }
 ```
 
+**`level` 的确切定义（`uint8` 数值等级 —— 契约已明确）**：
+
+- **类型** = **JSON number**（**整数**）。**不**接受字符串（连 `"3"` / `"ERROR"` 亦不接受）、布尔、`null`、浮点、负数，以及 **> 255** 的值。
+- **取值与语义**（= 设备 `LogLevel` 枚举，`src/log/log_events.h`）：
+
+| 数值 | 设备枚举 | 云端语义 | 云端处置 |
+|---|---|---|---|
+| `0` | `LOG_LVL_DEBUG` | 调试 | **策略过滤** —— **不写入** `log_history`（与「拒收」**不同**，必须可分别观测） |
+| `1` | `LOG_LVL_INFO` | 信息 | **接受** ⇒ `log_history.level = 'INFO'` |
+| `2` | `LOG_LVL_WARN` | 警告 | **接受** ⇒ `'WARN'` |
+| `3` | `LOG_LVL_ERROR` | 错误 | **接受** ⇒ `'ERROR'` |
+| `4` | `LOG_LVL_CRITICAL` | 严重 | **接受** ⇒ `'CRITICAL'` |
+| 其他（`5…255`） | **未定义等级** | — | **拒收**（逐条 `rejected`） |
+
+- **★ 固件当前上传策略（事实核对 · `src/log/log_events.h` `LOG_LEVEL_POLICY`）**：`DEBUG` **不上传**（`cloud = 0`）；**`INFO` / `WARN` / `ERROR` / `CRITICAL` 均上传**（`cloud = 1`）。
+  ⇒ ⚠️ **`INFO` 确实会被上传**；**任何「Worker 不会收到 INFO」的假设均不成立**（该错误假设已由 `F-C2-8` 更正）。
+- **云端落库**：`log_history.level` 存**规范化后的字符串**（`INFO` / `WARN` / `ERROR` / `CRITICAL`）—— **不是**数值文本。
+- **决策留痕** → `docs/review/F-C2-8-Log-Level-Contract-Assessment.md`（根因 / 裁决 / 验证方法）。
+
 **`payload_base64` 的确切定义**：
 
 ```
