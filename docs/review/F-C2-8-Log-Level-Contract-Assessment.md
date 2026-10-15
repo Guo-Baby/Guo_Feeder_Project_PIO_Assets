@@ -1,18 +1,19 @@
-# `F-C2-8` —— Log `level` 契约冲突 · 只读核查与修复方案评估（`READ-ONLY` · `PLAN ONLY`）
+# `F-C2-8` —— Log `level` 契约冲突 · 只读核查、修复实施与验证记录
 
-> ## 🟡 `READ-ONLY / PLAN ONLY` —— 本文件**只是核查与评估**，**不含任何实现变更**
+> ## ✅ `IMPLEMENTED / VERIFIED（限定范围）` —— 核查 → 裁决 → **已实施** → **已测试**
 >
-> - **不做**：不改固件 · 不改 Worker · 不改 D1 schema / migration · 不改冻结协议 / 协议版本 / envelope · 不执行 EMQX 控制台操作 · 不做 MQTT 注入 / 端到端测试 / 部署 / 数据库写入 · 不 commit / push。
-> - **本文档定位**：对 `F-C2-8`（`level` 契约冲突）做**独立源码级核实**（**不引用上一轮报告作为证据**），并给出**可裁决的修复方案对比**。
-> - **产出**：`F-C2-8` 的**证据等级**判定 + **端到端契约对照表** + **方案 A/B/C 对比** + **推荐（待人工裁决）** + 后续验收矩阵。
-> - **未自行改裁**：不解除冻结、不修改验收状态、不授权施工；不改动任何既有决策。
+> - **`2026-10-15` 更新**：原**只读核查与方案评估**已完成；经人工裁决后，本任务**已实施修复并完成验证** ⇒ 见 **§11 验证记录**。
+> - **`level` 契约缺陷已修复**（Worker 按 JSON 数字校验 + 显式映射）· **逻辑测试 95/95 PASS** · **真实 D1 102/102 PASS** · **全量回归 7/7 套件绿**。
+> - **首次核查（§1–§10）保留原样**作为根因与方案留痕；**结论增量**见 §11（含 **新发现 `F-C2-9`**：信封形态缺口 —— **超出本任务范围，未修**）。
+> - **未做**：不改固件 · 不改 D1 schema / migration · 不执行 EMQX 控制台操作 · **不部署** · **不 push** · 不做真实设备端到端。
 
 | 项 | 值 |
 |---|---|
-| **状态** | **`F-C2-8 = CONFIRMED`（类型面 `CONFIRMED` · 枚举面 `CONFIRMED` 且**已被既有登记 `F-WP4-FW-9` 部分覆盖**）** |
+| **状态** | **`F-C2-8 = CONFIRMED → 已修复` · 结论 = `CONDITIONAL PASS`**（依据见 §11.9） |
 | **核查方式** | 源码 + 冻结文档 + 既有测试**逐条对照**（工作区实读，非引用历史报告） |
-| **影响** | **`V-3.3` 维持 `BLOCKED`**；`V-3.2` 判据须含 `rejected` 与 D1 增量；**路由施工与契约修复 = 两个独立实现任务** |
-| **生产变更** | **零**（本文件） |
+| **影响** | **`V-3.3` 仍 `BLOCKED`**（`level` 已修，但**另有 `F-C2-9` 信封形态缺口** + 真实端到端未执行）· `V-3.2` 判据须含 `rejected` 与 D1 增量 |
+| **实施提交** | 固件仓 `53ada3b`（契约文档）· Cloudflare 仓 `fed18be`（Worker）· `b1c1f83`（测试） |
+| **生产变更** | **零**（无部署 / 无远端 D1 写入 / 无 EMQX 变更） |
 | **门禁** | `G-1 HUMAN_REQUIRED` · `G-4 BLOCKED` **均未变** |
 
 ---
@@ -324,6 +325,125 @@ LogRecord.level (uint8_t)                       src/log/log_events.h L458
 
 ---
 
-*本文件于 **`2026-10-15`** 建立，为 **`F-C2-8`（Log `level` 契约冲突）** 的**只读核查与修复方案评估**（`READ-ONLY` · `PLAN ONLY`）。*
-*基线 = 固件仓 **`859888c`**（工作区含 `REV-3` 未提交文档修改 · 全部保留）· EMQX 仓 **`3165aab`** · Cloudflare 仓 **`415cd0c`**；**不含任何实现变更、生产变更或配置变更**。*
-*结论：**`F-C2-8 = CONFIRMED`**（类型面新确证；枚举面已被 `F-WP4-FW-9` 部分登记但**其前提已被推翻**）；**契约存在真实缺口（`CQ-1/2/3`），须人工裁决后方可实施修复**。*
+---
+
+## §11 ★ 验证记录（`2026-10-15` · 实施 + 测试 · 分阶段提交）
+
+### 11.1 实施范围（**已交付**）
+
+| 阶段 | 提交 | 仓库 | 内容 |
+|---|---|---|---|
+| **一 · 契约与文档统一** | **`53ada3b`** `docs: define numeric log level contract` | 固件仓 | `cloud_protocol.md` §8.2.1（补 `level` 值表与语义）· `P3-WP2-…md` §4.2（词表 3→4 值含 `INFO`）· `P3-DT-WP4-…md`（V-L4 / R-3 / 新增 **R-7** / §6.4 响应加 `filtered`）· 本文件（§0 裁决记录） |
+| **二 · Worker 修复** | **`fed18be`** `fix: normalize numeric log levels in history ingest` | Cloudflare | `history-ingest.js`：`LOG_LEVELS`（字符串白名单）→ `LOG_LEVEL_BY_CODE`（数值映射）+ `asLevelCode()` + `LOG_FILTERED` 三态；最小配套夹具同步 |
+| **三 · 测试** | **`b1c1f83`** `test: cover numeric log level contract` | Cloudflare | 新套件 `test/current/log_level_contract.test.mjs`（352 行）· `run_all.mjs` 注册 · `real_d1/history_ingest_real_d1.sh` 夹具改数值 + **§[16] 数值等级契约块** |
+| **四 · 审查与验证记录** | 见 §11.8 | 固件仓 | 本 §11 + 设计文档 V-禁止 澄清 |
+
+> **未改动**：固件生产代码 · D1 schema / migration · EMQX 规则 / 连接器 / 动作 · 部署 · 生产数据。
+> **`F-WP4-FW-9` 的处置（升格重估）**：其「仅 INFO 被拒 · 合规但不经济」的前提已被本轮推翻（**全线记录被拒**）⇒ 该条目**随本次修复一并消解**，**建议人工将其标为 `RESOLVED`**（本任务不自行改其状态）。
+
+### 11.2 最终契约（**已生效**）
+
+| 项 | 契约 |
+|---|---|
+| **输入类型** | **JSON number**（整数 · `uint8` 语义 `0..255`）—— **严格**：字符串（含 `"3"`）· 数字字符串 · 布尔 · `null` · 浮点 · 负数 · `> 255` **一律不接受**（**不自动转换**） |
+| **映射** | `1→INFO` · `2→WARN` · `3→ERROR` · `4→CRITICAL` |
+| **`0`（DEBUG）** | **策略过滤** —— 不写 `log_history`，计入 `filtered`，**不**计入 `rejected` |
+| **其他 / 非法** | **拒收** ⇒ `rejected` |
+| **D1 存储** | `log_history.level` = **规范字符串**（`INFO`/`WARN`/`ERROR`/`CRITICAL`）—— **非**数字文本；列仍 `TEXT NOT NULL`（**无 schema 变更**） |
+| **响应** | `{accepted, duplicate, rejected, filtered}` —— **`filtered` 为加性字段**，原三字段语义逐字未改 |
+
+### 11.3 测试执行结果（**实际运行 · 可复核**）
+
+| # | 命令 | 退出码 | 结果 |
+|---|---|---|---|
+| T-1 | `node test/current/history_ingest.test.mjs` | **0** | **32 PASS / 0 FAIL**（基线同为 32/0 ⇒ 无回归） |
+| T-2 | `node test/current/log_level_contract.test.mjs`（新增） | **0** | **95 PASS / 0 FAIL** |
+| T-3 | `node test/run_all.mjs`（全量 7 套件） | **0** | **7/7 OK**；仅 legacy 套件 **7 `EXPECTED_FAILURE`**（属既有设计，非本次引入） |
+| T-4 | `bash test/real_d1/history_ingest_real_d1.sh`（**真实 D1 引擎** · workerd 本地） | **0** | **PASS=102 / FAIL=0**（含 **§[16]** 数值等级块全绿） |
+
+**T-4 关键实证（真实 D1 回读）**：
+
+| 断言 | 实际 |
+|---|---|
+| `level=1` ⇒ DB `level='INFO'` | ✅ `INFO` |
+| `level=3` ⇒ DB `level='ERROR'` | ✅ `ERROR` |
+| `level=2` ⇒ DB `level='WARN'` | ✅ `WARN` |
+| `level=4` ⇒ DB `level='CRITICAL'` | ✅ `CRITICAL` |
+| `level=0`(DEBUG) ⇒ `filtered=1` · `accepted=0` · `rejected=0` · **未落库** | ✅ |
+| 字符串 / 数字字符串 / 布尔 / `null` / 浮点 / 负数 / `256` / `5` / `255` / 缺失 ⇒ `rejected=1` · 未落库 | ✅ 全绿 |
+| `log_history` 净增 = **1**（仅合法 INFO 入库） | ✅ |
+
+> **证据等级**：T-1/T-2 = **逻辑层（stub 替身）**；**T-4 = 真实 D1 引擎（workerd / 本地 SQLite）**，**可标记为「真实 D1 验证」**。
+> **测试矩阵覆盖对照**：合法 `0..4` ✅ · 非法 10 类 ✅ · 批量三态互斥统计 ✅ · `payload` 原样搬运 ✅ · 绑定顺序 ✅ · telemetry 回归 ✅ · 鉴权 / 结构校验回归 ✅ · **固件逐字 fixture（`"level":3` 无引号）✅**。
+
+### 11.4 回归结果
+
+- **既有套件**：`history_ingest.test.mjs` 由 32/0 → **32/0**（**无失败、无跳过**）。
+- **旧测试改动**：① 夹具 `level: "ERROR"` → **`level: 3`**（原夹具编码的是**错误契约**，按新契约更正，**未删除任何断言、未弱化校验**）② 原「`log.level=INFO` 不在枚举 ⇒ rejected」用例：语义更新为「**字符串** ⇒ rejected（**类型不符**）」，**断言保持不变且仍成立**。
+- **`real_d1` 脚本**：5 处字符串 `level` 改为数值 + 新增 §[16]（**未删除既有断言**）。
+- **`run_all.mjs`**：新增 1 条套件条目（原 6 → **7**）。
+
+### 11.5 🔴 新发现 —— `F-C2-9`：Log 信封**形态**缺口（**超出本任务范围 · 未修**）
+
+> **发现方式**：本轮测试设计时核对「EMQX 动作体 → Worker」的实际形态，**经本地实证**（stub DB · **只读**）。
+
+| 形态 | 来源 | Worker 响应 |
+|---|---|---|
+| **嵌套**：`{topic, clientid, payload:{device_id,boot_seq,seq,ts,level,payload_base64}}` | **EMQX 动作体实际模板**（`{"topic":"${topic}","clientid":"${clientid}","payload": ${payload}}` · `V2V4` §2.3） | 🔴 **`400 {"error":"unparsable_payload"}`** |
+| **扁平**：`{topic, clientid, device_id, boot_seq, seq, ts, level, payload_base64}` | 设计 §616 所述 ingest 信封 | ✅ `200 {"accepted":1,…}` |
+
+**实证输出（本轮实跑）**：
+
+```
+NESTED(EMQX action body): {"status":400,"body":"{\"error\":\"unparsable_payload\"}"}
+FLAT  (design §616)     : {"status":200,"body":"{\"accepted\":1,\"duplicate\":0,\"rejected\":0,\"filtered\":0}"}
+```
+
+**根因**：`extractRecords(domain="log", …)` 要求 log 域的承载字段位于 **body 顶层**（`body.payload_base64` 或字符串 `payload`）；而 EMQX 动作体把设备载荷**包进 `payload`** ⇒ log 域判为不可解析。
+
+> ⚠️ **与本任务边界的关系**：`F-C2-9` 是**信封 / 传输形态**问题，**不是 `level` 问题** ⇒ 按任务纪律「**不得自行扩大任务范围** · 发现新契约问题须**停止相关实现并报告**」，**本轮未修**、**未改 Worker 的解析分支**、**未改 EMQX 模板**。
+> ⇒ **须人工裁决**（三选一：改 EMQX 动作体模板 / 改 Worker 解包 / 改固件信封形态）。**该问题不解决，真实设备 `/log` 仍无法落库**（`V-3.3` 的第二重阻塞）。
+
+### 11.6 遗留风险
+
+| # | 风险 | 说明 |
+|---|---|---|
+| R-1 | 🔴 **真实设备端到端 `NOT RUN`** | 未执行 真实 ESP32 → EMQX → Worker → D1 · **不得宣称已完成** |
+| R-2 | 🔴 **`F-C2-9`（信封形态）未决** | 即使 `level` 已修，真实 `/log` 仍会被判 `unparsable_payload` |
+| R-3 | 🟠 **Worker 未部署** | 修复仅在仓库；**部署属独立生产变更，须另行授权** |
+| R-4 | 🟡 **`0003_*.sql` 注释仍写 3 值词表** | 该 migration **已上线**（项目纪律：既有 migration **不得再编辑**）⇒ **未改**；词表权威已移至 `WP2` §4.2 + `cloud_protocol.md` §8.2.1，**注释滞后已登记** |
+| R-5 | 🟡 **`F-WP4-FW-9` 状态未更新** | 需人工标 `RESOLVED`（本任务不自行改其状态） |
+
+### 11.7 安全与范围核查
+
+**未发生**：`push` · 部署 · 生产 D1 写入 · 迁移执行 · EMQX 控制台操作 · 固件生产代码修改 · 设备刷写 · 历史重写 · `git add -A` · 密钥入库（`real_d1` 用的 `test-hook-key` 为**既有测试值**）。
+**提交边界**：三笔提交**分属三个语义层**（契约文档 / Worker 实现 / 测试），**互相独立、无混装**。
+
+### 11.8 对 `Phase C-C2` 的影响
+
+| 项 | 建议状态 |
+|---|---|
+| **`V-3.3`** | 🔴 **仍 `BLOCKED`** —— ① 真实端到端未执行 ② **`F-C2-9`** 未决（`level` 已不再是阻塞项） |
+| **`V-3.2`** | ✅ **必须**同时核对 **HTTP 200 + `rejected` + D1 增量**（本轮再次确证：记录级拒收/过滤**均返 200**） |
+| **`V-3.7`** | 🟡 部分解除 —— 「`level` 缺陷污染预期行为」已消除；**「缺合规注入手段」仍在** |
+| **`SYN-1…SYN-4` 纯语法验证** | ✅ **建议继续**（只读 · 与 `level` 正交） |
+| **Rule A/B 施工授权** | 🟡 **技术可行**，但**建议先裁决 `F-C2-9`** —— 否则路由改完 **`/log` 仍不落任何表**（可观测性空窗），且会**新增 `unparsable_payload` 噪声** |
+| **边界** | **本契约修复** ≠ **Phase C-C2 路由工作** —— 二者**独立**，**不得混为一个实现任务** |
+
+### 11.9 ★ 最终结论
+
+> ## `F-C2-8 = CONDITIONAL PASS`
+>
+> **依据（已达成）**：`level` 契约**已统一**（文档三层）· Worker **已按 JSON 数字校验并显式映射** · **逻辑测试 95/95** · **真实 D1 102/102** · **全量回归 7/7 无失败** · **零固件改动 / 零 schema 变更 / 零部署**。**`level` 类型与枚举两面的不一致均已消除并经验证。**
+>
+> **附加条件（未满足 ⇒ 不判 `PASS`）**：
+> ① **真实设备 → EMQX → Worker → D1 端到端未执行**（`NOT RUN`）；
+> ② **新发现 `F-C2-9`（信封形态）** 会独立阻断真实 `/log` 落库 ⇒ **`Phase C-C2` 的 `V-3.3` 仍未闭合**。
+>
+> **不得混同**：**Worker 单元 / 真实 D1 测试通过 ≠ `Phase C-C2` 整体完成** —— EMQX Rule 路由、`F-C2-9`、真实设备验证**均须单独推进**。
+
+---
+
+*本文件于 **`2026-10-15`** 建立（只读核查与方案评估），**同日续修**（§0 裁决记录 + §11 实施与验证记录）。*
+*基线 = 固件仓 `859888c` → **`53ada3b`** · Cloudflare 仓 `415cd0c` → **`b1c1f83`** · EMQX 仓 `3165aab`（未动）；**未部署、未 push、无生产变更**。*
+*结论：**`F-C2-8 = CONFIRMED → 已修复` · 判定 `CONDITIONAL PASS`**（`level` 契约已闭合且经真实 D1 验证；真实端到端与 **`F-C2-9`** 仍待推进）。*
