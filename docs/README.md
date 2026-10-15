@@ -118,7 +118,7 @@
 
 ### Phase C · 固件遥测 / 日志 端到端（`2026-10-13` ~ `2026-10-14`）
 
-> **阶段状态**：`Phase C-C1`（固件遥测发布器 + `HD-1` 运行时开关）= ✅ **实施 + 上板验证完成并 push** · **`V-2` telemetry 真实落库 = ✅ `ACCEPTED`（`V-2.1`…`V-2.6` 全 `PASS` · 真机 D1 `+8` 行 · `2026-10-14`）**；`Phase C-C2`（`/log` → `log_history`）= 🟡 **审查已出 · `BLOCKED-1`（EMQX 缺 `/log` 分流 · 规则配额 `4/4`）**。**Phase C 仅剩 `V-3`（`/log` 真实落库）未收口**。
+> **阶段状态**：`Phase C-C1`（固件遥测发布器 + `HD-1` 运行时开关）= ✅ **实施 + 上板验证完成并 push** · **`V-2` telemetry 真实落库 = ✅ `ACCEPTED`（`V-2.1`…`V-2.6` 全 `PASS` · 真机 D1 `+8` 行 · `2026-10-14`）**；`Phase C-C2`（`/log` → `log_history`）= 🟡 **审查已出 · 方案 B 已裁决 · 施工任务单已出（待人工审核 + 控制台施工）**。**Phase C 仅剩 `V-3`（`/log` 真实落库）未收口**。
 
 | 文档 | 说明 |
 |---|---|
@@ -127,6 +127,7 @@
 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | **`HD-1` 上板验证记录**（固件 `04aca12` · `V-C1-12…19` = **7 PASS / 1 BLOCKED** · 结论 `ACCEPTED`） |
 | `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` | **★ `Phase C-C1 · V-2`（telemetry → EMQX → Worker → D1）真机端到端落库验证记录**（固件 `04aca12` · 设备 `288485896ce4` @ `COM8` · `V-2.1…V-2.6` = **全 `PASS`** · D1 `telemetry_history` **+8 行** · 结论 `ACCEPTED`；登记 `P-3` / `C-C2` / `BT-1` 发现项） |
 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | **★ `Phase C-C2`（`/log` → `log_history`）实施前审查**（`CONDITIONAL GO / BLOCKED-1`：固件信封 + Worker 已就绪 · **唯一缺口 = EMQX `/log` 分流且规则配额 `4/4`** · 待裁决 `HR-C2-1/2/3`） |
+| `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md` | **★ `Phase C-C2` 方案 B 控制台施工任务单（`PLAN ONLY`）** —— 只改 **2 条规则 SQL**（A 扩 `FROM`+`WHERE` · B 扩否定排除 `/log`）· 配额 `4/4` 不变 · 含新 `log_predicate` 提案（§2.3）· 回滚快照 / `V-3.1…V-3.6` / STOP 条件 · **待人工审核 `HR-C2-4/5/6`** |
 
 ## interfaces/ 接口 / 协议
 

@@ -26,7 +26,7 @@
 | 3 | `docs/architecture/Cloud-APP-Platform-Plan.md` | 云端/APP 架构 v2 = **P0–P6 依据** |
 | 4 | `docs/architecture/P3-History-D1-Plan.md` | ★ **P3 实施计划 + 门禁 `G-1…G-5`**（当前主阶段） |
 | 5 | `docs/review/P3-WP4C-Implementation-Record.md` | ★ **WP4C 权威结论**（EMQX 遥测路由 · §5 / §6 / §8） |
-| 6 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | ★★ **最新审查**：`/log` 端到端缺口 + 待裁决项（**下一步所在**） |
+| 6 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` · `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md` | ★★ **下一步所在**：C2 审查（`/log` 端到端缺口 + 方案 A/B/C/D）+ **方案 B 控制台施工任务单**（`HR-C2-1 = B` 已裁 · 待审 `HR-C2-4/5/6`） |
 | 7 | `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | 遥测运行时开关规格（两道门 · 方案 A） |
 | 8 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | 遥测开关**上板验证**（`V-C1-12…19` = 7 PASS / 1 BLOCKED · `ACCEPTED`） |
 | 9 | `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` | **`V-2` telemetry 真实落库**端到端验证（`V-2.1…V-2.6` 全 PASS · D1 `+8` 行 · `ACCEPTED`） |
@@ -73,7 +73,7 @@
 
 1. **Phase C 收口 —— 真实数据端到端（两条路径）**
    - **`V-2`（telemetry 落库）**：✅ **已完成 / `ACCEPTED`（`2026-10-14`）** —— 真机开 `telemetry_enable=true` 后，telemetry **→ EMQX 规则 A → Worker `/api/history/ingest` → D1 `telemetry_history`** 全链路闭合（`V-2.1…V-2.6` 全 `PASS` · D1 **+8 行** · 零重烧 · 零 EMQX 改动）。记录 → `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md`。
-   - **`V-3`（`/log` 落库）**：**唯一缺口 = EMQX 缺 `/log` 分流，且规则配额 `4/4` 已满** ⇒ **须先人工裁决** `HR-C2-1`（推荐 **B：改规则 A+B · 配额中立**）/ `HR-C2-2` / `HR-C2-3`；EMQX 控制台改动**只能人工**（API 对 rules/actions/connectors 全 `403`）。详见 `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md`。
+   - **`V-3`（`/log` 落库）**：`HR-C2-1 = ✅ 方案 B`（改规则 A+B · 配额中立）已裁决 ⇒ **施工规格已出** → `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md`（**待人工审核 `HR-C2-4/5/6`**：解除冻结约束 / `log_predicate` 定义 / 施工顺序与作业授权）。审核通过后**人工控制台改 2 条规则**（EMQX API 对 rules/actions/connectors 全 `403`）→ 跑 `V-3.1…V-3.6` → 收口。详见 §7 关联。
 2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结、**实施未开始**（`WP4C` 之后第一块未动工的工作包）。
 3. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED`（`BT-1`：云端 `log_ack`）。
 4. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
