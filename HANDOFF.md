@@ -55,8 +55,7 @@
 - `WP-3`(Plan) EMQX 集成 + `WP-4`(Plan) ingest Worker → ✅ 设计冻结（`DT:WP-4`）+ 已实现 → **EMQX 侧 = `WP4C` ✅ `CLOSED`**
 - `WP-5`(Plan) `log_ack` → 🚫 **受阻于 `G-4`**（`BT-1` 未修）
 - `WP-6`(Plan) 容量验证 → ⏳ `NOT RUN`（需真实流量）
-- `WP-7`(Plan) 保留策略 → ✅ 设计冻结（`DT:WP-3`：retention **90/180 天** · `scheduled cleanup job` · **无附加索引**）· **实施未开始**
-- **Phase C（集成上线）**：`C-2` 远端 D1 migration ✅ · `C-1` EMQX Action 切换 ✅（均随 `WP4C`）· ✅ **`V-2` telemetry / `V-3` log 真实落库均已收口**（`V-2` `2026-10-14` · `V-3` = `Phase C-C2` `2026-10-16` **`CLOSED`**）
+- `WP-7`(Plan) 保留策略 → ✅ 设计冻结（`DT:WP-3`：retention **90/180 天** · `scheduled cleanup job` · **无附加索引**）· ✅ **`PHASE 3 DEPLOYED & ACCEPTED`（`2026-10-16`）** —— 任务单 **`rev.2`** 已获人工裁决 **`Q-1…Q-10`** ⇒ 代码 + 测试闭环：`src/retention.js`（新增）· `src/index.js` 的 `scheduled()` · `wrangler.toml` 的 `[triggers]` · **L1 `99 PASS / 0 FAIL`** · **L2 `89 PASS / 0 FAIL`（两遍逐行一致）** · `run_all` `exit 0` · **🟡 `Phase 2` 部署前只读审计 = `COMPLETE`（`2026-10-17`）** —— 生产 D1 基线（`telemetry` 20 / `log` 84 · `ts=0` 超窗 **20**）· 生产 `DELETE … LIMIT` `EXPLAIN` **通过**（命中 `ix_*_device_ts` · 无 `SCAN`）· 线上 `[vars]` **零**（`RETENTION_*` 0）· 线上 Cron **`schedules = []`** · `dry-run` **`exit 0`** · **无 `STOP` 条件** · **✅ `Phase 3` = `DEPLOYED & ACCEPTED`（`2026-10-16T17:22Z–17:49Z`）** —— 备份 `d1 export`（SHA-256 已记录 + 本地真 D1 验证）· 临时 `*/5` 部署 → **2 次真实 `scheduled`**（`log deleted` **20 → 0** · `calls` **4** · 无截断 / 无异常 / cpu ≤ 4 ms）→ 恢复 **`0 3 * * *`** 部署 · 线上 Cron **仅 1 条正式表达式（无临时残留）** · 生产版本 **`1ffbbe2e-ed09-43f9-b576-06380bdec8e0`** · `log_history` **86 → 66**（恰删 20 条 `ts=0`）· `telemetry_history` 未删 · 超窗行 **0** · **`W7-A*…G*` = `PASS`（38/38）**—— 权威 = **`docs/architecture/P3-WP7-Implementation-Record.md`**- **Phase C（集成上线）**：`C-2` 远端 D1 migration ✅ · `C-1` EMQX Action 切换 ✅（均随 `WP4C`）· ✅ **`V-2` telemetry / `V-3` log 真实落库均已收口**（`V-2` `2026-10-14` · `V-3` = `Phase C-C2` `2026-10-16` **`CLOSED`**）
 
 #### 1.0.4 已完成里程碑（近期）
 
@@ -74,7 +73,7 @@
 1. **Phase C 收口 —— 真实数据端到端（两条路径）**
    - **`V-2`（telemetry 落库）**：✅ **已完成 / `ACCEPTED`（`2026-10-14`）** —— 真机开 `telemetry_enable=true` 后，telemetry **→ EMQX 规则 A → Worker `/api/history/ingest` → D1 `telemetry_history`** 全链路闭合（`V-2.1…V-2.6` 全 `PASS` · D1 **+8 行** · 零重烧 · 零 EMQX 改动）。记录 → `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md`。
    - **`V-3`（`/log` 落库）**：✅ **已完成 / `CLOSED`（`2026-10-16`）** —— **`Phase C-C2`** 收口：人工在 EMQX 控制台改 **2 条规则**（规则 A 扩 `FROM`+`WHERE` 加 `log_predicate`；规则 B 追加 `AND ( NOT ( topic =~ 'guo_feeder/+/log' ) )` · 配额 `4/4` 不变）+ `F-C2-8`/`F-C2-9` 修复（Worker `dd5ab824`）⇒ `/log` → **EMQX 规则 A → Worker `/api/history/ingest` → D1 `log_history`** 全链贯通（`log_history` `0 → 13` · 幂等吸收重投 · 过渡双写于 `01:20:22` 终止）。**`V-3.1…V-3.9` 全 `PASS`**（`V-3.7a` 本地隔离 `81/0` × 2 · `V-3.8` 真机 presence `+2`）。记录 → `docs/review/Phase-C-C2-Final-Closure-Report.md`（+ 4 份验证/复核记录）。**★ 关键教训：EMQX 规则 SQL 的 `=~` 是 topic 通配符匹配（`+`/`#`），不是正则 —— 正则写法静默失效。**
-2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结、**实施未开始**（`WP4C` 之后第一块未动工的工作包）。
+2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结；**Phase 1（代码 + L1/L2 测试闭环）已完成（`2026-10-16`）**，实施任务单 `rev.2` 的 `Q-1…Q-10` 已获人工裁决 ⇒ **下一步 = 生产部署**（**须单独授权**）：1 次 `wrangler deploy`（代码 + `[triggers] crons = ["0 3 * * *"]`）；首次验证建议按 `Q-4` **方案 α**（临时高频 cron 观察 2–3 次 → 恢复 `0 3 * * *`）；上线前可按 `Q-7` 做一次性 `d1 export`（**须再次明确授权**）。
 3. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED`（`BT-1`：云端 `log_ack`）。
 4. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
 5. **遗留运维**：MQTT 密码轮换（10 文件含明文）；设备当前 = 「遥测功能构建 + `telemetry_enable=false` 安全态」，是否刷回编译门 OFF 默认镜像待定。
