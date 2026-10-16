@@ -116,9 +116,9 @@
 
 > 📌 **冻结 / 历史文档阅读提示（`2026-10-12` 22:20 补）**：上表中 🔒 冻结文档（如 `P3-WP4C-EMQX-Rule-Design.md`）与各阶段历史记录里的「`CF-2` 仍 `BLOCKED`」「`V-1…V-7` 全 `NOT RUN`」「presence 链路零接触」等表述均为**冻结 / 历史时点快照**；**终态 = `CF-2` `CLOSED` · `V-1…V-7` 全 `PASS` · presence 已删旧建新并全链恢复**（权威 = `docs/review/P3-WP4C-Implementation-Record.md` §5 / §6 / §8）。**勿将时点表述当终态读。**
 
-### Phase C · 固件遥测 / 日志 端到端（`2026-10-13` ~ `2026-10-14`）
+### Phase C · 固件遥测 / 日志 端到端（`2026-10-13` ~ `2026-10-16`）
 
-> **阶段状态**：`Phase C-C1`（固件遥测发布器 + `HD-1` 运行时开关）= ✅ **实施 + 上板验证完成并 push** · **`V-2` telemetry 真实落库 = ✅ `ACCEPTED`（`V-2.1`…`V-2.6` 全 `PASS` · 真机 D1 `+8` 行 · `2026-10-14`）**；`Phase C-C2`（`/log` → `log_history`）= 🟡 **审查已出 · 方案 B 已裁决 · 施工任务单已出（待人工审核 + 控制台施工）**。**Phase C 仅剩 `V-3`（`/log` 真实落库）未收口**。
+> **阶段状态**：`Phase C-C1`（固件遥测发布器 + `HD-1` 运行时开关）= ✅ **实施 + 上板验证完成并 push** · **`V-2` telemetry 真实落库 = ✅ `ACCEPTED`（`V-2.1`…`V-2.6` 全 `PASS` · 真机 D1 `+8` 行 · `2026-10-14`）**；**`Phase C-C2`（`/log` → `log_history`）= ✅ `CLOSED`（`2026-10-16`）** —— 人工在 EMQX 控制台改 **2 条规则**（A 扩 `FROM`+`WHERE` 加 `log_predicate` · B 追加 `AND ( NOT ( topic =~ 'guo_feeder/+/log' ) )` · 配额 `4/4` 不变）+ `F-C2-8`/`F-C2-9` 修复（Worker `dd5ab824`）⇒ 全链贯通（`log_history` `0 → 13` · 过渡双写于 `01:20:22` 终止）· **`V-3.1…V-3.9` 全 `PASS`**（`V-3.2` = 口径修订 · `V-3.7b` = 构造性 + 人工核实）。**★ Phase C 双路径（`V-2` telemetry + `V-3` log）均已收口。**
 
 | 文档 | 说明 |
 |---|---|
@@ -126,8 +126,14 @@
 | `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | **`HD-1` 运行时遥测开关实施规格**（方案 A 扁平键 `telemetry_enable` · 编译门 × 运行时门 · `fail-closed` · §15 实施回填） |
 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | **`HD-1` 上板验证记录**（固件 `04aca12` · `V-C1-12…19` = **7 PASS / 1 BLOCKED** · 结论 `ACCEPTED`） |
 | `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` | **★ `Phase C-C1 · V-2`（telemetry → EMQX → Worker → D1）真机端到端落库验证记录**（固件 `04aca12` · 设备 `288485896ce4` @ `COM8` · `V-2.1…V-2.6` = **全 `PASS`** · D1 `telemetry_history` **+8 行** · 结论 `ACCEPTED`；登记 `P-3` / `C-C2` / `BT-1` 发现项） |
-| `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | **★ `Phase C-C2`（`/log` → `log_history`）实施前审查**（`CONDITIONAL GO / BLOCKED-1`：固件信封 + Worker 已就绪 · **唯一缺口 = EMQX `/log` 分流且规则配额 `4/4`** · 待裁决 `HR-C2-1/2/3`） |
-| `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md` | **★ `Phase C-C2` 方案 B 控制台施工任务单（`PLAN ONLY`）** —— 只改 **2 条规则 SQL**（A 扩 `FROM`+`WHERE` · B 扩否定排除 `/log`）· 配额 `4/4` 不变 · 含新 `log_predicate` 提案（§2.3）· 回滚快照 / `V-3.1…V-3.6` / STOP 条件 · **待人工审核 `HR-C2-4/5/6`** |
+| `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` | **★ `Phase C-C2`（`/log` → `log_history`）实施前审查**（✅ **`CLOSED`（`2026-10-16`）** · 历史判定 `CONDITIONAL GO / BLOCKED-1`：固件信封 + Worker 已就绪 · **`/log` 分流缺口且规则配额 `4/4`** · `HR-C2-1 = B` 已裁 · `HR-C2-3 = 接受`）· **`REV-3` 更正**：新增 **`F-C2-8`（`level` 契约不一致 · P0 · 阻塞 `V-3.3`）** · §3「唯一缺口」表述已更正 · **§7 验证矩阵状态已回填全 `PASS`** · §12 裁决全收口 · §13 收口 |
+| `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md` | **★ `Phase C-C2` 方案 B 控制台施工任务单（✅ **`CLOSED`（`2026-10-16`）** · `REV-3` · `2026-10-15`）** —— 只改 **2 条规则 SQL**（A 扩 `FROM`+`WHERE` · B **按 topic domain 排除 `/log`（策略 A）**）· 配额 `4/4` 不变 · `log_predicate` 提案（§2.3）· 路由隔离分层论证（§2.4）· **施工前只读核查（§1.3）** · **策略 A 影响分析（§2.5）** · **★ `F-C2-8` `level` 契约（§2.6）** · **验证分层 + `V-3.1…V-3.9` + `V-3.4`/`V-3.7` 判据（§4.5/§4.6）** · 回滚边界 / STOP 条件 · **★ §2.2.2 `=~` 通配符教训（正则静默失效）** · **§12 收口记录（最终矩阵 + `HR-C2-*` 全收口 + `O-1` 归并）** |
+| `docs/review/F-C2-8-Log-Level-Contract-Assessment.md` | **★ `F-C2-8`（Log `level` 契约冲突）只读核查与修复方案评估（`READ-ONLY` · `PLAN ONLY` · `2026-10-15`）** —— 判定 **`F-C2-8 = CONFIRMED`**（固件信封产出**整数** `uint8` · Worker 只接受 **字符串** `{WARN,ERROR,CRITICAL}` ⇒ 真实 `/log` 记录必被拒收）· 端到端契约对照表 · 契约争议 **`CQ-1/2/3`** · 方案 **A（固件适配）/ B（云端规范化）/ C（双格式）** 对比与推荐 · 后续验收矩阵 `L-1…L-9` · **与 `F-WP4-FW-9` 的升格重估关系**（★ **后续已修复并部署** → Worker `dd5ab824`） |
+| **`docs/review/Phase-C-C2-Final-Closure-Report.md`** | **★★★ `Phase C-C2` 最终收口审计报告（✅ `Phase C-C2 = CLOSED` · `2026-10-16`）** —— `Final Audit = PASS` · §0 结论摘要 · §1 功能目标成立证据（三层）· **§2 最终验收矩阵（`V-3.1…V-3.9` 全 `PASS`）** + `V-3.2` 口径修订依据 · §3 文档收口清单 + `V-3.6` 记录的 5 项订正 · §4 未闭合项四分类 + **`O-1` 归并 `BT-1`** · §5 `STOP` 条件逐条核对（无一命中）· §6 三仓工作树逐文件归属 · §7 收口动作 · §8 边界声明。**★ 含 EMQX 规则 SQL 教训：`=~` 是 topic 通配符匹配（`+`/`#`），不是正则。** |
+| `docs/review/Phase-C-C2-V36-Telemetry-Regression-Verification-Record.md` | **`V-3.6` Telemetry 回归真机验证记录（`PASS` · `2026-10-16`）** —— 两轮独立触发 · `telemetry_history` `15 → 20`（+5，与抓包字段级 1:1）· 含 `schema_version` 的 `mqtt_messages` 行 = `0` · 终态 `telemetry_enable=false`。★ **文首含 5 项结论订正**（非原子基线 / 「未重启」被推翻 / `V-3.8` 顺带复证撤回 / tail 21 事件 / `O-1` 归并 `BT-1`） |
+| `docs/review/Phase-C-C2-V36-Review-Follow-up-Read-Only-Investigation.md` | **`V-3.6` 二轮只读复核报告（A–E · `2026-10-16`）** —— `V-3.6` 主结论**可维持 `PASS`**；订正 2 项 `MAJOR` + 若干 `MINOR` · **★ `O-1` 根因四层判别**（应用层重发 vs 协议层重传 vs 下游重复投递 vs D1 幂等忽略）· `V-3.2`/`V-3.8` 证据边界 · `V-3.7` 拆 `a`/`b` 建议 · §9 收口后状态更新 |
+| `docs/review/Phase-C-C2-V37a-Local-Isolation-Verification-Report.md` | **`V-3.7a` 本地隔离验证实施报告（`PASS` · `2026-10-16`）** —— 本地 `wrangler dev --local` + 本地 D1（真引擎）· `M-2…M-5` + 幂等重投 · **`81 PASS / 0 FAIL` × 2 遍逐行一致** · 零生产污染 · ★ **MQTT `dup/qos` 补采取得 12 帧**（`qos=1` · **`dup=False`** ⇒ `O-1` = 应用层重发）· 「隔离证明」自动断言 · §文首含收口状态更新块 |
+| `docs/review/Phase-C-C2-V38-Verification-Report.md` | **★★ `V-3.8` Presence 回归独立正式验收报告（`PASS` · `2026-10-16`）** —— 真实设备 `offline → online`（EMQX 会话踢线 `204`）· `device_event` `187/216 → 189/218`（**恰好 +2**：`id 217 offline` / `id 218 online`）· 三源秒级收敛（EMQX `connected_at` ↔ `event_at` ↔ 设备自发 `/up system/online`）· **负向对照**：非设备客户端 presence `200` 但 D1 零新增 · **不以 `HTTP 200` 单独作 `PASS` 依据** |
 
 ## interfaces/ 接口 / 协议
 

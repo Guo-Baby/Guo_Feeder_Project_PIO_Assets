@@ -9,15 +9,27 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | **`Phase C-C2 = PLANNED / BLOCKED`**（唯一阻塞：`/log` 路由 + 规则配额） |
-| **基线** | 固件仓 **`73bf330`** · EMQX 仓 **`3165aab`** · Cloudflare 仓（`/api/history/ingest` 已上线） |
+| **状态** | ✅ **`Phase C-C2 = CLOSED`（`2026-10-16`）** —— 施工已完成 · `V-3.1…V-3.9` 全 `PASS` · 收口报告 `Phase-C-C2-Final-Closure-Report.md`（历史：`PLANNED / BLOCKED` → `REV-3` `PRE-FLIGHT COMPLETE / BLOCKED` → **`CLOSED`**） |
+| **基线** | 固件仓 **`1ebae81`**（收口前）· EMQX 仓 **`3165aab`** · Cloudflare 仓 **`e328a11`**（收口前） |
 | **对应** | **Phase C 集成计划 `C-1 · V-3（log path）`**（`P3-WP4-PhaseC-Integration-Plan.md` §2.2） |
-| **门禁** | `G-1 HUMAN_REQUIRED` · `G-4 BLOCKED` **均未变** |
-| **生产变更** | **零** |
+| **门禁** | `G-1 HUMAN_REQUIRED` · `G-4 BLOCKED` **均未变**（属 P3 计划门禁，与 C2 收口无耦合） |
+| **生产变更** | 本文件**零**；施工由**人工**在 EMQX 控制台完成（改 **2 条规则** · 配额 `4/4` 不变） |
 
 > 🔄 **决策更新（`2026-10-15`）**：**`HR-C2-1` = ✅ 方案 B（改规则 A + B · 配额中立）** 已裁决。
-> 落地方案 → **`docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md`**（控制台施工任务单 · `PLAN ONLY` · **待人工审核 `HR-C2-4/5/6`**：解除冻结约束 / `log_predicate` 定义 / 施工顺序与作业授权）。
+> 落地方案 → **`docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md`**（控制台施工任务单 · `PLAN ONLY` · **`REV-2`** · ~~待人工审核 `HR-C2-4/5/6/7`~~ → ✅ **已全部收口（`2026-10-16` · 见 §12）**）：解除冻结约束 / `log_predicate` 定义 / 施工顺序与作业授权 / **`/log` 排除策略（策略 A）+ 候选 SQL**。
 > 本文件的 §5 方案评估、§6 配额分析、§7 验证矩阵、§12 裁决表**仍为有效依据**；`HR-C2-2` 因未选 A 而**不适用**。
+>
+> 🔴 **`REV-2` 关键修订（`2026-10-15` · 任务单 §10 对照）**：
+> - **问题二** —— 原任务单「两 predicate 字段集不相交 ⇒ 必然互斥」**论证作废**（`seq` / `ts` 交集存在，混合信封理论可同时满足）⇒ 改为**分层组合依据**（真实 topic + envelope 契约 + 规则逻辑 + Worker 按 topic 域选表 · 任务单 §2.4），**不宣称绝对安全**。
+> - **问题三** —— `/log` 排除**由「排除符合 log_predicate 的消息」（= 策略 B）改为「按 topic domain 排除」（策略 A）** ⇒ 所有 `guo_feeder/+/log` 一律不进旧路径；候选 SQL **待控制台语法验证**（任务单 §2.2.2 / §2.2.3）。
+> - **问题四** —— 验证分层 **L0 推演 / L1 模拟 / L2 真实 MQTT**；**仅 L2 为验收依据**；不可执行项标 `NOT RUN` / `BLOCKED`（任务单 §4）。
+> - **过渡期双写** —— 人工**已接受**且**不要求改 A→B 顺序**；文档仍如实说明，**不再作为阻塞理由**（任务单 §3.1）。
+>
+> 🔴 **`REV-3` 施工前只读核查（`2026-10-15` · 任务单 §11 对照）**：
+> - **`LIVE CONFIGURATION: NOT VERIFIED`** —— 代理无 EMQX 控制台 / 数据集成 API 只读权限（`403`）⇒ 规则 A/B 的 SQL **仅为存档转录**（任务单 §1.3）。
+> - **策略 A 静态影响分析**（`CONFIRMED`/`INFERRED`/`BLOCKED` · 任务单 §2.5）：**Presence 解耦 = `CONFIRMED`**（`FROM` 无交集）· **topic 集穷举 = `BLOCKED`** ⇒ 白名单候选的回归风险登记为 **`HR-C2-7a/7b`**。
+> - **★ 新发现 `F-C2-8`（P0 · 阻塞 `V-3.3`）**：**`level` 契约不一致** —— 冻结协议 / 固件信封 = **整数 `uint8`**，Worker `normalizeLog` = **字符串 `{WARN,ERROR,CRITICAL}`** ⇒ **真实 `/log` 记录将被逐条拒收** ⇒ `log_history` 恒 0（**即使路由修好**）⇒ 登记 **`HR-C2-8`**（任务单 §2.6）。
+> - **验证判据补齐**：`V-3.4` 最终态隔离（关联字段 + `t0` 须在 B 之后 · 任务单 §4.5）· `V-3.7` 畸形 `/log` 七类矩阵（任务单 §4.6）· 未验证项汇总（任务单 §4.7）。
 
 ---
 
@@ -100,6 +112,14 @@
 - **唯一缺口 = EMQX 缺少把 `/log` 投递到 `/api/history/ingest` 的分流**；
 - 而该分流**无法用"新增一条规则"实现** —— **规则配额 `4/4` 已满**（§2.2）。
 
+> 🔴 **`REV-3` 更正（`2026-10-15` · **只报告，不重裁**）**：本节「**唯一缺口 = 路由**」的表述**已不完整**。
+> 施工前只读核查发现**第二个、与路由独立的缺口** —— **`F-C2-8`：`level` 契约不一致**（§11）：
+> 固件信封以**整数 `uint8`** 产出 `level`，而 Worker `normalizeLog` 要求**字符串 `{WARN,ERROR,CRITICAL}`** ⇒
+> **即使路由完全修好，真实 `/log` 记录仍会被逐条拒收，`log_history` 恒为 0**。
+> ⇒ 更准确的表述：**§3 的「路由」是 `V-3.3` 的「必要不充分」条件**；
+> **`V-3.3` 的完整前置 = 路由修复 ∧ `F-C2-8` 处置**（后者 → **`HR-C2-8`** · 任务单 §2.6）。
+> **本文档不自行改裁 `HR-C2-1`（方案 B）等既有决策**；该更正仅影响「验收能否达成」的判断。
+
 > 该缺口与冻结设计**一致可预期**：`P3-WP4C-Console-Task-Sheet.md` §15 第 5 条已明示「未来固件 log 信封落地后…**届时需新增一条 log 域规则**（属未来工作包，现在不建）」—— **本包即该"未来工作包"**。
 
 ---
@@ -142,14 +162,21 @@
 
 ## §7 Verification matrix（`V-3` · 实施后方可执行）
 
-| # | 步骤 | 判据（`PASS` 定义） | 证据 |
-|---|---|---|---|
-| `V-3.1` | 设备发出 ≥1 条 `/log`（JSON 信封） | MQTT `guo_feeder/<device_id>/log` 出现 `{device_id,boot_seq,seq,ts,level,payload_base64}` | MQTT 订阅抓包 |
-| `V-3.2` | 观测 Worker | `wrangler tail` 命中 **`/api/history/ingest`**（**非** `/api/webhook`）· `200 {"accepted":1,…}` | tail 日志 |
-| `V-3.3` | D1 落库 | `log_history` **+1 行**；`payload` **原样**（未解码）；幂等键唯一；`created_at` 由 D1 生成 | D1 查询 |
-| `V-3.4` | 隔离 | `mqtt_messages` **不因 `/log` 增长** | D1 计数对照 |
-| `V-3.5` | 鉴权不变 | 无 `X-Webhook-Key` ⇒ `401`（不放宽） | 探针 |
-| `V-3.6` | 回归 | `/up` telemetry 仍落 `telemetry_history` · presence 仍 200 · 其余三端点不变 | 复测 |
+| # | 步骤 | 判据（`PASS` 定义） | 证据 | 当前状态 |
+|---|---|---|---|---|
+| `V-3.1` | 设备发出 ≥1 条 `/log`（JSON 信封） | MQTT `guo_feeder/<device_id>/log` 出现 `{device_id,boot_seq,seq,ts,level,payload_base64}`；**记录 `boot_seq`/`seq` 供关联** | MQTT 订阅抓包 | ✅ `PASS` |
+| `V-3.2` | 观测 Worker | `wrangler tail` 命中 **`/api/history/ingest`**（**非** `/api/webhook`）· **且记录响应 `rejected` 计数**（⚠️ `200` 本身非通过判据） | tail 日志 | ✅ **`PASS`（口径修订）** —— 响应体计数通道不存在 ⇒ 由 `V-3.7a` 本地真引擎等价取证 |
+| `V-3.3` | D1 落库 | `log_history` **相对基线 +≥1 行**；`payload` **原样**（未解码）；幂等键唯一；`created_at` 由 D1 生成 | D1 查询（前后增量） | ✅ `PASS`（`0 → 13` · 原 `BLOCKED`） |
+| `V-3.4` | 隔离 | `mqtt_messages` **不因 `/log` 增长**（**B 改完后** · 按 topic + **`(boot_seq, seq)` 联合键**关联 · **不看总行数**） | D1 查询（任务单 §4.5） | ✅ `PASS`（`id>3483` 的 `/log` 行 = `0`） |
+| `V-3.5` | 鉴权不变 | 无 `X-Webhook-Key` ⇒ `401`（不放宽） | 探针 | ✅ `PASS`（本地真 D1 层套件用例 #10 · 鉴权层零改动） |
+| `V-3.6` | 回归 | `/up` telemetry 仍落 `telemetry_history` · presence 仍 200 · 其余三端点不变 | 复测 | ✅ `PASS`（`telemetry_history` `+5` · 含 `schema_version` 的 `mqtt_messages` 行 = `0`） |
+| `V-3.7` | 畸形 / 无效 `/log` 处置 | 按策略 A 逐类核对四要素 | tail + D1 + 本地隔离 | ✅ `PASS`（`a` 实测 · `b` 构造性 + 人工核实） |
+| `V-3.8` | Presence 回归 | 真实上下线 ⇒ 落 `device_event` | tail + D1 | ✅ `PASS`（`187/216 → 189/218` · `+2`） |
+| `V-3.9` | 命令下行 + webhook 回归 | 命令回包落 `mqtt_messages`；现行 webhook 通路行为不变 | tail + D1 | ✅ `PASS`（★ 实际路径 = **`POST /`**，非 `/api/webhook`） |
+
+> ✅ **`2026-10-16` 收口**：验证矩阵已扩为 **`V-3.1…V-3.9`**（+ 畸形 `/log` 处置 / presence 回归 / 命令下行回归），
+> 并补齐 `V-3.4`（任务单 §4.5）与 `V-3.7`（任务单 §4.6）判据；**全部 `PASS`**（`V-3.2` = 口径修订 · `V-3.7b` = 构造性 + 人工核实）。
+> 收口报告 → **`Phase-C-C2-Final-Closure-Report.md`**。
 
 > **观测纪律**：`/log` 仅在设备**产生日志**时上行 ⇒ 需构造触发（见 §10）或等待自然日志；不得以「窗口内无日志」判定 FAIL。
 
@@ -194,37 +221,51 @@
 | `F-C2-2` | 🟠 | `/log` 现被规则 B 误路由至 `/api/webhook` ⇒ 落 **`mqtt_messages`（表错）**（信封为合法 JSON ⇒ 不再 400） |
 | `F-C2-3` | 🔴 | 规则配额 **`4/4` 全满** ⇒ 「新增 log 规则」**不可直接实施** |
 | `F-C2-4` | 🟢 | Worker `/api/history/ingest` 对 `/log` **已就绪**（`TOPIC_DOMAIN` / 字段契约 / 落库 SQL 齐备） |
-| `F-C2-5` | 🟡 | `telemetry_history` 仍为 0 ⇒ **`Phase C-C1` 的真实遥测落库（`V-2`）亦待验证**（与本包并行项） |
+| `F-C2-5` | 🟡 | `telemetry_history` 仍为 0 ⇒ **`Phase C-C1` 的真实遥测落库（`V-2`）亦待验证**（与本包并行项）—— **✅ 已闭合（`2026-10-14` · `V-2.1…V-2.6` 全 `PASS` · D1 `+8`）** |
+| `F-C2-6` | 🟠 | **原计划的路由隔离论证有误**（任务单 `REV-1`）：「两 predicate 字段集不相交 ⇒ 必然互斥」**不成立**（`seq`/`ts` 为交集，混合信封理论可同时满足）⇒ `REV-2` 已改正为**分层组合依据**并登记 `BR-C2-1`/`BR-C2-2`（任务单 §2.4） |
+| `F-C2-7` | 🟠 | **原计划的 `/log` 排除不完整**（任务单 `REV-1` 的 `NOT telemetry AND NOT log_predicate`）⇒ 缺字段 `/log` 仍可能进旧路径（= 策略 B）⇒ `REV-2` 改为**策略 A 按 topic domain 排除**（候选 SQL **待控制台验证** · 任务单 §2.2） |
+| `F-C2-8` | 🔴 | **★ `level` 契约不一致（`REV-3` 发现 · P0）**：冻结协议 `cloud_protocol.md` §8.2.1 与固件 `log_envelope.cpp` 均以 **整数 `uint8`** 产出 `level`；而 Worker `history-ingest.js` 的 `normalizeLog` 要求 **字符串 ∈ `{WARN,ERROR,CRITICAL}`**（`asText` + `LOG_LEVELS`）⇒ **真实 `/log` 记录逐条被拒**（HTTP 200 + `rejected`）⇒ **`log_history` 恒 0**。**与 EMQX 路由无关**，但**决定 `V-3.3` 不可能 `PASS`**。处置 → **`HR-C2-8`**（独立问题 · 本任务不修）。<br>🔎 **独立核查已出**（`2026-10-15`）→ **`docs/review/F-C2-8-Log-Level-Contract-Assessment.md`**：判定 **`CONFIRMED`** · 契约争议 **`CQ-1/2/3`** · 与既有登记 **`F-WP4-FW-9`** 的关系（**其前提已被推翻，须升格重估**） |
 
 ---
 
-## §12 Open Human Decisions
+## §12 Open Human Decisions → ✅ **全部收口（`2026-10-16`）**
 
-| ID | 事项 | 选项 |
-|---|---|---|
-| **`HR-C2-1`** | **`/log` 分流方案** | ✅ **已裁决 = B（改规则 A+B · 配额中立）**（`2026-10-15`） |
-| **`HR-C2-2`** | 若选 A：**如何释放槽位** | 🚫 **不适用**（未选 A） |
-| **`HR-C2-3`** | 是否接受 `/log` **现阶段落 `mqtt_messages`**（过渡噪声） | 🟡 建议接受（方案 B 下改完即消除 · 详见任务单 §7） |
-| **`HR-C2-4`（新）** | 解除对规则 A / B 的**冻结约束**（冻结要求 `FROM`/谓词不动；方案 B 须改） | 🔴 待裁 → 任务单 §7 |
-| **`HR-C2-5`（新）** | **`log_predicate` 定义**批准（5 键「存在」语义） | 🔴 待裁 → 任务单 §2.3 / §7 |
-| **`HR-C2-6`（新）** | **施工顺序（A 先 → B 后）+ 控制台作业授权** | 🔴 待裁 → 任务单 §3 / §7 |
+| ID | 事项 | 选项 | 收口结论 |
+|---|---|---|---|
+| **`HR-C2-1`** | **`/log` 分流方案** | ✅ **已裁决 = B（改规则 A+B · 配额中立）**（`2026-10-15`） | 已实施 |
+| **`HR-C2-2`** | 若选 A：**如何释放槽位** | 🚫 **不适用**（未选 A） | — |
+| **`HR-C2-3`** | 是否接受 `/log` **现阶段落 `mqtt_messages`** | ✅ **已接受**（人工 `2026-10-15`） | 过渡双写已实测终止（`01:20:22`） |
+| **`HR-C2-4`（新）** | 解除规则 A / B 的**冻结约束** | ✅ **事实已满足** | 规则 A/B 已改并生效 ⇒ 收口 |
+| **`HR-C2-5`（新）** | **`log_predicate` 定义**批准 | ✅ **事实已满足** | 规则 A 已含 `log_predicate` 且真机命中 ⇒ 收口 |
+| **`HR-C2-6`（新）** | **施工顺序 + 控制台作业授权** | ✅ **事实已满足** | A 先 B 后已执行 ⇒ 收口 |
+| **`HR-C2-7`（`REV-2`）** | **`/log` 排除策略 = 策略 A（按 topic domain）** | ✅ **事实已满足** | 规则 B 按 topic 排除已生效（`V-3.4` = `0`）⇒ 收口 |
+| **`HR-C2-7a` / `HR-C2-7b`（`REV-3`）** | 候选形态：`7a` 黑名单 / `7b` 白名单 | ✅ **采用 `7a`（黑名单）** | 生产规则 B = `NOT ( topic =~ 'guo_feeder/+/log' )`，**人工已核实** ⇒ 收口 |
+| **`HR-C2-8`（`REV-3` · 🔴 P0）** | **`level` 契约不一致处置** | ✅ **已修并部署** | `F-C2-8` 修复随 Worker `dd5ab824` 上线 ⇒ 收口 |
 
----
-
-## §13 Deliverables / next
-
-1. **本文（Review）** → **人工审核** → 裁决 **`HR-C2-1` / `HR-C2-2` / `HR-C2-3`** ⇒ ✅ **`HR-C2-1 = B`（`2026-10-15`）**；
-2. ✅ **施工规格已出** → `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md`（方案 B · 照抄版）→ **待人工审核 `HR-C2-4/5/6`** → 控制台**施工**（改规则 A / B）→ 回写存档（`V2V4` + 任务单）；
-3. 执行 **§7 验证矩阵 `V-3`** → 记录 `PASS / NOT RUN / BLOCKED`；
-4. 收口 `Phase C`（`C-1` 的 `V-2` telemetry + `V-3` log 双路径）。
+> ✅ **人工确认事实归档**（文档收口动作 · 非新裁决）：EMQX 控制台**实际规则 A/B 已人工检查、规则正确**；AI 测试代码行为符合预期；
+> **不再因 `403` 将规则 A/B 视为 `UNKNOWN`**（`LIVE CONFIGURATION: VERIFIED`）。
 
 ---
 
-> **Phase C-C2 = PLANNED / BLOCKED（未开工）. No EMQX change. No firmware change. No deploy. No push.**
-> **唯一阻塞 = `/log` 路由 + 规则配额（`4/4`）. 固件 / Worker / D1 均已就绪.**
+## §13 Deliverables / next → ✅ **已完成**
+
+1. ✅ **本文（Review）** → 裁决 **`HR-C2-1 = B` · `HR-C2-3 = 接受`**（`2026-10-15`）；
+2. ✅ **施工规格已出** → `Phase-C-C2-Log-Routing-Console-Task-Sheet.md`（`REV-3`）→ **人工控制台施工完成**（改规则 A / B · 2 条 · 配额 `4/4` 不变）→ 已回写存档（任务单 §12 + 本文件）；
+3. ✅ 执行 **§7 验证矩阵 `V-3.1…V-3.9`** → **全部 `PASS`**；
+4. ✅ 收口 `Phase C`（`C-1` 的 `V-2` telemetry + `V-3` log 双路径）；
+5. ✅ **`HR-C2-8`（`F-C2-8` `level` 契约）已修复并部署** ⇒ `V-3.3` `BLOCKED` → `PASS`。
+
+**★ 收口报告** → **`docs/review/Phase-C-C2-Final-Closure-Report.md`**（`Final Audit = PASS` · **`Phase C-C2 = CLOSED`**）。
+
+---
+
+> **Phase C-C2 = ✅ `CLOSED`（`2026-10-16`）.** 变更面 = **EMQX 2 条规则**（人工控制台）· **Worker `history-ingest.js`**（`F-C2-8`/`F-C2-9` 修复 · 已部署 `dd5ab824`）· 配额 `4/4` 不变.
+> **`V-3.1…V-3.9` 全 `PASS`**（`V-3.2` = 口径修订 · `V-3.7b` = 构造性 + 人工核实）.
+> **`LIVE CONFIGURATION: VERIFIED`**（人工核实规则 A/B）.
 > **No Gate changed. `G-1 HUMAN_REQUIRED` · `G-4 BLOCKED` unchanged.**
+> **后续工作（非本阶段未完成项）**：`BT-1`/`WP-5` `log_ack`（`O-1` = 其现网症状 · `MINOR`）· `V-3.2` observability enhancement · `HD-2`/`HD-3`/`P-3` · 历史噪音清理与 MQTT 密码轮换.
 
 ---
 
-*本文件于 **`2026-10-14`** 建立，为 **`Phase C-C2`（`/log` → `log_history`）** 的**实施前审查**（`REVIEW ONLY`）。
-基线 = 固件仓 **`73bf330`** · EMQX 仓 **`3165aab`**；**不含任何生产变更、代码改动或配置变更**。*
+*本文件于 **`2026-10-14`** 建立，为 **`Phase C-C2`（`/log` → `log_history`）** 的**实施前审查**（`REVIEW ONLY`）；**`2026-10-15` 修订**（决策回填 + `REV-2`/`REV-3` 施工前核查更正）；**`2026-10-16` 收口**（`Phase C-C2 = CLOSED` · `V-3.1…V-3.9` 全 `PASS`）。*
+*`REV-3` 基线 = 固件仓 **`859888c`** · EMQX 仓 **`3165aab`** · Cloudflare 仓 **`415cd0c`**；收口基线 = 固件仓 **`1ebae81`**（收口前）· EMQX 仓 **`3165aab`** · Cloudflare 仓 **`e328a11`**（收口前）；本文件**不含任何生产变更、代码改动或配置变更**。*
