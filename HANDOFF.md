@@ -26,14 +26,14 @@
 | 3 | `docs/architecture/Cloud-APP-Platform-Plan.md` | 云端/APP 架构 v2 = **P0–P6 依据** |
 | 4 | `docs/architecture/P3-History-D1-Plan.md` | ★ **P3 实施计划 + 门禁 `G-1…G-5`**（当前主阶段） |
 | 5 | `docs/review/P3-WP4C-Implementation-Record.md` | ★ **WP4C 权威结论**（EMQX 遥测路由 · §5 / §6 / §8） |
-| 6 | `docs/review/Phase-C-C2-Log-History-End-to-End-Review.md` · `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md` | ★★ **下一步所在**：C2 审查（`/log` 端到端缺口 + 方案 A/B/C/D）+ **方案 B 控制台施工任务单**（`HR-C2-1 = B` 已裁 · 待审 `HR-C2-4/5/6`） |
+| 6 | `docs/review/Phase-C-C2-Final-Closure-Report.md`（+ `…-V36-…-Record` · `…-V36-Review-Follow-up-…` · `…-V37a-…` · `…-V38-…` · C2 审查 · C2 任务单） | ✅ **`Phase C-C2 = CLOSED`（`2026-10-16`）**：`/log` → `log_history` 全链贯通 · **`V-3.1…V-3.9` 全 `PASS`**（收口报告 + 4 份验证/复核记录）。**★ 下一步所在** ⇒ 见 §1.0.5（`DT:WP-3` 保留策略清理 · 门禁裁决 · 固件遗留） |
 | 7 | `docs/review/Phase-C-C1-HD1-Runtime-Telemetry-Enable-Gate-Implementation-Specification.md` | 遥测运行时开关规格（两道门 · 方案 A） |
 | 8 | `docs/review/Phase-C-C1-HD1-Runtime-Verification-Record.md` | 遥测开关**上板验证**（`V-C1-12…19` = 7 PASS / 1 BLOCKED · `ACCEPTED`） |
 | 9 | `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` | **`V-2` telemetry 真实落库**端到端验证（`V-2.1…V-2.6` 全 PASS · D1 `+8` 行 · `ACCEPTED`） |
 | 10 | `docs/review/P3-WP4C-Implementation-Discipline.md` | ★ 生产变更纪律（控制台 = 人工变更 · `STOP` 条款） |
 | 11 | `docs/issues/未修复的问题.md` | 全项目问题权威清单 |
 | 12 | `.workbuddy/memory/MEMORY.md` | **长期铁律 + 当前状态**（★ 优先看「★ 当前状态」块） |
-| 13 | `.workbuddy/memory/2026-10-14.md` | 最近工作日志 |
+| 13 | `.workbuddy/memory/2026-10-16.md` | 最近工作日志 |
 | 14 | `AGENTS.md` · 技能 `pio-esp32-windows-workflow` | 构建 / 烧录 / 串口 / MQTT 测试 + 沙箱已知坑 |
 | 15 | `EMQX_Assets/config/data-integration/`（`P3-WP4C-V0-EMQX-Baseline.md` · `P3-WP4C-V2V4-Config-After.md` · `README.md`） | EMQX 存档（`V-0` 基线 / 变更后配置 / 终态对象） |
 
@@ -56,7 +56,7 @@
 - `WP-5`(Plan) `log_ack` → 🚫 **受阻于 `G-4`**（`BT-1` 未修）
 - `WP-6`(Plan) 容量验证 → ⏳ `NOT RUN`（需真实流量）
 - `WP-7`(Plan) 保留策略 → ✅ 设计冻结（`DT:WP-3`：retention **90/180 天** · `scheduled cleanup job` · **无附加索引**）· **实施未开始**
-- **Phase C（集成上线）**：`C-2` 远端 D1 migration ✅ · `C-1` EMQX Action 切换 ✅（均随 `WP4C`）· **`V-2` telemetry / `V-3` log 真实落库待验证**
+- **Phase C（集成上线）**：`C-2` 远端 D1 migration ✅ · `C-1` EMQX Action 切换 ✅（均随 `WP4C`）· ✅ **`V-2` telemetry / `V-3` log 真实落库均已收口**（`V-2` `2026-10-14` · `V-3` = `Phase C-C2` `2026-10-16` **`CLOSED`**）
 
 #### 1.0.4 已完成里程碑（近期）
 
@@ -66,14 +66,14 @@
 | 远端 D1 `0003` + Worker `/api/history/ingest` + Pages 中转 | ✅ 已部署（`99e6d937` / `61b4938e`） |
 | **Phase C-C1** 固件遥测发布器 + `HD-1` 运行时门 | ✅ 实施 + **上板验证**（`V-C1-12…19` = **7 PASS / 1 BLOCKED**）· 已 push（FW HEAD `73bf330`） |
 | 文档同步（WP4C 终态 + HD-1 收尾 + presence ID 回填） | ✅ 全部已 push（`a01797d..73bf330`） |
-| **Phase C-C2** `/log` 端到端实施前审查 | ✅ 已出（FW `b61323e` · **未 push**）· 判定 `CONDITIONAL GO / BLOCKED-1` |
+| **Phase C-C2** `/log` → `log_history` 端到端 | ✅ **`CLOSED`（`2026-10-16`）** —— 施工（EMQX 2 条规则 · 人工控制台）+ 修复（`F-C2-8`/`F-C2-9` · Worker `dd5ab824`）完成 · **`V-3.1…V-3.9` 全 `PASS`** · 收口报告 `docs/review/Phase-C-C2-Final-Closure-Report.md` |
 | **Phase C-C1 · `V-2`** telemetry 真实落库 | ✅ **`ACCEPTED`**（`V-2.1…V-2.6` **全 PASS** · 真机 D1 `telemetry_history` **+8 行** · `2026-10-14`）· 验证记录 `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md` |
 
 #### 1.0.5 ★ 接下来应该进行的步骤
 
 1. **Phase C 收口 —— 真实数据端到端（两条路径）**
    - **`V-2`（telemetry 落库）**：✅ **已完成 / `ACCEPTED`（`2026-10-14`）** —— 真机开 `telemetry_enable=true` 后，telemetry **→ EMQX 规则 A → Worker `/api/history/ingest` → D1 `telemetry_history`** 全链路闭合（`V-2.1…V-2.6` 全 `PASS` · D1 **+8 行** · 零重烧 · 零 EMQX 改动）。记录 → `docs/review/Phase-C-C1-V2-Telemetry-Landing-Verification-Record.md`。
-   - **`V-3`（`/log` 落库）**：`HR-C2-1 = ✅ 方案 B`（改规则 A+B · 配额中立）已裁决 ⇒ **施工规格已出** → `docs/review/Phase-C-C2-Log-Routing-Console-Task-Sheet.md`（**待人工审核 `HR-C2-4/5/6`**：解除冻结约束 / `log_predicate` 定义 / 施工顺序与作业授权）。审核通过后**人工控制台改 2 条规则**（EMQX API 对 rules/actions/connectors 全 `403`）→ 跑 `V-3.1…V-3.6` → 收口。详见 §7 关联。
+   - **`V-3`（`/log` 落库）**：✅ **已完成 / `CLOSED`（`2026-10-16`）** —— **`Phase C-C2`** 收口：人工在 EMQX 控制台改 **2 条规则**（规则 A 扩 `FROM`+`WHERE` 加 `log_predicate`；规则 B 追加 `AND ( NOT ( topic =~ 'guo_feeder/+/log' ) )` · 配额 `4/4` 不变）+ `F-C2-8`/`F-C2-9` 修复（Worker `dd5ab824`）⇒ `/log` → **EMQX 规则 A → Worker `/api/history/ingest` → D1 `log_history`** 全链贯通（`log_history` `0 → 13` · 幂等吸收重投 · 过渡双写于 `01:20:22` 终止）。**`V-3.1…V-3.9` 全 `PASS`**（`V-3.7a` 本地隔离 `81/0` × 2 · `V-3.8` 真机 presence `+2`）。记录 → `docs/review/Phase-C-C2-Final-Closure-Report.md`（+ 4 份验证/复核记录）。**★ 关键教训：EMQX 规则 SQL 的 `=~` 是 topic 通配符匹配（`+`/`#`），不是正则 —— 正则写法静默失效。**
 2. **`DT:WP-3` 保留策略 + 清理任务实施**（retention 90/180 天 · scheduled cleanup · 无附加索引）—— 设计已冻结、**实施未开始**（`WP4C` 之后第一块未动工的工作包）。
 3. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED`（`BT-1`：云端 `log_ack`）。
 4. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。

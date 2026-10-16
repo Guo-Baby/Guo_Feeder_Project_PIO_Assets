@@ -10,6 +10,12 @@
 > | **生产变更** | **仅 1 项**：Worker `guo-feeder-api` 部署 `e328a11` ⇒ 版本 `dd5ab824`（回滚 `99e6d937`） |
 > | **未做** | 未改固件 / 未改 EMQX 配置 / 未改 D1 schema 或 migration / 未写生产 D1 测试数据 / 未 push |
 
+> ## ★ 后续收口（`2026-10-16` 追加 · 本记录结论**不改**）
+>
+> 本记录的两项 `BLOCKED` 均已于 `2026-10-16` 解除：**EMQX `/log` 分流**由**人工在控制台完成并核实**（规则 A/B · `HR-C2-7a` 黑名单形态）；
+> **`V-3.3` 真实设备 E2E** 已在真机完成 —— `log_history` `0 → 13`（`level` 全 `INFO` · 幂等吸收重投）⇒ **`V-3.3` `BLOCKED` → `PASS`**。
+> ⇒ **`Phase C-C2 = CLOSED`** · `V-3.1…V-3.9` 全 `PASS` → **`docs/review/Phase-C-C2-Final-Closure-Report.md`**。
+
 ---
 
 ## §1 目标与范围
