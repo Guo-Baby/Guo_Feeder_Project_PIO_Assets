@@ -550,9 +550,16 @@ P2 编号            = 结束于 P2-8
 
 ### 11.6 仓库基线与推送状态
 
-| 仓库 | HEAD | 推送 |
+> ⚠️ 本节为 **P2 期历史快照**（原记「三仓均未 push」）。**当前状态见下方 `2026-10-16` 更新行。**
+
+| 仓库 | HEAD（P2 期） | 推送（P2 期） |
 |---|---|---|
 | 固件 `PIO_Assets/Guo_Feeder_Project` | 见 `git log -1` | **未 push**（`origin/wb` 落后） |
 | 云端 `Cloudflare_Assets/guo-feeder-api` | `392f181` | **未 push** |
 | 消息 `EMQX_Assets` | `eec9444` | **未 push** |
+
+> ★ **`2026-10-16` 更新（`Phase C-C2` 收口后 · 三仓均 `HEAD == origin/main` · 工作树 clean）**：
+> - 固件仓 `wb` = **`b782bf9`** ⇒ 远端 **`main`**（本次 `73bf330..b782bf9`；**注意同步只走 `wb:main`，`origin/wb` 为历史遗留、严重滞后**）
+> - 云端仓 `main` = **`f519c9e`**（本次 `d604f2e..f519c9e`）
+> - 消息仓 `main` = **`3165aab`**（本阶段无变更 · 未制造空 commit）
 

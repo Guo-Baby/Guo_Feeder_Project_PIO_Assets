@@ -202,9 +202,9 @@
 
 | 仓 | 分支 | 本阶段提交 | 结论 |
 |---|---|---|---|
-| **固件** `PIO_Assets/Guo_Feeder_Project` | `wb`（同步远端 `main`） | 见 **§7.6 commit 记录** | ✅ 已提交并 push |
-| **云端** `Cloudflare_Assets` | `main` | 见 **§7.6 commit 记录** | ✅ 已提交并 push |
-| **消息** `EMQX_Assets` | `main` | **无本阶段变更** | ✅ **未制造空 commit**（工作树 clean） |
+| **固件** `PIO_Assets/Guo_Feeder_Project` | `wb`（同步远端 `main`） | **`b782bf9`**（`73bf330..b782bf9` · 12 文件 · +2521/−120） | ✅ 已提交并 push |
+| **云端** `Cloudflare_Assets` | `main` | **`f519c9e`**（`d604f2e..f519c9e` · 2 文件 · +391/−1） | ✅ 已提交并 push |
+| **消息** `EMQX_Assets` | `main` | **无本阶段变更** ⇒ **未制造空 commit** | ✅ 保持 `3165aab`（工作树 clean） |
 
 ### 6.2 逐文件归属核对（**§8 检查项**）
 
@@ -256,15 +256,23 @@
 - 最终验收矩阵已记录（§2）。
 - 仍存在但**明确属后续工作**的事项已记录（§4.3）—— **不得**被描述为 `Phase C-C2` 未完成。
 
-### 7.6 commit 记录（push 后回填）
+### 7.6 commit 记录（push 结果）
 
-| 仓 | commit | 说明 |
-|---|---|---|
-| 固件 `wb` | *（见当日工作日志 `2026-10-16.md`）* | `docs(review): close Phase C-C2 log routing`（文档收口 + 4 份验证记录 + 收口报告 + `BT-1` 症状追加） |
-| 云端 `main` | *（见当日工作日志）* | `test(history-ingest): add V-3.7a local isolation matrix`（夹具 + README 登记） |
-| 消息 `main` | — | 无变更 |
+| 仓 | commit | 说明 | push 结果 |
+|---|---|---|---|
+| 固件 `wb` | **`b782bf9`** | `docs(review): close Phase C-C2 log routing (V-3.1..V-3.9 all PASS)` —— 文档收口 + 4 份验证记录 + 收口报告 + `BT-1` 症状追加（12 文件 · +2521/−120） | ✅ `73bf330..b782bf9  wb -> main`（FF） |
+| 云端 `main` | **`f519c9e`** | `test(history-ingest): add V-3.7a local isolation matrix` —— 夹具 + `test/real_d1/README.md` 登记（2 文件 · +391/−1） | ✅ `d604f2e..f519c9e  main -> main`（FF） |
+| 消息 `main` | — | 无变更 | ✅ **未制造空 commit** |
 
-> ⚠️ commit hash / push 结果以 **§8 执行记录**（本轮实际执行的填充）与当日工作日志为准。
+**push 后复核（`git fetch` + `rev-list`）**：
+
+| 仓 | 分支 | 本地 HEAD | `origin/main` | ahead / behind | 工作树 |
+|---|---|---|---|---|---|
+| 固件 | `wb` | `b782bf9` | `b782bf9` | `0 / 0` | clean |
+| 云端 | `main` | `f519c9e` | `f519c9e` | `0 / 0` | clean |
+| 消息 | `main` | `3165aab` | `3165aab` | `0 / 0` | clean |
+
+⇒ **三仓均 `HEAD == origin/main`** · **无未提交变更**。
 
 ---
 
