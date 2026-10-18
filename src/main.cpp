@@ -466,6 +466,14 @@ void setup()
         (unsigned)LOG_SEGMENT_CAPACITY,
         (unsigned)LOG_BATCH_FMT,
         log_contract_self_check() ? "PASS" : "FAIL");
+    // ===== P0-1：设备身份（**提前**到 log_init 之前，`HD-3`·`A-1` 修复）=====
+    //
+    // 为什么必须前置：LogManager 的恢复判据需要「本次 boot 是否才建立身份」
+    // 这一信号，用来区分「真·首启」与「日志区被格式化清空」。该信号只由
+    // device_identity 提供 ⇒ 必须早于 log_init()。
+    // 身份只依赖 eFuse MAC + NVS，不依赖网络 / 配置 / LittleFS ⇒ 前置安全。
+    device_identity_init();
+    log_set_first_boot(device_identity_first_boot());
     // ===== LogManager P1.2：RAM 环（PSRAM 优先，失败回退 DRAM）=====
     //
     // 只分配 RAM 环，不写 Flash、不发 MQTT。
@@ -520,8 +528,8 @@ void setup()
     }
     system_state_init();
     config_init();
-    // P0-1：设备身份（必须在 wifi_init() / cloud_init() 之前；身份不依赖网络）
-    device_identity_init();
+    // P0-1：设备身份 —— **已上移到 log_init() 之前**（`HD-3`·`A-1` 修复）。
+    // 仍满足原约束：早于 wifi_init() / cloud_init()。
 #if GF_TOPIC_RENDER_SELFTEST
     // P0-2：模板渲染自检（**DEBUG / 测试环境专用**；默认开关 0 ⇒ 生产固件不编译）
     topic_renderer_selftest();
@@ -1042,12 +1050,42 @@ static void logt_print_meta()
         (unsigned)fi.seq_base,
         (unsigned)fi.seq_limit,
         (unsigned)fi.seq_last);
+
+    /* `HD-3`·`A-1` 修复：隔离与持久证据（`A1-03` 的**串口**可观测面） */
+    Serial.printf(
+        "[LogT] evidence src=%u nvs_ok=%u nvs_q=%u qfile=%u failclosed=%u nvs_boot=%u nvs_reserved=%u gen=%u\n",
+        (unsigned)fi.evidence_source,
+        (unsigned)fi.nvs_evidence_ok,
+        (unsigned)fi.nvs_quarantine,
+        (unsigned)fi.quarantine_file,
+        (unsigned)fi.seq_failclosed,
+        (unsigned)fi.nvs_boot_hw,
+        (unsigned)fi.nvs_reserved_hw,
+        (unsigned)fi.evidence_gen);
+
+    /* `A1-02` 残留修复：损坏痕迹（跨重启证据；`0/0xFFFFFFFF` = 无痕迹） */
+    Serial.printf(
+        "[LogT] trace corrupt=%u last_seg=%u\n",
+        (unsigned)fi.trace_corrupt,
+        (unsigned)fi.trace_last_seg);
 }
 
 static void logt_do_mwipe()
 {
     const bool ok = log_meta_wipe();
-    Serial.printf("[LogT] mwipe ok=%d\n", ok ? 1 : 0);
+    Serial.printf("[LogT] mwipe ok=%d (legacy + both slots)\n", ok ? 1 : 0);
+}
+
+static void logt_do_lqclear()
+{
+    const bool ok = log_quarantine_clear();
+    Serial.printf("[LogT] lqclear ok=%d (takes effect next boot)\n", ok ? 1 : 0);
+}
+
+static void logt_do_levwipe()
+{
+    const bool ok = log_evidence_wipe();
+    Serial.printf("[LogT] levwipe ok=%d (nvs evidence + quarantine file)\n", ok ? 1 : 0);
 }
 
 static void logt_do_mcorrupt()
@@ -1061,6 +1099,16 @@ static void logt_do_mfail(const String &op)
     const long v = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
     log_meta_test_fail_next(v != 0);
     Serial.printf("[LogT] mfail armed=%ld\n", (v != 0) ? 1L : 0L);
+}
+
+// `HD-3`·`A-1` 修复：分阶段提交故障注入（`A1-06`）
+//   0=关 · 1=写槽①失败 · 2=写槽②失败（半写槽留盘）· 3=回读校验失败
+static void logt_do_mstage(const String &op)
+{
+    const long n = strtol(logt_arg(op, 1).c_str(), nullptr, 10);
+    const uint8_t v = (n >= 0 && n <= 3) ? (uint8_t)n : (uint8_t)0;
+    log_meta_test_fail_stage(v);
+    Serial.printf("[LogT] mstage armed=%u\n", (unsigned)v);
 }
 
 // Commit 5：令接下来 n 次 Flash append 整批失败（验证 §22/§23 安全交接）
@@ -1446,6 +1494,7 @@ void logt_console(const String &cmd)
         Serial.println("[LogT]   lv = dbg|info|warn|error|crit (or 0..4)");
         Serial.println("[LogT] P1.3: flush | flash | fseg <seg> | fver <seg> <rec> | fwipe");
         Serial.println("[LogT] P1.3: stats | mwipe | mcorrupt | mfail <0|1> | ffail <n>");
+        Serial.println("[LogT] A-1 : mstage <0|1|2|3> | lqclear | levwipe");
         Serial.println("[LogT] P1.4: cloud | cpush <n> [lv] | creset");
         Serial.println("[LogT] P1.5: ack <boot> <from> <to> | ackauto <mode> [k] | cfail <n> | sonline <0|1>");
         Serial.println("[LogT] P1.5: atimeout <ms> | abackoff <ms>   (0 = 恢复默认)");
@@ -1510,6 +1559,19 @@ void logt_console(const String &cmd)
         return;
     }
 
+    /* `HD-3`·`A-1` 修复：隔离的**受控**解除（人为出厂重置）与证据清除 */
+    if (name == "lqclear")
+    {
+        logt_do_lqclear();
+        return;
+    }
+
+    if (name == "levwipe")
+    {
+        logt_do_levwipe();
+        return;
+    }
+
     if (name == "mcorrupt")
     {
         logt_do_mcorrupt();
@@ -1519,6 +1581,12 @@ void logt_console(const String &cmd)
     if (name == "mfail")
     {
         logt_do_mfail(op);
+        return;
+    }
+
+    if (name == "mstage")
+    {
+        logt_do_mstage(op);
         return;
     }
 

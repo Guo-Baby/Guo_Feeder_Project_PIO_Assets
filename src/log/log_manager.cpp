@@ -20,6 +20,7 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <string.h>
 #include <esp_heap_caps.h>
 
@@ -32,6 +33,8 @@
 
 // P1.5：ACK / Retry / Offline 的纯决策逻辑（独立头文件，可主机编译验证）
 #include "log/log_ack.h"
+#include "log/log_meta_slot.h"
+#include "log/log_meta_evidence.h"
 
 // P3 · WP4-FW-LOG：Cloud Log Envelope Producer（独立模块，可主机编译验证）
 //   —— /log 上行载荷由「原始 CBOR 批次」改为「JSON envelope（逐条，count=1）」
@@ -107,8 +110,44 @@ static uint32_t s_seq_last = 0;           // 最近一次分配出去的 seq
 static bool     s_seq_reliable = true;    // false = 可能重复（§15）
 static bool     s_seq_reserving = false;  // 预留进行中（避免并发重复写 meta）
 
+// ---- `HD-3`·`A-1`（`2026-10-18`）：双槽元数据状态 ----
+static int8_t   s_meta_slot = -1;         // 当前有效槽：0=A / 1=B / -1=未知
+static uint32_t s_meta_slot_seq = 0;      // 当前有效槽的 slot_seq（选槽依据）
+// true = **无法证明 boot_seq 安全** ⇒ 停止分配新 seq（fail-closed）。
+// `HD-3`·`A-1` 修复后：该状态**跨重启固化**（NVS 标志 + `/log/quarantine.bin`），
+// 不再因"第一次启动删掉了损坏证据"而退化（原 `A1-02`）。
+static bool     s_seq_failclosed = false;
+static bool     s_failclosed_logged = false;
+
+// ---- `HD-3`·`A-1` 修复：持久证据（NVS）与隔离（`2026-10-18`）----
+//
+// 为什么必须放在 NVS：`LittleFS.begin(true, …)` 的 `formatOnFail` 会在挂载失败时
+// **主动格式化**整个 LittleFS ⇒ 日志区（双槽 / legacy / 段）全部消失。
+// NVS 是**独立分区**，不随该格式化丢失 ⇒ 它是唯一能区分
+// 「真·首启」与「日志区被清空」的本地证据（原 `A1-01`）。
+static const char *kEvNamespace = "guolog";   // NVS namespace（≤15 字符）
+static const char *kEvKey       = "ev";       // 32 B 证据记录
+
+static bool     s_evidence_ok      = false;   // NVS 证据可读
+static uint32_t s_ev_boot_hw       = 0;       // NVS 里的 boot 高水位
+static uint32_t s_ev_reserved_hw   = 0;       // NVS 里的 seq 高水位
+static uint32_t s_ev_flags         = 0;       // bit0 隔离 / bit1 曾 provision
+static uint32_t s_ev_gen           = 0;       // 写入代数
+static uint32_t s_ev_corrupt       = 0;       // corrupt_count 快照
+static uint8_t  s_ev_source        = 0xFFu;   // 本次恢复来源（LogFlashInfo 上报）
+
+// 「本次 boot 才建立设备身份」= 真·首启的**唯一**合法信号（由 `main.cpp` 注入）。
+// 默认 `false`（保守）：未注入时任何"无证据"都会转入隔离，而不是当作全新设备。
+static bool     s_first_boot       = false;
+// 是否**真的**被注入过（仅用于诊断：漏调用 ⇒ 新设备会被误判隔离，必须可见）
+static bool     s_first_boot_set   = false;
+static bool     s_qfile_present    = false;   // /log/quarantine.bin 存在
+
 // 测试钩子：令下一次 meta_write 失败（一次性），用于验证 §15 / §41-4
 static bool s_meta_fail_next = false;
+
+// 测试钩子（`A1-06`）：分阶段注入。0=关；1=写槽①失败；2=写槽②失败；3=回读校验失败
+static uint8_t s_meta_fail_stage = 0;
 
 // 测试钩子：令接下来 N 次 Flash append 整批失败，用于验证 §22/§23 / F10
 static uint8_t s_flash_fail_budget = 0;
@@ -537,26 +576,15 @@ static void log_cloud_ack_callback(uint32_t boot_seq, uint32_t seq_from, uint32_
     portEXIT_CRITICAL(&s_mux);
 }
 
-// =====================================================
 // CRC32（与项目既有实现一致：init 0xFFFFFFFF，
 //        poly 0xEDB88320 反射，final xor 0xFFFFFFFF）
-// =====================================================
-
+//
+// `HD-3`·`A-1`：实现已抽到 `log/log_meta_slot.h`（freestanding）以便
+// `test/log_contract/probe_meta_slot.cpp` 真执行验证；此处保留同名薄封装，
+// **既有调用点零改动**，算法仍只有**一份**。
 static uint32_t log_crc32(const uint8_t *data, uint32_t len)
 {
-    uint32_t crc = 0xFFFFFFFFu;
-
-    for (uint32_t i = 0; i < len; i++)
-    {
-        crc ^= (uint32_t)data[i];
-
-        for (uint8_t bit = 0; bit < 8; bit++)
-        {
-            crc = (crc >> 1) ^ ((crc & 1u) ? 0xEDB88320u : 0u);
-        }
-    }
-
-    return ~crc;
+    return log_meta_slot::crc32(data, len);
 }
 
 // =====================================================
@@ -580,20 +608,15 @@ static void flash_seg_path(uint32_t seg, char *out, size_t out_size)
     snprintf(out, out_size, LOG_SEG_PATH_FMT, (unsigned)seg);
 }
 
+// 小端 u32 —— 实现见 `log/log_meta_slot.h`（`A-1` 抽取，单一来源）
 static void flash_put_u32(uint8_t *dst, uint32_t v)
 {
-    dst[0] = (uint8_t)(v & 0xFFu);
-    dst[1] = (uint8_t)((v >> 8) & 0xFFu);
-    dst[2] = (uint8_t)((v >> 16) & 0xFFu);
-    dst[3] = (uint8_t)((v >> 24) & 0xFFu);
+    log_meta_slot::put_u32(dst, v);
 }
 
 static uint32_t flash_get_u32(const uint8_t *src)
 {
-    return (uint32_t)src[0]
-         | ((uint32_t)src[1] << 8)
-         | ((uint32_t)src[2] << 16)
-         | ((uint32_t)src[3] << 24);
+    return log_meta_slot::get_u32(src);
 }
 
 // 段头组装：magic / seg_index / first_seq / crc32(前 12 B)
@@ -708,9 +731,136 @@ static bool flash_extend_file(File &f, size_t target)
     return true;
 }
 
+// -----------------------------------------------------------------------------
+// `A1-02` 残留修复（`2026-10-19`）：**损坏痕迹**（`/log/corrupt.trace`）
+// -----------------------------------------------------------------------------
+//
+// 背景：`flash_drop_broken_segment()` 会 `LittleFS.remove()` 掉损坏段 ⇒ 同一份
+// "损坏证据"在**下一次启动**就消失了。若隔离标记两份都写失败（NVS 异常 +
+// LittleFS 只读），第二次启动就可能因 `scan_corrupt=0 + total_records=0`
+// 被判 `REC_PROVISION` ⇒ `boot_seq=1` ⇒ 键重用。
+//
+// 本痕迹把"曾经损坏过"独立于段文件固化；`flash_scan_all()` 与本次扫描**取大**。
+// ⚠️ 与日志区同生共死（同一 LittleFS），格式化后同样消失 —— 该情形由 NVS 证据兜底。
+
+#define LOG_CORRUPT_TRACE_PATH "/log/corrupt.trace"
+#define LOG_CORRUPT_TRACE_TMP  "/log/corrupt.tmp"
+
+static bool corrupt_trace_read_path(const char *path, uint32_t &count,
+                                    uint32_t &last_seg, uint32_t &last_boot)
+{
+    count     = 0;
+    last_seg  = LOG_TRACE_SEG_NONE;
+    last_boot = 0;
+
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t buf[LOG_EV_SIZE];
+    const bool got = (f.read(buf, sizeof(buf)) == (size_t)sizeof(buf));
+
+    f.close();
+
+    if (!got)
+    {
+        return false;
+    }
+
+    uint32_t ms = 0;
+
+    return log_meta_evidence::parse_trace(buf, count, last_seg, last_boot, ms);
+}
+
+static bool corrupt_trace_read(uint32_t &count, uint32_t &last_seg, uint32_t &last_boot)
+{
+    return corrupt_trace_read_path(LOG_CORRUPT_TRACE_PATH, count, last_seg, last_boot);
+}
+
+static bool corrupt_trace_write_raw(const char *path, uint32_t count,
+                                    uint32_t last_seg, uint32_t last_boot)
+{
+    uint8_t buf[LOG_EV_SIZE];
+
+    log_meta_evidence::pack_trace(buf, count, last_seg, last_boot, (uint32_t)millis());
+
+    File f = LittleFS.open(path, "w");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const bool ok = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+
+    f.close();
+
+    return ok;
+}
+
+/**
+ * 损坏计数 +1 并落盘（**写后回读校验**）。
+ *
+ * @param last_seg  `LOG_TRACE_SEG_NONE` 表示非段来源（如隔离标记无法持久化）
+ * @returns true = 痕迹**已确认落盘**；false = 无法持久化（调用方须保持停写）
+ */
+static bool corrupt_trace_bump(uint32_t last_seg, uint32_t last_boot)
+{
+    uint32_t c = 0, s = 0, b = 0;
+
+    (void)corrupt_trace_read(c, s, b);
+
+    const uint32_t next = log_meta_evidence::trace_add(c, 1u);
+
+    if (!corrupt_trace_write_raw(LOG_CORRUPT_TRACE_TMP, next, last_seg, last_boot))
+    {
+        LittleFS.remove(LOG_CORRUPT_TRACE_TMP);
+        return false;
+    }
+
+    /* 回读校验（与 `A1-05` 同风格）：`write()` 成功 ≠ 已真正落盘 */
+    uint32_t c2 = 0, s2 = 0, b2 = 0;
+
+    if (!corrupt_trace_read_path(LOG_CORRUPT_TRACE_TMP, c2, s2, b2) || (c2 != next))
+    {
+        LittleFS.remove(LOG_CORRUPT_TRACE_TMP);
+        return false;
+    }
+
+    /* rename 覆盖（同文件系统、目录项级）；失败再退化为直接写 */
+    if (LittleFS.exists(LOG_CORRUPT_TRACE_PATH))
+    {
+        (void)LittleFS.remove(LOG_CORRUPT_TRACE_PATH);
+    }
+
+    if (!LittleFS.rename(LOG_CORRUPT_TRACE_TMP, LOG_CORRUPT_TRACE_PATH))
+    {
+        LittleFS.remove(LOG_CORRUPT_TRACE_TMP);
+
+        if (!corrupt_trace_write_raw(LOG_CORRUPT_TRACE_PATH, next, last_seg, last_boot))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // §18：Header 无效 / 尺寸异常 → 删除该 segment（下次作为空段复用）并计数
 static void flash_drop_broken_segment(uint32_t seg, const char *path)
 {
+    /* ★ `A1-02` 残留修复：**先**把损坏痕迹固化，**再**删除段。
+       即使段被删，下一次启动仍能从 trace 读到 `count > 0` ⇒ 不会被判 `PROVISION`。 */
+    (void)corrupt_trace_bump(seg, s_boot_seq);
+
     LittleFS.remove(path);
 
     s_seg_present[seg] = 0;
@@ -836,6 +986,20 @@ static bool flash_drop_segment(uint32_t seg)
 //    头/大小损坏时的"删除 + corrupt_count++"（§18）在 Commit 4 实现。
 static void flash_scan_all()
 {
+    /* ★ `A1-02` 残留修复（`2026-10-19`）：把**历史**损坏痕迹并入本次计数（取大）。
+       损坏段在上一次启动已被 `LittleFS.remove()` ⇒ 段文件不再是证据；
+       trace 是唯一还能证明"这台设备曾发生过损坏"的东西。
+       `merge_corrupt` 用 `max` 而非 `+`：多轮扫描不会重复累加，且
+       "痕迹 > 0 ⇒ 合并值 > 0" ⇒ `decide_recovery()` 永不返回 `REC_PROVISION`。 */
+    {
+        uint32_t tc = 0, ts = 0, tb = 0;
+
+        if (corrupt_trace_read(tc, ts, tb))
+        {
+            s_scan_corrupt = log_meta_evidence::merge_corrupt(s_scan_corrupt, tc);
+        }
+    }
+
     s_valid_segment_count = 0;
     s_flash_total_records = 0;
     s_oldest_segment = 0;
@@ -1339,16 +1503,271 @@ static bool meta_read(uint32_t &boot_seq, uint32_t &seq_reserved, uint32_t &corr
     return true;
 }
 
-// 写 meta（整块 32 B 覆写，含 CRC）
-static bool meta_write(uint32_t boot_seq, uint32_t seq_reserved, uint32_t corrupt)
+// -----------------------------------------------------------------------------
+// `HD-3`·`A-1` 修复：持久证据（NVS）与隔离标记（`2026-10-18`）
+// -----------------------------------------------------------------------------
+//
+// 三份证据的存活关系（**这是本修复的核心论点**）：
+//   · NVS 记录（`guolog/ev`）      —— 存活于 LittleFS 格式化 / 日志区损坏
+//   · `/log/quarantine.bin`        —— 与日志区同生共死（作为 NVS 的备份）
+//   · 双槽 / legacy / 段内 boot_seq —— 原有三层（日志区内）
+// ⇒ 只有"整片擦除（NVS + LittleFS 同时丢）"才会三者全无；
+//   该情形等价于**受控恢复出厂设置**，见 `log_meta_evidence.h` 头部边界说明。
+
+#define LOG_QUARANTINE_PATH "/log/quarantine.bin"
+
+// 读 NVS 证据。失败 ⇒ 输出参数保持 0，返回 false（**不得**据此推断"从未运行"）
+static bool evidence_read_nvs()
 {
-    // 故障注入（仅测试用，一次性）
-    if (s_meta_fail_next)
+    Preferences prefs;
+
+    if (!prefs.begin(kEvNamespace, true))   // 只读打开
     {
-        s_meta_fail_next = false;
         return false;
     }
 
+    uint8_t buf[LOG_EV_SIZE];
+
+    const size_t n = prefs.getBytesLength(kEvKey);
+
+    if (n != (size_t)LOG_EV_SIZE)
+    {
+        prefs.end();
+        return false;
+    }
+
+    if (prefs.getBytes(kEvKey, buf, sizeof(buf)) != sizeof(buf))
+    {
+        prefs.end();
+        return false;
+    }
+
+    prefs.end();
+
+    uint32_t b = 0, r = 0, f = 0, g = 0, c = 0;
+
+    if (!log_meta_evidence::parse(buf, b, r, f, g, c))
+    {
+        return false;
+    }
+
+    s_ev_boot_hw     = b;
+    s_ev_reserved_hw = r;
+    s_ev_flags       = f;
+    s_ev_gen         = g;
+    s_ev_corrupt     = c;
+
+    return true;
+}
+
+// 写 NVS 证据（每次 boot + 每次 seq 预留 + 隔离置位）
+static bool evidence_write_nvs(uint32_t boot_hw, uint32_t reserved_hw,
+                               uint32_t flags, uint32_t corrupt)
+{
+    uint8_t buf[LOG_EV_SIZE];
+
+    log_meta_evidence::pack(buf, boot_hw, reserved_hw, flags, s_ev_gen + 1u, corrupt);
+
+    Preferences prefs;
+
+    if (!prefs.begin(kEvNamespace, false))
+    {
+        return false;
+    }
+
+    const size_t n = prefs.putBytes(kEvKey, buf, sizeof(buf));
+
+    prefs.end();
+
+    if (n != sizeof(buf))
+    {
+        return false;
+    }
+
+    s_ev_gen         = s_ev_gen + 1u;
+    s_ev_boot_hw     = boot_hw;
+    s_ev_reserved_hw = reserved_hw;
+    s_ev_flags       = flags;
+    s_ev_corrupt     = corrupt;
+    s_evidence_ok    = true;
+
+    return true;
+}
+
+// 读 `/log/quarantine.bin`（NVS 的备份；两者任一存活即可）
+static bool quarantine_read_file()
+{
+    if (!LittleFS.exists(LOG_QUARANTINE_PATH))
+    {
+        return false;
+    }
+
+    File f = LittleFS.open(LOG_QUARANTINE_PATH, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t buf[LOG_EV_SIZE];
+    const bool got = (f.read(buf, sizeof(buf)) == (size_t)sizeof(buf));
+
+    f.close();
+
+    if (!got)
+    {
+        return false;
+    }
+
+    uint32_t b = 0, r = 0, f2 = 0, g = 0, c = 0;
+    return log_meta_evidence::parse(buf, b, r, f2, g, c);
+}
+
+/**
+ * 写隔离标记文件（`/log/quarantine.bin`）。
+ *
+ * ★ `A1-11` 修复（`2026-10-19`）：原实现 `open(path, "w")` **立即截断**目标 ——
+ *   掉电在 32 B 半写之间 ⇒ 文件存在但 CRC 失败 ⇒ `quarantine_read_file()` 返回
+ *   false ⇒ 隔离标记丢失（此时只剩 NVS 一份）。现改为：
+ *     ① 写临时文件；② **回读逐字节校验**；③ `rename` 覆盖。
+ *   ⇒ "要么旧标记、要么新标记"，不会产生半写的第三态。
+ *
+ * ⚠️ `LittleFS.rename` 在目标存在时可能是 unlink+rename（非严格原子）⇒
+ *   仍存在极窄的"两者都不存在"窗口；因此 NVS 那一份**不可省略**。
+ */
+static bool quarantine_write_file(uint32_t boot_hw, uint32_t reserved_hw, uint32_t corrupt)
+{
+    uint8_t buf[LOG_EV_SIZE];
+
+    log_meta_evidence::pack(buf, boot_hw, reserved_hw,
+                            LOG_EV_FLAG_QUARANTINE, s_ev_gen + 1u, corrupt);
+
+    const char *tmp = "/log/quarantine.tmp";
+
+    File f = LittleFS.open(tmp, "w");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const bool wrote = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+
+    f.close();
+
+    if (!wrote)
+    {
+        LittleFS.remove(tmp);
+        return false;
+    }
+
+    /* 回读校验：写成功 ≠ 已落盘 */
+    uint32_t b = 0, r = 0, fl = 0, g = 0, c = 0;
+    bool verified = false;
+
+    File rf = LittleFS.open(tmp, "r");
+
+    if (rf)
+    {
+        uint8_t chk[LOG_EV_SIZE];
+
+        verified = (rf.read(chk, sizeof(chk)) == (size_t)sizeof(chk))
+                && log_meta_evidence::parse(chk, b, r, fl, g, c);
+
+        rf.close();
+    }
+
+    if (!verified)
+    {
+        LittleFS.remove(tmp);
+        return false;
+    }
+
+    if (LittleFS.exists(LOG_QUARANTINE_PATH))
+    {
+        (void)LittleFS.remove(LOG_QUARANTINE_PATH);
+    }
+
+    if (LittleFS.rename(tmp, LOG_QUARANTINE_PATH))
+    {
+        return true;
+    }
+
+    /* 退化：rename 失败时直接写正式路径（旧行为），至少保证标记存在 */
+    LittleFS.remove(tmp);
+
+    File f2 = LittleFS.open(LOG_QUARANTINE_PATH, "w");
+
+    if (!f2)
+    {
+        return false;
+    }
+
+    const bool ok2 = (f2.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+
+    f2.close();
+
+    return ok2;
+}
+
+/**
+ * 进入隔离：**双份固化**（NVS + 文件），并把运行期闸门置位。
+ *
+ * 设计取舍：任一份写失败都**不放弃**另一份，且无论持久化是否成功，
+ * 本次 boot 立即停写（`s_seq_failclosed`）—— 宁可少记日志，也不产生
+ * 可能与历史记录撞键的 `(boot_seq, seq)`。
+ */
+static void quarantine_enter(const char *reason, uint32_t boot_hw, uint32_t reserved_hw)
+{
+    s_seq_failclosed = true;
+    s_seq_reliable   = false;
+
+    const uint32_t flags = (s_ev_flags | LOG_EV_FLAG_QUARANTINE | LOG_EV_FLAG_PROVISIONED);
+
+    const bool nvs_ok  = evidence_write_nvs(boot_hw, reserved_hw, flags, s_meta_corrupt);
+    const bool file_ok = quarantine_write_file(boot_hw, reserved_hw, s_meta_corrupt);
+
+    s_qfile_present = file_ok ? true : s_qfile_present;
+
+    Serial.printf(
+        "[Log] QUARANTINE (%s): seq allocation stopped; nvs=%d file=%d\n",
+        reason, nvs_ok ? 1 : 0, file_ok ? 1 : 0);
+
+    if (!nvs_ok && !file_ok)
+    {
+        /* 两份标记都写不进 ⇒ 本次 boot 仍停写，但**下次重启无法复原该状态**。
+           退而求其次（`A1-02` 残留修复）：把"无法固化隔离"记为一次**损坏痕迹**。
+           若该痕迹能落盘 ⇒ 下次 `flash_scan_all()` 会把它并入 `scan_corrupt`
+           ⇒ `decide_recovery()` 绝不返回 `REC_PROVISION`（探针 E11 已断言）。
+           ⚠️ 若 trace 也写不进（LittleFS 整体只读），则**没有任何**跨重启证据 ——
+              该边界无法在设备侧保证，必须显式告警并由服务侧兜底。 */
+        const bool trace_ok = corrupt_trace_bump(LOG_TRACE_SEG_NONE, boot_hw);
+
+        Serial.printf(
+            "[Log] QUARANTINE: BOTH markers failed -> trace=%d (durable=%d) reason=%s\n",
+            trace_ok ? 1 : 0, trace_ok ? 1 : 0, reason);
+
+        if (!trace_ok)
+        {
+            Serial.println(
+                "[Log] QUARANTINE: NOT durable across reboot (nvs+file+trace all failed)");
+        }
+    }
+}
+
+
+// 写 **legacy** `meta.bin`（32 B · `fmt = LOG_META_VERSION = 2`）
+//
+// ⚠️ `HD-3`·`A-1` 起本函数**不再**是权威写入路径：
+//    权威路径 = 双槽 `meta_commit_write()`（`meta_a.bin` / `meta_b.bin`，fmt=3）。
+//    本函数只用于**回滚镜像**——让旧固件（只认 `meta.bin`）仍能读到最近一次成功值。
+// ⚠️ 故障注入**不在此处**（已上移到 `meta_commit_write()`），否则"槽提交失败"与
+//    "镜像失败"会被混为一谈。
+// ★ `A1-08` 修复：改为 **临时文件 + rename**。原实现 `open("w")` 会立即截断唯一的
+//   回滚镜像；若随后掉电，旧固件将读到 0 字节 ⇒ 回滚本身成为 `R-2` 的触发器。
+//   `rename` 在同一文件系统内是**目录项级原子替换** ⇒ 要么旧镜像、要么新镜像。
+static bool meta_write(uint32_t boot_seq, uint32_t seq_reserved, uint32_t corrupt)
+{
     uint8_t buf[LOG_META_SIZE];
     memset(buf, 0, sizeof(buf));
 
@@ -1359,26 +1778,253 @@ static bool meta_write(uint32_t boot_seq, uint32_t seq_reserved, uint32_t corrup
     flash_put_u32(&buf[LOG_META_OFF_CORRUPT], corrupt);
     flash_put_u32(&buf[LOG_META_OFF_CRC32], log_crc32(buf, LOG_META_CRC_SPAN));
 
-    File f = LittleFS.open(LOG_META_PATH, "w");
+    const char *tmp_path = LOG_META_PATH ".tmp";
+
+    File f = LittleFS.open(tmp_path, "w");
 
     if (!f)
     {
         return false;
     }
 
-    const bool ok = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+    const bool wrote = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
     f.close();
 
-    return ok;
+    if (!wrote)
+    {
+        LittleFS.remove(tmp_path);
+        return false;
+    }
+
+    /* 原子替换：旧镜像在新镜像落盘前始终完好 */
+    if (!LittleFS.rename(tmp_path, LOG_META_PATH))
+    {
+        LittleFS.remove(tmp_path);
+        return false;
+    }
+
+    return true;
 }
 
-// 扫描全部有效 segment 求已使用的最大 seq（§16-1..4）
+// -----------------------------------------------------------------------------
+// `HD-3`·`A-1`：双槽写入原语（`2026-10-18`）
+// -----------------------------------------------------------------------------
+
+// 写单个槽（`commit` 由调用方指定）+ **写后回读逐字节校验**（`A1-05`）
+//
+// ★ 为什么必须回读：`File::write()` 只表示"数据交给了 FS 缓存"，
+//   `File::close()` 在 Arduino-ESP32 中**无返回值** ⇒ 落盘失败无法被察觉。
+//   原实现因此可能返回 `true` 而槽内仍是旧值，导致内存与 Flash 信念分叉。
+//   回读 32 B 的成本可忽略（仅在每次 seq 预留 / 开机时发生）。
+static bool meta_slot_write_raw(const char *path, uint32_t boot_seq,
+                                uint32_t seq_reserved, uint32_t corrupt,
+                                uint32_t slot_seq, uint32_t commit)
+{
+    uint8_t buf[LOG_META_SIZE];
+
+    /* 序列化（magic/fmt/payload/slot_seq/commit/crc）**全部**由纯逻辑完成
+       ⇒ 与 `probe_meta_slot.cpp` 跑的是同一份代码 */
+    log_meta_slot::pack(buf, boot_seq, seq_reserved, corrupt, slot_seq, commit);
+
+    File f = LittleFS.open(path, "w");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    const bool wrote = (f.write(buf, sizeof(buf)) == (size_t)sizeof(buf));
+    f.close();
+
+    if (!wrote)
+    {
+        return false;
+    }
+
+    /* ---- 回读校验（`A1-05`）：逐字节比对，覆盖 `commit=0` 的中间态 ---- */
+    if (s_meta_fail_stage == 3u)
+    {
+        s_meta_fail_stage = 0;      // 一次性注入
+        return false;
+    }
+
+    File g = LittleFS.open(path, "r");
+
+    if (!g)
+    {
+        return false;
+    }
+
+    uint8_t back[LOG_META_SIZE];
+    const bool got = (g.read(back, sizeof(back)) == (size_t)sizeof(back));
+
+    g.close();
+
+    if (!got)
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < LOG_META_SIZE; i++)
+    {
+        if (back[i] != buf[i])
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// 读单个槽：**只有 `commit=1` 且 CRC 通过才算有效**
+//
+// ★ 两阶段提交的关键：`commit=0` 的半写槽**一律无效** ⇒ 掉电不会产生"看似有效
+//   但字段半新半旧"的状态。
+static bool meta_slot_read(const char *path, uint32_t &boot_seq,
+                           uint32_t &seq_reserved, uint32_t &corrupt,
+                           uint32_t &slot_seq)
+{
+    if (!LittleFS.exists(path))
+    {
+        return false;
+    }
+
+    File f = LittleFS.open(path, "r");
+
+    if (!f)
+    {
+        return false;
+    }
+
+    uint8_t buf[LOG_META_SIZE];
+    const bool got = (f.read(buf, sizeof(buf)) == (size_t)sizeof(buf));
+    f.close();
+
+    if (!got)
+    {
+        return false;
+    }
+
+    /* 校验（magic / fmt / **commit** / CRC）由纯逻辑完成 ⇒ 与探针同一份代码 */
+    return log_meta_slot::parse(buf, boot_seq, seq_reserved, corrupt, slot_seq);
+}
+
+// 选一个可信槽：`slot_seq` 大者胜；两槽都无效 ⇒ false
+static bool meta_read_best(uint32_t &boot_seq, uint32_t &seq_reserved,
+                           uint32_t &corrupt, int8_t &slot)
+{
+    uint32_t bA = 0, rA = 0, cA = 0, qA = 0;
+    uint32_t bB = 0, rB = 0, cB = 0, qB = 0;
+
+    const bool okA = meta_slot_read(LOG_META_SLOT_A, bA, rA, cA, qA);
+    const bool okB = meta_slot_read(LOG_META_SLOT_B, bB, rB, cB, qB);
+
+    /* 选槽规则（纯逻辑，见 `log_meta_slot::choose()`）：
+       `slot_seq` 大者胜；相等取 A（确定性）；都无效 ⇒ -1 */
+    const int8_t pick = log_meta_slot::choose(okA, qA, okB, qB);
+
+    if (pick < 0)
+    {
+        slot = -1;
+        s_meta_slot_seq = 0;
+        return false;
+    }
+
+    const bool takeA = (pick == 0);
+
+    boot_seq        = takeA ? bA : bB;
+    seq_reserved    = takeA ? rA : rB;
+    corrupt         = takeA ? cA : cB;
+    slot            = pick;
+    s_meta_slot_seq = takeA ? qA : qB;
+
+    return true;
+}
+
+// 提交一次元数据：**双槽两阶段** + legacy 镜像（best-effort）
+//
+// 顺序（每一步掉电都安全）：
+//   ① 写目标槽（= 非当前有效槽）`commit=0`  ⇒ 目标槽失效，**旧槽仍完好**
+//   ② 写目标槽 `commit=1`                   ⇒ 原子生效点
+//   ③ best-effort 镜像 legacy `meta.bin`
+//
+// 返回 false 只有两种情形：① 或 ② 失败。此时**旧槽仍是最后一次成功值**，
+// 调用方必须按"序号可能重复"降级（`s_seq_reliable=false`）。
+static bool meta_commit_write(uint32_t boot_seq, uint32_t seq_reserved, uint32_t corrupt)
+{
+    // 故障注入（仅测试用，一次性）—— 作用于**整个提交**
+    if (s_meta_fail_next)
+    {
+        s_meta_fail_next = false;
+        return false;
+    }
+
+    /* `A1-06`：阶段 1 = 写槽①之前失败（等价于"提交未开始"） */
+    if (s_meta_fail_stage == 1u)
+    {
+        s_meta_fail_stage = 0;
+        return false;
+    }
+
+    const int8_t target = (s_meta_slot == 0) ? 1 : 0;
+    const char *path = (target == 0) ? LOG_META_SLOT_A : LOG_META_SLOT_B;
+    const uint32_t next_seq = s_meta_slot_seq + 1;
+
+    if (!meta_slot_write_raw(path, boot_seq, seq_reserved, corrupt, next_seq, 0))
+    {
+        return false;
+    }
+
+    /* `A1-06`：阶段 2 = 槽①已落盘（`commit=0`）但槽②失败
+       ⇒ **半写槽留在盘上**，这是两阶段提交最关键的中间态 */
+    if (s_meta_fail_stage == 2u)
+    {
+        s_meta_fail_stage = 0;
+        return false;
+    }
+
+    if (!meta_slot_write_raw(path, boot_seq, seq_reserved, corrupt,
+                             next_seq, LOG_META_COMMIT_MARK))
+    {
+        return false;
+    }
+
+    s_meta_slot = target;
+    s_meta_slot_seq = next_seq;
+
+    /* legacy 镜像：失败**不影响**本次提交（回滚场景的已知限制），
+       但必须留痕（`A1-08`）—— 否则"回滚可用性"会在无声中退化 */
+    if (!meta_write(boot_seq, seq_reserved, corrupt))
+    {
+        s_seq_reliable = false;
+        Serial.println("[Log] legacy meta mirror failed (rollback image stale)");
+    }
+
+    /* NVS 证据：与槽**同频**刷新（每次预留 / 开机一次）
+       ⇒ LittleFS 整体被格式化后仍有独立的高水位可依（`A1-01`）。
+       失败不改变本次提交结果（槽是权威），但必须降级标记。 */
+    if (!evidence_write_nvs(boot_seq, seq_reserved,
+                            s_ev_flags | LOG_EV_FLAG_PROVISIONED, corrupt))
+    {
+        s_seq_reliable = false;
+        Serial.println("[Log] NVS evidence write failed (independent copy stale)");
+    }
+
+    return true;
+}
+
+// 扫描全部有效 segment 求已使用的最大 seq **与最大 boot_seq**（§16-1..4）
+//
+// `A-1` 追加 `out_boot_seq`：`meta` 全失效时，`boot_seq` **必须**能从段内
+// `LogRecord.boot_seq`（`LOG_OFF_BOOT_SEQ = 8`，固件记录里本就存在）恢复，
+// 否则只能从 1 重建 ⇒ 与云端历史 `(device_id, 1, …)` 撞键（`R-2`）。
 //
 // 依赖 flash_scan_all() 建立的 s_seg_present / s_seg_records，
 // 因此必须在扫描之后调用。
-static uint32_t flash_find_max_seq()
+static uint32_t flash_find_max_seq(uint32_t *out_boot_seq)
 {
     uint32_t max_seq = 0;
+    uint32_t max_boot = 0;
     LogRecord rec;
 
     for (uint32_t seg = 0; seg < LOG_SEGMENT_COUNT; seg++)
@@ -1417,9 +2063,19 @@ static uint32_t flash_find_max_seq()
             {
                 max_seq = rec.seq;
             }
+
+            if (rec.boot_seq > max_boot)
+            {
+                max_boot = rec.boot_seq;
+            }
         }
 
         f.close();
+    }
+
+    if (out_boot_seq != nullptr)
+    {
+        *out_boot_seq = max_boot;
     }
 
     return max_seq;
@@ -1433,10 +2089,20 @@ static uint32_t flash_find_max_seq()
 // 返回 false = meta 写入失败 → 调用方置 s_seq_reliable = false（§15）
 static bool seq_reserve_next()
 {
+    /* `A1-07`：区间算术不得回绕。`reserved` 已到最后一个可对齐的倍数之后
+       ⇒ 无可用区间 ⇒ 直接转入隔离（此后 `log_emit` 全部拒绝）。 */
+    if (s_meta_reserved >= 0xFFFFFF00u)
+    {
+        s_seq_failclosed = true;
+        s_seq_reliable   = false;
+        Serial.println("[Log] seq reserve impossible (reserved near UINT32_MAX) -> quarantine");
+        return false;
+    }
+
     const uint32_t base = s_meta_reserved + 1;
     const uint32_t next_reserved = s_meta_reserved + LOG_SEQ_RESERVE;
 
-    if (!meta_write(s_boot_seq, next_reserved, s_meta_corrupt))
+    if (!meta_commit_write(s_boot_seq, next_reserved, s_meta_corrupt))
     {
         return false;
     }
@@ -1454,40 +2120,227 @@ static bool seq_reserve_next()
     return true;
 }
 
-// Boot 时初始化 sequence（§13 / §16）
+// ---- `HD-3`·`A-1` 修复：段内 seq 高水位（跳过"末条未知"哨兵，`A1-04`）----
+//
+// `flash_scan_all()` 在读不到某段末条记录时把 `s_seg_last_seq[seg]` 置为
+// `0xFFFFFFFF`（"未知"）。旧实现把它当数值参与 `ceil` 对齐 ⇒ 溢出回绕成 0
+// ⇒ `reserved` **骤降**（注释却声称"只升不降"）。
+static uint32_t flash_seg_high_water()
+{
+    uint32_t hw = 0;
+
+    for (uint32_t i = 0; i < LOG_SEGMENT_COUNT; i++)
+    {
+        if (log_meta_evidence::seg_last_usable(s_seg_last_seq[i]) &&
+            s_seg_last_seq[i] > hw)
+        {
+            hw = s_seg_last_seq[i];
+        }
+    }
+
+    return hw;
+}
+
+// Boot 时初始化 sequence（§13 / §16 · `HD-3`·`A-1` 修复）
 //
 // 必须在 flash_init()（含 flash_scan_all）之后调用。
+//
+// 恢复顺序（唯一判据 = `log_meta_evidence::decide_recovery`）：
+//   ① 隔离标记（NVS / `/log/quarantine.bin`）⇒ 拒绝分配，**跨重启固化**
+//   ② NVS 证据        —— 独立于 LittleFS（格式化后仍可依）
+//   ③ 双槽            —— 掉电安全的权威值
+//   ④ legacy `meta.bin` —— 升级 / 回滚路径
+//   ⑤ 段内 `boot_seq` —— 日志区最后一道线索
+//   ⑥ 真·首启（**仅当**"本次 boot 才建立身份"且无任何痕迹）
+//   ⑦ 其余（含"无证据但身份早已存在"）⇒ 隔离
+//
+// ★ 与旧实现的**行为差异**（即 `A1-01` / `A1-02` 的修复点）：
+//   · 旧：无证据 + 无损坏痕迹 ⇒ 一律 `BOOT_FRESH`（含被格式化的旧设备）
+//   · 新：无证据 + 身份早已存在 ⇒ **隔离**；只有"身份也是本次才建立"才允许 =1
+//   · 旧：隔离只在 RAM 里，第二次重启即被删证据"洗白"
+//   · 新：隔离写入 NVS（+ 文件备份）⇒ 重启后仍然生效
 static void seq_init()
 {
-    uint32_t boot = 0;
-    uint32_t reserved = 0;
-    uint32_t corrupt = 0;
-
-    const bool have_meta = meta_read(boot, reserved, corrupt);
-
-    if (have_meta)
+    /* 诊断：漏调 `log_set_first_boot()` ⇒ 全新设备会被判隔离（安全但不可用）。
+       本告警只打一次，且**不改变**任何判定。 */
+    if (!s_first_boot_set)
     {
-        // §18：本次扫描发现的损坏段也累加进持久化计数
-        corrupt = corrupt + s_scan_corrupt;
-        s_meta_corrupt = corrupt;
+        Serial.println(
+            "[Log] WARN log_set_first_boot() not called -> first boot will be quarantined");
+    }
+
+    /* ================= ① 读三条独立证据线 ================= */
+
+    s_evidence_ok   = evidence_read_nvs();
+    s_qfile_present = quarantine_read_file();
+
+    const bool q_nvs      = s_evidence_ok && ((s_ev_flags & LOG_EV_FLAG_QUARANTINE) != 0u);
+    const bool quarantine = q_nvs || s_qfile_present;
+
+    /* 双槽**总是**读：即使由 NVS 主导恢复，也必须知道"下一次提交该写哪个槽"，
+       否则可能覆盖唯一有效槽 ⇒ 下次开机选槽回退到更旧的 `slot_seq`。 */
+    uint32_t slot_boot = 0, slot_res = 0, slot_corrupt = 0;
+    int8_t   slot = -1;
+    const bool have_slot = meta_read_best(slot_boot, slot_res, slot_corrupt, slot);
+
+    if (have_slot)
+    {
+        s_meta_slot = slot;      // 目标槽 = 非当前槽（由 `meta_commit_write` 取反）
+    }
+
+    /* legacy 仅在双槽无效且未隔离时读（省一次 Flash 读） */
+    uint32_t l_boot = 0, l_res = 0, l_corrupt = 0;
+    const bool have_legacy = (!have_slot && !quarantine)
+                                 ? meta_read(l_boot, l_res, l_corrupt)
+                                 : false;
+
+    /* 段扫描仅在 NVS / 槽 / legacy 全无效时做（省 I/O） */
+    uint32_t max_boot = 0;
+
+    if (!s_evidence_ok && !have_slot && !have_legacy && !quarantine)
+    {
+        (void)flash_find_max_seq(&max_boot);   // seq 高水位由 `flash_seg_high_water()` 统一取
+    }
+
+    /* ================= ② 来源判定（纯逻辑） ================= */
+
+    const int src = (int)log_meta_evidence::decide_recovery(
+        quarantine, s_evidence_ok, have_slot, have_legacy,
+        max_boot, s_flash_total_records, s_scan_corrupt, !s_first_boot);
+
+    s_ev_source = (uint8_t)src;
+
+    /* ================= ③ 统一取高水位（只升不降） ================= */
+
+    const uint32_t seg_hw      = flash_seg_high_water();
+    const uint32_t seg_align   = log_meta_evidence::align_reserve(seg_hw);
+
+    const uint32_t boot_used = log_meta_evidence::pick_hw4(
+        s_evidence_ok ? s_ev_boot_hw : 0u, slot_boot, l_boot, max_boot);
+
+    uint32_t reserved = log_meta_evidence::pick_hw4(
+        s_evidence_ok ? s_ev_reserved_hw : 0u, slot_res, l_res,
+        (seg_align == LOG_SEQ_EXHAUSTED) ? 0u : seg_align);
+
+    /* corrupt 计数：取"主导来源"的快照 + 本次扫描新增（§18） */
+    uint32_t stored_corrupt = 0;
+
+    if (s_evidence_ok)
+    {
+        stored_corrupt = s_ev_corrupt;
+    }
+    else if (have_slot)
+    {
+        stored_corrupt = slot_corrupt;
+    }
+    else if (have_legacy)
+    {
+        stored_corrupt = l_corrupt;
+    }
+
+    const bool recovered = (src == (int)log_meta_evidence::REC_FROM_NVS)
+                        || (src == (int)log_meta_evidence::REC_FROM_SLOT)
+                        || (src == (int)log_meta_evidence::REC_FROM_LEGACY);
+
+    uint32_t corrupt = (recovered ? stored_corrupt : 0u) + s_scan_corrupt
+                     + (recovered ? 0u : 1u);
+
+    /* ================= ④ 隔离：不分配、不写槽、固化标记 ================= */
+
+    if (src == (int)log_meta_evidence::REC_QUARANTINE)
+    {
+        s_meta_reserved = reserved;
+        s_meta_corrupt  = corrupt;
+        s_boot_seq      = boot_used;      // 仅用于上报，**不参与任何分配**
+
+        Serial.printf(
+            "[Log] recovery=QUARANTINE (nvs=%d slot=%d legacy=%d seg_max=%u recs=%u corrupt=%u first_boot=%d)\n",
+            s_evidence_ok ? 1 : 0, have_slot ? 1 : 0, have_legacy ? 1 : 0,
+            (unsigned)max_boot, (unsigned)s_flash_total_records,
+            (unsigned)s_scan_corrupt, s_first_boot ? 1 : 0);
+
+        const char *why = q_nvs ? "nvs-flag"
+                        : (s_qfile_present ? "file-flag" : "no-evidence-but-provisioned");
+
+        quarantine_enter(why, boot_used, reserved);
+
+        /* 区间信息置为"不可用"，避免上游把 0 当成合法区间 */
+        s_seq_base  = 0;
+        s_seq_limit = 0;
+        s_seq_last  = 0;
+        return;
+    }
+
+    /* ================= ⑤ 计算本次 boot_seq（饱和，不回绕） ================= */
+
+    bool boot_ok = true;
+    uint32_t next_boot;
+
+    if (src == (int)log_meta_evidence::REC_PROVISION)
+    {
+        next_boot = 1u;
+        Serial.println("[Log] recovery=PROVISION (first boot of a new unit) -> boot_seq=1");
     }
     else
     {
-        // §16：meta 不存在或损坏 → 扫描现有 segment 取最大 seq，向上对齐重建
-        const uint32_t max_seq = flash_find_max_seq();
+        next_boot = log_meta_evidence::next_boot_seq(boot_used, boot_ok);
+    }
 
-        reserved = ((max_seq + LOG_SEQ_RESERVE - 1) / LOG_SEQ_RESERVE) * LOG_SEQ_RESERVE;
-        corrupt = corrupt + 1 + s_scan_corrupt;      // §16-7 + §18
-
-        s_meta_corrupt = corrupt;
+    /* 区间耗尽 ⇒ 同样无法安全分配 ⇒ 隔离（绝不把 0 当新区间） */
+    if (!boot_ok || reserved == LOG_SEQ_EXHAUSTED || seg_align == LOG_SEQ_EXHAUSTED)
+    {
+        s_meta_reserved = reserved;
+        s_meta_corrupt  = corrupt;
+        s_boot_seq      = boot_used;
 
         Serial.printf(
-            "[Log] meta missing/corrupt -> rebuild: max_seq=%u reserved=%u corrupt=%u\n",
-            (unsigned)max_seq, (unsigned)reserved, (unsigned)corrupt);
+            "[Log] seq space exhausted (boot_ok=%d reserved=%u seg=%u) -> quarantine\n",
+            boot_ok ? 1 : 0, (unsigned)reserved, (unsigned)seg_align);
+
+        quarantine_enter("seq-exhausted", boot_used, reserved);
+        s_seq_base  = 0;
+        s_seq_limit = 0;
+        s_seq_last  = 0;
+        return;
+    }
+
+    /* ================= ⑥ 段内高水位兜底（`A1-04`：已按 sentinel 过滤） ================= */
+
+    if (seg_align != LOG_SEQ_EXHAUSTED && seg_align > reserved)
+    {
+        Serial.printf(
+            "[Log] reserved raised by segment high-water: seg_hw=%u reserved=%u\n",
+            (unsigned)seg_hw, (unsigned)seg_align);
+
+        reserved = seg_align;
     }
 
     s_meta_reserved = reserved;
-    s_boot_seq = boot + 1;                            // §13：boot_seq++
+    s_meta_corrupt  = corrupt;
+    s_boot_seq      = next_boot;
+
+    /* ================= ⑦ 固化 NVS 证据（即使后续预留失败也已留证） ================= */
+
+    if (!evidence_write_nvs(s_boot_seq, s_meta_reserved,
+                            (s_ev_flags | LOG_EV_FLAG_PROVISIONED),
+                            s_meta_corrupt))
+    {
+        s_seq_reliable = false;
+        Serial.println("[Log] NVS evidence write failed at boot (independent copy stale)");
+    }
+
+    /* 恢复来源逐条留痕（**串口是唯一能区分 5 种来源的地方**） */
+    Serial.printf(
+        "[Log] recovery=%s boot_hw=%u -> boot_seq=%u reserved=%u corrupt=%u (nvs=%d slot=%d legacy=%d seg_max=%u)\n",
+        (src == (int)log_meta_evidence::REC_FROM_NVS)     ? "NVS"
+        : (src == (int)log_meta_evidence::REC_FROM_SLOT)  ? "SLOT"
+        : (src == (int)log_meta_evidence::REC_FROM_LEGACY) ? "LEGACY"
+        : (src == (int)log_meta_evidence::REC_FROM_SEGMENT) ? "SEGMENT" : "PROVISION",
+        (unsigned)boot_used, (unsigned)s_boot_seq, (unsigned)reserved,
+        (unsigned)corrupt, s_evidence_ok ? 1 : 0, have_slot ? 1 : 0,
+        have_legacy ? 1 : 0, (unsigned)max_boot);
+
+    /* ================= ⑧ 预留首个区间 ================= */
 
     if (!seq_reserve_next())
     {
@@ -1640,13 +2493,15 @@ bool log_init()
     seq_init();
 
     Serial.printf(
-        "[Log] seq: boot_seq=%u base=%u limit=%u reserved=%u reliable=%u corrupt=%u\n",
+        "[Log] seq: boot_seq=%u base=%u limit=%u reserved=%u reliable=%u corrupt=%u src=%u failclosed=%u\n",
         (unsigned)s_boot_seq,
         (unsigned)s_seq_base,
         (unsigned)s_seq_limit,
         (unsigned)s_meta_reserved,
         s_seq_reliable ? 1u : 0u,
-        (unsigned)s_meta_corrupt);
+        (unsigned)s_meta_corrupt,
+        (unsigned)s_ev_source,
+        s_seq_failclosed ? 1u : 0u);
 
     // ---- P1.4：Cloud Log Topic 缓冲（PSRAM 优先 / DRAM 回退）----
     if (!cloud_init_buffers())
@@ -1713,6 +2568,23 @@ static bool log_emit_internal(LogEventId event_id, LogLevel level,
 {
     if (!s_ready)
     {
+        return false;
+    }
+
+    /* ★ `HD-3`·`A-1` fail-closed：无法证明 `boot_seq` 安全时**停止分配任何新 seq**。
+       非阻塞、无 Flash I/O、不进临界区 —— 只返回 `false`（调用方本就多以忽略返回值调用）。
+       取舍：宁可少记一条日志，也不产生**可能与历史记录撞 `ux_lh_dedup` 键**的
+       `(boot_seq, seq)` —— 后者会被云端静默丢弃，属**不可恢复**的数据损失。
+       只在首次触发时打一行串口，避免刷屏。 */
+    if (s_seq_failclosed)
+    {
+        if (!s_failclosed_logged)
+        {
+            s_failclosed_logged = true;
+            Serial.println(
+                "[Log] fail-closed active: log_emit rejected (seq not provably unique)");
+        }
+
         return false;
     }
 
@@ -3350,7 +4222,28 @@ void log_flash_get_info(LogFlashInfo &out)
     out.seq_base      = s_seq_base;
     out.seq_limit     = s_seq_limit;
     out.seq_last      = s_seq_last;
+
+    /* `HD-3`·`A-1` 修复：恢复证据与隔离（追加字段，`A1-03`） */
+    out.seq_failclosed  = s_seq_failclosed ? 1u : 0u;
+    out.nvs_evidence_ok = s_evidence_ok ? 1u : 0u;
+    out.nvs_quarantine  = (s_evidence_ok && ((s_ev_flags & LOG_EV_FLAG_QUARANTINE) != 0u)) ? 1u : 0u;
+    out.quarantine_file = s_qfile_present ? 1u : 0u;
+    out.evidence_source = s_ev_source;
+    out.nvs_boot_hw     = s_ev_boot_hw;
+    out.nvs_reserved_hw = s_ev_reserved_hw;
+    out.evidence_gen    = s_ev_gen;
     portEXIT_CRITICAL(&s_mux);
+
+    /* 损坏痕迹（只读一次小文件；失败 ⇒ 保持 0，不改变任何判定） */
+    {
+        uint32_t tc = 0, ts = 0, tb = 0;
+
+        if (corrupt_trace_read(tc, ts, tb))
+        {
+            out.trace_corrupt  = tc;
+            out.trace_last_seg = ts;
+        }
+    }
 }
 
 bool log_flash_peek_segment(uint32_t seg, LogSegmentHead &out)
@@ -3479,12 +4372,162 @@ bool log_flash_wipe()
 
 bool log_meta_wipe()
 {
+    /* `HD-3`·`A-1` 修复后：`meta.bin` 只是回滚镜像 ⇒ 仅删它**不再**等于
+       "元数据丢失"。本函数表示 **legacy + 双槽全失**（段保留），
+       以保持上板自测 `logt mwipe` 的原始语义（→ 走"段内重建"路径）。 */
+    bool ok = true;
+
+    if (LittleFS.exists(LOG_META_PATH) && !LittleFS.remove(LOG_META_PATH))
+    {
+        ok = false;
+    }
+
+    if (!log_meta_wipe_slots())
+    {
+        ok = false;
+    }
+
+    s_meta_slot     = -1;
+    s_meta_slot_seq = 0;
+
+    return ok;
+}
+
+bool log_meta_wipe_legacy()
+{
     if (LittleFS.exists(LOG_META_PATH))
     {
         return LittleFS.remove(LOG_META_PATH);
     }
 
     return true;
+}
+
+bool log_meta_wipe_slots()
+{
+    bool ok = true;
+
+    if (LittleFS.exists(LOG_META_SLOT_A) && !LittleFS.remove(LOG_META_SLOT_A))
+    {
+        ok = false;
+    }
+
+    if (LittleFS.exists(LOG_META_SLOT_B) && !LittleFS.remove(LOG_META_SLOT_B))
+    {
+        ok = false;
+    }
+
+    s_meta_slot     = -1;
+    s_meta_slot_seq = 0;
+
+    return ok;
+}
+
+void log_meta_test_fail_stage(uint8_t stage)
+{
+    s_meta_fail_stage = stage;
+}
+
+// ---- `HD-3`·`A-1` 修复：持久证据 / 隔离（`2026-10-18`）----
+
+void log_set_first_boot(bool is_first_boot)
+{
+    s_first_boot     = is_first_boot;
+    s_first_boot_set = true;
+}
+
+bool log_quarantine_active()
+{
+    return s_seq_failclosed;
+}
+
+/**
+ * 受控解除隔离（**仅人工**：串口 `lqclear`）。
+ *
+ * ★ 语义边界：**保留** `boot_hw` / `reserved_hw`，只清隔离标志
+ *   ⇒ 下次开机继续从"已知最大 `boot_seq`"往后走，**不是**回到 1。
+ *   若当初隔离时 `boot_hw` 就是 0（什么都没恢复出来），则下次仍为 1
+ *   —— 该情形无法在设备侧消除，须服务侧兜底（`HUMAN_REQUIRED`）。
+ *
+ * ⚠️ 不改变本次运行期闸门（`s_seq_failclosed`）：必须重启后重新判定，
+ *    避免"运行中清标志 → 复用未固化的序号区间"。
+ */
+bool log_quarantine_clear()
+{
+    uint8_t buf[LOG_EV_SIZE];
+
+    const uint32_t flags = (s_ev_flags & ~(uint32_t)LOG_EV_FLAG_QUARANTINE)
+                           | LOG_EV_FLAG_PROVISIONED;
+
+    log_meta_evidence::pack(buf, s_ev_boot_hw, s_ev_reserved_hw, flags,
+                            s_ev_gen + 1u, s_meta_corrupt);
+
+    bool ok_nvs = false;
+    Preferences prefs;
+
+    if (prefs.begin(kEvNamespace, false))
+    {
+        ok_nvs = (prefs.putBytes(kEvKey, buf, sizeof(buf)) == sizeof(buf));
+        prefs.end();
+    }
+
+    bool ok_file = true;
+
+    if (LittleFS.exists(LOG_QUARANTINE_PATH))
+    {
+        ok_file = LittleFS.remove(LOG_QUARANTINE_PATH);
+    }
+
+    if (ok_nvs && ok_file)
+    {
+        s_ev_flags      = flags;
+        s_ev_gen        = s_ev_gen + 1u;
+        s_evidence_ok   = true;
+        s_qfile_present = false;
+    }
+
+    Serial.printf("[Log] quarantine clear: nvs=%d file=%d (takes effect next boot)\n",
+                  ok_nvs ? 1 : 0, ok_file ? 1 : 0);
+
+    return ok_nvs && ok_file;
+}
+
+/**
+ * 删除持久证据（NVS 记录 + 隔离文件）。**仅测试 / 受控重置**用。
+ *
+ * 用于验证两条边界：
+ *   · 清证后 + `first_boot=false` ⇒ 下次必判隔离（不得当作全新设备）
+ *   · 清证后 + `first_boot=true`  ⇒ 下次判 `PROVISION`（真·首启）
+ */
+bool log_evidence_wipe()
+{
+    bool ok = true;
+
+    Preferences prefs;
+
+    if (prefs.begin(kEvNamespace, false))
+    {
+        prefs.remove(kEvKey);
+        prefs.end();
+    }
+    else
+    {
+        ok = false;
+    }
+
+    if (LittleFS.exists(LOG_QUARANTINE_PATH) && !LittleFS.remove(LOG_QUARANTINE_PATH))
+    {
+        ok = false;
+    }
+
+    s_evidence_ok   = false;
+    s_qfile_present = false;
+    s_ev_flags      = 0;
+    s_ev_boot_hw    = 0;
+    s_ev_reserved_hw = 0;
+    s_ev_gen        = 0;
+
+    return ok;
 }
 
 bool log_meta_corrupt()

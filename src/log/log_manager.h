@@ -130,6 +130,36 @@
 #define LOG_META_OFF_CRC32          28u
 #define LOG_META_CRC_SPAN           28u
 
+// -----------------------------------------------------------------------------
+// `HD-3` · `A-1`：双槽元数据（`2026-10-18`）
+// -----------------------------------------------------------------------------
+// 目的：单块覆写在"写一半掉电"时会同时毁掉唯一的可信状态 ⇒ `boot_seq`
+//       回退 ⇒ 与历史记录撞 `(device_id, boot_seq, seq)` 去重键（`R-1`）。
+//
+// 布局：**两个各 32 B 的槽文件**，复用上面的字段偏移，只把原本空着的
+//       `[20..27]` 8 B 用起来（**不改 `LOG_META_SIZE`、不改 CRC 跨度**）：
+//   20  slot_seq  uint32   提交序号（单调递增；选槽依据）
+//   24  commit    uint32   1 = 本槽有效；0 = 写入中 / 已失效
+//   28  crc32     uint32   覆盖 [0..27]（**含** slot_seq 与 commit）
+//
+// 为什么用两个文件而不是"一个文件两半"：
+//   · 两个文件各自可独立写完再原子生效，语义最清晰；
+//   · 旧固件只认 `meta.bin`，因此**每次提交后仍 best-effort 镜像一份 legacy**
+//     （fmt=2）供回滚读取 —— 见 `meta_commit_write()`。
+//
+// 选槽规则：两槽都 `commit=1` 且 CRC 通过 ⇒ 取 `slot_seq` **较大**者；
+//           仅一槽有效 ⇒ 用之；都无效 ⇒ 回退 legacy `meta.bin`；
+//           legacy 也无效 ⇒ 从日志段恢复（段内 `LogRecord.boot_seq` 可用）。
+#define LOG_META_SLOT_A             "/log/meta_a.bin"
+#define LOG_META_SLOT_B             "/log/meta_b.bin"
+
+/** 槽格式版本（**与 legacy 的 `LOG_META_VERSION`=2 区分**，避免把旧文件误读为槽） */
+#define LOG_META_SLOT_FMT           3u
+
+#define LOG_META_OFF_SLOT_SEQ       20u
+#define LOG_META_OFF_COMMIT         24u
+#define LOG_META_COMMIT_MARK        1u
+
 // =====================================================
 // 统计（侧信道：LogManager 自身状态，不产生 Log，避免递归）
 // =====================================================
@@ -198,7 +228,17 @@ struct LogStats
 // =====================================================
 
 // 分配 RAM 环（PSRAM 优先，失败回退 DRAM）。幂等，可重复调用。
+//
+// ⚠️ `HD-3`·`A-1` 修复（`2026-10-18`）：调用 `log_init()` **之前**必须先调用
+//    `log_set_first_boot()`，否则默认按"非首启"处理（保守：无证据 ⇒ 隔离）。
 bool log_init();
+
+// 告知 LogManager："本次 boot 才建立设备身份"（真·首启的唯一合法信号）。
+//
+// 唯一合法取值来源 = `device_identity_first_boot()`（NVS 里原本没有 `did`）。
+// 语义：true  ⇒ 允许在"完全无证据"时按全新设备从 `boot_seq=1` 起步
+//       false ⇒ 无证据一律转入隔离（拒绝分配 seq），**绝不**把未知当全新
+void log_set_first_boot(bool is_first_boot);
 
 // 在 loop() 中调用：消费 RAM 环 → routing 决策 → 一个 Flash append 单元。
 //
@@ -319,6 +359,20 @@ struct LogFlashInfo
     uint32_t seq_base;          // 本区间首号
     uint32_t seq_limit;         // 本区间末号（seq_base + LOG_SEQ_RESERVE - 1）
     uint32_t seq_last;          // 最近一次分配出去的 seq
+
+    // ---- `HD-3`·`A-1` 修复：恢复证据与隔离（`2026-10-18`，**追加字段**）----
+    // 只追加、不改既有字段 ⇒ 既有读取方（`main.cpp` 串口指令）零改动。
+    uint8_t  seq_failclosed;    // 1 = 隔离中：拒绝分配新 seq（跨重启固化）
+    uint8_t  nvs_evidence_ok;   // 1 = NVS 证据可读（独立于 LittleFS）
+    uint8_t  nvs_quarantine;    // 1 = NVS 证据里的隔离标志
+    uint8_t  quarantine_file;   // 1 = /log/quarantine.bin 存在
+    uint8_t  evidence_source;   // 恢复来源（对应 `log_meta_evidence::Recovery`）
+    uint32_t nvs_boot_hw;       // NVS 证据里的 boot 高水位
+    uint32_t nvs_reserved_hw;   // NVS 证据里的 seq 高水位
+    uint32_t evidence_gen;      // NVS 证据写入代数
+    // ---- `A1-02` 残留修复（`2026-10-19`）：损坏痕迹（独立于段文件）----
+    uint32_t trace_corrupt;     // `/log/corrupt.trace` 里的累计损坏次数（0 = 无痕迹）
+    uint32_t trace_last_seg;    // 最近损坏的段号（`0xFFFFFFFF` = 非段来源）
 };
 
 void log_flash_get_info(LogFlashInfo &out);
@@ -345,15 +399,38 @@ bool log_flash_peek_record(uint32_t seg, uint8_t rec, LogRecord &out, uint8_t &c
 // 删除 /log 下全部文件（测试基线复位）
 bool log_flash_wipe();
 
-// 删除 /log/meta.bin（测试 §16 的"meta 丢失 → 扫描重建"路径）
+// ---- `HD-3`·`A-1` 修复：测试钩子（`2026-10-18`）----
+//
+// ⚠️ 语义变更留痕：A-1 引入双槽后，`meta.bin` 只是**回滚镜像**，
+//    仅删 legacy 已**不能**再模拟"元数据丢失"。故：
+//      `log_meta_wipe()`   ⇒ 删 **legacy + 双槽**（= 元数据全失，保留段）
+//      `log_meta_wipe_legacy()` ⇒ 只删 legacy（= 升级/回滚场景）
+//      `log_meta_wipe_slots()`  ⇒ 只删双槽（= 回到 legacy 回退路径）
 bool log_meta_wipe();
+bool log_meta_wipe_legacy();
+bool log_meta_wipe_slots();
 
-// 破坏 /log/meta.bin 的 CRC（测试 §16 的"meta 损坏 → 扫描重建"路径）
+// 破坏 `/log/meta.bin` 的 CRC（legacy 回退路径的损坏用例）
 bool log_meta_corrupt();
 
-// 一次性故障注入：令下一次 meta 写入失败（测试 §15 / §41-4 的
-// "reservation 写失败 → s_seq_reliable = false"）
+// 一次性故障注入：令下一次 meta **提交**失败（测试 §15 / §41-4）
 void log_meta_test_fail_next(bool enable);
+
+// 分阶段故障注入（`A1-06`）：0 = 关闭；1 = 第一阶段(commit=0)失败；
+// 2 = 第二阶段(commit=1)失败（**半写槽留在盘上**，最关键中间态）；
+// 3 = 写后回读校验失败（`A1-05`）。一次性生效。
+void log_meta_test_fail_stage(uint8_t stage);
+
+// ---- `HD-3`·`A-1` 修复：持久证据 / 隔离（`2026-10-18`）----
+//
+// 隔离 = "本地无法证明 `boot_seq` 唯一" ⇒ 拒绝分配新 `seq`（跨重启固化）。
+// 仅可由**人工**通过 `log_quarantine_clear()`（受控恢复出厂）解除。
+bool log_quarantine_active();
+bool log_quarantine_clear();
+
+// 清空持久证据（NVS 记录 + `/log/quarantine.bin`）。**仅测试 / 受控重置**用；
+// 正常路径**不得**调用 —— 清空证据会把设备退化为"无法证明唯一"。
+bool log_evidence_wipe();
 
 // ---- Commit 4：损坏注入（仅上板自测）----
 
