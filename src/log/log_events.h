@@ -197,7 +197,22 @@ enum LogParamId : uint8_t
     LOG_P_MIN_FREE         = 0x56,
     LOG_P_PENDING          = 0x57,
     LOG_P_REMAIN_MS        = 0x58,
-    LOG_P_MAX              = 0x59
+
+    /* ---- `HD-3`·`A1-03`：启动诊断（加性扩展，`2026-10-19`）----
+       为什么必须 > 0x59：`0x00…0x59` 已被 90 个既有 PID 用满
+       （`LOG_P_MAX` 原为 0x59），新增只能往后排。
+       类型说明：本格式**没有 U8**（见 `LogParamType`）⇒
+         · `RECOVERY_SRC` 用 `LOG_PTYPE_ENUM`（语义枚举，取值 0..5）
+         · `FAILDCLOSED` 用 `LOG_PTYPE_BOOL`（0/1）
+         · `RESERVED_HW` / `TRACE_CORRUPT` 用 `LOG_PTYPE_U32`
+       兼容性：云端把 `payload_base64` 当**不透明数据**，不按 PID 解析；
+       仓库内**没有** TLV 解码器 ⇒ 见 `docs/interfaces/log_params_contract.md`。 */
+    LOG_P_RESERVED_HW      = 0x5A,   // u32  序号高水位（seq_reserved）
+    LOG_P_RECOVERY_SRC     = 0x5B,   // enum 0=NVS 1=SLOT 2=LEGACY 3=SEGMENT 4=PROVISION 5=QUARANTINE
+    LOG_P_FAILDCLOSED      = 0x5C,   // bool 0/1
+    LOG_P_TRACE_CORRUPT    = 0x5D,   // u32  损坏痕迹累计
+
+    LOG_P_MAX              = 0x5D
 };
 
 // =====================================================
@@ -616,7 +631,11 @@ static_assert(LOG_P_NONE == 0x00, "LOG_P_NONE");
 static_assert(LOG_P_SLOT == 0x01, "LOG_P_SLOT");
 static_assert(LOG_P_BOOT_SEQ == 0x21, "LOG_P_BOOT_SEQ");
 static_assert(LOG_P_REMAIN_MS == 0x58, "LOG_P_REMAIN_MS");
-static_assert(LOG_P_MAX == 0x59, "LOG_P_MAX");
+static_assert(LOG_P_RESERVED_HW == 0x5A, "LOG_P_RESERVED_HW");
+static_assert(LOG_P_RECOVERY_SRC == 0x5B, "LOG_P_RECOVERY_SRC");
+static_assert(LOG_P_FAILDCLOSED == 0x5C, "LOG_P_FAILDCLOSED");
+static_assert(LOG_P_TRACE_CORRUPT == 0x5D, "LOG_P_TRACE_CORRUPT");
+static_assert(LOG_P_MAX == 0x5D, "LOG_P_MAX");
 
 // 常量表达式形式的 Contract 自检（与 static_assert 等价，便于集中查看）
 //

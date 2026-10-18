@@ -623,9 +623,32 @@ void setup()
     if (!config_boot_validate()) {
         Serial.println("[WARN] Config boot validate failed");
     } else {
-        LogParamIn p[1];
+        /* `HD-3`·`A1-03`：启动诊断（**每次启动只发 1 条**）
+         *
+         * 4 个新增参数 + 既有 `INIT_MS` = 5 个（`LOG_MAX_PARAMS = 8`，不超限）。
+         * `boot_seq` **不在这里发** —— 它是日志记录**头部**字段
+         * （`LOG_OFF_BOOT_SEQ = 8`），每条记录自带，重复发是冗余。
+         *
+         * ⚠️ 数据来源 `log_flash_get_info()`：
+         *   · 内含一个**短临界区**（`s_mux`）读取序号/证据状态 —— 无阻塞；
+         *   · 会**只读**一次 `/log/corrupt.trace`（32 B，`exists` + 读+关；
+         *     文件不存在直接返回，不创建、不重试）⇒ 一次启动一次小 I/O；
+         *   · 失败不改变任何判定（返回 0），也**不影响**启动流程。
+         *
+         * ⚠️ 若设备处于 `failclosed`（隔离），`log_emit()` 会被短路 ⇒
+         *     **这条诊断发不出去**。看不到 ≠ 没问题；此时只能靠串口。
+         */
+        LogFlashInfo fi;
+        log_flash_get_info(fi);
+
+        LogParamIn p[5];
         p[0] = log_arg_u32(LOG_P_INIT_MS, (uint32_t)(millis() - setup_begin_ms));
-        log_emit(LOG_SYS_BOOT_COMPLETE, LOG_LVL_INFO, p, 1);
+        p[1] = log_arg_u32(LOG_P_RESERVED_HW, fi.seq_reserved);
+        p[2] = log_arg_enum(LOG_P_RECOVERY_SRC, (uint32_t)fi.evidence_source);
+        p[3] = log_arg_bool(LOG_P_FAILDCLOSED, fi.seq_failclosed != 0u);
+        p[4] = log_arg_u32(LOG_P_TRACE_CORRUPT, fi.trace_corrupt);
+
+        log_emit(LOG_SYS_BOOT_COMPLETE, LOG_LVL_INFO, p, 5);
     }
 }
 
