@@ -21,6 +21,9 @@ Log 契约测试运行器（离线，无需硬件/Arduino 框架/MQTT 对端）
     [4] ACK  探针 probe_ack.cpp  → wasm32 真跑：P1.5 ACK/退避/放弃/段可删性
     [5] ENV  探针 probe_envelope.cpp → wasm32 真跑：P3 WP4-FW-LOG
         Cloud Log Envelope（字段完整性 / payload_base64 可逆 / count=1 CBOR 回归）
+    [6] GC   探针 probe_gc.cpp    → wasm32 真跑：**段回收判定**（整段/部分确认、
+        边界 seq、空洞相交、空洞表溢出、`gc` 水位 vs `acked_max`、重复 ACK、
+        以及"谓词不含 append 保护"这一语义前提）
 
 只用 [1] 是不够的：若头文件的断言被某种方式跳过，[1] 也会"通过"。
 [2] 的存在使 Contract Test 具备"可证伪性"。
@@ -205,27 +208,33 @@ def main():
 
     ok1 = ok2 = None
     if gxx is not None:
-        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/5 positive")
-        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/5 negative")
+        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/6 positive")
+        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/6 negative")
     else:
-        print("[1/5 positive] SKIP : 未找到 xtensa 交叉编译器")
-        print("[2/5 negative] SKIP : 同上")
+        print("[1/6 positive] SKIP : 未找到 xtensa 交叉编译器")
+        print("[2/6 negative] SKIP : 同上")
 
     ok3 = run_wasm_probe(
-        "cbor", "3/5 cbor    ",
+        "cbor", "3/6 cbor    ",
         "21 B 头逐字节匹配 + records 130 B/条 + 越界/上界保护")
 
     ok4 = run_wasm_probe(
-        "ack", "4/5 ack     ",
+        "ack", "4/6 ack     ",
         "IGNORE/DUPLICATE/ACCEPT/PARTIAL 分类 + 覆盖前缀 + 段可删性 + 退避 + 放弃门槛")
 
     ok5 = run_wasm_probe(
-        "envelope", "5/5 envelope",
+        "envelope", "5/6 envelope",
         "6 字段完整性 + payload_base64 可逆 + count=1 CBOR 与冻结编码器逐字节一致",
         extra_sources=[os.path.join("src", "log", "log_envelope.cpp")])
 
+    # [6] 段回收（GC）判定：整段/部分/边界/空洞/溢出/水位/append 语义
+    #     —— 与 probe_ack 的分工：那个测**协议**，这个测**哪一段能删**。
+    ok6 = run_wasm_probe(
+        "gc", "6/6 gc      ",
+        "整段确认/部分确认/边界 seq/空洞相交/表溢出/gc 水位 vs acked_max/重复 ACK/append 语义")
+
     print("-" * 56)
-    results = [ok1, ok2, ok3, ok4, ok5]
+    results = [ok1, ok2, ok3, ok4, ok5, ok6]
     if any(r is False for r in results):
         print("CONTRACT TEST: FAIL")
         return 1
