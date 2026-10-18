@@ -73,7 +73,11 @@ static_assert(LOG_P_NONE == 0x00,      "0x00");
 static_assert(LOG_P_BOOT_SEQ == 0x21,  "0x21");
 static_assert(LOG_P_DROP_OVERFLOW == 0x55, "0x55");
 static_assert(LOG_P_REMAIN_MS == 0x58, "0x58");
-static_assert(LOG_P_MAX == 0x59,       "param count = 0x59");
+static_assert(LOG_P_RESERVED_HW == 0x5A, "0x5A");
+static_assert(LOG_P_RECOVERY_SRC == 0x5B, "0x5B");
+static_assert(LOG_P_FAILDCLOSED == 0x5C, "0x5C");
+static_assert(LOG_P_TRACE_CORRUPT == 0x5D, "0x5D");
+static_assert(LOG_P_MAX == 0x5D,       "param count = 0x5D");
 
 // 布局偏移
 static_assert(LOG_OFF_SEQ == 4 && LOG_OFF_BOOT_SEQ == 8 && LOG_OFF_EVENT_ID == 12, "offsets 4/8/12");

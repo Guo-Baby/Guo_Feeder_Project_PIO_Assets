@@ -215,45 +215,53 @@ def main():
 
     ok1 = ok2 = None
     if gxx is not None:
-        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/8 positive")
-        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/8 negative")
+        ok1 = run(gxx, os.path.join(HERE, "probe_ok.cpp"), True, "1/9 positive")
+        ok2 = run(gxx, os.path.join(HERE, "probe_bad.cpp"), False, "2/9 negative")
     else:
-        print("[1/8 positive] SKIP : 未找到 xtensa 交叉编译器")
-        print("[2/8 negative] SKIP : 同上")
+        print("[1/9 positive] SKIP : 未找到 xtensa 交叉编译器")
+        print("[2/9 negative] SKIP : 同上")
 
     ok3 = run_wasm_probe(
-        "cbor", "3/8 cbor    ",
+        "cbor", "3/9 cbor    ",
         "21 B 头逐字节匹配 + records 130 B/条 + 越界/上界保护")
 
     ok4 = run_wasm_probe(
-        "ack", "4/8 ack     ",
+        "ack", "4/9 ack     ",
         "IGNORE/DUPLICATE/ACCEPT/PARTIAL 分类 + 覆盖前缀 + 段可删性 + 退避 + 放弃门槛")
 
     ok5 = run_wasm_probe(
-        "envelope", "5/8 envelope",
+        "envelope", "5/9 envelope",
         "6 字段完整性 + payload_base64 可逆 + count=1 CBOR 与冻结编码器逐字节一致",
         extra_sources=[os.path.join("src", "log", "log_envelope.cpp")])
 
     # [6] 段回收（GC）判定：整段/部分/边界/空洞/溢出/水位/append 语义
     #     —— 与 probe_ack 的分工：那个测**协议**，这个测**哪一段能删**。
     ok6 = run_wasm_probe(
-        "gc", "6/8 gc      ",
+        "gc", "6/9 gc      ",
         "整段确认/部分确认/边界 seq/空洞相交/表溢出/gc 水位 vs acked_max/重复 ACK/append 语义")
 
     # [7] 双槽元数据纯逻辑（`HD-3`·`A-1`）
     #     被测 = src/log/log_meta_slot.h（与 log_manager.cpp 同一份）
     ok7 = run_wasm_probe(
-        "meta_slot", "7/8 meta    ",
+        "meta_slot", "7/9 meta    ",
         "pack/parse 往返 · commit=0 无效 · CRC 保护 · legacy fmt 隔离 · 选槽 · 掉电模拟 · 双槽损坏 · 端点值")
 
     # [8] 持久证据 / 隔离判据（`HD-3`·`A-1` 修复 · A1-01/02/04/07 的回归探针）
     #     被测 = src/log/log_meta_evidence.h（与 log_manager.cpp 同一份）
     ok8 = run_wasm_probe(
-        "meta_evidence", "8/8 evidence",
+        "meta_evidence", "8/9 evidence",
         "证据记录往返 · CRC/magic/fmt 校验 · 恢复优先级（含隔离优先）· 首启与已 provision 的分界 · 高水位只升不降 · align_reserve 溢出 · boot_seq 饱和 · 段末哨兵过滤 · 跨重启状态机 · 损坏痕迹（段被删后仍判隔离）")
 
+    # [9] 启动诊断参数（`HD-3`·`A1-03`）
+    #     被测 = src/log/log_events.h（与固件同一份）
+    #     ⚠️ 只能证明"PID/类型/上限/offset/事件ID"；**不能**证明"旧解码器跳过未知PID"
+    #        —— 仓库内没有 TLV 解码器（见 docs/interfaces/log_params_contract.md）
+    ok9 = run_wasm_probe(
+        "boot_diag", "9/9 bootdiag",
+        "4 个新 PID 取值/互不冲突/均 > 旧上限 0x59 · LOG_P_MAX 同步抬升 · 参数上限 5<=8 · LogParamIn 尺寸 · boot_seq 在头部（LOG_OFF_BOOT_SEQ=8）· 事件 ID 不变 · 类型映射 U32/ENUM/BOOL · helper 编码与顺序")
+
     print("-" * 56)
-    results = [ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8]
+    results = [ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8, ok9]
     if any(r is False for r in results):
         print("CONTRACT TEST: FAIL")
         return 1
