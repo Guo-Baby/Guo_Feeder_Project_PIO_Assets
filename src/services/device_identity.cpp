@@ -19,6 +19,13 @@ static char    s_device_id[13] = {0};
 static uint8_t s_dver          = 0u;
 static bool    s_ready         = false;
 
+// `HD-3`·`A-1` 修复（`2026-10-18`）：本次 boot 是否**持久**建立了新身份。
+//
+// 只有当 `did` 原本不存在 **且** 本次成功写入 NVS 时才为 true。
+// NVS 写失败 ⇒ 保持 false（下次开机仍会重建身份）⇒ LogManager 会把
+// "无证据"判为隔离，而不是每轮都从 `boot_seq=1` 重放。
+static bool    s_first_boot    = false;
+
 // =====================================================
 // 内部工具
 // =====================================================
@@ -82,6 +89,11 @@ bool device_id_valid()
     return s_ready && is_valid_id(s_device_id);
 }
 
+bool device_identity_first_boot()
+{
+    return s_first_boot;
+}
+
 void device_identity_init()
 {
     char derived[13] = {0};
@@ -132,6 +144,10 @@ void device_identity_init()
                 // 降级：本次上电仍可用（内存值有效），下次启动重新尝试
                 Serial.println("[Identity] WARN nvs write failed, id kept in ram only");
             }
+
+            /* ★ 只有**持久**建立了身份才算"首启"。写失败 ⇒ 下次仍无 did
+               ⇒ 若此时允许从 1 重放，会每轮开机都撞同一批键。 */
+            s_first_boot = wrote;
 
             prefs.end();
         }

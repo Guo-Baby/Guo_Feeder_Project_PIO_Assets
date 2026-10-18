@@ -39,4 +39,15 @@ const char* device_id();
 // device_id 是否可用（长度恰为 12 且全部为 [0-9a-f]）
 bool device_id_valid();
 
+// 本次 boot 是否**持久**建立了新身份（`HD-3`·`A-1` 修复）。
+//
+// 语义：true  = NVS 里原本没有 `did`，且本次已成功写入 ⇒ 真·首启
+//       false = NVS 里早已有 `did`（正常重启 / 升级 / 降级）
+//               **或** NVS 写入失败（此时下次仍会重建 ⇒ 不得视为首启）
+//
+// 用途：`log_set_first_boot(device_identity_first_boot())`。
+// 唯一消费者是 LogManager 的恢复判据 —— 它决定"完全无日志证据时能否从
+// `boot_seq=1` 起步"。除首启外，任何"无证据"都必须转入隔离。
+bool device_identity_first_boot();
+
 #endif  // DEVICE_IDENTITY_H
