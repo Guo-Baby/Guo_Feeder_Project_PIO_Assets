@@ -813,6 +813,57 @@ payload_base64 = Base64( 完整 log_cbor_encode_batch(count = 1) 的 CBOR bytes 
 > 仅**上行承载形态**由「原始 CBOR 批次」改为「逐条 Cloud Log Envelope JSON」。
 > 更早的完整设计见 `docs/archive/log/LogManager详细设计规划0915.md`。
 
+#### 8.2.5 `log_ack` 语义澄清（`HD-3` · `H-3-7-c` · `2026-10-18`）
+
+> 本节**只做澄清**：**不改**任何字段、Topic、QoS、响应体与既有行为。
+> 目的：把"ACK 到底承诺了什么"写死，避免把**键存在**误读为**内容已保存**。
+
+**① ACK 的唯一语义**
+
+```
+ACK(boot_seq, seq_from, seq_to)  ⇒  "该 (device_id, boot_seq, seq) 在云端已有行"
+                                  ⇏  "本次提交的 payload 已被持久化"
+```
+
+- 依据：云端去重是 `INSERT OR IGNORE` + 唯一键 `(device_id, boot_seq, seq)`；
+  命中冲突时**保留首行**，本次内容被丢弃，但键**确实存在**。
+- 因此设备侧收到 ACK 后的正确理解是"这一号我可以不再重投了"，**不是**"我的内容进去了"。
+
+**② 三种内容判定（云端内部三态，**不进** HTTP 响应体）**
+
+| 判定 | 条件 | 是否 ACK | 含义 |
+|---|---|---|---|
+| `same_content` | 键存在 **且** `ts/level/code/message/payload` 五字段全等 | **是** | 合法重试（幂等重放） |
+| `collision` | 键存在 **且** 至少一字段不等 | **是**（`H-3-7-a` 已批准） | **候选碰撞** ⇒ 本次内容**没有**被保存 |
+| `content_unverified` | 键存在 **但** 内容无法比较（列缺失/类型异常） | **是** | 无法下结论，**既不算相同也不算碰撞** |
+
+> ★ **`collision` 不得被解释为 `same_content`**：前者意味着"一条内容被静默丢弃"，
+> 后者意味着"内容与云端一致"。二者对排障的意义相反。
+
+**③ 为什么碰撞也回 ACK（决策留痕）**
+
+- 设备端没有第二条上行通道能把内容"换个形式"再送一次 ⇒ 不 ACK 只会带来
+  有界重投 + 段不回收，**救不回内容**；
+- 不 ACK 会让 `collision` 计数按重投次数线性放大；
+- 因此：**ACK 保持**，把碰撞升级为**可观测告警**（见 ④）。
+
+**④ 碰撞的持久化追踪（`log_conflict`）**
+
+| 项 | 状态 |
+|---|---|
+| 表结构草案 | `Cloudflare_Assets/guo-feeder-api/migrations/drafts/0004_log_conflict.sql`（**草案，未应用**） |
+| 实现 | `guo-feeder-api/src/log-conflict.js`（指纹 + `ON CONFLICT` 幂等聚合） |
+| 应用状态 | **`NOT APPLIED`**（未在生产 D1 建表；未部署 Worker） |
+| 未应用时的行为 | Worker 捕获 `no such table` ⇒ 冲突追踪**降级为仅日志**，ACK/响应体**不受影响** |
+| 隐私边界 | 只存"差异字段名 + 两侧 16 hex 指纹"，**不存** payload 原文 |
+
+**⑤ 不变的契约（逐条确认）**
+
+- HTTP 响应体仍**恰为**四字段 `accepted / duplicate / rejected / filtered`（`T02j` 冻结）
+- `duplicate` 口径不变（未新增行 **且** 键存在）——`same/collision/unverified` 是其**子集细分**
+- 设备端重试语义不变（`MAX_RETRY` / 退避 / 放弃门槛均未动）
+- `log_history` 结构不变；冲突**不写入** `log_history`（避免冒充"已保存的日志"）
+
 ### 8.3 新增 Topic 的通用规范
 
 1. **配置化**：新 Topic 必须在 `mqtt.json` 增加独立字段，**禁止**从 `publish_topic` 推导。
