@@ -1,5 +1,12 @@
 # HD-3 收尾审计：A-1 / boot_seq 水位 / log_conflict / Retention
 
+> ⚠️ **状态更新（`2026-10-19 02:25` 追加，不改正文）**
+> 本文是 **`2026-10-19 00:57` 的时点快照**。其后已发生（见 `HD-3-RealDevice-Verification-and-Release.md`）：
+> ① `0004` / `0005` **已应用**到生产 D1；② Worker **已部署**（`508461f3-…`，前版 `72023596-…`）；
+> ③ `LOG_BOOT_WATERMARK="1"` **已启用**；④ RD-1/2/3/7a/8 与 `mstage 2` **真机已跑**。
+> ⇒ 下文所有 **`NOT APPLIED` / `NOT DEPLOYED` / 未部署** 描述**仅代表写作时点**，**不得**作为当前状态引用；
+> 物理断电仍为 `NOT RUN`；门禁 `BT-1 OPEN` / `G-4 BLOCKED` / `WP-5` 未解锁 / `STOP-R1` 未解除 **均未变**。
+
 > 日期：`2026-10-19` · 仓库基线：固件 `3acf91c` · 云端 `a3473eb`（**均未提交本轮改动**）
 > 前序报告：`HD-3-Remaining-Closure-Report.md`（`2026-10-18`）· `HD-3-A1-Recovery-Scenarios-and-RealDevice-Matrix.md`
 > **本文件为新一轮独立审计结果，不覆盖前序任何报告。**
