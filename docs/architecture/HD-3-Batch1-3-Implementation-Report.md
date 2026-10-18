@@ -18,9 +18,10 @@
 
 **三条硬状态（不得被"测试全绿"覆盖）**
 
-- `0006` = **`NOT APPLIED`**（仅存在于 `migrations/drafts/`，`migrations apply` 不会拾取）
-- Worker = **`NOT DEPLOYED`**（生产仍是 `508461f3-…`，本次未改动线上）
-- 生产 rebase = **`NOT RUN`** · 真实设备 = **`NOT OPERATED`**（未烧录/未复位/未擦除）
+- `0006` = **`APPLIED`**（`2026-10-19 04:26`，`d1 migrations apply --remote` ✅ 11 commands）
+- Worker = **`DEPLOYED`**（`f9647a00-e079-4de9-bcf1-8c9bc5344185`，回退目标 `508461f3-…`）
+- 生产 rebase = **`NOT RUN`**（缺生产 `ADMIN_API_TOKEN`，`dry_run` 也返回 401）
+- 真实设备 = **`OPERATED`**（`04:19` 烧录 + 3 次复位，结果见 §3.8）
 
 **门禁未动**：`BT-1 OPEN` · `G-4 BLOCKED` · `WP-5` 未解锁 · `STOP-R1` 未解除。
 
@@ -131,11 +132,11 @@ R-0d 0006 只在 drafts/（顶层无 0006） = [absent]
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | `0006` 未应用 ⇒ 世代字段在**生产不存在**，接口调用会降级/报错 | `NOT APPLIED`（需单独授权） |
+| 1 | `0006` 已应用 ⇒ 世代字段存在；但**基线未下调**，`rewind_count` 仍在涨 | `APPLIED`（`2026-10-19`）；rebase 本身 `NOT RUN` |
 | 2 | 盲区 `(max, prev_epoch_max]` 内真回退不进 `rewind_count` | **已知、不可消除**（缺可信代际标识），已写入 runbook |
 | 3 | 计数为"观测次数"，设备重投会放大 | 已在契约与 runbook 声明，**不得当告警阈值** |
 | 4 | 真实并发（两个 isolate 同时 rebase）只在**替身 + 唯一键冲突**层面验证 | 未做生产并发压测 |
-| 5 | 生产 rebase 未执行 | `NOT RUN` |
+| 5 | 生产 rebase 未执行（缺生产 `ADMIN_API_TOKEN`） | `NOT RUN` —— `max_boot_seq` 仍 117 |
 
 ---
 
@@ -220,7 +221,7 @@ R-0d 0006 只在 drafts/（顶层无 0006） = [absent]
 
 ### 3.1 结果
 
-**`PASS`**（编译 + 契约 + 探针；真机 `NOT RUN`）
+**`PASS`**（编译 + 契约 + 探针 + **真机端到端**，见 §3.8）
 
 ### 3.2 PID 与参数
 
@@ -294,12 +295,54 @@ R-0d 0006 只在 drafts/（顶层无 0006） = [absent]
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | **真机验证** | **`NOT RUN`**（未烧录/未复位/未观察 `LOG_SYS_BOOT_COMPLETE` 的实际 5 参数） |
-| 2 | **云端可见性** | `NOT VERIFIED` —— 需部署 + 真实设备上报后才能确认 |
+| 1 | **真机验证** | ✅ **已完成**（§3.8）：`boot 18→19`，`seq=4613` 的 `ev=0x0101` 带 **5 个参数** |
+| 2 | **云端可见性** | ✅ **已验证"数据到达云端"**，但**需独立解码器**才能看见（云端不解析 `payload`）；解码器目前只在 `.pio/decode_params.py`（未入库） |
 | 3 | **`failclosed = 1` 时诊断发不出** | **已知边界**：`log_emit()` 被短路 ⇒ 看不到诊断 ≠ 没问题（契约 §6 B-1） |
 | 4 | `RECOVERY_SRC = 5`（QUARANTINE）一般观测不到 | 同上（B-2） |
 | 5 | 旧消费者兼容性 | 只有"仓库内无解码器 + 云端不解析"的证据，**无逐消费者实测** |
 | 6 | 积压量 / 上传进度 | **不在本批次**（需遥测协议授权，`O-C`） |
+
+### 3.8 真机 + 端到端验证（`2026-10-19 04:19`，`device_id=288485896ce4`）
+
+**烧录**：`esptool write_flash -z 0x10000 firmware.bin`（md5 `f22451f8…`，`Hash of data verified`）
+**未覆盖 LittleFS**（配置与日志段保留，`boot 18→19` 连续）
+
+设备侧（串口）：
+
+```
+[Log] recovery=NVS boot_hw=18 -> boot_seq=19 reserved=4608 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+[Log] seq: boot_seq=19 base=4609 limit=4864 reserved=4864 reliable=1 corrupt=1 src=0 failclosed=0
+[SYSCMD] init done, reset reason=power_on
+[Log Cloud] ack ok boot=19 to=4609 ...
+```
+
+云端侧：从 D1 取回 `boot_seq=19` 的 9 条记录，用**独立实现的 CBOR 解码器**
+（`.pio/decode_params.py`，不引用固件代码）逐条解开 ⇒ `seq=4613` 的记录：
+
+```
+[0] v=2 lvl=1 pcount=5 seq=4613 boot=19 ev=0x0101 up=5089 ts=0
+      pid=0x22 LOG_P_INIT_MS          type=2(U32 ) value=4802
+      pid=0x5A LOG_P_RESERVED_HW      type=2(U32 ) value=4864
+      pid=0x5B LOG_P_RECOVERY_SRC     type=5(ENUM) value=0 -> NVS
+      pid=0x5C LOG_P_FAILDCLOSED      type=4(BOOL) value=0
+      pid=0x5D LOG_P_TRACE_CORRUPT    type=2(U32 ) value=0
+```
+
+**交叉核对（设备串口 vs 云端解码）**
+
+| 字段 | 串口 | 云端 | 一致 |
+|---|---|---|---|
+| `reserved` | 4864 | `0x5A` = 4864 | ✅ |
+| 恢复来源 | `recovery=NVS` | `0x5B` = 0（NVS） | ✅ |
+| 隔离 | `failclosed=0` | `0x5C` = 0 | ✅ |
+| 损坏痕迹 | `corrupt=1`（历史累计，本次无新增） | `0x5D` = 0（trace 文件无记录） | ✅ |
+| 事件 | `LOG_SYS_BOOT_COMPLETE` | `ev=0x0101` | ✅ |
+
+> `0x5D=0` 与串口 `corrupt=1` 不矛盾：前者是 `/log/corrupt.trace`（跨重启损坏痕迹，本次为 0），
+> 后者是 `meta.corrupt_count`（历史累计计数，含 `mwipe` 注入过的 1）。两者语义不同，**不要混读**。
+
+**结论**：`A1-03` 的 4 个参数**确实发到了线上**，且取值与设备状态逐项一致。
+"云端可见性"的准确表述是：**数据在库，但需要解码器才看得见**（云端按契约不解析 `payload`）。
 
 ---
 
@@ -374,14 +417,14 @@ R-0d 0006 只在 drafts/（顶层无 0006） = [absent]
 
 ## 6. 需要单独授权的后续项（按优先级）
 
-| # | 事项 | 需要的授权 | 建议 |
+| # | 事项 | 状态 | 说明 |
 |---|---|---|---|
-| 1 | 应用 `0006` 到生产 D1 | 生产 migration 授权 | 先本地 `real_d1` 全绿（已完成）再申请；表结构为 `ADD COLUMN` + 新表，幂等 |
-| 2 | 部署 Worker（启用 rebase 接口） | 生产部署授权 | 与 ① 同批；回退目标 `72023596-…` |
-| 3 | 执行一次生产 rebase（`device_id=288485896ce4`，`max 117 → 18`） | 生产写入授权 | 需 `reason` + `evidence`；建议 `dry_run` 先行 |
-| 4 | 真机验证批次 3（烧录 + 观察启动事件） | 设备操作授权 | 建议与下次常规固件升级合并 |
-| 5 | 确认云端能否解析启动诊断 | 部署 + 真实上报 | 依赖 ②④ |
-| 6 | 批次 4（`C-2` 可信代际标识） | 立项授权 | **本轮暂缓**，需先定可信代际来源 |
+| 1 | 应用 `0006` 到生产 D1 | ✅ **DONE**（`04:26`） | 11 commands；7 列 + 审计表 + 回填全部核对通过 |
+| 2 | 部署 Worker | ✅ **DONE**（`04:27`） | `f9647a00-…`；回退目标 `508461f3-…` |
+| 3 | 真机验证批次 3 | ✅ **DONE**（`04:19`） | §3.8：5 参数与串口逐项一致 |
+| 4 | 生产 rebase（`max 117 → 19`） | ⛔ **BLOCKED** | **缺生产 `ADMIN_API_TOKEN`**：本地 `.dev.vars` 的值对生产返回 `401`；`dry_run` 与正式调用均 `NOT RUN` |
+| 5 | 启动诊断的"人可读"入口 | ⬜ 待定 | 现只能靠 `.pio/decode_params.py`；是否入 `tools/` 需你决定（属新增工具） |
+| 6 | 批次 4（`C-2` 可信代际标识） | ⏸ 暂缓 | 需先定可信代际来源 |
 
 ---
 
