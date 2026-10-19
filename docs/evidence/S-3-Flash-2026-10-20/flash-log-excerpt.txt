@@ -1,0 +1,7 @@
+# 烧录记录（esptool 原始输出尾部）
+flash_start=2026-10-19T18:34:11Z
+Wrote 1407472 bytes (901606 compressed) at 0x00010000 in 15.4 seconds (effective 729.0 kbit/s)...
+Hash of data verified.
+Leaving...
+Staying in bootloader.
+flash_end=2026-10-19T18:34:30Z

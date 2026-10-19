@@ -1,0 +1,15 @@
+# 烧录前设备与云端状态（S-3 完整烧录验证）
+captured_utc=2026-10-19T18:33:1xZ
+device_id=288485896ce4
+emqx_connected=True
+emqx_connected_at=2026-10-19T16:29:35.064+00:00   (旧会话，烧录前)
+emqx_recv_cnt=811  emqx_send_cnt=950
+log_history_boot_seq=22  n=146  minseq=5377  maxseq=5522  maxid=1892  last=2026-10-19T18:33:40Z
+device_firmware=system.stats 构建（commit 82123a3）
+device_firmware_sha256=a2c8a0388e1e4b621a0e2e7d28a4b2269e1d84f96044211ace96532e61040b4f
+device_firmware_bytes=1402672
+rollback_artifact=docs/evidence/S-3-Flash-2026-10-20/rollback-firmware-a2c8a038.bin  (已归档，sha256 与上面一致)
+flash_target=docs/evidence/S-3-Flash-2026-10-20/flash-target-72d7a610.bin
+flash_target_sha256=72d7a610761c8dd76c4c5857d12615c839f19633bee0b2388cb9e3b330dd744c
+flash_target_bytes=1407472
+预检_loop_object=命令被受理但设备回 unknown object（旧固件无该接口）⇒ 预期行为

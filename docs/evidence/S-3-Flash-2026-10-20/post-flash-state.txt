@@ -1,0 +1,21 @@
+# 烧录后设备与云端状态（S-3 完整烧录验证）
+captured_utc=2026-10-19T18:50:2xZ
+device_id=288485896ce4
+boot_seq=23            (烧录前 22；串口原文 "recovery=NVS boot_hw=22 -> boot_seq=23")
+seq_base=5633  seq_limit=5888  reliable=1  corrupt=1
+cfg_boot_validated=YES  (未回滚配置)
+wifi=connected  mqtt=connected  connected_at=2026-10-19T18:34:47.207+00:00
+emqx_subscriptions_cnt=1  mqueue_dropped=0  inflight=0
+复位次数=1（仅烧录触发，串口 ESP-ROM 出现 1 次）
+panic=0  assert=0  watchdog=0
+命令往返=20/20（UP-ACK 20 与发出 20 条一致；result 帧 20）
+log ACK：ack rx 55 / ack ok 55 / ack_timeout_retry 0；末条 acked=5664 floor=0（积压已排空）
+log_history boot 23：seq 5633–5665，共 30 行；与设备 seq_base=5633 对齐
+counters: drop_overflow=0 drop_unacked=0 seg_evicted_unacked=0 ring_drop=0
+          cloud_retx=0 cloud_ack_timeout=0 cloud_ack_lost=0 give_up=0
+          seg_deleted=0 self_degraded=0 hole_overflow=0
+          (cloud_records_sent=0 属已知无效字段 S-1)
+memory(18:38:05Z): internal total=250428 free=65960 largest_free_block=57332 minimum_free=55180
+                   external total=8385719 free=7993863
+system.loop：available=true enabled=true valid=true sat_buckets=0 n_saturated=false anomaly=0
+             P50<200us  P99<200us  max=356377us(=356.4ms)  snap_crit_max_us=12
