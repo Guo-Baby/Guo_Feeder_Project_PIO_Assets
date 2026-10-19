@@ -1,0 +1,95 @@
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[env:esp32-s3-devkitc-1]
+; ---------------------------------------------------------------
+; ★ C-3（对应 docs/issues「DD-5」/「9.7」）：固定构建环境
+;   目的：未来重新 clone 后 `pio run` 结果一致（可复现构建）
+;   · platform 固定到 7.0.1
+;   · platform_packages 显式锁住框架与工具链（防止平台升级时被静默替换）
+;   · lib_deps 一律写精确版本（禁止无版本号 / @latest）
+;   ⚠️ 升级依赖必须显式改这里，不要在本地"顺手升级"。
+; ---------------------------------------------------------------
+platform = espressif32@7.0.1
+board = esp32-s3-devkitc-1
+framework = arduino
+
+platform_packages =
+    platformio/framework-arduinoespressif32@3.20017.241212+sha.dcc1105b
+    platformio/tool-esptoolpy@2.41100.0
+    platformio/tool-mkfatfs@2.0.1
+    platformio/tool-mklittlefs@1.203.210628
+    platformio/tool-mkspiffs@2.230.0
+    platformio/tool-openocd-esp32@2.1100.20220706
+    espressif/toolchain-xtensa-esp32s3@8.4.0+2021r2-patch5
+    espressif/toolchain-riscv32-esp@8.4.0+2021r2-patch5
+
+#挂载文件系统为littlefs
+board_build.filesystem = littlefs
+# N16R8 QIO Flash + OPI PSRAM 核心配置
+board_build.flash_mode = qio
+board_build.arduino.memory_type = qio_opi
+board_build.psram_type = opi
+board_upload.flash_size = 16MB
+board_upload.maximum_size = 16777216
+board_build.partitions = partitions.csv
+
+# 全套PSRAM底层宏，缺一不可
+board_build.extra_flags =
+  -DBOARD_HAS_PSRAM
+  -DCONFIG_SPIRAM
+  -DCONFIG_SPIRAM_SUPPORT=1
+  -DCONFIG_SPIRAM_MODE_OPI=1
+
+; ---------------------------------------------------------------
+; ★ P1-7：Production Topic Enforcement 开关（GF_ENV_PRODUCTION）
+;   0（默认 · 未定义即 0）= dev / test —— 完全保持 P0 行为：
+;        legacy 模板（无 <device_id>）原样透传，T-5 不变
+;   1                    = production —— 3 个 MQTT Topic 模板必须含 <device_id>，
+;        任一缺失 ⇒ 启动期 ERROR 且**阻止 MQTT 上线**（在 esp_mqtt_client_init() 之前）
+;
+;   ⚠️ 刻意**不**在此处写 `-DGF_ENV_PRODUCTION=0`：
+;      与显式覆盖值（-DGF_ENV_PRODUCTION=1）并存会触发 GCC "macro redefined" 警告。
+;      默认值 0 由 src/cloud/cloud_manager.cpp 的
+;      `#ifndef GF_ENV_PRODUCTION / #define GF_ENV_PRODUCTION 0` 提供 ⇒
+;      普通开发构建**不可能**意外进入 production。
+;
+;   生产构建（**不改本文件**）：
+;      PLATFORMIO_BUILD_FLAGS="-DGF_ENV_PRODUCTION=1" pio run
+;
+;   代价：默认 0 时 production 分支与其字符串被 --gc-sections 剔除 ⇒ 零 Flash/RAM 代价。
+; ---------------------------------------------------------------
+build_flags =
+  -DARDUINOJSON_USE_CBOR=1
+  ; loopTask 默认栈 8KB，命令路径（JSON 解析 + Capability Registry 重扫）
+  ; 实测会溢出（Stack canary watchpoint triggered (loopTask)）。
+  ; 提到 16KB：本工程 DRAM 余量充足（静态占用约 130KB / 327KB）。
+  -DARDUINO_LOOP_STACK_SIZE=16384
+  ; S-3：loop() 周期耗时统计（system.loop 只读查询的数据源）
+  ; · =1 采样器生效（约 +570 B 静态 RAM、每轮 1.0–1.8 µs）
+  ; · =0 整体编译剔除（零开销），用于"纯净对照构建"以量化采样器自身影响
+  ; ★ 改动此宏会改变固件指纹，必须重新归档 .bin + SHA-256（S-2 纪律）
+  -DGF_LOOP_STATS_ENABLED=1
+
+upload_speed = 921600
+monitor_speed = 115200
+
+
+; ★ C-3：依赖必须写**精确版本**（下列为当前实测版本），
+;   否则不同时间 clone 会解析到不同的库版本 ⇒ 构建不可复现。
+lib_deps =
+    olikraus/U8g2@2.36.18           #oled驱动库依赖
+    bblanchon/ArduinoJson@7.4.3     #json解析库依赖
+    bogde/HX711@0.7.5               #HX711驱动库依赖
+    h2zero/NimBLE-Arduino@2.5.1     #蓝牙驱动库依赖
+
+lib_ldf_mode = deep+
+
+extra_scripts = fix_compiledb.py

@@ -9,6 +9,7 @@
 #include "services/system_command.h"
 
 #include "log/log_manager.h"   // LOG_SYS_RESET_ABNORMAL（log_emit / log_arg_*）
+#include "app/loop_stats.h"    // S-3：loop() 周期耗时统计（system.loop 只读查询）
 
 #include <LittleFS.h>
 #include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() / ESP.restart()
@@ -745,6 +746,166 @@ bool syscmd_stats(JsonDocument &out)
 
     c["seg_deleted"] = st.flash_segment_deleted;   // 段删除频率 = Δ/时间
     c["self_degraded"] = st.self_degraded;
+
+    return true;
+}
+
+// =====================================================
+// system.loop（S-3：loop() 周期耗时统计 · 只读）
+//
+// 三条不变量：
+//   1. 只读：不 reset、不改任何计数、不产生副作用（快照读取除外）
+//   2. 不欺骗：统计不可信时**抑制** p50/p99 数值，只给 valid:false + 原因位
+//   3. 不改既有契约：与 system.stats 完全独立（新 object，不影响既有解析方）
+// =====================================================
+static const char *loop_invalid_reason_name(uint16_t bit)
+{
+    switch (bit)
+    {
+    case loopstat::INVALID_NOT_AVAILABLE:    return "not_available";     // 尚无首样本
+    case loopstat::INVALID_INSUFFICIENT:     return "insufficient_samples";
+    case loopstat::INVALID_SATURATION:       return "bucket_saturated";
+    case loopstat::INVALID_N_SATURATED:      return "sample_counter_saturated";
+    case loopstat::INVALID_GEOMETRY:         return "snapshot_geometry_mismatch";
+    case loopstat::INVALID_REGRESSION:       return "counter_regression";
+    case loopstat::INVALID_ANOMALY_DOMINANT: return "anomaly_dominant";
+    default:                                 return "unknown";
+    }
+}
+
+bool syscmd_loop(JsonDocument &out)
+{
+    JsonObject data = out["data"].to<JsonObject>();
+    if (data.isNull())
+    {
+        return false;
+    }
+
+    LoopStatsSnapshot snap;
+    const bool available = loop_stats_get(snap);
+
+    data["available"] = available;
+    data["enabled"] = (GF_LOOP_STATS_ENABLED != 0);
+    data["scope"] = "uptime";            // ★ 累积口径（自首样本起），不是窗口值
+    data["uptime_ms"] = (uint32_t)millis();
+
+    // 几何参数始终输出：即使不可用，调用方也能知道量程与桶宽
+    data["bucket_width_us"] = (uint32_t)loopstat::BUCKET_WIDTH_US;
+    data["bucket_count"] = (uint32_t)loopstat::BUCKET_COUNT;
+    data["over_limit_us"] = (uint32_t)loopstat::RANGE_US;
+    data["min_samples"] = (uint32_t)loopstat::MIN_SAMPLES;
+    data["gate_p99_us"] = (uint32_t)loopstat::GATE_P99_US;
+
+    if (!available)
+    {
+        // ★ 不写任何计数字段 ⇒ 调用方不得把缺省当成 0 解读
+        data["quantiles_suppressed"] = true;
+        JsonArray r = data["invalid_reasons"].to<JsonArray>();
+        r.add("not_available");
+        return true;
+    }
+
+    // ---- 原始计数（可用于 L2 有效性校验）----
+    data["elapsed_ms"] = (uint64_t)(snap.elapsed_us / 1000ull);
+    data["samples"] = snap.n;
+    data["over"] = snap.over_cnt;
+    data["anomaly"] = snap.anomaly_cnt;
+    data["sum_us"] = snap.sum_us;
+    data["min_us"] = snap.min_us;
+    data["max_us"] = snap.max_us;
+    data["sat_buckets"] = snap.sat_buckets;
+    data["n_saturated"] = (snap.n_saturated != 0);
+    data["snap_crit_max_us"] = snap.snap_crit_max_us;
+    data["snap_count"] = snap.snap_count;
+
+    // 精确均值（用 sum/n，**不得**用 P50 代替平均周期）
+    if (snap.n != 0u)
+    {
+        data["mean_us"] = (uint32_t)(snap.sum_us / (uint64_t)snap.n);
+    }
+
+    // ---- 分位（以"空基线"做累积口径，等同自 boot 起）----
+    LoopStatsSnapshot zero;
+    memset(&zero, 0, sizeof(zero));
+    zero.magic = loopstat::MAGIC_EMPTY;
+
+    LoopStatsQuantiles q;
+    const bool parsed = loop_stats_compute(zero, snap, q);
+    if (!parsed)
+    {
+        data["valid"] = false;
+        data["quantiles_suppressed"] = true;
+        JsonArray r = data["invalid_reasons"].to<JsonArray>();
+        r.add(loop_invalid_reason_name(q.invalid_bits));
+        return true;
+    }
+
+    data["valid"] = (q.valid != 0);
+    data["window_samples"] = q.n;
+    data["window_over"] = q.over;
+    data["window_anomaly"] = q.anomaly;
+
+    // ---- 不可信：**拒绝输出** p50/p99 数值，只给原因 ----
+    if (q.valid == 0u)
+    {
+        data["quantiles_suppressed"] = true;
+
+        JsonArray r = data["invalid_reasons"].to<JsonArray>();
+        for (uint16_t bit = 1; bit != 0; bit = (uint16_t)(bit << 1))
+        {
+            if ((q.invalid_bits & bit) != 0u)
+            {
+                r.add(loop_invalid_reason_name(bit));
+            }
+        }
+
+        // 溢出区间仍必须给出**下界 + 精确最大值**（不得只报 25.6 ms）
+        if (q.p99_in_overflow != 0u)
+        {
+            data["p99_overflow"] = true;
+            data["p99_lower_bound_us"] = (uint32_t)loopstat::RANGE_US;
+            data["p99_max_us"] = q.max_us_uptime;
+        }
+    }
+    else
+    {
+        // ---- 可信：输出桶边界（20 ms 恰在桶边界 ⇒ 判定精确）----
+        data["p50_bucket"] = q.p50_bucket;
+        data["p50_low_us"] = q.p50_low_us;
+        data["p50_high_us"] = q.p50_high_us;
+        data["p50_us"] = q.p50_high_us;      // 保守取桶上界（不含）
+
+        if (q.p99_in_overflow != 0u)
+        {
+            // P99 落在 over 区间：只给下界 + 精确 max，不给伪装成数值的 P99
+            data["p99_overflow"] = true;
+            data["p99_lower_bound_us"] = (uint32_t)loopstat::RANGE_US;
+            data["p99_max_us"] = q.max_us_uptime;
+            data["p99_lt_gate"] = false;
+        }
+        else
+        {
+            data["p99_bucket"] = q.p99_bucket;
+            data["p99_low_us"] = q.p99_low_us;
+            data["p99_high_us"] = q.p99_high_us;
+            data["p99_us"] = q.p99_high_us;
+            data["p99_lt_gate"] = (q.p99_lt_gate != 0u);
+        }
+    }
+
+    // ---- 直方图（非零稀疏对；供"两次快照差分"复核 P99）----
+    JsonArray hist = data["hist"].to<JsonArray>();
+    uint32_t pairs = 0;
+    for (uint32_t i = 0; i < loopstat::BUCKET_COUNT; ++i)
+    {
+        if (snap.hist[i] != 0u)
+        {
+            hist.add(i);
+            hist.add(snap.hist[i]);
+            pairs++;
+        }
+    }
+    data["hist_pairs"] = pairs;
 
     return true;
 }

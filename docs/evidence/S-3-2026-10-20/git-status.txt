@@ -1,0 +1,13 @@
+ M platformio.ini
+ A src/app/loop_stats.cpp
+ A src/app/loop_stats.h
+ M src/main.cpp
+ M src/services/command_manager.cpp
+ M src/services/system_command.cpp
+ M src/services/system_command.h
+ A test/loop_stats_host/loop_stats_probe.cpp
+ A test/loop_stats_host/run.sh
+ A test/loop_stats_host/run_probe.js
+?? docs/architecture/S-3-Spec-Revision-R2.md
+?? docs/evidence/G-4-Stats-2026-10-20/pre-flash-firmware.bin
+?? docs/evidence/S-3-2026-10-20/

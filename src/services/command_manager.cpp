@@ -217,6 +217,7 @@ static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &
 static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_stats(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_loop(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
 // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
@@ -2510,6 +2511,10 @@ static bool system_router(
     if (object == "stats") {
         return command_system_stats(cmd, response);
     }
+    if (object == "loop") {
+        // S-3：loop() 周期耗时统计（**只读**；不 reset、不改任何计数）
+        return command_system_loop(cmd, response);
+    }
     if (object == "restart") {
         return command_system_restart(cmd, response);
     }
@@ -3302,6 +3307,25 @@ static bool command_system_stats(
     if (!syscmd_stats(response))
     {
         command_send_error(cmd, CMD_ERROR_SYSTEM, "stats query failed");
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// system: loop（S-3 · 只读）
+// object: loop
+// 返回 loop() 周期耗时的累积统计（P50/P99 等）+ 稀疏直方图。
+// ⚠️ `data.available=false` ⇒ 尚无首样本/编译期关闭，**不得**当作"全为 0"。
+// ⚠️ `data.valid=false` ⇒ 分位被**抑制**（样本不足/桶饱和/计数回退），不得引用 p50/p99。
+static bool command_system_loop(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_loop(response))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "loop stats query failed");
         return false;
     }
     response["status"] = "success";
