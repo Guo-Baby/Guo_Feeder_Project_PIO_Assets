@@ -92,8 +92,10 @@
    **后续真实测试的前置条件 = 用户实际焊接电器（电机 / 电磁阀等）之后再做**；执行类动作验证不得用只读结果替代。登记见 `docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md` **§10**。
    **★ `2026-10-20 02:35` 已推进 `G-4` 的"能力缺口"部分（S-3 第二轮）**：`loop()` 耗时采样器 + **只读 `system.loop`** 已实现并通过**本地验收**（宿主机 82/82；RAM +600 B / Flash +4800 B；固件 `sha256=72d7a610…`，干净全量构建与增量构建**字节一致**）。规格修订 `docs/architecture/S-3-Spec-Revision-R2.md` · 报告 `docs/architecture/S-3-Implementation-and-Local-Acceptance-Report.md` · 证据 `docs/evidence/S-3-2026-10-20/`。
    ★ **`2026-10-20 02:51` 已授权完成完整烧录验证**（`boot 22→23`，**1 次重启**，回退件 `rollback-firmware-a2c8a038.bin` 已入库）：真机 10.4 min / **17 291 753 样本**，`Σhist+over=n` **4 快照 + 2 窗口全 PASS**、`anomaly=0`、`sat=0`、覆盖率 **99.9964%**、**P50/P99 均 `<200 µs`**、**`max=356.4 ms`**（开机 TLS 握手，登记 `S-3-O1`）、命令 20/20、`ack_timeout=0`、丢弃类全 0。报告 `docs/architecture/S-3-Flash-Verification-and-Design-Goal-Assessment.md`。
-   ★ **未达设计目标**：读路径临界区 **12 µs > 10 µs 预算**（`S-3-O2`，待裁决：改预算 or 改实现）；采样开销未做 `ENABLED=0/1` A/B（`S-3-U6`）。
+   ★ **未达设计目标**：读路径临界区 **12 µs**（当时预算 10 µs ⇒ 当时超标 20%）；采样开销未做 `ENABLED=0/1` A/B（`S-3-U6`）。
    ⇒ **L1 真机达成 / L2 核心达成 / L3 仍 `NOT VERIFIED`**（10.4 min ≪ 2 h + 30 min）⇒ **`G-4` 仍 `BLOCKED`、`WP-5` 未解锁、`STOP-R1` 无解除**。
+   **★ `2026-10-20 03:05` 规格修订 R3 已裁决两项**（`docs/architecture/S-3-Spec-Revision-R3.md`）：① `S-3-O2` 读路径预算 **10 → 15 µs**（实测 12 µs / 原预算 10 µs / 当时超标判定**三项留痕**，只能写"预算内"，**不得**写"达标"；**不重烧**）；② **2.5 h 正式门禁窗口延期至「预生产验收阶段」**，启动需 5 项前置（硬件 bring-up · `config_query` 快照入库 · 单独授权 · 新 boot 基线 · 设备专用）。
+   ★ **新增观察 `S-3-O3`（INFERRED）**：27 840 轮/s 反推 ⇒ 本轮窗口 **OLED 未实际传输** + `weight.enable=false` ⇒ **"P99<0.2 ms" 是缩减配置结论**；若上板后 OLED 真传输，100 kHz 单帧 **92–184 ms** ⇒ **20 ms 门禁不可能通过**（`S-3-O3-d` 待裁：提速 / 局部分块 / 移出 loop / 不装屏）。
 6. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
 7. **遗留运维**：MQTT 密码轮换（10 文件含明文）；设备当前 = 「遥测功能构建 + `telemetry_enable=false` 安全态」，是否刷回编译门 OFF 默认镜像待定。
 
