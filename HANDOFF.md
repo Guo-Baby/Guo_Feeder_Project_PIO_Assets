@@ -94,6 +94,16 @@
    ★ **`2026-10-20 02:51` 已授权完成完整烧录验证**（`boot 22→23`，**1 次重启**，回退件 `rollback-firmware-a2c8a038.bin` 已入库）：真机 10.4 min / **17 291 753 样本**，`Σhist+over=n` **4 快照 + 2 窗口全 PASS**、`anomaly=0`、`sat=0`、覆盖率 **99.9964%**、**P50/P99 均 `<200 µs`**、**`max=356.4 ms`**（开机 TLS 握手，登记 `S-3-O1`）、命令 20/20、`ack_timeout=0`、丢弃类全 0。报告 `docs/architecture/S-3-Flash-Verification-and-Design-Goal-Assessment.md`。
    ★ **未达设计目标**：读路径临界区 **12 µs**（当时预算 10 µs ⇒ 当时超标 20%）；采样开销未做 `ENABLED=0/1` A/B（`S-3-U6`）。
    ⇒ **L1 真机达成 / L2 核心达成 / L3 仍 `NOT VERIFIED`**（10.4 min ≪ 2 h + 30 min）⇒ **`G-4` 仍 `BLOCKED`、`WP-5` 未解锁、`STOP-R1` 无解除**。
+   ★★ **`2026-10-20 04:2x` G4-R4 / G4-R5 联合推进（Phase 0 调查 + Phase 1–2 本地实施）已完成**：
+   · 调查报告 `docs/architecture/G4-R4-R5-Joint-Investigation-Report.md`（`de060bc`）
+   · 实施报告 `docs/architecture/G4-R5-B1-B2-Implementation-and-Local-Acceptance-Report.md`
+   · G4-R4 草案 `docs/architecture/G4-R4-Gate-Revision-Draft-2026-10-20.md`
+   **B-1 归属修复**（`deviceIdFromTopic`：方向扩 `up/down/log`、支持 `$tenants/<t>/`、失败写哨兵 `unresolved` **不回落** `http_api`）→ 单测 **52/52**；
+   **B-2 幂等去重**（新模块 `src/mqtt-dedup.js` + migration **`0007`（`NOT APPLIED`）**：`audit`/`echo` 入键隔离、同 `msg_id` 不同内容不合并、`ON CONFLICT … DO NOTHING` 区分预期冲突/真实失败、历史行 NULL 键不受约束）→ 单测 **43/43** + **真 D1 引擎 18/18**；
+   全量回归 **24 套件全绿**（2 处旧契约改标 `EXPECTED_FAILURE`，**保留未删未弱化**）。
+   ⚠️ **`B-3`（漏记）未解决**，与 B-1/B-2 是不同问题，仍缺 EMQX 运行指标（API 403）。
+   ⚠️ **`G4-R4` 只是草案**：`<70%` 标为**未批准的历史建议值** + 降级为参考指标（历史 `FAIL` 全保留）；**H-1…H-5 全部为候选、未批准**；分配失败覆盖边界已盘点（可覆盖 22 处 `heap_caps_malloc`，**不可**覆盖 Arduino String 498 处 + 第三方库）⇒ **"计数=0"不得表述为"系统无任何分配失败"**。
+   ⇒ **门禁状态全未动**：`G-4 BLOCKED` / `WP-5 未解锁` / `BT-1 CLOSED` / `STOP-R1 无解除`。**未**应用 migration、**未**部署、**未**碰设备、**未**改 EMQX。
    **★ `2026-10-20 03:05` 规格修订 R3 已裁决两项**（`docs/architecture/S-3-Spec-Revision-R3.md`）：① `S-3-O2` 读路径预算 **10 → 15 µs**（实测 12 µs / 原预算 10 µs / 当时超标判定**三项留痕**，只能写"预算内"，**不得**写"达标"；**不重烧**）；② **2.5 h 正式门禁窗口延期至「预生产验收阶段」**，启动需 5 项前置（硬件 bring-up · `config_query` 快照入库 · 单独授权 · 新 boot 基线 · 设备专用）。
    ★ **新增观察 `S-3-O3`（INFERRED）**：27 840 轮/s 反推 ⇒ 本轮窗口 **OLED 未实际传输** + `weight.enable=false` ⇒ **"P99<0.2 ms" 是缩减配置结论**；若上板后 OLED 真传输，100 kHz 单帧 **92–184 ms** ⇒ **20 ms 门禁不可能通过**（`S-3-O3-d` 待裁：提速 / 局部分块 / 移出 loop / 不装屏）。
 6. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。

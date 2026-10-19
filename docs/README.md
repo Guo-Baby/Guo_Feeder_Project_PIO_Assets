@@ -103,6 +103,15 @@
 > **★★★ `2026-10-20 03:05` 规格修订 R3（`S-3-Spec-Revision-R3.md`）** —— ① `S-3-O2`：读路径预算 **10 → 15 µs**（**实测 12 µs / 原预算 10 µs / "当时超标 20%" 三项全部保留**，现仅可表述为"**预算内**"，**不得**写"达标"）；**不重烧**、**不改 L3**。② **2.5 h 正式门禁窗口延期至「预生产验收阶段」**（启动需 5 项前置：硬件 bring-up · 配置快照入库 · 单独授权 · 新 boot 基线 · 设备专用）。
 > ★ **本轮新增观察 `S-3-O3`（INFERRED）**：由 27 840 轮/s 反推 —— 本轮窗口内 **OLED 并未实际传输**、`weight.enable=false` ⇒ **"P99 < 0.2 ms" 是缩减配置下的结论**，**不得**当作生产配置的实时性证据。若上板后 OLED 真传输，**100 kHz 下单帧 92–184 ms ⇒ 20 ms 门禁不可能通过**（`S-3-O3-d`，待裁决 4 选 1）。
 >
+
+> **★★★ `2026-10-20 04:2x` G4-R4 / G4-R5 联合推进（Phase 0 调查 + Phase 1–2 本地实施）** ——
+> 调查 `docs/architecture/G4-R4-R5-Joint-Investigation-Report.md`（`de060bc`）·
+> 实施 `docs/architecture/G4-R5-B1-B2-Implementation-and-Local-Acceptance-Report.md` ·
+> **G4-R4 草案** `docs/architecture/G4-R4-Gate-Revision-Draft-2026-10-20.md`。
+> **B-1 归属修复**（`deviceIdFromTopic`：方向扩 `up/down/log`、支持 `$tenants/<t>/`、失败写哨兵 `unresolved` **不回落** `http_api`）→ 单测 **52/52**；
+> **B-2 幂等去重**（新模块 `src/mqtt-dedup.js` + migration **`0007`（`NOT APPLIED`）**：`audit`/`echo` 入键隔离、同 `msg_id` 不同内容不合并、`ON CONFLICT … DO NOTHING`、历史行 NULL 键不受约束）→ 单测 **43/43** + **真 D1 引擎 18/18**；全量回归 **24 套件全绿**（2 处旧契约 `EXPECTED_FAILURE` 保留）。
+> ⚠️ **`B-3`（漏记）未解决**（与 B-1/B-2 不同问题，缺 EMQX 运行指标）；**`G4-R4` 仅草案未裁决**（`<70%` = 未批准的历史建议值、降级为参考；**H-1…H-5 全为候选未批准**；分配失败覆盖边界 = 22 处 `heap_caps_malloc` 可、**String 498 处不可**）。
+> ⇒ **门禁全未动**：`G-4 BLOCKED` / `WP-5 未解锁` / `BT-1 CLOSED` / `STOP-R1 无解除`；**未**应用 migration、**未**部署、**未**碰设备。
 > **`计划:WP-7` = ✅ `PHASE 3 DEPLOYED & ACCEPTED`（`2026-10-16`）** —— 实施任务单（`rev.2`）**已获人工裁决 `Q-1…Q-10`** ⇒ 代码 + 测试闭环完成：`src/retention.js`（新增）· `src/index.js` 的 `scheduled()` · `wrangler.toml` 的 `[triggers]` · **L1 `99 PASS / 0 FAIL`** · **L2 `89 PASS / 0 FAIL`（两遍一致）** · `run_all` `exit 0`。**`Phase 2`（`2026-10-17`）= 🟡 `READ-ONLY AUDIT COMPLETE`** —— 生产 D1 基线（`telemetry` 20 行 / `log` 84 行 · 其中 `ts=0` **20 行**超窗）· 生产 `DELETE … LIMIT` **`EXPLAIN` 语法+计划通过**（命中 `ix_*_device_ts` · 无 `SCAN`）· 线上 `[vars]` **零** / `RETENTION_*` **0** · 线上 Cron **`schedules = []`** · `deploy --dry-run` **`exit 0`** · **无 `STOP` 条件**。**✅ `Phase 3`（`2026-10-16`）= `DEPLOYED & ACCEPTED`** —— 备份 `d1 export`（SHA-256 已记录）· 临时 `*/5` 部署 → **2 次真实 `scheduled`**（`log deleted` **20 → 0** · `calls` **4** · 无截断 / 无异常 / cpu ≤ 4 ms）→ 恢复 **`0 3 * * *`** 部署 · 线上 Cron **仅 1 条正式表达式（无临时残留）** · 生产版本 **`1ffbbe2e-ed09-43f9-b576-06380bdec8e0`** · `log_history` **86 → 66**（恰删 20 条 `ts=0`）· `telemetry_history` 未删 · 超窗行 **0** · **`W7-A*…G*` = `PASS`（38/38）**。权威 = `docs/architecture/P3-WP7-Implementation-Record.md`（§10 = 部署前审计 · **§11 = 部署执行与生产验收**）。> **`P2` 编号结束于 `P2-8`**；**`P3` = 下一主阶段**。
 
 | 文档 | 说明 |
