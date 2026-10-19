@@ -1,0 +1,24 @@
+{
+ "tag": "b1",
+ "count": 1,
+ "interval": 0.0,
+ "t_start": 1792423361.2732573,
+ "t_start_iso": "15:22:41.273",
+ "t_sent_all": 1792423361.2743204,
+ "t_sent_all_iso": "15:22:41.274",
+ "http200": 0,
+ "records": [
+  {
+   "tag": "b1",
+   "idx": 0,
+   "cmd_id": "g4b10061273",
+   "t_send": 1792423361.273261,
+   "t_send_iso": "15:22:41.273",
+   "http": 403,
+   "t_done": 1792423361.8417268,
+   "elapsed": 0.568,
+   "body": "error code: 1010\n",
+   "error": null
+  }
+ ]
+}

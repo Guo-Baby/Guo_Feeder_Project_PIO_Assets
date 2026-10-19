@@ -1,0 +1,30 @@
+[15:19:46] boot21_logs=[
+  {
+    "results": [
+      {
+        "n": 60,
+        "maxid": 1674,
+        "maxseq": 5180
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.7283
+      },
+      "duration": 0.7283,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1683456,
+      "rows_read": 61,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+] | recv=1320 send=1325
+[15:22:28] boot21 n=60 maxseq=5180 | recv=1322 send=1327 mqlen=0

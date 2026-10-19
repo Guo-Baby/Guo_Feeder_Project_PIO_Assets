@@ -1,0 +1,34 @@
+[
+  {
+    "results": [
+      {
+        "msg_id": "g4post179242373527747",
+        "cmd": "result",
+        "p": "{\"s\":0,\"c\":\"result\",\"i\":\"g4post179242373527747\",\"t\":1792423737,\"data\":{\"internal\":{\"total\":250964,\"free\":66356,\"used\":184608,\"largest_free_block\":55284,\"minimum_free\":43168},\"external\":{\"total\":8385719,\"free\":7993863,\"used\":391856,\"largest_free_block\":7864308,\"minimum_free\":7986879}},\"command\":\"system\"}"
+      },
+      {
+        "msg_id": "g4post179242374124975",
+        "cmd": "result",
+        "p": "{\"s\":0,\"c\":\"result\",\"i\":\"g4post179242374124975\",\"t\":1792423744,\"data\":{\"external\":{\"total\":12517376,\"used\":163840,\"free\":12353536},\"internal\":{\"total\":4259840,\"used\":1400800,\"free\":2859040},\"files\":[{\"path\":\"/config-tempalte.json\",\"type\":\"file\",\"size\":1238},{\"path\":\"/config.json\",\"type\":\"file\",\"size\":1576},{\"path\":\"/config\",\"type\":\"directory\",\"size\":0},{\"path\":\"/config/.bootok\",\"type\":\"file\",\"size\":1},{\"path\":\"/confi"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.7596
+      },
+      "duration": 2.7596,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1753088,
+      "rows_read": 4726,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

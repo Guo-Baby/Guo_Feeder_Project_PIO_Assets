@@ -1,0 +1,88 @@
+[
+  {
+    "results": [
+      {
+        "boot_seq": 117,
+        "n": 9,
+        "seq_min": 114433,
+        "seq_max": 114441,
+        "t0": 1792345018,
+        "t1": 1792345036
+      },
+      {
+        "boot_seq": 116,
+        "n": 9,
+        "seq_min": 114177,
+        "seq_max": 114185,
+        "t0": 1792344887,
+        "t1": 1792344906
+      },
+      {
+        "boot_seq": 115,
+        "n": 11,
+        "seq_min": 113921,
+        "seq_max": 113931,
+        "t0": 1792344821,
+        "t1": 1792344841
+      },
+      {
+        "boot_seq": 114,
+        "n": 9,
+        "seq_min": 113665,
+        "seq_max": 113673,
+        "t0": 1792344747,
+        "t1": 1792344771
+      },
+      {
+        "boot_seq": 113,
+        "n": 9,
+        "seq_min": 113409,
+        "seq_max": 113417,
+        "t0": 1792344709,
+        "t1": 1792344726
+      },
+      {
+        "boot_seq": 112,
+        "n": 19,
+        "seq_min": 112897,
+        "seq_max": 113154,
+        "t0": 1792344658,
+        "t1": 1792344812
+      },
+      {
+        "boot_seq": 111,
+        "n": 9,
+        "seq_min": 112641,
+        "seq_max": 112649,
+        "t0": 1792344565,
+        "t1": 1792344598
+      },
+      {
+        "boot_seq": 110,
+        "n": 9,
+        "seq_min": 112385,
+        "seq_max": 112393,
+        "t0": 1792344493,
+        "t1": 1792344509
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.4476
+      },
+      "duration": 0.4476,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1679360,
+      "rows_read": 85,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

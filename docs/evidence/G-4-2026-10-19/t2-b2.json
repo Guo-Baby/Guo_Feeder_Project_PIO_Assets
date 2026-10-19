@@ -1,0 +1,132 @@
+{
+ "tag": "b2",
+ "count": 10,
+ "interval": 1.0,
+ "t_start": 1792423442.3825853,
+ "t_start_iso": "15:24:02.382",
+ "t_sent_all": 1792423451.3888357,
+ "t_sent_all_iso": "15:24:11.388",
+ "http200": 10,
+ "records": [
+  {
+   "tag": "b2",
+   "idx": 0,
+   "cmd_id": "g4b20042382",
+   "t_send": 1792423442.382589,
+   "t_send_iso": "15:24:02.382",
+   "http": 200,
+   "t_done": 1792423443.7029438,
+   "elapsed": 1.32,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 1,
+   "cmd_id": "g4b20142382",
+   "t_send": 1792423443.3836517,
+   "t_send_iso": "15:24:03.383",
+   "http": 200,
+   "t_done": 1792423444.464434,
+   "elapsed": 1.081,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 2,
+   "cmd_id": "g4b20242382",
+   "t_send": 1792423444.384022,
+   "t_send_iso": "15:24:04.384",
+   "http": 200,
+   "t_done": 1792423445.8656597,
+   "elapsed": 1.482,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 3,
+   "cmd_id": "g4b20342382",
+   "t_send": 1792423445.384589,
+   "t_send_iso": "15:24:05.384",
+   "http": 200,
+   "t_done": 1792423446.6320941,
+   "elapsed": 1.248,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 4,
+   "cmd_id": "g4b20442382",
+   "t_send": 1792423446.3851829,
+   "t_send_iso": "15:24:06.385",
+   "http": 200,
+   "t_done": 1792423449.157237,
+   "elapsed": 2.772,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 5,
+   "cmd_id": "g4b20542382",
+   "t_send": 1792423447.3859763,
+   "t_send_iso": "15:24:07.385",
+   "http": 200,
+   "t_done": 1792423449.3360715,
+   "elapsed": 1.95,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 6,
+   "cmd_id": "g4b20642382",
+   "t_send": 1792423448.3867033,
+   "t_send_iso": "15:24:08.386",
+   "http": 200,
+   "t_done": 1792423449.3414683,
+   "elapsed": 0.955,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 7,
+   "cmd_id": "g4b20742382",
+   "t_send": 1792423449.387383,
+   "t_send_iso": "15:24:09.387",
+   "http": 200,
+   "t_done": 1792423451.0303636,
+   "elapsed": 1.643,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 8,
+   "cmd_id": "g4b20842382",
+   "t_send": 1792423450.388162,
+   "t_send_iso": "15:24:10.388",
+   "http": 200,
+   "t_done": 1792423451.8081524,
+   "elapsed": 1.42,
+   "body": "OK",
+   "error": null
+  },
+  {
+   "tag": "b2",
+   "idx": 9,
+   "cmd_id": "g4b20942382",
+   "t_send": 1792423451.3885512,
+   "t_send_iso": "15:24:11.388",
+   "http": 200,
+   "t_done": 1792423452.5162954,
+   "elapsed": 1.128,
+   "body": "OK",
+   "error": null
+  }
+ ]
+}
