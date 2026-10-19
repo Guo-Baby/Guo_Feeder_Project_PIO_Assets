@@ -339,7 +339,7 @@ L4 采样点（`t=845 s`）已为 0。即**四级突发的积压始终远低于 
 | `S-1` | MINOR（观测） | `counters.cloud_records_sent` 无自增点 ⇒ 恒 0，易误读为"未发送" |
 | `S-2` | MAJOR（证据管理） | 隔离 worktree 产出的 `firmware.bin` **未随 diff 归档** ⇒ 原件不可取回，只能重建 |
 | `G4-R5` | MAJOR（云端取证） | `mqtt_messages` 在突发窗口**再次漏记**（上行 8.6% / 9.5%）**且出现重复行**（185 行 / 96 ID），印证并扩展 `G4-R1` |
-| `G4-R6` | 观测口径（非缺陷） | rebase 后 `(21, 117]` 盲区生效：`boot=22` 被判 **`ambiguous`**，`max_boot_seq` **停在 21**、`ambiguous_count` 增长，`rewind_count` 因**合法补发 `boot=20` 记录** `0 → 21`。⇒ **今后不得用 `max_boot_seq` 判"设备是否重启"，一律以设备侧 `boot_seq` 为准** |
+| `G4-R6` | 观测口径（非缺陷） | rebase 后 `(21, 117]` 盲区生效：`boot=22` 被判 **`ambiguous`**，`max_boot_seq` **停在 21**、`ambiguous_count 13→141`。★ **`rewind_count 0→21` 与本条不同源**（代码中两者是**互斥分支**）：它增的是 **`boot<21`** 的观测（`last_rewind_boot=20`），来源为设备**补发 `boot=20` 的旧未 ACK 记录**，该补发为**强证据推断（`INFERRED`，非逐批直读）**；中间态 `12` 于 `16:30` 被观测到。详见 `docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md` §6.1。⇒ **今后不得用 `max_boot_seq` 判"设备是否重启"，一律以设备侧 `boot_seq` 为准** |
 | `G4-R4`（补充） | 门禁口径 | DRAM 分母必须是 `internal.total`（heap ≈ 251 KB），不是 327 680；按 `<70%` 口径**空载即 77.08%**，阈值不可满足 |
 | `G4-M1` | **部分关闭** | 原"M1：10 条 vs 20 条不可辨识，需新 boot 周期重测"——本次已在新 boot 周期用**分级**方式重测，且 `L3` 把 `minimum_free` 压出新低（57 544 → 57 356）⇒ **峰值时刻可被观测**，M1 的"不可辨识"前提不再成立；但 `minimum_free` 仍不可跨 boot 比较这一约束**保留** |
 

@@ -83,6 +83,11 @@
 5. **门禁裁决（人工）**：`G-1 HUMAN_REQUIRED`（P3 计划人工批准）· `G-4 BLOCKED` —— 双条件见 `P3-History-D1-Plan.md` §8：**① `BT-1` `CLOSED` = ✅ 已满足**；**② 设备侧负载评估 = ✅ 已执行两轮**：首轮方案 A（`2026-10-19 15:17–15:31Z`，`CONDITIONAL`，`L-4 FAIL min_free −29.4%`）+ 次轮 **`system.stats` 烧录 + 四级压力（`2026-10-19 16:21–16:51Z`）**。
    **★ 次轮（权威）= `docs/architecture/G-4-System-Stats-Flashing-and-Stress-Acceptance-Report.md`** · 证据 `docs/evidence/G-4-Stats-2026-10-20/`：`boot 21→22`·105 条只读命令 **设备 ACK 105/105**·`seq 5377–5508` **132 条记录全部 ACK** ⇒ **`drop_unacked` / `hovf` / 段删除频率 三项 `PASS`**；**内部 DRAM 峰值 `FAIL`（77.16%，★基线即 77.08%，`<70%` 阈值本设备从未满足 ⇒ 待人工裁决 `G4-R4`）**；**`loop()` P99 `NOT VERIFIED`（固件无埋点，补埋点须二次烧录 + 独立授权）** ⇒ **`G-4` 仍 `BLOCKED`，`WP-5` 未解锁**。
    `G-4` 的负载条件定义 = `BT-1-Acceptance-Report.md` §6.4/§6.5 `GATE-WP5` ②（五项，**不得缩小定义**）· 首轮计划 `G-4-Uplink-Load-Assessment-Plan.md`。
+   ★ **`2026-10-20` 补充：个人试运行 = ✅ `CONDITIONAL GO`（10 分钟最终验证通过）—— 这不是正式门禁解锁**。
+   报告 `docs/architecture/G-4-Personal-Trial-Final-Verification-Report.md` · 证据 `docs/evidence/G-4-Trial-2026-10-20/`；
+   裁决（6 项全部收口）`docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md`；
+   门禁修订 `docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md`（旧 `<70%` 与历史 `FAIL` **均不改写**，新增 `TRIAL-DRAM` **仅用于试运行**）。
+   ⇒ **`G-4` 仍 `BLOCKED`、`WP-5` 未解锁、`STOP-R1` 无解除**；试运行约束见报告 §6（有人值守 · 不做宠物唯一依赖 · **未验证任何执行类硬件动作**）。
 6. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
 7. **遗留运维**：MQTT 密码轮换（10 文件含明文）；设备当前 = 「遥测功能构建 + `telemetry_enable=false` 安全态」，是否刷回编译门 OFF 默认镜像待定。
 

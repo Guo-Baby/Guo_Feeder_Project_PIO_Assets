@@ -22,7 +22,7 @@
 | `epoch` | 2 | 2（未 rebase） |
 | `prev_epoch_max` | 117 | 117 |
 | `ambiguous_count` | — | **141**（`boot=22` 落在 `(21,117]` 歧义带 ⇒ 只记"观测前进"） |
-| `rewind_count` | 0 | **21**（全部来自**合法补发** `boot=20` 的旧未 ACK 记录，`last_rewind_boot=20`） |
+| `rewind_count` | 0 | **21**（★ 与 `ambiguous_count` **不同源**：此项增的是 `boot<21` 的观测，`last_rewind_boot=20`；来源为设备**补发 `boot=20` 旧未 ACK 记录**，属**强证据推断 `INFERRED`**，非逐批直读；`16:30` 曾读到中间态 **12**） |
 | `obs_count` | 498 | 662 |
 | `observed_max_boot_seq` | 117 | 117（观测只增） |
 | `log_history`（`boot_seq=22`） | — | **132 行**，`seq 5377–5508`，与设备 `emit_total` 精确一致（零丢失） |
