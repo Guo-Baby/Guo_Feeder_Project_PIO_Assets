@@ -173,6 +173,21 @@ bool syscmd_memory(JsonDocument &out);
 // 返回 true=成功；false=存储/文件系统不可用 或 枚举失败
 bool syscmd_flash(JsonDocument &out);
 
+// system.stats（G-4 观测缺口补齐 · 只读）
+// 写入 out["data"] = {
+//     available:true|false,          // false ⇒ LogManager 未初始化（≠ 全零）
+//     uptime_ms, boot_seq,
+//     queue:{used,capacity,inflight,retry,gave_up,acked_seq,hole_overflow},
+//     counters:{emit_total,ring_drop,drop_overflow,drop_unacked,
+//               cloud_batch_sent,cloud_records_sent,cloud_retx,cloud_ack_ok,
+//               cloud_ack_timeout,cloud_ack_lost,ack_ignored,ack_partial,
+//               replay_records,offline_skip,give_up,seg_evicted_unacked,
+//               seg_deleted,self_degraded},
+//     flash:{valid_segments,total_records,corrupt_count,seq_reliable}
+// }
+// 返回 true=成功；false=统计不可用（**不得**降级为"全部为 0"）
+bool syscmd_stats(JsonDocument &out);
+
 // system.restart_status（诊断 / 观察用）
 // 写入 out["data"] = {
 //     state, critical_operations, restart_pending, remain_ms, safe_delay_ms

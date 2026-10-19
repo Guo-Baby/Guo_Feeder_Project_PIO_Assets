@@ -659,3 +659,92 @@ bool syscmd_flash(JsonDocument &out)
 
     return true;
 }
+
+// =====================================================
+// system.stats（G-4 · 只读统计快照）
+//
+// 目的：补齐 `GATE-WP5` ② 的观测缺口 ——
+//       `drop_unacked` / `drop_overflow` / `hovf` / 段删除频率 等
+//       此前**只有串口**可读，云端完全不可见。
+//
+// 语义约束：
+//   · `log_stats_get()` 返回 false ⇒ `available:false`，**不写**计数器；
+//     绝不把"统计不可用"渲染成"全部为 0"（那会被误读为"没有丢弃"）；
+//   · 只读：不修改配置、不触发硬件、不重启、不分配堆内存；
+//   · 栈开销 ≈ `LogStats(≈160 B) + LogCloudInfo(≈60 B) + LogFlashInfo(≈50 B)`。
+// =====================================================
+bool syscmd_stats(JsonDocument &out)
+{
+    JsonObject data = out["data"].to<JsonObject>();
+    if (data.isNull())
+    {
+        return false;
+    }
+
+    LogStats st;
+    const bool available = log_stats_get(st);
+
+    data["available"] = available;
+    data["uptime_ms"] = (uint32_t)millis();
+
+    // ---- 队列 / ACK 运行时状态 ----
+    LogCloudInfo ci;
+    log_cloud_get_info(ci);
+
+    JsonObject q = data["queue"].to<JsonObject>();
+    q["used"] = ci.queue_used;
+    q["capacity"] = (uint16_t)LOG_CLOUD_QUEUE_SLOTS;
+    q["inflight"] = ci.inflight;
+    q["retry"] = ci.retry;
+    q["gave_up"] = ci.gave_up;
+    q["acked_seq"] = ci.acked_seq;
+    q["hole_overflow"] = ci.hole_overflow;   // `hovf`：空洞表溢出 ⇒ 本 boot 停止回收
+    q["connected"] = ci.connected;
+
+    // ---- Flash 段状态 ----
+    LogFlashInfo fi;
+    log_flash_get_info(fi);
+
+    data["boot_seq"] = fi.boot_seq;
+
+    JsonObject f = data["flash"].to<JsonObject>();
+    f["ready"] = fi.flash_ready;
+    f["valid_segments"] = fi.valid_segments;
+    f["total_records"] = fi.total_records;
+    f["corrupt_count"] = fi.corrupt_count;
+    f["seq_reliable"] = fi.seq_reliable;
+
+    // ---- 累计计数器（仅在可用时写入）----
+    if (!available)
+    {
+        return true;    // 保留 available:false，字段缺省 ⇒ 调用方不得当 0 解读
+    }
+
+    JsonObject c = data["counters"].to<JsonObject>();
+
+    c["emit_total"] = st.emit_total;
+    c["ring_drop"] = st.ring_drop;
+
+    // 丢弃三类（GATE-WP5 ② 的核心指标）
+    c["drop_overflow"] = st.cloud_q_drop;          // 云队列溢出淘汰
+    c["drop_unacked"] = st.cloud_flash_drop;       // give-up / 段淘汰中未 ACK 的条数
+    c["seg_evicted_unacked"] = st.flash_seg_evict_unacked;   // 段环压力淘汰的未确认数
+
+    c["cloud_batch_sent"] = st.cloud_batch_sent;
+    c["cloud_records_sent"] = st.cloud_records_sent;
+    c["cloud_retx"] = st.cloud_retx;               // ACK 超时后的重发次数
+    c["cloud_ack_ok"] = st.cloud_ack_ok;
+    c["cloud_ack_timeout"] = st.cloud_ack_timeout;
+    c["cloud_ack_lost"] = st.cloud_ack_lost;       // 重试耗尽
+    c["ack_ignored"] = st.cloud_ack_ignored;
+    c["ack_partial"] = st.cloud_ack_partial;
+
+    c["replay_records"] = st.cloud_replay_records;
+    c["offline_skip"] = st.cloud_offline_skip;
+    c["give_up"] = st.cloud_give_up;
+
+    c["seg_deleted"] = st.flash_segment_deleted;   // 段删除频率 = Δ/时间
+    c["self_degraded"] = st.self_degraded;
+
+    return true;
+}

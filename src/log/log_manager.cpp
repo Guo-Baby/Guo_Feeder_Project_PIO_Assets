@@ -4172,6 +4172,24 @@ void log_stats_reset()
     portEXIT_CRITICAL(&s_mux);
 }
 
+// G-4：统计只读快照（单临界区整体拷贝，保证字段自洽）。
+// 语义见 log_manager.h：false = 不可用 ≠ 全零。
+bool log_stats_get(LogStats &out)
+{
+    memset(&out, 0, sizeof(out));
+
+    if (!s_ready)
+    {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    out = s_stats;          // POD 结构（纯 uint32/uint8），整体拷贝
+    portEXIT_CRITICAL(&s_mux);
+
+    return true;
+}
+
 bool log_flush_requested()
 {
     // 与 log_task() / log_emit() 统一使用 s_mux（非阻塞自旋锁，不用 mutex）

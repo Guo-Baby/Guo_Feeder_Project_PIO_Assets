@@ -216,6 +216,7 @@ static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &
 // ---- SystemCommand（V2：资源查询 + 统一 Safe Restart）----
 static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_stats(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
 // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
@@ -2506,6 +2507,9 @@ static bool system_router(
     if (object == "flash") {
         return command_system_flash(cmd, response);
     }
+    if (object == "stats") {
+        return command_system_stats(cmd, response);
+    }
     if (object == "restart") {
         return command_system_restart(cmd, response);
     }
@@ -3280,6 +3284,24 @@ static bool command_system_memory(
     if (!syscmd_memory(response))
     {
         command_send_error(cmd, CMD_ERROR_SYSTEM, "memory query failed");
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// system: stats（G-4 · 只读）
+// object: stats
+// 返回 LogManager 累计统计 + 云队列/Flash 运行时状态。
+// ⚠️ `data.available=false` 表示统计不可用，**不得**当作"计数全为 0"。
+static bool command_system_stats(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_stats(response))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "stats query failed");
         return false;
     }
     response["status"] = "success";
