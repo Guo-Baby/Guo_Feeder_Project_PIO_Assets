@@ -1,0 +1,70 @@
+# S-3 构建与固件指标（采集于 2026-10-19T18:22:00Z）
+
+## 1. 三个构建的资源对照
+
+| 构建 | RAM (PlatformIO) | Flash | .bin 字节 | text | data | bss |
+|---|---|---|---|---|---|---|
+| **ENABLED=1**（本包交付） | 133344 (40.7%) | 1407105 (67.1%) | 1407472 | 1134430 | 288940 | 1224805 |
+| **ENABLED=0**（对照构建） | 132744 (40.5%) | 1406393 (67.1%) | 1406752 | 1133798 | 288860 | 1224221 |
+| **上一版生产**（system.stats, boot22） | 132744 (40.5%) | 1402305 (66.9%) | 1402672 | 1129218 | 287476 | 1224221 |
+
+## 2. 增量（必须按这三组读，不要混用）
+
+```
+A) 本包 vs 上一版生产   : RAM  +600 B  | Flash +4800 B | bin +4800 B
+B) 采样器开 vs 关       : RAM  +600 B  | Flash  +712 B | bin  +720 B
+C) 关 vs 上一版生产     : RAM     0 B  | Flash +4088 B | bin +4080 B   <- syscmd_loop/路由/字符串常量（与采样器无关）
+```
+
+## 3. 关键结论（可复核）
+
+```
+· ENABLED=0 的 bss = 1224221 = 上一版生产的 bss ⇒ 宏关闭时采样器**零静态 RAM**（不是"留着数组只关逻辑"）
+· loop_stats.cpp.o: enabled  text=1736 data=8 bss=586;  disabled text=875 data=0 bss=0
+· 因此"新增静态 RAM"= bss +584 B（ELF 口径）/ bss 586 B（目标文件口径），取 ELF 口径为准
+· .data 差值（+1464 B）主要是 syscmd_loop 的 JSON 键名与原因字符串（.rodata，落 Flash/DROM），
+  其不计入 PlatformIO 的 RAM 数字（后者只算 DRAM 段）
+```
+
+## 4. 固件 SHA-256
+```
+72d7a610761c8dd76c4c5857d12615c839f19633bee0b2388cb9e3b330dd744c *docs/evidence/S-3-2026-10-20/s3-loopstats-firmware.bin
+b7ce129958faf6d60562797607746acbba3095036233e0f7f8e18e1e4e6cb9a5 *docs/evidence/S-3-2026-10-20/s3-loopstats-CONTROL-off-firmware.bin
+bytes=1407472 docs/evidence/S-3-2026-10-20/s3-loopstats-firmware.bin
+bytes=1406752 docs/evidence/S-3-2026-10-20/s3-loopstats-CONTROL-off-firmware.bin
+```
+
+## 5. 编译告警（2 条，**均为既有**，与本包无关）
+```
+--- 上一版 G-4 构建的同名告警（对照，证明非本包引入）---
+52:src/cloud/cloud_manager.cpp:1461:28: warning: 'DynamicJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+74:src/main.cpp:2294:41: warning: 'bool ArduinoJson::V743PB22::JsonDocument::containsKey(TChar*) const [with TChar = const char]' is deprecated: use doc["key"].is<T>() instead [-Wdeprecated-declarations]
+```
+
+## 6. 构建环境
+```
+platformio.ini: platform=espressif32@7.0.1  framework-arduinoespressif32@3.20017.241212+sha.dcc1105b
+构建目录（互相隔离）: .pio/build/s3loop（ENABLED=1） / .pio/build/s3loop_off（ENABLED=0）
+对照构建命令: PLATFORMIO_BUILD_DIR=.pio/build/s3loop_off PLATFORMIO_BUILD_FLAGS="-DGF_LOOP_STATS_ENABLED=0" pio run
+```
+
+## 7. 可复现性（两次独立构建，字节级一致）
+```
+干净全量构建（.pio/build/s3loop_clean，417 个编译单元，263 s）:
+  sha256 72d7a610761c8dd76c4c5857d12615c839f19633bee0b2388cb9e3b330dd744c
+  RAM 133344 (40.7%) / Flash 1407105 (67.1%)
+增量构建（.pio/build/s3loop）:
+  sha256 72d7a610761c8dd76c4c5857d12615c839f19633bee0b2388cb9e3b330dd744c  <- **完全相同**
+=> 同一源码 + 固定工具链（platformio.ini 锁版本）⇒ 固件可复现（不是"碰巧一样"）
+```
+
+## 8. 日志文件清单（*.log 受 .gitignore 限制，已 gzip 归档）
+```
+-rw-r--r-- 1 wang 197121  508688 Oct 20 02:26 build-clean.log
+-rw-r--r-- 1 wang 197121   12691 Oct 20 02:26 build-clean.log.gz
+-rw-r--r-- 1 wang 197121    2681 Oct 20 02:21 build-control-off-incremental.log
+-rw-r--r-- 1 wang 197121    1378 Oct 20 02:22 build-control-off-incremental.log.gz
+-rw-r--r-- 1 wang 197121    2526 Oct 20 02:20 build-incremental.log
+-rw-r--r-- 1 wang 197121    1287 Oct 20 02:21 build-incremental.log.gz
+-rw-r--r-- 1 wang 197121    4869 Oct 20 02:22 host-probe.log
+```

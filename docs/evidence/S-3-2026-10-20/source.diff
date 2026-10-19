@@ -1,0 +1,1476 @@
+diff --git a/platformio.ini b/platformio.ini
+index e0702a4..7d5b39e 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -72,6 +72,11 @@ build_flags =
+   ; 实测会溢出（Stack canary watchpoint triggered (loopTask)）。
+   ; 提到 16KB：本工程 DRAM 余量充足（静态占用约 130KB / 327KB）。
+   -DARDUINO_LOOP_STACK_SIZE=16384
++  ; S-3：loop() 周期耗时统计（system.loop 只读查询的数据源）
++  ; · =1 采样器生效（约 +570 B 静态 RAM、每轮 1.0–1.8 µs）
++  ; · =0 整体编译剔除（零开销），用于"纯净对照构建"以量化采样器自身影响
++  ; ★ 改动此宏会改变固件指纹，必须重新归档 .bin + SHA-256（S-2 纪律）
++  -DGF_LOOP_STATS_ENABLED=1
+ 
+ upload_speed = 921600
+ monitor_speed = 115200
+diff --git a/src/app/loop_stats.cpp b/src/app/loop_stats.cpp
+new file mode 100644
+index 0000000..37be65f
+--- /dev/null
++++ b/src/app/loop_stats.cpp
+@@ -0,0 +1,374 @@
++// =====================================================
++// LoopStats —— loop() 周期耗时统计（S-3 实现）
++//
++// ★ 本文件的三条硬约束（评审时逐条核对，违反即缺陷）：
++//   1. **零输出**：不出现 Serial / printf / log_emit / ESP_LOGx / MQTT 调用
++//      —— 一行 100 B 的串口打印在 115200 8N1 下 ≈ 8.7 ms，会直接制造假长尾。
++//   2. **零动态分配**：不出现 new / malloc / String / std::vector。
++//   3. **热路径无锁**：`loop_stats_tick()` 内不出现 portENTER_CRITICAL；
++//      只有读路径 `loop_stats_get()` 用单临界区整体拷贝。
++//
++// 计时源：esp_timer_get_time()（int64 µs）。**禁止 micros()**（uint32 µs，
++// 71.58 min 回绕，2 h 门禁窗口必然溢出）。
++// =====================================================
++
++#include "app/loop_stats.h"
++
++#if defined(LOOP_STATS_HOST_TEST)
++// ---------------- 宿主机（无硬件、无 Arduino、无 libc）----------------
++// ★ 故意**不** include <string.h>：宿主机探针跑在 wasm32 freestanding
++//   （-nostdlib），由探针自行提供 memcpy/memset（见 test/loop_stats_host）。
++#include <stddef.h>
++extern "C" void *memcpy(void *dst, const void *src, size_t n);
++extern "C" void *memset(void *dst, int c, size_t n);
++extern "C" int64_t loop_stats_host_time_us(void);
++static inline int64_t ls_now_us(void) { return loop_stats_host_time_us(); }
++#define LS_CRIT_ENTER() ((void)0)
++#define LS_CRIT_EXIT()  ((void)0)
++#else
++// ---------------- 目标板 ----------------
++#include <Arduino.h>
++#include <string.h>
++#include "esp_timer.h"
++
++static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
++static inline int64_t ls_now_us(void) { return (int64_t)esp_timer_get_time(); }
++#define LS_CRIT_ENTER() portENTER_CRITICAL(&s_mux)
++#define LS_CRIT_EXIT()  portEXIT_CRITICAL(&s_mux)
++#endif
++
++// =====================================================
++// 内部状态（全部 static，编译期定容）
++//   hist 512 B + 饱和位图 16 B + 标量 ≈ 40 B ⇒ 合计 ≈ 570 B 内部 RAM
++//
++// ★ 整段被 GF_LOOP_STATS_ENABLED 包裹：宏=0 时**连静态数组都不分配**
++//   ⇒ "纯净对照构建"才是真正的零 RAM 零开销（不是"只关逻辑、留着数组"）。
++// =====================================================
++#if GF_LOOP_STATS_ENABLED
++static uint32_t s_hist[loopstat::BUCKET_COUNT];      // 累积桶计数
++static uint32_t s_sat_mask[loopstat::BUCKET_COUNT / 32]; // 已饱和桶的位图（去重计数用）
++static uint32_t s_over;          // dt >= RANGE_US 的样本数
++static uint32_t s_anomaly;       // dt <= 0 或 dt > 60 s
++static uint32_t s_n;             // 有效样本数（含 over）
++static uint32_t s_min_us;
++static uint32_t s_max_us;
++static uint32_t s_sat_buckets;   // 发生过饱和的**不同**桶数
++static uint8_t  s_n_saturated;
++static uint8_t  s_available;     // 1 = 首样本已建立
++static uint64_t s_sum_us;
++static int64_t  s_prev_us;       // 上一次 loop() 入口时刻
++static int64_t  s_start_us;      // 首样本时刻（elapsed 起点）
++static uint32_t s_crit_max_us;   // 读路径观测到的最大耗时
++static uint32_t s_snap_count;
++#endif // GF_LOOP_STATS_ENABLED
++
++// 结构体积（1 KB 栈铁律：快照会被放在命令处理栈帧上）
++static_assert(sizeof(LoopStatsSnapshot) <= 1024, "LoopStatsSnapshot 超 1 KB");
++static_assert(sizeof(LoopStatsQuantiles) <= 128, "LoopStatsQuantiles 意外过大");
++// 20 ms 必须落在桶边界上，否则 P99 判定会产生桶内插值歧义
++static_assert((loopstat::GATE_P99_US % loopstat::BUCKET_WIDTH_US) == 0,
++              "门禁阈值必须与桶宽整除");
++static_assert((loopstat::GATE_P99_US / loopstat::BUCKET_WIDTH_US) < loopstat::BUCKET_COUNT,
++              "门禁阈值必须落在直方图量程内");
++
++// =====================================================
++// 初始化
++// =====================================================
++void loop_stats_init()
++{
++#if GF_LOOP_STATS_ENABLED
++    memset(s_hist, 0, sizeof(s_hist));
++    memset(s_sat_mask, 0, sizeof(s_sat_mask));
++    s_over = 0;
++    s_anomaly = 0;
++    s_n = 0;
++    s_min_us = 0;
++    s_max_us = 0;
++    s_sat_buckets = 0;
++    s_n_saturated = 0;
++    s_available = 0;
++    s_sum_us = 0;
++    s_prev_us = 0;
++    s_start_us = 0;
++    s_crit_max_us = 0;
++    s_snap_count = 0;
++#endif
++}
++
++// =====================================================
++// 采样（loop() 第一行）
++//
++// 开销预算：esp_timer_get_time ≈0.5–1.5 µs + 减法/索引/自增 ≈0.1 µs ⇒ 1.0–1.8 µs/轮
++// （目标板实测值见实施报告；本函数内**没有任何**可能阻塞的调用）
++// =====================================================
++void loop_stats_tick()
++{
++#if GF_LOOP_STATS_ENABLED
++    const int64_t now = ls_now_us();
++
++    // 首样本：只建立基线，丢弃（否则首个 dt 是不完整周期）
++    if (!s_available)
++    {
++        s_prev_us = now;
++        s_start_us = now;
++        s_available = 1;
++        return;
++    }
++
++    const int64_t dt_signed = now - s_prev_us;
++    s_prev_us = now;
++
++    // ---- 异常样本：dt <= 0（时钟回退/并发重复进入）或 dt > 60 s（非物理）----
++    // ★ 计入 anomaly 后**直接返回**：既不入 n，也不入 sum/min/max，
++    //   因此 elapsed 与 sum 的差额即可反映"未被统计覆盖的时间"。
++    if (dt_signed <= 0 || dt_signed > (int64_t)loopstat::ANOMALY_MAX_US)
++    {
++        s_anomaly++;
++        return;
++    }
++
++    const uint32_t dt_us = (uint32_t)dt_signed;
++
++    if (dt_us >= loopstat::RANGE_US)
++    {
++        // ---- 溢出桶：dt >= 25.6 ms ----
++        if (s_over != 0xFFFFFFFFu) { s_over++; }
++    }
++    else
++    {
++        uint32_t b = dt_us / loopstat::BUCKET_WIDTH_US;
++        if (b >= loopstat::BUCKET_COUNT) { b = loopstat::BUCKET_COUNT - 1; } // 防御（不可达）
++
++        if (s_hist[b] != 0xFFFFFFFFu)
++        {
++            s_hist[b]++;
++        }
++        else
++        {
++            // 饱和：不再自增，按**不同桶**去重计数（位图保证只计一次）
++            const uint32_t w = b >> 5;
++            const uint32_t bit = 1u << (b & 31u);
++            if ((s_sat_mask[w] & bit) == 0u)
++            {
++                s_sat_mask[w] |= bit;
++                s_sat_buckets++;
++            }
++        }
++    }
++
++    // ---- 计数饱和（uint32 @1 kHz ≈ 49.7 天；2.5 h 窗口无风险）----
++    if (s_n != 0xFFFFFFFFu) { s_n++; }
++    else { s_n_saturated = 1; }
++
++    s_sum_us += (uint64_t)dt_us;
++
++    if (s_min_us == 0u || dt_us < s_min_us) { s_min_us = dt_us; }
++    if (dt_us > s_max_us) { s_max_us = dt_us; }
++#endif
++}
++
++// =====================================================
++// 读取快照（任意任务上下文；单临界区整体拷贝）
++// =====================================================
++bool loop_stats_get(LoopStatsSnapshot &out)
++{
++    memset(&out, 0, sizeof(out));
++    out.magic = loopstat::MAGIC;
++    out.bucket_count = loopstat::BUCKET_COUNT;
++    out.bucket_width_us = loopstat::BUCKET_WIDTH_US;
++    out.enabled = (GF_LOOP_STATS_ENABLED) ? 1u : 0u;
++
++#if GF_LOOP_STATS_ENABLED
++    const int64_t t0 = ls_now_us();
++
++    LS_CRIT_ENTER();
++    out.available    = s_available;
++    out.over_cnt     = s_over;
++    out.anomaly_cnt  = s_anomaly;
++    out.n            = s_n;
++    out.min_us       = s_min_us;
++    out.max_us       = s_max_us;
++    out.sat_buckets  = s_sat_buckets;
++    out.n_saturated  = s_n_saturated;
++    out.sum_us       = s_sum_us;
++    if (s_available)
++    {
++        memcpy(out.hist, s_hist, sizeof(s_hist));   // 512 B
++        out.elapsed_us = (uint64_t)(t0 - s_start_us);
++        s_snap_count++;
++    }
++    out.snap_count = s_snap_count;
++    LS_CRIT_EXIT();
++
++    // 读路径开销自测（目标板取证项）：含临界区进出 + 512 B 拷贝
++    {
++        const uint32_t dur = (uint32_t)(ls_now_us() - t0);
++        if (dur > s_crit_max_us) { s_crit_max_us = dur; }
++        out.snap_crit_max_us = s_crit_max_us;
++    }
++
++    return out.available != 0u;
++#else
++    return false;
++#endif
++}
++
++// =====================================================
++// 分位 / 差分（纯函数）
++// =====================================================
++bool loop_stats_compute(const LoopStatsSnapshot &base,
++                        const LoopStatsSnapshot &top,
++                        LoopStatsQuantiles &out)
++{
++    memset(&out, 0, sizeof(out));
++
++    // ---- 1. 几何 / 版本校验 ----
++    const bool base_empty = (base.magic == loopstat::MAGIC_EMPTY);
++    if (top.magic != loopstat::MAGIC ||
++        top.bucket_count != loopstat::BUCKET_COUNT ||
++        top.bucket_width_us != loopstat::BUCKET_WIDTH_US)
++    {
++        out.invalid_bits = loopstat::INVALID_GEOMETRY;
++        return false;
++    }
++    if (!base_empty &&
++        (base.magic != loopstat::MAGIC ||
++         base.bucket_count != top.bucket_count ||
++         base.bucket_width_us != top.bucket_width_us))
++    {
++        out.invalid_bits = loopstat::INVALID_GEOMETRY;
++        return false;
++    }
++    if (!top.available)
++    {
++        out.invalid_bits = loopstat::INVALID_NOT_AVAILABLE;
++        return false;
++    }
++
++    // ---- 2. 差分（含回退检测）----
++    uint16_t bits = 0;
++    uint32_t d_n = 0, d_over = 0, d_anom = 0, d_sat = 0;
++    uint64_t d_sum = 0;
++
++    if (base_empty)
++    {
++        d_n = top.n;
++        d_over = top.over_cnt;
++        d_anom = top.anomaly_cnt;
++        d_sat = top.sat_buckets;
++        d_sum = top.sum_us;
++    }
++    else
++    {
++        if (top.n < base.n || top.over_cnt < base.over_cnt ||
++            top.anomaly_cnt < base.anomaly_cnt || top.sum_us < base.sum_us ||
++            top.sat_buckets < base.sat_buckets)
++        {
++            bits |= loopstat::INVALID_REGRESSION;
++        }
++        d_n = (top.n >= base.n) ? (top.n - base.n) : 0u;
++        d_over = (top.over_cnt >= base.over_cnt) ? (top.over_cnt - base.over_cnt) : 0u;
++        d_anom = (top.anomaly_cnt >= base.anomaly_cnt) ? (top.anomaly_cnt - base.anomaly_cnt) : 0u;
++        d_sat = (top.sat_buckets >= base.sat_buckets) ? (top.sat_buckets - base.sat_buckets) : 0u;
++        d_sum = (top.sum_us >= base.sum_us) ? (top.sum_us - base.sum_us) : 0ull;
++    }
++
++    out.n = d_n;
++    out.over = d_over;
++    out.anomaly = d_anom;
++    out.sum_us = d_sum;
++    out.min_us_uptime = top.min_us;
++    out.max_us_uptime = top.max_us;
++    out.mean_us = (d_n != 0u) ? (uint32_t)(d_sum / (uint64_t)d_n) : 0u;
++
++    // ---- 3. 饱和（窗口内新增即判 P99 不可信）----
++    if (d_sat != 0u || top.n_saturated != 0u)
++    {
++        bits |= loopstat::INVALID_SATURATION;
++        if (top.n_saturated != 0u) { bits |= loopstat::INVALID_N_SATURATED; }
++    }
++
++    if (d_n < loopstat::MIN_SAMPLES) { bits |= loopstat::INVALID_INSUFFICIENT; }
++    if (d_anom != 0u && (uint64_t)d_anom > (uint64_t)d_n) { bits |= loopstat::INVALID_ANOMALY_DOMINANT; }
++
++    // ---- 4. 分位（单趟累加，不分配临时数组）----
++    // rank = ceil(p * N)，用整数运算避免浮点
++    const uint64_t rank50 = ((uint64_t)d_n * 50ull + 99ull) / 100ull;
++    const uint64_t rank99 = ((uint64_t)d_n * 99ull + 99ull) / 100ull;
++
++    uint64_t cum = 0;
++    bool got50 = false, got99 = false;
++    uint32_t b50 = 0, b99 = 0;
++
++    // ★ 必须**遍历全部桶**：`cum` 的终值要用于 "Δn == ΣΔhist + Δover" 恒等式校验，
++    //   提前 break 会让恒等式误判为"计数回退"（曾被 T9 端到端用例捕获）。
++    for (uint32_t i = 0; i < loopstat::BUCKET_COUNT; ++i)
++    {
++        const uint32_t v = top.hist[i];
++        const uint32_t b = base_empty ? 0u : base.hist[i];
++        if (!base_empty && v < b)
++        {
++            bits |= loopstat::INVALID_REGRESSION;
++            continue;
++        }
++        cum += (uint64_t)(v - b);
++
++        if (d_n == 0u) { continue; }
++        if (!got50 && cum >= rank50) { b50 = i; got50 = true; }
++        if (!got99 && cum >= rank99) { b99 = i; got99 = true; }
++    }
++
++    // ---- 5. 恒等式：Δn == ΣΔhist + Δover（仅在无饱和时成立）----
++    if ((bits & loopstat::INVALID_SATURATION) == 0u && top.n_saturated == 0u)
++    {
++        if ((uint64_t)d_n != cum + (uint64_t)d_over)
++        {
++            bits |= loopstat::INVALID_REGRESSION;
++        }
++    }
++
++    out.invalid_bits = bits;
++
++    // d_n == 0 时不做分位判定（否则会被误读为"P99 落在 over 区间"），
++    // 可信性已由 INSUFFICIENT 位否决
++    if (d_n != 0u)
++    {
++        if (!got50) { out.p50_in_overflow = 1; }
++        else
++        {
++            out.p50_bucket = b50;
++            out.p50_low_us = b50 * loopstat::BUCKET_WIDTH_US;
++            out.p50_high_us = (b50 + 1u) * loopstat::BUCKET_WIDTH_US;
++        }
++
++        if (!got99) { out.p99_in_overflow = 1; }
++        else
++        {
++            out.p99_bucket = b99;
++            out.p99_low_us = b99 * loopstat::BUCKET_WIDTH_US;
++            out.p99_high_us = (b99 + 1u) * loopstat::BUCKET_WIDTH_US;
++            // ★ 20 ms = 100 × 200 µs 恰在桶边界 ⇒ 该判定**精确**
++            out.p99_lt_gate = (out.p99_low_us < loopstat::GATE_P99_US) ? 1u : 0u;
++        }
++    }
++
++    out.valid = (bits == 0u && out.p99_in_overflow == 0u && out.p50_in_overflow == 0u) ? 1u : 0u;
++    return true;
++}
++
++// =====================================================
++// 宿主机单测注入钩子（生产构建中不编译）
++// =====================================================
++#if defined(LOOP_STATS_HOST_TEST) && GF_LOOP_STATS_ENABLED
++void loop_stats_host_force_bucket_full(uint32_t bucket)
++{
++    if (bucket < loopstat::BUCKET_COUNT) { s_hist[bucket] = 0xFFFFFFFFu; }
++}
++void loop_stats_host_force_n_saturated()
++{
++    s_n = 0xFFFFFFFFu;
++    s_n_saturated = 1;
++}
++uint32_t loop_stats_host_n() { return s_n; }
++void loop_stats_host_reset() { loop_stats_init(); }
++#endif
+diff --git a/src/app/loop_stats.h b/src/app/loop_stats.h
+new file mode 100644
+index 0000000..d740d65
+--- /dev/null
++++ b/src/app/loop_stats.h
+@@ -0,0 +1,170 @@
++#pragma once
++// =====================================================
++// LoopStats —— loop() 周期耗时统计（S-3）
++//
++// 目的：为正式 G-4 门禁提供 `loop()` 单轮耗时 P50/P99 的**观测能力**。
++//
++// -----------------------------------------------------
++// 设计要点（详见 docs/architecture/S-3-Loop-Timing-...md 与
++//            docs/architecture/S-3-Implementation-and-Local-Acceptance-Report.md）
++// -----------------------------------------------------
++// 1. 采样点：**只有 loop() 入口一处**。样本 = 相邻两次进入 loop() 的时间差，
++//    即"上一轮完整周期"，**包含调度与抢占影响**（无节流器时执行时间≈周期）。
++// 2. 计时源：`esp_timer_get_time()`（int64 µs，**不回绕**）。
++//    ★ 禁用 `micros()`：其底层为 uint32 µs，**71.58 min 回绕**，
++//      2 h 门禁窗口必然溢出 ⇒ 差分变成负值/巨值。
++// 3. 存储：**编译期定容、纯静态、内部 RAM**。
++//    ★ 故意不用 PSRAM：PSRAM 经 cache，可能产生数十 µs 抖动，
++//      会污染被测对象本身。
++// 4. 热路径：**无锁**（单写者 = loopTask）、**零输出**（不 Serial / 不 log_emit /
++//    不发 MQTT）、**无动态分配**。这是硬约束 —— 一行 100 B 的串口打印在
++//    115200 8N1 下 ≈ 8.7 ms，足以单独制造"假 P99 长尾"。
++// 5. 读路径：**单临界区整体拷贝** POD（576 B），预算 ≤ 10 µs；
++//    并在同一次调用内自测该临界区耗时（`snap_crit_max_us`，供目标板实测取证）。
++// 6. 无写命令：**不提供 reset**。窗口统计由调用方做"两次快照差分"
++//    （`loop_stats_compute(base, top, out)`）；单次查询返回的是
++//    **自首样本起的累积口径**（`scope = "uptime"`）。
++//
++// -----------------------------------------------------
++// 直方图参数（为什么是 128 × 200 µs）
++// -----------------------------------------------------
++//   量程 = 128 × 200 µs = **25.6 ms**，`over` 桶 = dt ≥ 25.6 ms。
++//   ★ 门禁阈值 **20 ms = 100 × 200 µs，恰好落在桶边界上**
++//     ⇒ bucket ≤ 99 ⟺ P99 < 20 ms（**判定精确，无桶内插值歧义**）。
++//   ★ 桶类型用 **uint32** 而非 uint16：1 kHz 下 2 h ≈ 7.2e6 样本，
++//     单桶（如 P50 所在桶）远超 65535 ⇒ uint16 会在正式窗口内**提前饱和**
++//     并使 P99 失真。uint32 上限 4.29e9 ≈ 49.7 天 @1 kHz，覆盖 2.5 h 窗口有余。
++//     仍保留饱和检测（`sat_buckets` / `n_saturated`）：一旦发生，**拒绝输出 P99**。
++//   ★ ≥ 25.6 ms 的样本进 `over_cnt`，但 `max_us` 始终记录**精确最大值**
++//     ⇒ 溢出区间也永不只报 "≥25.6 ms"。
++// =====================================================
++
++#include <stdint.h>
++
++// 编译期门控：=0 时 tick/get 为空实现（零开销），用于纯净对照构建（S-3 §R1）
++#ifndef GF_LOOP_STATS_ENABLED
++#define GF_LOOP_STATS_ENABLED 1
++#endif
++
++namespace loopstat
++{
++    // ---- 直方图几何（改这些常量必须同步复核 20 ms 是否仍在桶边界）----
++    static constexpr uint32_t BUCKET_COUNT = 128;
++    static constexpr uint32_t BUCKET_WIDTH_US = 200;
++    static constexpr uint32_t RANGE_US = BUCKET_COUNT * BUCKET_WIDTH_US; // 25 600 µs
++    static constexpr uint32_t OVER_US = RANGE_US;                        // ≥ 此值进 over
++    // 异常样本上界：dt ≤ 0 或 dt > 60 s ⇒ 非物理样本，计入 anomaly 且**不**入统计
++    static constexpr uint32_t ANOMALY_MAX_US = 60000000u;
++    // 分位可判读的最小样本数（P99 尾部 ≥100 个样本）
++    static constexpr uint32_t MIN_SAMPLES = 10000;
++    // 结构版本（快照兼容性校验）
++    static constexpr uint32_t MAGIC = 0x4C535431u; // 'LST1'
++    // 门禁绝对阈值（BT-1 Plan §6.2）
++    static constexpr uint32_t GATE_P99_US = 20000;
++    // 空基线的 magic：`loop_stats_compute()` 允许 base.magic==0 表示"自 boot 起"
++    static constexpr uint32_t MAGIC_EMPTY = 0u;
++}
++
++// =====================================================
++// 快照（POD，可整体拷贝；576 B ⇒ 可上栈，< 1 KB 铁律）
++// =====================================================
++struct LoopStatsSnapshot
++{
++    uint32_t magic;                          // loopstat::MAGIC / MAGIC_EMPTY
++    uint32_t bucket_count;                   // 拷贝时校验几何一致性
++    uint32_t bucket_width_us;
++    uint32_t hist[loopstat::BUCKET_COUNT];   // 512 B：累积桶计数（uint32，见文件头）
++    uint32_t over_cnt;                       // dt ≥ RANGE_US 的样本数（已含在 n 内）
++    uint32_t anomaly_cnt;                    // dt ≤ 0 或 dt > 60 s 的样本数（**不**含在 n 内）
++    uint32_t n;                              // 有效样本数（含 over）
++    uint32_t min_us;                         // 累积最小值（未饱和前精确）
++    uint32_t max_us;                         // 累积最大值（**精确**，不受直方图分辨率限制）
++    uint32_t sat_buckets;                    // 发生过饱和的**不同**桶数量
++    uint8_t  available;                      // 1 = 已建立首个样本，统计可读
++    uint8_t  enabled;                        // 编译期开关回显
++    uint8_t  n_saturated;                    // 1 = n 已达 uint32 上限（此后 n 不再增长）
++    uint8_t  reserved0;
++    uint64_t sum_us;                         // 累积样本和（用于精确均值，**不用 P50 代替**）
++    uint64_t elapsed_us;                     // 自首个样本起的墙钟时间（**uint64**，2 h 不溢出）
++    uint32_t snap_crit_max_us;               // 观测到的读路径临界区最大耗时（目标板取证项）
++    uint32_t snap_count;                     // 读路径被调用次数
++};
++
++// =====================================================
++// 分位结果（由 `loop_stats_compute()` 产出；纯计算，不碰硬件）
++// =====================================================
++struct LoopStatsQuantiles
++{
++    uint8_t  valid;             // 1 ⇒ p50/p99 数值可信（invalid_bits==0 且非 p99_in_overflow）
++    uint8_t  p99_in_overflow;   // 1 ⇒ P99 落在 over 区间（只能给**下界** + 精确 max）
++    uint8_t  p50_in_overflow;   // 1 ⇒ P50 落在 over 区间（病态）
++    uint8_t  p99_lt_gate;       // 1 ⇒ P99 < 20 ms（门禁绝对口径）；无桶结果时为 0
++    uint16_t invalid_bits;      // 见 loopstat::INVALID_* 位定义
++    uint16_t reserved1;
++    uint32_t n;                 // 窗口内有效样本数（Δn，含 over）
++    uint32_t over;              // 窗口内 over 样本数（Δover）
++    uint32_t anomaly;           // 窗口内异常样本数（Δanomaly）
++    uint32_t mean_us;           // **精确均值** = Δsum / Δn（不是 P50）
++    uint32_t min_us_uptime;     // 累积最小（**非窗口值**，见 min_max_scope）
++    uint32_t max_us_uptime;     // 累积最大（**非窗口值**）
++    uint32_t p50_bucket;        // 分位所在桶下标
++    uint32_t p99_bucket;
++    uint32_t p50_low_us;        // 桶下界（含）
++    uint32_t p50_high_us;       // 桶上界（不含）
++    uint32_t p99_low_us;
++    uint32_t p99_high_us;
++    uint64_t sum_us;            // 窗口内样本和（Δsum）
++};
++
++namespace loopstat
++{
++    // invalid_bits 定义（可叠加）
++    static constexpr uint16_t INVALID_NOT_AVAILABLE   = 1u << 0;  // 尚无首样本 / 未启用
++    static constexpr uint16_t INVALID_INSUFFICIENT    = 1u << 1;  // Δn < MIN_SAMPLES
++    static constexpr uint16_t INVALID_SATURATION      = 1u << 2;  // 窗口内出现桶饱和 ⇒ P99 不可信
++    static constexpr uint16_t INVALID_N_SATURATED     = 1u << 3;  // n 已饱和
++    static constexpr uint16_t INVALID_GEOMETRY        = 1u << 4;  // 快照几何/版本不匹配
++    static constexpr uint16_t INVALID_REGRESSION      = 1u << 5;  // 计数回退或恒等式不成立
++    static constexpr uint16_t INVALID_ANOMALY_DOMINANT = 1u << 6; // 异常样本多于有效样本
++}
++
++// =====================================================
++// API
++// =====================================================
++
++// 初始化（setup 末尾调用一次）。幂等：清空全部统计并丢弃首样本状态。
++void loop_stats_init();
++
++// 采样（**必须是 loop() 的第一行**）。无锁、零输出、O(1)。
++void loop_stats_tick();
++
++// 读取快照（可在任意任务上下文调用；内部单临界区整体拷贝）。
++// 返回 true = 统计可用；false = 尚无首样本或编译期关闭（此时 out 已清零，
++// 调用方**不得**把 false 当作"全部为 0"解读）。
++bool loop_stats_get(LoopStatsSnapshot &out);
++
++// 分位/差分计算（纯函数，无副作用、无硬件依赖，可在宿主机单测）。
++//   base = 窗口起点快照（magic 可为 MAGIC_EMPTY 表示"自 boot 起"）
++//   top  = 窗口终点快照
++// 返回 true = 结构可解析（不代表分位可信，可信性看 out.valid / invalid_bits）。
++bool loop_stats_compute(const LoopStatsSnapshot &base,
++                        const LoopStatsSnapshot &top,
++                        LoopStatsQuantiles &out);
++
++// -----------------------------------------------------
++// 仅宿主机单测可用的注入钩子（生产构建中不存在）
++// -----------------------------------------------------
++#if defined(LOOP_STATS_HOST_TEST)
++// 把指定桶预置为饱和值（不置 sat 位）——用于验证"饱和只计一次"的逻辑
++void loop_stats_host_force_bucket_full(uint32_t bucket);
++// 把 n 预置为 uint32 上限
++void loop_stats_host_force_n_saturated();
++// 直接读内部 n（便于断言）
++uint32_t loop_stats_host_n();
++// 清空内部状态但**不**重置 n_saturated/几何（等价 init 的严格版）
++void loop_stats_host_reset();
++#endif
++
++// 结构体积预算（static_assert 在 .cpp 中另有一条针对 1 KB 栈铁律的断言）
++static_assert(sizeof(LoopStatsSnapshot) <= 1024,
++              "LoopStatsSnapshot 必须 <=1024B：它会被放在命令处理栈帧上（1 KB 栈铁律）");
+diff --git a/src/main.cpp b/src/main.cpp
+index 990b294..223abbf 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -12,6 +12,7 @@
+ #include "services/topic_renderer.h"
+ #include "services/event_manager.h"
+ #include "app/oled.h"
++#include "app/loop_stats.h"   // S-3：loop() 周期耗时统计（GF_LOOP_STATS_ENABLED 门控）
+ #include "services/command_manager.h"
+ #include "services/credential_manager.h"   // Phase D-2：凭据生命周期（gfcred 双 slot）
+ #include "services/wifi_module.h"
+@@ -650,6 +651,14 @@ void setup()
+ 
+         log_emit(LOG_SYS_BOOT_COMPLETE, LOG_LVL_INFO, p, 5);
+     }
++
++    // =====================================================
++    // S-3：loop() 周期耗时统计初始化（必须在 loop() 启动之前）
++    //
++    // 只清空静态计数；**首样本在第一次 loop_stats_tick() 时建立并丢弃**
++    // （否则首个 dt 是不完整周期）。无动态分配、无输出、不改任何其他模块。
++    // =====================================================
++    loop_stats_init();
+ }
+ 
+ void serial_debug_command_process();
+@@ -667,6 +676,13 @@ void logt_console(const String &cmd);
+ // =====================================================
+ void loop()
+ {
++    // ---- S-3：loop() 周期耗时采样（**必须是第一行**）----
++    //
++    // 样本 = 相邻两次进入 loop() 的时间差（上一轮完整周期，含调度/抢占影响）。
++    // 硬约束：本函数**零输出、零动态分配、无锁**（详见 src/app/loop_stats.h）。
++    // GF_LOOP_STATS_ENABLED=0 时为空实现（宏在 platformio.ini，可直接关掉）。
++    loop_stats_tick();
++
+     // ---- Safe Restart 状态机（SystemCommand）----
+     // 必须每轮调用：它是全系统唯一的 Restart 执行点。
+     // 放在最前面，保证已进入的 10 秒安全窗口不被其他任务拖长。
+diff --git a/src/services/command_manager.cpp b/src/services/command_manager.cpp
+index d04ed48..f0e71b6 100644
+--- a/src/services/command_manager.cpp
++++ b/src/services/command_manager.cpp
+@@ -217,6 +217,7 @@ static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &
+ static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_stats(const CommandMessage &cmd, JsonDocument &response);
++static bool command_system_loop(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
+ // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
+@@ -2510,6 +2511,10 @@ static bool system_router(
+     if (object == "stats") {
+         return command_system_stats(cmd, response);
+     }
++    if (object == "loop") {
++        // S-3：loop() 周期耗时统计（**只读**；不 reset、不改任何计数）
++        return command_system_loop(cmd, response);
++    }
+     if (object == "restart") {
+         return command_system_restart(cmd, response);
+     }
+@@ -3309,6 +3314,25 @@ static bool command_system_stats(
+     return true;
+ }
+ 
++// system: loop（S-3 · 只读）
++// object: loop
++// 返回 loop() 周期耗时的累积统计（P50/P99 等）+ 稀疏直方图。
++// ⚠️ `data.available=false` ⇒ 尚无首样本/编译期关闭，**不得**当作"全为 0"。
++// ⚠️ `data.valid=false` ⇒ 分位被**抑制**（样本不足/桶饱和/计数回退），不得引用 p50/p99。
++static bool command_system_loop(
++    const CommandMessage &cmd,
++    JsonDocument &response)
++{
++    if (!syscmd_loop(response))
++    {
++        command_send_error(cmd, CMD_ERROR_SYSTEM, "loop stats query failed");
++        return false;
++    }
++    response["status"] = "success";
++    last_result = CMD_RESULT_OK;
++    return true;
++}
++
+ // =====================================================
+ // system: flash（V1，合并原 system.files）
+ //
+diff --git a/src/services/system_command.cpp b/src/services/system_command.cpp
+index 023fec3..ed5f00d 100644
+--- a/src/services/system_command.cpp
++++ b/src/services/system_command.cpp
+@@ -9,6 +9,7 @@
+ #include "services/system_command.h"
+ 
+ #include "log/log_manager.h"   // LOG_SYS_RESET_ABNORMAL（log_emit / log_arg_*）
++#include "app/loop_stats.h"    // S-3：loop() 周期耗时统计（system.loop 只读查询）
+ 
+ #include <LittleFS.h>
+ #include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() / ESP.restart()
+@@ -748,3 +749,163 @@ bool syscmd_stats(JsonDocument &out)
+ 
+     return true;
+ }
++
++// =====================================================
++// system.loop（S-3：loop() 周期耗时统计 · 只读）
++//
++// 三条不变量：
++//   1. 只读：不 reset、不改任何计数、不产生副作用（快照读取除外）
++//   2. 不欺骗：统计不可信时**抑制** p50/p99 数值，只给 valid:false + 原因位
++//   3. 不改既有契约：与 system.stats 完全独立（新 object，不影响既有解析方）
++// =====================================================
++static const char *loop_invalid_reason_name(uint16_t bit)
++{
++    switch (bit)
++    {
++    case loopstat::INVALID_NOT_AVAILABLE:    return "not_available";     // 尚无首样本
++    case loopstat::INVALID_INSUFFICIENT:     return "insufficient_samples";
++    case loopstat::INVALID_SATURATION:       return "bucket_saturated";
++    case loopstat::INVALID_N_SATURATED:      return "sample_counter_saturated";
++    case loopstat::INVALID_GEOMETRY:         return "snapshot_geometry_mismatch";
++    case loopstat::INVALID_REGRESSION:       return "counter_regression";
++    case loopstat::INVALID_ANOMALY_DOMINANT: return "anomaly_dominant";
++    default:                                 return "unknown";
++    }
++}
++
++bool syscmd_loop(JsonDocument &out)
++{
++    JsonObject data = out["data"].to<JsonObject>();
++    if (data.isNull())
++    {
++        return false;
++    }
++
++    LoopStatsSnapshot snap;
++    const bool available = loop_stats_get(snap);
++
++    data["available"] = available;
++    data["enabled"] = (GF_LOOP_STATS_ENABLED != 0);
++    data["scope"] = "uptime";            // ★ 累积口径（自首样本起），不是窗口值
++    data["uptime_ms"] = (uint32_t)millis();
++
++    // 几何参数始终输出：即使不可用，调用方也能知道量程与桶宽
++    data["bucket_width_us"] = (uint32_t)loopstat::BUCKET_WIDTH_US;
++    data["bucket_count"] = (uint32_t)loopstat::BUCKET_COUNT;
++    data["over_limit_us"] = (uint32_t)loopstat::RANGE_US;
++    data["min_samples"] = (uint32_t)loopstat::MIN_SAMPLES;
++    data["gate_p99_us"] = (uint32_t)loopstat::GATE_P99_US;
++
++    if (!available)
++    {
++        // ★ 不写任何计数字段 ⇒ 调用方不得把缺省当成 0 解读
++        data["quantiles_suppressed"] = true;
++        JsonArray r = data["invalid_reasons"].to<JsonArray>();
++        r.add("not_available");
++        return true;
++    }
++
++    // ---- 原始计数（可用于 L2 有效性校验）----
++    data["elapsed_ms"] = (uint64_t)(snap.elapsed_us / 1000ull);
++    data["samples"] = snap.n;
++    data["over"] = snap.over_cnt;
++    data["anomaly"] = snap.anomaly_cnt;
++    data["sum_us"] = snap.sum_us;
++    data["min_us"] = snap.min_us;
++    data["max_us"] = snap.max_us;
++    data["sat_buckets"] = snap.sat_buckets;
++    data["n_saturated"] = (snap.n_saturated != 0);
++    data["snap_crit_max_us"] = snap.snap_crit_max_us;
++    data["snap_count"] = snap.snap_count;
++
++    // 精确均值（用 sum/n，**不得**用 P50 代替平均周期）
++    if (snap.n != 0u)
++    {
++        data["mean_us"] = (uint32_t)(snap.sum_us / (uint64_t)snap.n);
++    }
++
++    // ---- 分位（以"空基线"做累积口径，等同自 boot 起）----
++    LoopStatsSnapshot zero;
++    memset(&zero, 0, sizeof(zero));
++    zero.magic = loopstat::MAGIC_EMPTY;
++
++    LoopStatsQuantiles q;
++    const bool parsed = loop_stats_compute(zero, snap, q);
++    if (!parsed)
++    {
++        data["valid"] = false;
++        data["quantiles_suppressed"] = true;
++        JsonArray r = data["invalid_reasons"].to<JsonArray>();
++        r.add(loop_invalid_reason_name(q.invalid_bits));
++        return true;
++    }
++
++    data["valid"] = (q.valid != 0);
++    data["window_samples"] = q.n;
++    data["window_over"] = q.over;
++    data["window_anomaly"] = q.anomaly;
++
++    // ---- 不可信：**拒绝输出** p50/p99 数值，只给原因 ----
++    if (q.valid == 0u)
++    {
++        data["quantiles_suppressed"] = true;
++
++        JsonArray r = data["invalid_reasons"].to<JsonArray>();
++        for (uint16_t bit = 1; bit != 0; bit = (uint16_t)(bit << 1))
++        {
++            if ((q.invalid_bits & bit) != 0u)
++            {
++                r.add(loop_invalid_reason_name(bit));
++            }
++        }
++
++        // 溢出区间仍必须给出**下界 + 精确最大值**（不得只报 25.6 ms）
++        if (q.p99_in_overflow != 0u)
++        {
++            data["p99_overflow"] = true;
++            data["p99_lower_bound_us"] = (uint32_t)loopstat::RANGE_US;
++            data["p99_max_us"] = q.max_us_uptime;
++        }
++    }
++    else
++    {
++        // ---- 可信：输出桶边界（20 ms 恰在桶边界 ⇒ 判定精确）----
++        data["p50_bucket"] = q.p50_bucket;
++        data["p50_low_us"] = q.p50_low_us;
++        data["p50_high_us"] = q.p50_high_us;
++        data["p50_us"] = q.p50_high_us;      // 保守取桶上界（不含）
++
++        if (q.p99_in_overflow != 0u)
++        {
++            // P99 落在 over 区间：只给下界 + 精确 max，不给伪装成数值的 P99
++            data["p99_overflow"] = true;
++            data["p99_lower_bound_us"] = (uint32_t)loopstat::RANGE_US;
++            data["p99_max_us"] = q.max_us_uptime;
++            data["p99_lt_gate"] = false;
++        }
++        else
++        {
++            data["p99_bucket"] = q.p99_bucket;
++            data["p99_low_us"] = q.p99_low_us;
++            data["p99_high_us"] = q.p99_high_us;
++            data["p99_us"] = q.p99_high_us;
++            data["p99_lt_gate"] = (q.p99_lt_gate != 0u);
++        }
++    }
++
++    // ---- 直方图（非零稀疏对；供"两次快照差分"复核 P99）----
++    JsonArray hist = data["hist"].to<JsonArray>();
++    uint32_t pairs = 0;
++    for (uint32_t i = 0; i < loopstat::BUCKET_COUNT; ++i)
++    {
++        if (snap.hist[i] != 0u)
++        {
++            hist.add(i);
++            hist.add(snap.hist[i]);
++            pairs++;
++        }
++    }
++    data["hist_pairs"] = pairs;
++
++    return true;
++}
+diff --git a/src/services/system_command.h b/src/services/system_command.h
+index 820c8cc..e5d1dc7 100644
+--- a/src/services/system_command.h
++++ b/src/services/system_command.h
+@@ -194,3 +194,23 @@ bool syscmd_stats(JsonDocument &out);
+ // }
+ // 返回 true=成功；false=结果构造失败
+ bool syscmd_restart_status(JsonDocument &out);
++
++// system.loop（S-3：loop() 周期耗时统计 · **只读**）
++//
++// 写入 out["data"] = {
++//     available:true|false,      // false ⇒ 尚无首样本 / 编译期关闭（≠ 全零）
++//     enabled, scope:"uptime",   // ★ 单次查询 = **自首样本起的累积口径**
++//     uptime_ms, elapsed_ms,
++//     bucket_width_us, bucket_count, over_limit_us,
++//     samples, over, anomaly, sum_us, mean_us, min_us, max_us,
++//     sat_buckets, n_saturated, snap_crit_max_us, snap_count,
++//     valid, invalid_reasons:[...], quantiles_suppressed,
++//     p50_us / p50_low_us / p50_high_us, p99_us / p99_low_us / p99_high_us,
++//     p50_bucket, p99_bucket, gate_p99_us, p99_lt_gate,
++//     hist: [bucket, count, ...]  // 非零稀疏对，供"两次快照差分"
++// }
++// ★ 不提供任何清零/重置写操作（窗口统计由调用方差分实现）
++// ★ 若统计不可信（样本不足/桶饱和/n 饱和/计数回退）则**不输出** p50/p99 数值，
++//   改为 valid:false + invalid_reasons，杜绝"误导性的有效 P99"
++// 返回 true=成功；false=结果构造失败（**不得**降级为"全部为 0"）
++bool syscmd_loop(JsonDocument &out);
+diff --git a/test/loop_stats_host/loop_stats_probe.cpp b/test/loop_stats_host/loop_stats_probe.cpp
+new file mode 100644
+index 0000000..7d0f3c0
+--- /dev/null
++++ b/test/loop_stats_host/loop_stats_probe.cpp
+@@ -0,0 +1,504 @@
++// =====================================================
++// LoopStats —— 宿主机探针（wasm32 freestanding + node）
++//
++// 用途：在**没有硬件**的环境里**真实执行** loop_stats 的全部纯逻辑，
++//       覆盖：桶边界 / 首样本丢弃 / 异常样本 / 溢出桶 / 饱和 /
++//             P50-P99 分位 / 快照差分 / 计数回退 / 几何校验 / 门禁边界。
++//
++// 编译（见 run.sh）：
++//   clang++ --target=wasm32 -std=gnu++17 -nostdlib -fno-builtin -O1 \
++//           -DLOOP_STATS_HOST_TEST -I src \
++//           loop_stats_probe.cpp ../../src/app/loop_stats.cpp \
++//           -Wl,--no-entry -Wl,--export-all -o probe.wasm
++//
++// ★ 本探针只证明"纯逻辑正确"，**不**证明目标板时序/开销 ——
++//   后者必须在真实 ESP32-S3 上由 `system.loop` 的 snap_crit_max_us 取证。
++// =====================================================
++
++#include <stddef.h>
++#include "app/loop_stats.h"
++
++// ---- freestanding 支撑（避免 libcall） ----
++extern "C" void *memcpy(void *dst, const void *src, size_t n)
++{
++    unsigned char *d = (unsigned char *)dst;
++    const unsigned char *s = (const unsigned char *)src;
++    for (size_t i = 0; i < n; ++i) { d[i] = s[i]; }
++    return dst;
++}
++extern "C" void *memset(void *dst, int c, size_t n)
++{
++    unsigned char *d = (unsigned char *)dst;
++    for (size_t i = 0; i < n; ++i) { d[i] = (unsigned char)c; }
++    return dst;
++}
++
++// ---- 时间源（由探针完全控制） ----
++static long long g_now_us = 0;
++extern "C" long long loop_stats_host_time_us(void) { return g_now_us; }
++
++// ---- 结果记录 ----
++static char g_log[32768];
++static int  g_log_len = 0;
++static int  g_pass = 0;
++static int  g_fail = 0;
++
++static void put(const char *s)
++{
++    while (*s != '\0' && g_log_len < (int)sizeof(g_log) - 1) { g_log[g_log_len++] = *s++; }
++}
++static void put_u(long long v)
++{
++    char b[24];
++    int n = 0;
++    if (v < 0) { put("-"); v = -v; }
++    if (v == 0) { b[n++] = '0'; }
++    while (v > 0) { b[n++] = (char)('0' + (int)(v % 10)); v /= 10; }
++    while (n > 0) { char c = b[--n]; if (g_log_len < (int)sizeof(g_log) - 1) { g_log[g_log_len++] = c; } }
++}
++
++static void check(bool ok, const char *name, long long got, long long want)
++{
++    if (ok) { g_pass++; put("  PASS  "); }
++    else    { g_fail++; put("  FAIL  "); }
++    put(name);
++    put("  got="); put_u(got);
++    put(" want="); put_u(want);
++    put("\n");
++}
++#define CHECK_EQ(name, got, want) check(((long long)(got)) == ((long long)(want)), name, (long long)(got), (long long)(want))
++#define CHECK_TRUE(name, cond)    check((cond) ? true : false, name, (cond) ? 1 : 0, 1)
++
++// =====================================================
++// 快照构造辅助（直接构造 POD，绕开采样器 ⇒ 单测"纯计算"部分）
++// =====================================================
++static void snap_reset(LoopStatsSnapshot &s)
++{
++    memset(&s, 0, sizeof(s));
++    s.magic = loopstat::MAGIC;
++    s.bucket_count = loopstat::BUCKET_COUNT;
++    s.bucket_width_us = loopstat::BUCKET_WIDTH_US;
++    s.available = 1;
++}
++static void snap_add_bucket(LoopStatsSnapshot &s, uint32_t b, uint32_t cnt)
++{
++    s.hist[b] += cnt;
++    s.n += cnt;
++    const uint32_t rep = b * loopstat::BUCKET_WIDTH_US + 100; // 桶内代表值
++    s.sum_us += (uint64_t)cnt * (uint64_t)rep;
++    if (s.min_us == 0u || rep < s.min_us) { s.min_us = rep; }
++    if (rep > s.max_us) { s.max_us = rep; }
++}
++static void snap_add_over(LoopStatsSnapshot &s, uint32_t cnt, uint32_t us)
++{
++    s.over_cnt += cnt;
++    s.n += cnt;
++    s.sum_us += (uint64_t)cnt * (uint64_t)us;
++    if (s.min_us == 0u || us < s.min_us) { s.min_us = us; }
++    if (us > s.max_us) { s.max_us = us; }
++}
++
++// =====================================================
++// T1 可用性 / 首样本
++// =====================================================
++static void t1_first_sample()
++{
++    put("\n[T1] 可用性与首样本丢弃\n");
++    loop_stats_host_reset();
++    g_now_us = 5000000;                     // 5 s
++
++    LoopStatsSnapshot s;
++    CHECK_TRUE("未进入 loop() 前 available=false", loop_stats_get(s) == false);
++    CHECK_EQ("未进入 loop() 前 available 字段", s.available, 0);
++
++    loop_stats_tick();                      // 首样本：只建基线
++    CHECK_TRUE("首样本后 available=true", loop_stats_get(s) == true);
++    CHECK_EQ("首样本**不**计入 n", s.n, 0);
++    CHECK_EQ("首样本后 elapsed=0", (long long)(s.elapsed_us / 1000ull), 0);
++
++    g_now_us += 1000;                       // 第二样本 dt=1000 µs
++    loop_stats_tick();
++    CHECK_TRUE("第二样本后可读", loop_stats_get(s) == true);
++    CHECK_EQ("第二样本计入 n", s.n, 1);
++    CHECK_EQ("min_us", s.min_us, 1000);
++    CHECK_EQ("max_us", s.max_us, 1000);
++    CHECK_EQ("bit0 命中（1000/200=5）", s.hist[5], 1);
++    CHECK_EQ("sum_us", (long long)s.sum_us, 1000);
++}
++
++// =====================================================
++// T2 桶边界 / 溢出桶
++// =====================================================
++static void t2_bucket_edges()
++{
++    put("\n[T2] 桶边界与溢出桶（桶宽 200 µs，量程 25.6 ms）\n");
++    loop_stats_host_reset();
++    g_now_us = 1000000;
++    loop_stats_tick();                       // 基线
++
++    struct { uint32_t dt; int want_bucket; } cases[] = {
++        {1,      0},      // [0,200)    -> 0
++        {199,    0},      // 上边界-1
++        {200,    1},      // 恰好边界
++        {25599,  127},    // 最后一个桶
++        {25600,  -1},     // 恰为量程 => over
++        {30000,  -1},     // over
++    };
++    uint32_t expect_hist[loopstat::BUCKET_COUNT];
++    for (uint32_t i = 0; i < loopstat::BUCKET_COUNT; ++i) { expect_hist[i] = 0; }
++    uint32_t expect_over = 0;
++
++    for (uint32_t k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k)
++    {
++        g_now_us += (long long)cases[k].dt;
++        loop_stats_tick();
++        if (cases[k].want_bucket >= 0) { expect_hist[cases[k].want_bucket]++; }
++        else { expect_over++; }
++    }
++
++    LoopStatsSnapshot s;
++    loop_stats_get(s);
++    CHECK_EQ("n = 6 个样本", s.n, 6);
++    CHECK_EQ("over_cnt = 2（≥25.6 ms）", s.over_cnt, expect_over);
++    CHECK_EQ("桶 0 计数（dt=1,199）", s.hist[0], expect_hist[0]);
++    CHECK_EQ("桶 1 计数（dt=200）", s.hist[1], expect_hist[1]);
++    CHECK_EQ("桶 127 计数（dt=25599）", s.hist[127], expect_hist[127]);
++    CHECK_EQ("max_us 精确（30000）", s.max_us, 30000);
++    CHECK_EQ("min_us 精确（1）", s.min_us, 1);
++
++    uint64_t sum_hist = 0;
++    for (uint32_t i = 0; i < loopstat::BUCKET_COUNT; ++i) { sum_hist += s.hist[i]; }
++    CHECK_EQ("恒等式 Σhist + over = n", (long long)(sum_hist + s.over_cnt), s.n);
++}
++
++// =====================================================
++// T3 异常样本
++// =====================================================
++static void t3_anomaly()
++{
++    put("\n[T3] 异常样本（dt<=0 / dt>60 s）不计入统计\n");
++    loop_stats_host_reset();
++    g_now_us = 1000000;
++    loop_stats_tick();
++
++    g_now_us += 0;                 // dt = 0  => anomaly
++    loop_stats_tick();
++    g_now_us -= 500;               // dt = -500 => anomaly
++    loop_stats_tick();
++    g_now_us += 60000001;          // dt = 60000001 > 60 s => anomaly
++    loop_stats_tick();
++    g_now_us += 60000000;          // dt = 60 s 恰好 => 非异常，进 over
++    loop_stats_tick();
++    g_now_us += 1500;              // 正常样本
++    loop_stats_tick();
++
++    LoopStatsSnapshot s;
++    loop_stats_get(s);
++    CHECK_EQ("anomaly_cnt = 3", s.anomaly_cnt, 3);
++    CHECK_EQ("n 只含 2 个有效样本", s.n, 2);
++    CHECK_EQ("60 s 样本进 over（不判异常）", s.over_cnt, 1);
++    CHECK_EQ("max_us = 60 000 000", s.max_us, 60000000u);
++}
++
++// =====================================================
++// T4 分位（P50 / P99）
++// =====================================================
++static void t4_quantiles()
++{
++    put("\n[T4] 分位计算（rank = ceil(p*N)）\n");
++    LoopStatsSnapshot base, top;
++    LoopStatsQuantiles q;
++
++    // --- 9000 @ b0 / 900 @ b10 / 100 @ b60，N=10000 ---
++    snap_reset(base); base.magic = loopstat::MAGIC_EMPTY;
++    snap_reset(top);
++    snap_add_bucket(top, 0, 9000);
++    snap_add_bucket(top, 10, 900);
++    snap_add_bucket(top, 60, 100);
++
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("N", q.n, 10000);
++    CHECK_TRUE("valid", q.valid == 1);
++    CHECK_EQ("P50 桶 = 0（累计 9000 ≥ 5000）", q.p50_bucket, 0);
++    CHECK_EQ("P99 桶 = 10（累计 9900 ≥ 9900）", q.p99_bucket, 10);
++    CHECK_EQ("P99 下界", q.p99_low_us, 2000);
++    CHECK_EQ("P99 上界", q.p99_high_us, 2200);
++    CHECK_EQ("mean = sum/n（非 P50）", q.mean_us, (uint32_t)(top.sum_us / 10000ull));
++
++    // --- 恰好 99% 落在桶 0（rank 边界）---
++    snap_reset(top);
++    snap_add_bucket(top, 0, 9900);
++    snap_add_bucket(top, 5, 100);
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("P99 桶 = 0（9900/10000 恰为 99%）", q.p99_bucket, 0);
++
++    // --- 门禁边界：P99 落在桶 99 => <20 ms；桶 100 => ≥20 ms ---
++    snap_reset(top);
++    snap_add_bucket(top, 0, 100);
++    snap_add_bucket(top, 99, 9900);
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("P99 桶 = 99", q.p99_bucket, 99);
++    CHECK_EQ("P99 上界 = 20 000（桶 99 = [19800,20000)）", q.p99_high_us, 20000);
++    CHECK_EQ("p99_lt_gate = 1（全部 <20 ms）", q.p99_lt_gate, 1);
++
++    snap_reset(top);
++    snap_add_bucket(top, 0, 100);
++    snap_add_bucket(top, 100, 9900);
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("P99 桶 = 100", q.p99_bucket, 100);
++    CHECK_EQ("P99 下界 = 20 000（≥20 ms）", q.p99_low_us, 20000);
++    CHECK_EQ("p99_lt_gate = 0（≥20 ms）", q.p99_lt_gate, 0);
++}
++
++// =====================================================
++// T5 快照差分
++// =====================================================
++static void t5_diff()
++{
++    put("\n[T5] 两次快照差分（窗口统计）\n");
++    LoopStatsSnapshot base, top;
++    LoopStatsQuantiles q;
++
++    snap_reset(base);
++    snap_add_bucket(base, 0, 50000);          // 窗口前的历史样本
++    snap_add_bucket(base, 3, 50000);
++
++    snap_reset(top);
++    snap_add_bucket(top, 0, 50000);
++    snap_add_bucket(top, 3, 50000);
++    snap_add_bucket(top, 7, 9000);            // 窗口内新增
++    snap_add_bucket(top, 7, 0);
++    snap_add_bucket(top, 8, 900);
++    snap_add_bucket(top, 40, 100);
++
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("Δn 只含窗口增量", q.n, 10000);
++    CHECK_TRUE("valid", q.valid == 1);
++    CHECK_EQ("P50 桶 = 7（9000 ≥ 5000）", q.p50_bucket, 7);
++    // 累计到桶 8 时恰为 9900 = rank99 ⇒ P99 落在桶 8（**不是**桶 40）
++    CHECK_EQ("P99 桶 = 8（累计 9900 恰达 rank99）", q.p99_bucket, 8);
++    CHECK_TRUE("差分不重复计入窗口前样本", q.n == 10000);
++}
++
++// =====================================================
++// T6 饱和
++// =====================================================
++static void t6_saturation()
++{
++    put("\n[T6] 桶饱和 / n 饱和 ⇒ 拒绝输出有效 P99\n");
++    loop_stats_host_reset();
++    g_now_us = 100000;
++    loop_stats_tick();
++
++    loop_stats_host_force_bucket_full(3);     // 桶 3 预置到 uint32 上限（未置 sat 位）
++    g_now_us += 700;                          // dt=700 => 桶 3
++    loop_stats_tick();
++    g_now_us += 700;
++    loop_stats_tick();                        // 第二次命中饱和桶
++
++    LoopStatsSnapshot s;
++    loop_stats_get(s);
++    CHECK_EQ("饱和桶计数不再增长", s.hist[3], 0xFFFFFFFFu);
++    CHECK_EQ("sat_buckets 按不同桶只计 1 次", s.sat_buckets, 1);
++
++    LoopStatsSnapshot zero;
++    memset(&zero, 0, sizeof(zero));
++    zero.magic = loopstat::MAGIC_EMPTY;
++    LoopStatsQuantiles q;
++    loop_stats_compute(zero, s, q);
++    CHECK_TRUE("饱和 ⇒ valid=0", q.valid == 0);
++    CHECK_TRUE("置 INVALID_SATURATION 位",
++               (q.invalid_bits & loopstat::INVALID_SATURATION) != 0);
++
++    // n 饱和
++    loop_stats_host_reset();
++    g_now_us += 1000;
++    loop_stats_tick();
++    g_now_us += 5000;
++    loop_stats_tick();
++    loop_stats_host_force_n_saturated();
++    LoopStatsSnapshot s2;
++    loop_stats_get(s2);
++    loop_stats_compute(zero, s2, q);
++    CHECK_TRUE("n 饱和 ⇒ 置 INVALID_N_SATURATED 位",
++               (q.invalid_bits & loopstat::INVALID_N_SATURATED) != 0);
++    CHECK_TRUE("n 饱和 ⇒ valid=0", q.valid == 0);
++}
++
++// =====================================================
++// T7 样本不足 / 溢出区间 / 异常主导
++// =====================================================
++static void t7_invalid_paths()
++{
++    put("\n[T7] 样本不足 / P99 落在溢出区间 / 异常主导 / 空窗口\n");
++    LoopStatsSnapshot base, top;
++    LoopStatsQuantiles q;
++
++    // --- 样本不足 ---
++    snap_reset(base); base.magic = loopstat::MAGIC_EMPTY;
++    snap_reset(top);
++    snap_add_bucket(top, 0, 9999);
++    loop_stats_compute(base, top, q);
++    CHECK_TRUE("n=9999 ⇒ INVALID_INSUFFICIENT",
++               (q.invalid_bits & loopstat::INVALID_INSUFFICIENT) != 0);
++    CHECK_TRUE("n=9999 ⇒ valid=0", q.valid == 0);
++
++    // --- P99 落在溢出区间（Δover=1000 占 10%）---
++    snap_reset(top);
++    snap_add_bucket(top, 0, 9000);
++    snap_add_over(top, 1000, 30000);
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("N 含 over 样本", q.n, 10000);
++    CHECK_TRUE("P99 落在 overflow 区间", q.p99_in_overflow == 1);
++    CHECK_TRUE("overflow ⇒ valid=0", q.valid == 0);
++    CHECK_EQ("overflow 时仍保留精确 max", q.max_us_uptime, 30000);
++    CHECK_TRUE("overflow 时不产生伪造的 P99 桶", q.p99_high_us == 0);
++
++    // --- 异常主导 ---
++    snap_reset(top);
++    snap_add_bucket(top, 0, 100);
++    top.anomaly_cnt = 500;
++    loop_stats_compute(base, top, q);
++    CHECK_TRUE("anomaly > n ⇒ INVALID_ANOMALY_DOMINANT",
++               (q.invalid_bits & loopstat::INVALID_ANOMALY_DOMINANT) != 0);
++
++    // --- Δn = 0（空窗口）不得被误判成"P99 在 overflow"---
++    snap_reset(base);
++    snap_reset(top);
++    snap_add_bucket(top, 0, 50000);
++    snap_add_bucket(base, 0, 50000);
++    loop_stats_compute(base, top, q);
++    CHECK_EQ("空窗口 N=0", q.n, 0);
++    CHECK_TRUE("空窗口不置 p99_in_overflow", q.p99_in_overflow == 0);
++    CHECK_TRUE("空窗口 ⇒ INVALID_INSUFFICIENT",
++               (q.invalid_bits & loopstat::INVALID_INSUFFICIENT) != 0);
++}
++
++// =====================================================
++// T8 结构 / 几何 / 回退
++// =====================================================
++static void t8_geometry_regression()
++{
++    put("\n[T8] 几何校验 / 计数回退 / 恒等式破坏\n");
++    LoopStatsSnapshot base, top;
++    LoopStatsQuantiles q;
++
++    snap_reset(top);
++    top.magic = 0xDEADBEEF;
++    CHECK_TRUE("magic 错 ⇒ 返回 false", loop_stats_compute(base, top, q) == false);
++    CHECK_EQ("置 INVALID_GEOMETRY", q.invalid_bits, loopstat::INVALID_GEOMETRY);
++
++    snap_reset(top);
++    top.bucket_width_us = 100;
++    CHECK_TRUE("桶宽不符 ⇒ 返回 false", loop_stats_compute(base, top, q) == false);
++
++    snap_reset(top);
++    top.available = 0;
++    CHECK_TRUE("available=0 ⇒ 返回 false", loop_stats_compute(base, top, q) == false);
++    CHECK_EQ("置 INVALID_NOT_AVAILABLE", q.invalid_bits, loopstat::INVALID_NOT_AVAILABLE);
++
++    // 计数回退
++    snap_reset(base);
++    snap_reset(top);
++    snap_add_bucket(base, 2, 20000);
++    snap_add_bucket(top, 2, 10000);
++    loop_stats_compute(base, top, q);
++    CHECK_TRUE("桶计数回退 ⇒ INVALID_REGRESSION",
++               (q.invalid_bits & loopstat::INVALID_REGRESSION) != 0);
++
++    // 恒等式破坏（n 与 hist+over 不等）
++    snap_reset(base); base.magic = loopstat::MAGIC_EMPTY;
++    snap_reset(top);
++    snap_add_bucket(top, 0, 20000);
++    top.n += 5;                              // 人为破坏
++    loop_stats_compute(base, top, q);
++    CHECK_TRUE("恒等式破坏 ⇒ INVALID_REGRESSION",
++               (q.invalid_bits & loopstat::INVALID_REGRESSION) != 0);
++
++    // 结构体积
++    CHECK_TRUE("sizeof(LoopStatsSnapshot) <= 1024", sizeof(LoopStatsSnapshot) <= 1024);
++    CHECK_EQ("sizeof(LoopStatsSnapshot)", (long long)sizeof(LoopStatsSnapshot), 576);
++    CHECK_TRUE("sizeof(LoopStatsQuantiles) <= 128", sizeof(LoopStatsQuantiles) <= 128);
++    CHECK_EQ("门禁阈值是桶宽整数倍",
++             loopstat::GATE_P99_US % loopstat::BUCKET_WIDTH_US, 0);
++}
++
++// =====================================================
++// T9 端到端：采样器 → 快照 → 分位（真实调用链）
++// =====================================================
++static void t9_end_to_end()
++{
++    put("\n[T9] 端到端（tick → snapshot → compute）\n");
++    loop_stats_host_reset();
++    g_now_us = 0;
++    loop_stats_tick();
++
++    // 12000 个 1000 µs 样本（1 kHz）+ 100 个 3000 µs 样本 ⇒ P99 应落在 1000 所在桶
++    for (int i = 0; i < 12000; ++i) { g_now_us += 1000; loop_stats_tick(); }
++    for (int i = 0; i < 100; ++i)   { g_now_us += 3000; loop_stats_tick(); }
++
++    LoopStatsSnapshot s;
++    CHECK_TRUE("快照可读", loop_stats_get(s) == true);
++    CHECK_EQ("样本数", s.n, 12100);
++    CHECK_EQ("无溢出", s.over_cnt, 0);
++    CHECK_EQ("无异常", s.anomaly_cnt, 0);
++    CHECK_EQ("elapsed ≈ 12.3 s", (long long)(s.elapsed_us / 1000ull), 12300);
++    CHECK_EQ("sum_us ≈ elapsed（采样覆盖完整）", (long long)(s.sum_us / 1000ull), 12300);
++
++    LoopStatsSnapshot zero;
++    memset(&zero, 0, sizeof(zero));
++    zero.magic = loopstat::MAGIC_EMPTY;
++    LoopStatsQuantiles q;
++    loop_stats_compute(zero, s, q);
++    CHECK_TRUE("valid", q.valid == 1);
++    CHECK_EQ("P50 桶 = 5（1000 µs）", q.p50_bucket, 5);
++    CHECK_EQ("P99 桶 = 5（3000 µs 仅占 0.8%）", q.p99_bucket, 5);
++    CHECK_EQ("p99_lt_gate", q.p99_lt_gate, 1);
++    CHECK_EQ("mean ≈ 1016 µs", q.mean_us, (uint32_t)((12000ull * 1000ull + 100ull * 3000ull) / 12100ull));
++
++    // 采样率自洽：n / elapsed ≈ 1 / mean（**不用 P50 代替平均周期**）
++    //   rate_from_counts  = n / elapsed(s) = n * 1000 / elapsed_ms
++    //   rate_from_mean    = 1e6 / mean_us
++    const long long rate_counts = (long long)s.n * 1000ll / (long long)(s.elapsed_us / 1000ull);
++    const long long rate_mean = (long long)q.mean_us > 0 ? (1000000ll / (long long)q.mean_us) : 0;
++    put("        rate_from_counts="); put_u(rate_counts);
++    put(" rate_from_mean="); put_u(rate_mean); put("\n");
++    const long long drift = (rate_counts > rate_mean) ? (rate_counts - rate_mean) : (rate_mean - rate_counts);
++    CHECK_TRUE("n/elapsed 与 1/mean 偏差 <=1%（采样率自洽）",
++               (drift * 100ll) <= (rate_mean * 1ll));
++}
++
++// =====================================================
++// 入口
++// =====================================================
++extern "C" int probe_run()
++{
++    g_log_len = 0;
++    g_pass = 0;
++    g_fail = 0;
++
++    put("=== LoopStats host probe（wasm32 freestanding，无硬件） ===\n");
++    put("bucket_width_us="); put_u(loopstat::BUCKET_WIDTH_US);
++    put(" bucket_count="); put_u(loopstat::BUCKET_COUNT);
++    put(" range_us="); put_u(loopstat::RANGE_US);
++    put(" gate_p99_us="); put_u(loopstat::GATE_P99_US);
++    put("\n");
++
++    t1_first_sample();
++    t2_bucket_edges();
++    t3_anomaly();
++    t4_quantiles();
++    t5_diff();
++    t6_saturation();
++    t7_invalid_paths();
++    t8_geometry_regression();
++    t9_end_to_end();
++
++    put("\n=== SUMMARY: pass="); put_u(g_pass);
++    put(" fail="); put_u(g_fail);
++    put(" ===\n");
++    return g_fail;
++}
++
++extern "C" const char *probe_log_ptr() { return g_log; }
++extern "C" int probe_log_len() { return g_log_len; }
+diff --git a/test/loop_stats_host/run.sh b/test/loop_stats_host/run.sh
+new file mode 100644
+index 0000000..fd71a8e
+--- /dev/null
++++ b/test/loop_stats_host/run.sh
+@@ -0,0 +1,44 @@
++#!/usr/bin/env bash
++# =====================================================
++# LoopStats 宿主机探针（wasm32 freestanding + node，无硬件 / 无 libc）
++#
++#   ./run.sh                 # 编译并运行；退出码 = 探针报告的 fail 数
++#   CXX=clang++ NODE=node ./run.sh
++#
++# 为什么不用原生可执行文件：
++#   本机 clang++ 无 MSVC libc 头文件（stdio.h 找不到）⇒ 采用与
++#   test/device_model_host 相同的 wasm32 freestanding 方案，
++#   由探针自带 memcpy/memset，纯逻辑在 node 里真实执行。
++# =====================================================
++set -u
++
++HERE="$(cd "$(dirname "$0")" && pwd)"
++ROOT="$(cd "$HERE/../.." && pwd)"
++cd "$ROOT"
++
++CXX="${CXX:-clang++}"
++NODE="${NODE:-C:/Users/wang/.workbuddy/binaries/node/versions/22.22.2-6/node.exe}"
++
++OUT="$ROOT/.pio/s3loop_host"
++mkdir -p "$OUT"
++
++FLAGS="-target wasm32 -std=gnu++17 -nostdlib -fno-builtin -O1 -Wall -Wextra -Wno-unused-parameter"
++INC="-I src"
++LINK="-Wl,--no-entry -Wl,--export-all"
++
++echo "### compile probe (wasm32 freestanding)"
++$CXX $FLAGS $INC -DLOOP_STATS_HOST_TEST \
++     "$HERE/loop_stats_probe.cpp" "$ROOT/src/app/loop_stats.cpp" \
++     $LINK -o "$OUT/loop_stats_probe.wasm" || exit 3
++
++echo "### run probe (node)"
++"$NODE" "$HERE/run_probe.js" "$OUT/loop_stats_probe.wasm"
++FAIL=$?
++
++echo
++if [ "$FAIL" -eq 0 ]; then
++  echo "### RESULT: PASS (0 failures)"
++  exit 0
++fi
++echo "### RESULT: FAIL ($FAIL failures)"
++exit 1
+diff --git a/test/loop_stats_host/run_probe.js b/test/loop_stats_host/run_probe.js
+new file mode 100644
+index 0000000..dba01ad
+--- /dev/null
++++ b/test/loop_stats_host/run_probe.js
+@@ -0,0 +1,33 @@
++// =====================================================
++// LoopStats wasm 探针运行器（node）
++//   用法: node run_probe.js <probe.wasm>
++//   退出码 = 探针报告的 fail 数（0 = 全通过）
++// =====================================================
++const fs = require('fs');
++
++(async () => {
++  const wasmPath = process.argv[2];
++  if (!wasmPath) {
++    console.error('usage: node run_probe.js <probe.wasm>');
++    process.exit(2);
++  }
++  const bytes = fs.readFileSync(wasmPath);
++  const { instance } = await WebAssembly.instantiate(bytes, {});
++  const ex = instance.exports;
++
++  const fails = ex.probe_run();
++  const len = ex.probe_log_len();
++  const ptr = ex.probe_log_ptr();
++  const mem = ex.memory || ex.__linear_memory;
++  if (!mem) {
++    console.error('no exported wasm memory');
++    process.exit(2);
++  }
++  const view = new Uint8Array(mem.buffer, ptr, len);
++  process.stdout.write(Buffer.from(view).toString('utf8'));
++  console.log(`exit_failures=${fails}`);
++  process.exit(fails === 0 ? 0 : 1);
++})().catch((e) => {
++  console.error('runner error:', e);
++  process.exit(2);
++});
+ platformio.ini                            |   5 +
+ src/app/loop_stats.cpp                    | 374 ++++++++++++++++++++++
+ src/app/loop_stats.h                      | 170 ++++++++++
+ src/main.cpp                              |  16 +
+ src/services/command_manager.cpp          |  24 ++
+ src/services/system_command.cpp           | 161 ++++++++++
+ src/services/system_command.h             |  20 ++
+ test/loop_stats_host/loop_stats_probe.cpp | 504 ++++++++++++++++++++++++++++++
+ test/loop_stats_host/run.sh               |  44 +++
+ test/loop_stats_host/run_probe.js         |  33 ++
+ 10 files changed, 1351 insertions(+)

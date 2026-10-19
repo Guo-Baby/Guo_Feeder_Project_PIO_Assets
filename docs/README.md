@@ -90,6 +90,10 @@
 >
 > **★★ `2026-10-20 01:47` 用户最终裁决 = 本阶段关闭**：`CONDITIONAL GO`（个人有限范围）· 正式 `G-4` `BLOCKED` · `WP-5` 未解锁 · `BT-1` `CLOSED` · `STOP-R1` 无解除 · **不需要立即再次烧录** · **不可宣称长期稳定**。
 > 后续真实测试**待用户完成电器焊接（电机 / 电磁阀等）后再做**；登记 = `docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md` §10。
+
+> **★★ `2026-10-20 02:35` S-3 第二轮（`loop()` 耗时观测）已实施并通过本地验收** —— 规格修订 `docs/architecture/S-3-Spec-Revision-R2.md`（`S3-Q1…Q10` 全部决策；`S-3-D1` 直方图改 **128×0.2 ms / uint32** 以躲开 1 KB 栈铁律并消除 `uint16` 提前饱和）· 实施报告 `docs/architecture/S-3-Implementation-and-Local-Acceptance-Report.md` · 证据 `docs/evidence/S-3-2026-10-20/`。
+> 结果：**宿主机单测 82/82 PASS** · 构建 **RAM +600 B / Flash +4800 B**·`.bin 1407472 B`·`sha256=72d7a610…`（干净全量构建与增量构建**字节一致**）· 新增**只读** `system.loop`（不可信时**抑制** p50/p99，只给 `invalid_reasons`）。
+> ★ **L1 = 代码级达成；L2（采集有效）/ L3（P99 达标）仍 `NOT VERIFIED`** —— **未烧录**，热路径开销与临界区耗时**均未实测** ⇒ `G-4` 仍 `BLOCKED`。
 >
 > **`计划:WP-7` = ✅ `PHASE 3 DEPLOYED & ACCEPTED`（`2026-10-16`）** —— 实施任务单（`rev.2`）**已获人工裁决 `Q-1…Q-10`** ⇒ 代码 + 测试闭环完成：`src/retention.js`（新增）· `src/index.js` 的 `scheduled()` · `wrangler.toml` 的 `[triggers]` · **L1 `99 PASS / 0 FAIL`** · **L2 `89 PASS / 0 FAIL`（两遍一致）** · `run_all` `exit 0`。**`Phase 2`（`2026-10-17`）= 🟡 `READ-ONLY AUDIT COMPLETE`** —— 生产 D1 基线（`telemetry` 20 行 / `log` 84 行 · 其中 `ts=0` **20 行**超窗）· 生产 `DELETE … LIMIT` **`EXPLAIN` 语法+计划通过**（命中 `ix_*_device_ts` · 无 `SCAN`）· 线上 `[vars]` **零** / `RETENTION_*` **0** · 线上 Cron **`schedules = []`** · `deploy --dry-run` **`exit 0`** · **无 `STOP` 条件**。**✅ `Phase 3`（`2026-10-16`）= `DEPLOYED & ACCEPTED`** —— 备份 `d1 export`（SHA-256 已记录）· 临时 `*/5` 部署 → **2 次真实 `scheduled`**（`log deleted` **20 → 0** · `calls` **4** · 无截断 / 无异常 / cpu ≤ 4 ms）→ 恢复 **`0 3 * * *`** 部署 · 线上 Cron **仅 1 条正式表达式（无临时残留）** · 生产版本 **`1ffbbe2e-ed09-43f9-b576-06380bdec8e0`** · `log_history` **86 → 66**（恰删 20 条 `ts=0`）· `telemetry_history` 未删 · 超窗行 **0** · **`W7-A*…G*` = `PASS`（38/38）**。权威 = `docs/architecture/P3-WP7-Implementation-Record.md`（§10 = 部署前审计 · **§11 = 部署执行与生产验收**）。> **`P2` 编号结束于 `P2-8`**；**`P3` = 下一主阶段**。
 

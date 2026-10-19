@@ -194,3 +194,23 @@ bool syscmd_stats(JsonDocument &out);
 // }
 // 返回 true=成功；false=结果构造失败
 bool syscmd_restart_status(JsonDocument &out);
+
+// system.loop（S-3：loop() 周期耗时统计 · **只读**）
+//
+// 写入 out["data"] = {
+//     available:true|false,      // false ⇒ 尚无首样本 / 编译期关闭（≠ 全零）
+//     enabled, scope:"uptime",   // ★ 单次查询 = **自首样本起的累积口径**
+//     uptime_ms, elapsed_ms,
+//     bucket_width_us, bucket_count, over_limit_us,
+//     samples, over, anomaly, sum_us, mean_us, min_us, max_us,
+//     sat_buckets, n_saturated, snap_crit_max_us, snap_count,
+//     valid, invalid_reasons:[...], quantiles_suppressed,
+//     p50_us / p50_low_us / p50_high_us, p99_us / p99_low_us / p99_high_us,
+//     p50_bucket, p99_bucket, gate_p99_us, p99_lt_gate,
+//     hist: [bucket, count, ...]  // 非零稀疏对，供"两次快照差分"
+// }
+// ★ 不提供任何清零/重置写操作（窗口统计由调用方差分实现）
+// ★ 若统计不可信（样本不足/桶饱和/n 饱和/计数回退）则**不输出** p50/p99 数值，
+//   改为 valid:false + invalid_reasons，杜绝"误导性的有效 P99"
+// 返回 true=成功；false=结果构造失败（**不得**降级为"全部为 0"）
+bool syscmd_loop(JsonDocument &out);

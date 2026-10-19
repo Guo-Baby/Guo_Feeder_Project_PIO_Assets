@@ -12,6 +12,7 @@
 #include "services/topic_renderer.h"
 #include "services/event_manager.h"
 #include "app/oled.h"
+#include "app/loop_stats.h"   // S-3：loop() 周期耗时统计（GF_LOOP_STATS_ENABLED 门控）
 #include "services/command_manager.h"
 #include "services/credential_manager.h"   // Phase D-2：凭据生命周期（gfcred 双 slot）
 #include "services/wifi_module.h"
@@ -650,6 +651,14 @@ void setup()
 
         log_emit(LOG_SYS_BOOT_COMPLETE, LOG_LVL_INFO, p, 5);
     }
+
+    // =====================================================
+    // S-3：loop() 周期耗时统计初始化（必须在 loop() 启动之前）
+    //
+    // 只清空静态计数；**首样本在第一次 loop_stats_tick() 时建立并丢弃**
+    // （否则首个 dt 是不完整周期）。无动态分配、无输出、不改任何其他模块。
+    // =====================================================
+    loop_stats_init();
 }
 
 void serial_debug_command_process();
@@ -667,6 +676,13 @@ void logt_console(const String &cmd);
 // =====================================================
 void loop()
 {
+    // ---- S-3：loop() 周期耗时采样（**必须是第一行**）----
+    //
+    // 样本 = 相邻两次进入 loop() 的时间差（上一轮完整周期，含调度/抢占影响）。
+    // 硬约束：本函数**零输出、零动态分配、无锁**（详见 src/app/loop_stats.h）。
+    // GF_LOOP_STATS_ENABLED=0 时为空实现（宏在 platformio.ini，可直接关掉）。
+    loop_stats_tick();
+
     // ---- Safe Restart 状态机（SystemCommand）----
     // 必须每轮调用：它是全系统唯一的 Restart 执行点。
     // 放在最前面，保证已进入的 10 秒安全窗口不被其他任务拖长。

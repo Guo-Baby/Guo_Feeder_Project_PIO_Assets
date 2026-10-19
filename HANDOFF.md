@@ -90,6 +90,8 @@
    ⇒ **`G-4` 仍 `BLOCKED`、`WP-5` 未解锁、`STOP-R1` 无解除**；试运行约束见报告 §6（有人值守 · 不做宠物唯一依赖 · **未验证任何执行类硬件动作**）。
    ★★ **`2026-10-20 01:47` 用户最终裁决 = 本阶段正式关闭**：`CONDITIONAL GO`（个人有限范围试运行）· 正式 `G-4` `BLOCKED` 维持 · `WP-5` 未解锁 · `BT-1` `CLOSED` · `STOP-R1` 无解除 · **不需要立即再次烧录** · **不可宣称长期稳定**。
    **后续真实测试的前置条件 = 用户实际焊接电器（电机 / 电磁阀等）之后再做**；执行类动作验证不得用只读结果替代。登记见 `docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md` **§10**。
+   **★ `2026-10-20 02:35` 已推进 `G-4` 的"能力缺口"部分（S-3 第二轮）**：`loop()` 耗时采样器 + **只读 `system.loop`** 已实现并通过**本地验收**（宿主机 82/82；RAM +600 B / Flash +4800 B；固件 `sha256=72d7a610…`，干净全量构建与增量构建**字节一致**）。规格修订 `docs/architecture/S-3-Spec-Revision-R2.md` · 报告 `docs/architecture/S-3-Implementation-and-Local-Acceptance-Report.md` · 证据 `docs/evidence/S-3-2026-10-20/`。
+   ★ **但 L2/L3 仍 `NOT VERIFIED`**：**未烧录**（本包明确不烧录）⇒ 采样开销与临界区耗时**未在目标板实测**；正式门禁还需 **2 h 稳态 + 30 min 突发**（另行授权）。⇒ **`G-4` 仍 `BLOCKED`、`WP-5` 未解锁、`STOP-R1` 无解除**，与上一行不冲突。
 6. **代码侧遗留（固件，可独立推进）**：`HD-2`（`interval_ms` 消费）· `HD-3`（`ts=0` + `seq` 归零 ⇒ 幂等碰撞）· `P-3`（NaN → JSON `null` ⇒ Worker 记录级拒收 · 静默丢样）。
 7. **遗留运维**：MQTT 密码轮换（10 文件含明文）；设备当前 = 「遥测功能构建 + `telemetry_enable=false` 安全态」，是否刷回编译门 OFF 默认镜像待定。
 
