@@ -1,0 +1,48 @@
+# Git 状态封存 2026-10-19T16:21:40Z
+
+## 固件仓 PIO_Assets/Guo_Feeder_Project
+```
+HEAD: 7f6b1fe03d77b666f4894305f9790f8ee494e848
+branch: wb
+ M HANDOFF.md
+ M docs/README.md
+ M docs/architecture/HD-3-Rebase-Runbook.md
+ M docs/architecture/P3-History-D1-Plan.md
+ M docs/architecture/P3-WP3-History-Storage-Policy-Design.md
+ M "docs/issues/\346\234\252\344\277\256\345\244\215\347\232\204\351\227\256\351\242\230.md"
+?? docs/architecture/BT-1-Acceptance-Report.md
+?? docs/architecture/G-4-Root-Cause-Investigation-Report.md
+?? docs/architecture/G-4-Uplink-Load-Assessment-Plan.md
+?? docs/architecture/G-4-Uplink-Load-Assessment-Report.md
+?? docs/architecture/HD-3-Composite-Review-Report.md
+?? docs/architecture/HD-3-P1-Rebase-Precondition-Assessment.md
+?? docs/architecture/HD-3-P2-Production-Deployment-and-E2E-Acceptance-Report.md
+?? docs/architecture/HD-3-RET-1-and-P1-Execution-Report.md
+?? docs/architecture/HD-3-Remediation-and-Reverification-Report.md
+?? docs/architecture/P3-WP6-Capacity-Verification-Implementation-Plan.md
+?? docs/architecture/P3-WP6-Capacity-Verification-Report.md
+?? docs/evidence/
+```
+
+## 云端仓 Cloudflare_Assets
+
+## 云端仓 D:/Guo_Feeder_Project/Cloudflare_Assets
+```
+HEAD: de4932594083a4fc26212fa88721832c9ea5d9ba
+ M guo-feeder-api/migrations/0006_log_boot_watermark_epoch.sql
+ M guo-feeder-api/migrations/README.md
+ M guo-feeder-api/src/emqx-admin.js
+ M guo-feeder-api/src/index.js
+ M guo-feeder-api/test/current/hard_retirement.test.mjs
+ M guo-feeder-api/test/current/redaction.test.mjs
+ M guo-feeder-api/test/real_d1/README.md
+ M guo-feeder-api/test/real_d1/log_conflict_real_d1.sh
+ M guo-feeder-api/test/real_d1/watermark_rebase_real_d1.sh
+ M guo-feeder-api/test/run_all.mjs
+?? guo-feeder-api/test/current/cloud_api_downlink_topic.test.mjs
+```
+
+## 消息仓 D:/Guo_Feeder_Project/EMQX_Assets
+```
+HEAD: ec2364fa60d1ce10849fb8a4f9546e94dd555100
+```
