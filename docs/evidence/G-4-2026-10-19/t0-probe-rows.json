@@ -1,0 +1,96 @@
+[
+  {
+    "results": [
+      {
+        "id": 4542,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4base179242314726295",
+        "created_at": 1792423149279,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4base179242314726295\",\"p\":{\"o\":\"memory\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4543,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4base179242315415590",
+        "created_at": 1792423156522,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4base179242315415590\",\"p\":{\"o\":\"flash\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4544,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4base179242314726295",
+        "created_at": 1792423160510,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4base179242314726295\",\"p\":{\"o\":\"memory\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4545,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "g4base179242314726295",
+        "created_at": 1792423160933,
+        "raw_payload": "{\"c\":\"ack\",\"i\":\"g4base179242314726295\",\"o\":\"memory\",\"p\":{\"result\":\"received\"},\"t\":1792423151}"
+      },
+      {
+        "id": 4546,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4base179242314726295",
+        "created_at": 1792423161758,
+        "raw_payload": "{\"s\":0,\"c\":\"result\",\"i\":\"g4base179242314726295\",\"t\":1792423151,\"data\":{\"internal\":{\"total\":250996,\"free\":66452,\"used\":184544,\"largest_free_block\":55284,\"minimum_free\":61124},\"external\":{\"total\":8385719,\"free\":7993863,\"used\":391856,\"largest_free_block\":7864308,\"minimum_free\":7986879}},\"command\":\"system\"}"
+      },
+      {
+        "id": 4547,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4base179242315415590",
+        "created_at": 1792423164666,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4base179242315415590\",\"p\":{\"o\":\"flash\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4548,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "g4base179242315415590",
+        "created_at": 1792423165061,
+        "raw_payload": "{\"c\":\"ack\",\"i\":\"g4base179242315415590\",\"o\":\"flash\",\"p\":{\"result\":\"received\"},\"t\":1792423157}"
+      },
+      {
+        "id": 4549,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4base179242315415590",
+        "created_at": 1792423165882,
+        "raw_payload": "{\"s\":0,\"c\":\"result\",\"i\":\"g4base179242315415590\",\"t\":1792423158,\"data\":{\"external\":{\"total\":12517376,\"used\":163840,\"free\":12353536},\"internal\":{\"total\":4259840,\"used\":1400800,\"free\":2859040},\"files\":[{\"path\":\"/config-tempalte.json\",\"type\":\"file\",\"size\":1238},{\"path\":\"/config.json\",\"type\":\"file\",\"size\":1576},{\"path\":\"/config\",\"type\":\"directory\",\"size\":0},{\"path\":\"/config/.bootok\",\"type\":\"file\",\"size\":1},{\"path\":\"/config/mi_thermo.json\",\"type\":\"file\",\"size\":123},{\"path\":\"/config/mqtt.json.example\",\"type\":\"file\",\"size\":488},{\"path\":\"/config/mqtt.json\",\"type\":\"file\",\"size\":479},{\"path\":\"/config/oled.json\",\"type\":\"file\",\"size\":98},{\"path\":\"/config/rtc.json\",\"type\":\"file\",\"size\":106},{\"path\":\"/config/time.json\",\"type\":\"file\",\"size\":129},{\"path\":\"/config/valve.json\",\"type\":\"file\",\"size\":124},{\"path\":\"/config/version.json\",\"type\":\"file\",\"size\":82},{\"path\":\"/config/weight.json\",\"type\":\"file\",\"size\":150},{\"path\":\"/config/wifi.json\",\"type\":\"file\",\"size\":117},{\"path\":\"/emqxsl-ca.crt\",\"type\":\"file\",\"size\":1316},{\"path\":\"/factory\",\"type\":\"directory\",\"size\":0},{\"path\":\"/log\",\"type\":\"directory\",\"size\":0},{\"path\":\"/log/meta.bin\",\"type\":\"file\",\"size\":32},{\"path\":\"/log/meta_a.bin\",\"type\":\"file\",\"size\":32},{\"path\":\"/log/meta_b.bin\",\"type\":\"file\",\"size\":32},{\"path\":\"/log/s0000000.log\",\"type\":\"file\",\"size\":3984},{\"path\":\"/registry\",\"type\":\"directory\",\"size\":0},{\"path\":\"/registry/action.bin\",\"type\":\"file\",\"size\":133},{\"path\":\"/registry/trigger.bin\",\"type\":\"file\",\"size\":36},{\"path\":\"/registry/workflow.bin\",\"type\":\"file\",\"size\":75},{\"path\":\"/workflow.json\",\"type\":\"file\",\"size\":2911},{\"path\":\"/workflow\",\"type\":\"directory\",\"size\":0},{\"path\":\"/workflow/meta.bin\",\"type\":\"file\",\"size\":1436},{\"path\":\"/workflow/wf00\",\"type\":\"directory\",\"size\":0},{\"path\":\"/workflow/wf00/step00.bin\",\"type\":\"file\",\"size\":169},{\"path\":\"/workflow/wf00/step01.bin\",\"type\":\"file\",\"size\":53},{\"path\":\"/workflow/wf00/step02.bin\",\"type\":\"file\",\"size\":111},{\"path\":\"/workflow/wf00/step03.bin\",\"type\":\"file\",\"size\":53},{\"path\":\"/workflow/wf01\",\"type\":\"directory\",\"size\":0},{\"path\":\"/workflow/wf01/step00.bin\",\"type\":\"file\",\"size\":169},{\"path\":\"/workflow/wf01/step01.bin\",\"type\":\"file\",\"size\":53},{\"path\":\"/workflow/wf01/step02.bin\",\"type\":\"file\",\"size\":111},{\"path\":\"/workflow/wf01/step03.bin\",\"type\":\"file\",\"size\":53},{\"path\":\"/workflow/wf02\",\"type\":\"directory\",\"size\":0},{\"path\":\"/workflow/wf02/step00.bin\",\"type\":\"file\",\"size\":169},{\"path\":\"/workflow/wf02/step01.bin\",\"type\":\"file\",\"size\":53},{\"path\":\"/workflow/wf02/step02.bin\",\"type\":\"file\",\"size\":111},{\"path\":\"/workflow/wf02/step03.bin\",\"type\":\"file\",\"size\":53}]},\"command\":\"system\"}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 4.8694
+      },
+      "duration": 4.8694,
+      "changes": 0,
+      "last_row_id": 1674,
+      "changed_db": false,
+      "size_after": 1683456,
+      "rows_read": 4532,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

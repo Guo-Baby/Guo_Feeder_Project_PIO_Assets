@@ -1,0 +1,78 @@
+[
+  {
+    "results": [
+      {
+        "id": 4527,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420494500,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"bt11792420492\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4528,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420498616,
+        "p": "{\"c\":\"ack\",\"i\":\"bt11792420492\",\"o\":\"config_query\",\"p\":{\"result\":\"received\"},\"t\":1792420497}"
+      },
+      {
+        "id": 4529,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420499391,
+        "p": "{\"s\":1,\"c\":\"result\",\"i\":\"bt11792420492\",\"t\":1792420497,\"m\":\"config query queued\",\"command\":\"system\"}"
+      },
+      {
+        "id": 4530,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420500150,
+        "p": "{\"s\":0,\"c\":\"result\",\"i\":\"bt11792420492\",\"o\":\"config_query\",\"t\":1792420497,\"m\":\"query module ok\",\"e\":0,\"v\":1,\"type\":\"config_result\",\"command\":\"system\",\"data\":{\"g"
+      },
+      {
+        "id": 4531,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420500184,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"bt11792420492\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4532,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:21:5174",
+        "created_at": 1792420515219,
+        "p": "{\"c\":\"log_ack\",\"i\":\"ack:21:5174\",\"p\":{\"b\":21,\"f\":5174,\"t\":5174}}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 7.9157
+      },
+      "duration": 7.9157,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1675264,
+      "rows_read": 4514,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

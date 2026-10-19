@@ -1,0 +1,42 @@
+[
+  {
+    "results": [
+      {
+        "boot_seq": 21,
+        "seq": 5169,
+        "ts": 1792414737,
+        "created_at": 1792414741
+      },
+      {
+        "boot_seq": 21,
+        "seq": 5168,
+        "ts": 1792414680,
+        "created_at": 1792414685
+      },
+      {
+        "boot_seq": 21,
+        "seq": 5167,
+        "ts": 1792413442,
+        "created_at": 1792413443
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.342
+      },
+      "duration": 1.342,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1050,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

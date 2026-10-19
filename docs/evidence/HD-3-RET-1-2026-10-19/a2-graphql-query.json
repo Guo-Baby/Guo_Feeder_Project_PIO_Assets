@@ -1,0 +1,1 @@
+{"query": "query { viewer { accounts(filter: {accountTag: \"9e72d201efec6925b3a468a0e3fb4928\"}) { workersInvocationsAdaptive(limit: 200, filter: {scriptName: \"guo-feeder-api\", datetime_geq: \"2026-10-19T02:30:00Z\", datetime_leq: \"2026-10-19T03:30:00Z\"}) { sum { requests errors } dimensions { datetime } } } } }"}

@@ -1,0 +1,69 @@
+[
+  {
+    "results": [
+      {
+        "id": 4552,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b1r0079518",
+        "created_at": 1792423380325,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b1r0079518\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4553,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b1r0079518",
+        "created_at": 1792423382038,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b1r0079518\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4554,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "g4b1r0079518",
+        "created_at": 1792423383392,
+        "raw_payload": "{\"c\":\"ack\",\"i\":\"g4b1r0079518\",\"o\":\"config_query\",\"p\":{\"result\":\"received\"},\"t\":1792423382}"
+      },
+      {
+        "id": 4555,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4b1r0079518",
+        "created_at": 1792423384153,
+        "raw_payload": "{\"s\":1,\"c\":\"result\",\"i\":\"g4b1r0079518\",\"t\":1792423382,\"m\":\"config query queued\",\"command\":\"system\"}"
+      },
+      {
+        "id": 4556,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4b1r0079518",
+        "created_at": 1792423384965,
+        "raw_payload": "{\"s\":0,\"c\":\"result\",\"i\":\"g4b1r0079518\",\"o\":\"config_query\",\"t\":1792423382,\"m\":\"query module ok\",\"e\":0,\"v\":1,\"type\":\"config_result\",\"command\":\"system\",\"data\":{\"gpio_pin\":12,\"active_level\":1,\"open_duration_ms\":0,\"safety_timeout_sec\":300,\"enable\":true}}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 9.3213
+      },
+      "duration": 9.3213,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1687552,
+      "rows_read": 4539,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

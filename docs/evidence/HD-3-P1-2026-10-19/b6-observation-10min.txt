@@ -1,0 +1,366 @@
+[13:40:53] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.3736
+      },
+      "duration": 0.3736,
+      "changes": 0,
+      "last_row_id": 1,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:40:53] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 0,
+        "maxb": null,
+        "lastc": null
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 4.9438
+      },
+      "duration": 4.9438,
+      "changes": 0,
+      "last_row_id": 1,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 525,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:43:05] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.3115
+      },
+      "duration": 0.3115,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:43:05] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 2,
+        "maxb": 21,
+        "lastc": 1792417362
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.7566
+      },
+      "duration": 0.7566,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 527,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:45:18] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2289
+      },
+      "duration": 0.2289,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:45:18] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 4,
+        "maxb": 21,
+        "lastc": 1792417463
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.6925
+      },
+      "duration": 0.6925,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 529,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:47:30] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2212
+      },
+      "duration": 0.2212,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:47:30] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 4,
+        "maxb": 21,
+        "lastc": 1792417463
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.5103
+      },
+      "duration": 0.5103,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 529,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:49:42] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.1352
+      },
+      "duration": 0.1352,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:49:42] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 4,
+        "maxb": 21,
+        "lastc": 1792417463
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.4608
+      },
+      "duration": 0.4608,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 529,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:51:55] W=[
+  {
+    "results": [
+      {
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "prev_epoch_max": 117,
+        "rewind_count": 0,
+        "observed_max_boot_seq": 117,
+        "last_rewind_at": 1792414807
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.1978
+      },
+      "duration": 0.1978,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+[13:51:55] NEWLOGS=[
+  {
+    "results": [
+      {
+        "n": 4,
+        "maxb": 21,
+        "lastc": 1792417463
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 5.0441
+      },
+      "duration": 5.0441,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 529,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

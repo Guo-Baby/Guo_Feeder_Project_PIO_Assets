@@ -1,0 +1,108 @@
+[
+  {
+    "results": [
+      {
+        "id": 3574,
+        "cmd": "ack",
+        "msg_id": "bt1t04a",
+        "created_at": 1792253375168
+      },
+      {
+        "id": 3575,
+        "cmd": "query",
+        "msg_id": "bt1t04a",
+        "created_at": 1792253377499
+      },
+      {
+        "id": 4527,
+        "cmd": "system",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420494500
+      },
+      {
+        "id": 4528,
+        "cmd": "ack",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420498616
+      },
+      {
+        "id": 4529,
+        "cmd": "result",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420499391
+      },
+      {
+        "id": 4530,
+        "cmd": "result",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420500150
+      },
+      {
+        "id": 4531,
+        "cmd": "system",
+        "msg_id": "bt11792420492",
+        "created_at": 1792420500184
+      },
+      {
+        "id": 4532,
+        "cmd": "log_ack",
+        "msg_id": "ack:21:5174",
+        "created_at": 1792420515219
+      },
+      {
+        "id": 4533,
+        "cmd": "system",
+        "msg_id": "bt1b1792420703",
+        "created_at": 1792420705090
+      },
+      {
+        "id": 4534,
+        "cmd": "system",
+        "msg_id": "bt1b1792420703",
+        "created_at": 1792420705789
+      },
+      {
+        "id": 4535,
+        "cmd": "ack",
+        "msg_id": "bt1b1792420703",
+        "created_at": 1792420707044
+      },
+      {
+        "id": 4536,
+        "cmd": "result",
+        "msg_id": "bt1b1792420703",
+        "created_at": 1792420707846
+      },
+      {
+        "id": 4537,
+        "cmd": "result",
+        "msg_id": "bt1b1792420703",
+        "created_at": 1792420708656
+      },
+      {
+        "id": 4538,
+        "cmd": "log_ack",
+        "msg_id": "ack:21:5175",
+        "created_at": 1792420710708
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.2988
+      },
+      "duration": 2.2988,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1679360,
+      "rows_read": 4520,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

@@ -1,0 +1,24 @@
+{
+ "tag": "b1r",
+ "count": 1,
+ "interval": 0.0,
+ "t_start": 1792423379.518226,
+ "t_start_iso": "15:22:59.518",
+ "t_sent_all": 1792423379.5190148,
+ "t_sent_all_iso": "15:22:59.519",
+ "http200": 1,
+ "records": [
+  {
+   "tag": "b1r",
+   "idx": 0,
+   "cmd_id": "g4b1r0079518",
+   "t_send": 1792423379.5182292,
+   "t_send_iso": "15:22:59.518",
+   "http": 200,
+   "t_done": 1792423381.8160028,
+   "elapsed": 2.298,
+   "body": "OK",
+   "error": null
+  }
+ ]
+}

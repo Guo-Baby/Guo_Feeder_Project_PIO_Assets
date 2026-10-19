@@ -1,0 +1,2 @@
+{"ok":true,"applied":false,"dry_run":true,"would_apply":true,"device_id":"288485896ce4","rebase_id":"rb-20261019-0001","epoch_now":1,"epoch_after":2,"max_boot_seq_now":117,"max_boot_seq_after":21,"prev_epoch_max_after":117,"observed_max_boot_seq":117,"rewind_count_reset_from":433,"ambiguous_count_reset_from":0}
+HTTP=200

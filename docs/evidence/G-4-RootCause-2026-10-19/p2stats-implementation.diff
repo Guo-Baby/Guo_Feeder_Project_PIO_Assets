@@ -1,0 +1,224 @@
+diff --git a/src/log/log_manager.cpp b/src/log/log_manager.cpp
+index bc303ae..601ca09 100644
+--- a/src/log/log_manager.cpp
++++ b/src/log/log_manager.cpp
+@@ -4172,6 +4172,24 @@ void log_stats_reset()
+     portEXIT_CRITICAL(&s_mux);
+ }
+ 
++// G-4：统计只读快照（单临界区整体拷贝，保证字段自洽）。
++// 语义见 log_manager.h：false = 不可用 ≠ 全零。
++bool log_stats_get(LogStats &out)
++{
++    memset(&out, 0, sizeof(out));
++
++    if (!s_ready)
++    {
++        return false;
++    }
++
++    portENTER_CRITICAL(&s_mux);
++    out = s_stats;          // POD 结构（纯 uint32/uint8），整体拷贝
++    portEXIT_CRITICAL(&s_mux);
++
++    return true;
++}
++
+ bool log_flush_requested()
+ {
+     // 与 log_task() / log_emit() 统一使用 s_mux（非阻塞自旋锁，不用 mutex）
+diff --git a/src/log/log_manager.h b/src/log/log_manager.h
+index 6fe07d5..abe0fa5 100644
+--- a/src/log/log_manager.h
++++ b/src/log/log_manager.h
+@@ -326,6 +326,20 @@ void log_get_stats(LogStats &out);
+ // 仅清零统计计数，不动 RAM 环内容
+ void log_stats_reset();
+ 
++// =====================================================
++// 统计只读快照（G-4 · 观测缺口补齐）
++//
++// 语义：
++//   · 一次性在**单个临界区**内拷贝整个 `LogStats`，保证字段间自洽
++//     （不会出现"读到一半被别的任务更新"的撕裂快照）；
++//   · **返回 false ⇒ 统计不可用**（LogManager 尚未初始化）。
++//     调用方**必须**区分「不可用」与「计数为 0」：
++//     前者不是"没丢过"，后者才是"计数确认为零"；
++//   · 不产生 Log（避免递归）、不分配堆内存、不阻塞（`portMUX` 自旋锁）。
++// =====================================================
++
++bool log_stats_get(LogStats &out);
++
+ // CRITICAL 触发的"立即 flush + 提升 Cloud 优先级"请求（P1.3 / P1.4 消费）
+ bool log_flush_requested();
+ void log_clear_flush_request();
+diff --git a/src/services/command_manager.cpp b/src/services/command_manager.cpp
+index 3f9aad6..d04ed48 100644
+--- a/src/services/command_manager.cpp
++++ b/src/services/command_manager.cpp
+@@ -216,6 +216,7 @@ static bool command_system_wifi_config(const CommandMessage &cmd, JsonDocument &
+ // ---- SystemCommand（V2：资源查询 + 统一 Safe Restart）----
+ static bool command_system_memory(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
++static bool command_system_stats(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
+ static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
+ // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
+@@ -2506,6 +2507,9 @@ static bool system_router(
+     if (object == "flash") {
+         return command_system_flash(cmd, response);
+     }
++    if (object == "stats") {
++        return command_system_stats(cmd, response);
++    }
+     if (object == "restart") {
+         return command_system_restart(cmd, response);
+     }
+@@ -3287,6 +3291,24 @@ static bool command_system_memory(
+     return true;
+ }
+ 
++// system: stats（G-4 · 只读）
++// object: stats
++// 返回 LogManager 累计统计 + 云队列/Flash 运行时状态。
++// ⚠️ `data.available=false` 表示统计不可用，**不得**当作"计数全为 0"。
++static bool command_system_stats(
++    const CommandMessage &cmd,
++    JsonDocument &response)
++{
++    if (!syscmd_stats(response))
++    {
++        command_send_error(cmd, CMD_ERROR_SYSTEM, "stats query failed");
++        return false;
++    }
++    response["status"] = "success";
++    last_result = CMD_RESULT_OK;
++    return true;
++}
++
+ // =====================================================
+ // system: flash（V1，合并原 system.files）
+ //
+diff --git a/src/services/system_command.cpp b/src/services/system_command.cpp
+index 34ed9c2..023fec3 100644
+--- a/src/services/system_command.cpp
++++ b/src/services/system_command.cpp
+@@ -659,3 +659,92 @@ bool syscmd_flash(JsonDocument &out)
+ 
+     return true;
+ }
++
++// =====================================================
++// system.stats（G-4 · 只读统计快照）
++//
++// 目的：补齐 `GATE-WP5` ② 的观测缺口 ——
++//       `drop_unacked` / `drop_overflow` / `hovf` / 段删除频率 等
++//       此前**只有串口**可读，云端完全不可见。
++//
++// 语义约束：
++//   · `log_stats_get()` 返回 false ⇒ `available:false`，**不写**计数器；
++//     绝不把"统计不可用"渲染成"全部为 0"（那会被误读为"没有丢弃"）；
++//   · 只读：不修改配置、不触发硬件、不重启、不分配堆内存；
++//   · 栈开销 ≈ `LogStats(≈160 B) + LogCloudInfo(≈60 B) + LogFlashInfo(≈50 B)`。
++// =====================================================
++bool syscmd_stats(JsonDocument &out)
++{
++    JsonObject data = out["data"].to<JsonObject>();
++    if (data.isNull())
++    {
++        return false;
++    }
++
++    LogStats st;
++    const bool available = log_stats_get(st);
++
++    data["available"] = available;
++    data["uptime_ms"] = (uint32_t)millis();
++
++    // ---- 队列 / ACK 运行时状态 ----
++    LogCloudInfo ci;
++    log_cloud_get_info(ci);
++
++    JsonObject q = data["queue"].to<JsonObject>();
++    q["used"] = ci.queue_used;
++    q["capacity"] = (uint16_t)LOG_CLOUD_QUEUE_SLOTS;
++    q["inflight"] = ci.inflight;
++    q["retry"] = ci.retry;
++    q["gave_up"] = ci.gave_up;
++    q["acked_seq"] = ci.acked_seq;
++    q["hole_overflow"] = ci.hole_overflow;   // `hovf`：空洞表溢出 ⇒ 本 boot 停止回收
++    q["connected"] = ci.connected;
++
++    // ---- Flash 段状态 ----
++    LogFlashInfo fi;
++    log_flash_get_info(fi);
++
++    data["boot_seq"] = fi.boot_seq;
++
++    JsonObject f = data["flash"].to<JsonObject>();
++    f["ready"] = fi.flash_ready;
++    f["valid_segments"] = fi.valid_segments;
++    f["total_records"] = fi.total_records;
++    f["corrupt_count"] = fi.corrupt_count;
++    f["seq_reliable"] = fi.seq_reliable;
++
++    // ---- 累计计数器（仅在可用时写入）----
++    if (!available)
++    {
++        return true;    // 保留 available:false，字段缺省 ⇒ 调用方不得当 0 解读
++    }
++
++    JsonObject c = data["counters"].to<JsonObject>();
++
++    c["emit_total"] = st.emit_total;
++    c["ring_drop"] = st.ring_drop;
++
++    // 丢弃三类（GATE-WP5 ② 的核心指标）
++    c["drop_overflow"] = st.cloud_q_drop;          // 云队列溢出淘汰
++    c["drop_unacked"] = st.cloud_flash_drop;       // give-up / 段淘汰中未 ACK 的条数
++    c["seg_evicted_unacked"] = st.flash_seg_evict_unacked;   // 段环压力淘汰的未确认数
++
++    c["cloud_batch_sent"] = st.cloud_batch_sent;
++    c["cloud_records_sent"] = st.cloud_records_sent;
++    c["cloud_retx"] = st.cloud_retx;               // ACK 超时后的重发次数
++    c["cloud_ack_ok"] = st.cloud_ack_ok;
++    c["cloud_ack_timeout"] = st.cloud_ack_timeout;
++    c["cloud_ack_lost"] = st.cloud_ack_lost;       // 重试耗尽
++    c["ack_ignored"] = st.cloud_ack_ignored;
++    c["ack_partial"] = st.cloud_ack_partial;
++
++    c["replay_records"] = st.cloud_replay_records;
++    c["offline_skip"] = st.cloud_offline_skip;
++    c["give_up"] = st.cloud_give_up;
++
++    c["seg_deleted"] = st.flash_segment_deleted;   // 段删除频率 = Δ/时间
++    c["self_degraded"] = st.self_degraded;
++
++    return true;
++}
+diff --git a/src/services/system_command.h b/src/services/system_command.h
+index da72a33..820c8cc 100644
+--- a/src/services/system_command.h
++++ b/src/services/system_command.h
+@@ -173,6 +173,21 @@ bool syscmd_memory(JsonDocument &out);
+ // 返回 true=成功；false=存储/文件系统不可用 或 枚举失败
+ bool syscmd_flash(JsonDocument &out);
+ 
++// system.stats（G-4 观测缺口补齐 · 只读）
++// 写入 out["data"] = {
++//     available:true|false,          // false ⇒ LogManager 未初始化（≠ 全零）
++//     uptime_ms, boot_seq,
++//     queue:{used,capacity,inflight,retry,gave_up,acked_seq,hole_overflow},
++//     counters:{emit_total,ring_drop,drop_overflow,drop_unacked,
++//               cloud_batch_sent,cloud_records_sent,cloud_retx,cloud_ack_ok,
++//               cloud_ack_timeout,cloud_ack_lost,ack_ignored,ack_partial,
++//               replay_records,offline_skip,give_up,seg_evicted_unacked,
++//               seg_deleted,self_degraded},
++//     flash:{valid_segments,total_records,corrupt_count,seq_reliable}
++// }
++// 返回 true=成功；false=统计不可用（**不得**降级为"全部为 0"）
++bool syscmd_stats(JsonDocument &out);
++
+ // system.restart_status（诊断 / 观察用）
+ // 写入 out["data"] = {
+ //     state, critical_operations, restart_pending, remain_ms, safe_delay_ms

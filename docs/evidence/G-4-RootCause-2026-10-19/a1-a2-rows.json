@@ -1,0 +1,114 @@
+[
+  {
+    "results": [
+      {
+        "id": 4651,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31753827",
+        "created_at": 1792423565292,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31753827\",\"p\":{\"o\":\"config_quer"
+      },
+      {
+        "id": 4705,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31753827",
+        "created_at": 1792423598666,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31753827\",\"p\":{\"o\":\"config_quer"
+      },
+      {
+        "id": 4709,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "g4b31753827",
+        "created_at": 1792423601473,
+        "p": "{\"c\":\"ack\",\"i\":\"g4b31753827\",\"o\":\"config_query\",\"p\":{\"result\":\"received\"},\"t\":17"
+      },
+      {
+        "id": 4710,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4b31753827",
+        "created_at": 1792423602270,
+        "p": "{\"s\":1,\"c\":\"result\",\"i\":\"g4b31753827\",\"t\":1792423566,\"m\":\"config query queued\",\""
+      },
+      {
+        "id": 4652,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31853827",
+        "created_at": 1792423565934,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31853827\",\"p\":{\"o\":\"config_quer"
+      },
+      {
+        "id": 4711,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31853827",
+        "created_at": 1792423602847,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31853827\",\"p\":{\"o\":\"config_quer"
+      },
+      {
+        "id": 4713,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "msg_id": "g4b31853827",
+        "created_at": 1792423603430,
+        "p": "{\"c\":\"ack\",\"i\":\"g4b31853827\",\"o\":\"config_query\",\"p\":{\"result\":\"received\"},\"t\":17"
+      },
+      {
+        "id": 4714,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "msg_id": "g4b31853827",
+        "created_at": 1792423604180,
+        "p": "{\"s\":1,\"c\":\"result\",\"i\":\"g4b31853827\",\"t\":1792423567,\"m\":\"config query queued\",\""
+      },
+      {
+        "id": 4654,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31953827",
+        "created_at": 1792423566263,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31953827\",\"p\":{\"o\":\"config_quer"
+      },
+      {
+        "id": 4712,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "msg_id": "g4b31953827",
+        "created_at": 1792423603048,
+        "p": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"g4b31953827\",\"p\":{\"o\":\"config_quer"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 7.533
+      },
+      "duration": 7.533,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1753088,
+      "rows_read": 4738,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

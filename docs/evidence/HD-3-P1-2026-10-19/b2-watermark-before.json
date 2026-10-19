@@ -1,0 +1,44 @@
+[
+  {
+    "results": [
+      {
+        "device_id": "288485896ce4",
+        "max_boot_seq": 117,
+        "max_seq_at_max": 114441,
+        "first_seen_at": 1792345018,
+        "last_seen_at": 1792414807,
+        "updated_at": 1792414807,
+        "obs_count": 443,
+        "rewind_count": 433,
+        "last_rewind_at": 1792414807,
+        "last_rewind_boot": 21,
+        "status": "open",
+        "epoch": 1,
+        "epoch_started_at": null,
+        "prev_epoch_max": null,
+        "observed_max_boot_seq": 117,
+        "ambiguous_count": 0,
+        "last_rebase_id": null,
+        "last_rebase_at": null
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.1435
+      },
+      "duration": 1.1435,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1671168,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

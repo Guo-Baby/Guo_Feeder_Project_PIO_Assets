@@ -177,10 +177,14 @@ observed_max_boot_seq = 100（随观测上升）
 |---|---|---|
 | `0004_log_conflict.sql` | 草案 / `drafts/` | **已转正**（`362ddfd`）并**已应用**到生产 D1 |
 | `0005_log_boot_watermark.sql` | 草案 / `drafts/` | **已转正**（`362ddfd`）并**已应用**到生产 D1 |
-| `0006_log_boot_watermark_epoch.sql` | 草案 | **仍在 `drafts/`，未应用** |
+| `0006_log_boot_watermark_epoch.sql` | ★ **已更正**（`2026-10-19`）：仅描述「它是什么」，不维护应用状态 | **已转正**（位于 `migrations/` 顶层）并**已应用**于 `2026-10-18 20:18:26 UTC`（`d1_migrations` id=6） |
 
-**为什么不改文件头**：改已应用 migration 的内容会让"仓库里的文件"与
+**为什么不改 0004 / 0005 的文件头**：改已应用 migration 的内容会让"仓库里的文件"与
 "当时实际执行过的 SQL"不一致，破坏审计链。以本表为准。
+
+**为什么 0006 改了**：只改**注释**（`--` 行），SQL 语义零改动；且按其时结论
+「在 SQL 文件头维护易变的应用状态本身就是缺陷」（`D-1`），故改为不描述状态、
+状态统一由 `migrations/README.md` 与 `d1_migrations` 承载。
 
 ---
 
@@ -188,3 +192,15 @@ observed_max_boot_seq = 100（随观测上升）
 
 本手册描述的**所有**操作（`0006` 应用、Worker 部署、真实 rebase）都需要
 **单独明确授权**。仓库中存在代码 ≠ 已授权执行。
+
+---
+
+## 9. 执行记录
+
+| 日期（UTC） | `rebase_id` | 设备 | 变更 | 结果 |
+|---|---|---|---|---|
+| `2026-10-19 13:40:27` | `rb-20261019-0001` | `288485896ce4` | `epoch 1→2` · `max 117→21` · `prev_epoch_max=117` · `rewind_count 433→0` | **`applied`**（`changes 1/1`，审计 1 条）· 10 分钟观察无 rewind 复现 |
+
+> 详细证据：`docs/architecture/HD-3-RET-1-and-P1-Execution-Report.md` ·
+> `docs/evidence/HD-3-P1-2026-10-19/`。
+> 执行后仍处于 §4 的**盲区**：`(21,117]` 区间的真回退暂不可识别（直到 `boot>117`）。

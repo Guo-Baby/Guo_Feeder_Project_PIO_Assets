@@ -1,0 +1,74 @@
+[
+  {
+    "results": [
+      {
+        "id": 4508,
+        "topic": "guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "status": null,
+        "error_code": null,
+        "created_at": 1792414737159,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"p2b1792414735\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4509,
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down",
+        "direction": "down",
+        "cmd": "system",
+        "status": null,
+        "error_code": null,
+        "created_at": 1792414737509,
+        "raw_payload": "{\"device_id\":\"288485896ce4\",\"c\":\"system\",\"i\":\"p2b1792414735\",\"p\":{\"o\":\"config_query\",\"module\":\"valve\"},\"source\":\"cloud_api\"}"
+      },
+      {
+        "id": 4510,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "ack",
+        "status": null,
+        "error_code": null,
+        "created_at": 1792414738798,
+        "raw_payload": "{\"c\":\"ack\",\"i\":\"p2b1792414735\",\"o\":\"config_query\",\"p\":{\"result\":\"received\"},\"t\":1792414737}"
+      },
+      {
+        "id": 4511,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "status": 1,
+        "error_code": null,
+        "created_at": 1792414739567,
+        "raw_payload": "{\"s\":1,\"c\":\"result\",\"i\":\"p2b1792414735\",\"t\":1792414737,\"m\":\"config query queued\",\"command\":\"system\"}"
+      },
+      {
+        "id": 4512,
+        "topic": "guo_feeder/288485896ce4/up",
+        "direction": "up",
+        "cmd": "result",
+        "status": 0,
+        "error_code": 0,
+        "created_at": 1792414740333,
+        "raw_payload": "{\"s\":0,\"c\":\"result\",\"i\":\"p2b1792414735\",\"o\":\"config_query\",\"t\":1792414737,\"m\":\"query module ok\",\"e\":0,\"v\":1,\"type\":\"config_result\",\"command\":\"system\",\"data\":{\"gpio_pin\":12,\"active_level\":1,\"open_duration_ms\":0,\"safety_timeout_sec\":300,\"enable\":true}}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 7.4958
+      },
+      "duration": 7.4958,
+      "changes": 0,
+      "last_row_id": 4513,
+      "changed_db": false,
+      "size_after": 1667072,
+      "rows_read": 4495,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
