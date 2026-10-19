@@ -253,7 +253,7 @@ C) 关 vs 上一版生产     : RAM     0 B  | Flash +4088 B | .bin +4080 B  ←
 | 分支 | `wb`（同步目标 `origin/main`，**同步只走 `git push origin wb:main`**） |
 | 本包源码改动 | 10 文件 / **+1351 / -0** |
 | 新增文件 | `src/app/loop_stats.h` · `src/app/loop_stats.cpp` · `test/loop_stats_host/{loop_stats_probe.cpp,run.sh,run_probe.js}` |
-| 提交 | 见 §10（提交后回填） |
+| 提交 | **`23bee8e`**（`feat(s3): loop() 耗时观测实施 + 只读 system.loop`） |
 | 工作区 | 提交后仅剩 1 个**有意未跟踪**文件 `docs/evidence/G-4-Stats-2026-10-20/pre-flash-firmware.bin`（1.4 MB，SHA 已记录在 G-4 证据 README） |
 
 ---
@@ -280,8 +280,10 @@ C) 关 vs 上一版生产     : RAM     0 B  | Flash +4088 B | .bin +4080 B  ←
 
 | 项 | 值 |
 |---|---|
-| 提交哈希 | 见文末「提交」小节（`git log` 为准） |
-| 推送 | `git push origin wb:main`；`HEAD == origin/main` |
+| 提交哈希 | **`23bee8e`**（父提交 `d595997` = S-3 R1 规格文档） |
+| 规模 | 26 文件 / **+3520 行**（含证据卷宗与两个固件；**源码本体 = 10 文件 / +1351 行**） |
+| 推送 | ✅ `git push origin wb:main` → **`d595997..23bee8e`**；`HEAD == origin/main == 23bee8e` |
+| 工作区 | 干净，除 **1 个有意未跟踪** 文件 `docs/evidence/G-4-Stats-2026-10-20/pre-flash-firmware.bin`（1.4 MB，属上一轮 G-4 证据，SHA 已记录） |
 
 ---
 
