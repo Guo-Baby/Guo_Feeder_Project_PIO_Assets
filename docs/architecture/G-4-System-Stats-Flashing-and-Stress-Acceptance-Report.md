@@ -152,6 +152,7 @@ WiFi connected
 | 命令响应 | `system.stats` / `system.memory` 均返回 **ack + result 双帧**，`data` 在顶层 |
 | 日志上行 | `[Cloud LOG] OK topic=…/log` + 云端 `log_ack` → 设备 `ack ok covered=1/1 acked=<seq> gc=… r=2` |
 | 崩溃/看门狗 | 全程 `ESP-ROM` 出现 **1 次**（即本次烧录启动）；`panic` / `Guru Meditation` / `abort()` **0 次** |
+| **固件版本识别** | ★ 设备**不打印版本串**（仅 `ESP-ROM Build:Mar 27 2021`）⇒ 版本只能由三件事共同确定：① 烧录日志 `Hash of data verified`（1 402 672 B）；② 本地 `sha256=a2c8a038…`；③ **`system.stats` 能返回 `available:true`** —— 该指令在上一版固件中**不存在**，旧固件必回 `unknown`，故"能应答"本身就是"新固件在跑"的行为证据 |
 
 **与历史启动的对照（排除"新增故障"）**：`/littlefs/log/*.log does not exist, no permits for creation`
 与 `[Log] RAM ring ready … (boot_seq=1)` 两处"刺眼"输出，在 `2026-10-19 04:10` 的 BT-1 启动日志
@@ -227,7 +228,8 @@ acked_seq = 5377 + emit_total − 1
 ```
 ⇒ 本 boot 周期共产生 **130 条**记录，**130 条全部被云端 ACK 覆盖**（`ack_lost=0`、`give_up=0`、`drop_*` 全 0）。
 
-**排空耗时**：`queue.used` 峰值仅 **10/128**（L3 采样点），在**下一个采样点（≤50 s）前归 0**；L4 采样点已为 0。
+**排空耗时**：`queue.used` 峰值仅 **10/128**（L3 采样点，`t=504 s`），在**下一个采样点（`t=593 s`，+89 s）已归 0**；
+L4 采样点（`t=845 s`）已为 0。即**四级突发的积压始终远低于 128 槽容量，且均在两个采样点内排空**。
 全程 `cloud_batch_sent=162`、`cloud_ack_ok=154`、`cloud_retx=9`、`cloud_ack_timeout=9`、`ack_ignored=7`。
 
 **ACK 重试明细**（串口原文，共 9 次，**全部止步于 `retry=2/5`**）：
