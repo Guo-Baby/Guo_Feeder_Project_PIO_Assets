@@ -288,7 +288,7 @@ L4 采样点（`t=845 s`）已为 0。即**四级突发的积压始终远低于 
 |---|---|---|---|---|---|
 | 1 | `loop()` P99 劣化 | < 20% | **无法测量** | **`NOT VERIFIED`** | 固件无 `loop()` 计时埋点，`uptime_ms` 仅为 `millis()`。**不得**用"命令响应正常/HTTP 200"冒充。 |
 | 2 | 内部 DRAM 峰值占用 | < 70% | **77.16%**（基线 77.08%） | **`FAIL`** | `(251 172 − 57 356) / 251 172`。★ 分母 = `ESP.getHeapSize()`（`internal.total`，本 boot 在 251 060–251 172 B 间浮动），**非** 327 680（那是 SRAM 总量，PlatformIO 的 40.5% 用的是它）。★ **基线即 77.08% > 70%** ⇒ **该阈值在本设备从未满足**（`G4-R4`），属阈值/口径缺陷，需人工裁决；就"突发是否使内存恶化"而言：**+0.09 pp / +300 B，且 `largest_free_block` 未变**。 |
-| 3 | `drop_unacked` | = 0 | **0**（6 次快照全 0；`seg_evicted_unacked` 亦 0） | **`PASS`** | `counters.drop_unacked`；并以 `acked_seq = 5377 + emit_total − 1` 恒等式佐证 **130/130 全部 ACK** |
+| 3 | `drop_unacked` | = 0 | **0**（6 次快照全 0；`seg_evicted_unacked` 亦 0） | **`PASS`** | `counters.drop_unacked`；并以 `acked_seq = 5377 + emit_total − 1` 恒等式佐证 **132/132 全部 ACK**（快照时刻 130/130，其余 2 条为快照自身产生的记录） |
 | 4 | `hovf`（空洞表溢出） | = 0 | **0**（6 次快照全 0） | **`PASS`** | `queue.hole_overflow` |
 | 5 | 段删除频率 | ≤ 1 次 / 10 min | **0 次 / 21.3 min** | **`PASS`** | `counters.seg_deleted` 全程恒 0（差分 0 / 1 280 s） |
 
