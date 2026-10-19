@@ -1,0 +1,58 @@
+# 测试后三方交叉核对（`2026-10-19T17:34:15Z`）
+
+## 1. 串口（原始流，`serial-trial.log`）
+
+```
+# open COM8 at 2026-10-19T17:22:25.828Z dtr=False rts=False  (NO RESET MODE)
+# closed at 2026-10-19T17:33:25.929Z total=12083 reset_markers=0
+```
+| 统计 | 值 |
+|---|---|
+| `ESP-ROM` 出现次数 | **0** |
+| `RESET/PANIC` 标记 | **0** |
+| `ack rx` | **7** |
+| `ack ok … covered=1/1` | **7**（最大 `r=2`） |
+| `ack timeout retry` | **0** |
+| panic / Guru Meditation | **0** |
+
+## 2. 设备侧终态（T+10 min，`uptime=3 783 837 ms`）
+
+```
+{"s":0,"c":"result","i":"g4tEND013231","t":1792431153,"data":{
+ "available":true,"uptime_ms":3783837,
+ "queue":{"used":0,"capacity":128,"inflight":0,"retry":0,"gave_up":0,"acked_seq":5514,"hole_overflow":0,"connected":1},
+ "boot_seq":22,
+ "flash":{"ready":1,"valid_segments":1,"total_records":24,"corrupt_count":1,"seq_reliable":1},
+ "counters":{"emit_total":138,"ring_drop":0,"drop_overflow":0,"drop_unacked":0,"seg_evicted_unacked":0,
+             "cloud_batch_sent":171,"cloud_records_sent":0,"cloud_retx":10,"cloud_ack_ok":162,
+             "cloud_ack_timeout":10,"cloud_ack_lost":0,"ack_ignored":7,"ack_partial":0,
+             "replay_records":24,"offline_skip":3283,"give_up":0,"seg_deleted":0,"self_degraded":0}},
+ "command":"system"}
+{"s":0,"c":"result","i":"g4tEND013231m","t":1792431161,"data":{
+ "internal":{"total":251172,"free":66956,"used":184216,"largest_free_block":51188,"minimum_free":57356},
+ "external":{"total":8385719,"free":7993863,"used":391856,"largest_free_block":7864308,"minimum_free":7984551}},
+ "command":"system"}
+```
+
+## 3. 云端
+
+| 项 | 测试前 | 测试后 | Δ |
+|---|---|---|---|
+| `log_history`（boot 22）行数 | 133 | **140** | **+7** |
+| `log_history` `maxseq` | 5 509 | **5 516** | +7 |
+| `log_history` 新增行 | — | `5510–5516`（`17:22:55 – 17:32:44`） | 7 行 = 7 条命令 |
+| EMQX `recv_cnt` / `send_cnt` | 712 / 844 | **748 / 887** | +36 / +43 |
+| EMQX `connected_at` | 16:29:35.064Z | **16:29:35.064Z** | **未变（无断连）** |
+| EMQX `mqueue_dropped` / `send_msg.dropped` / `recv_msg.dropped` | 0 / 0 / 0 | **0 / 0 / 0** | 0 |
+| `log_boot_watermark` | 见 `pre-test-baseline.txt` | `max_boot_seq=21`·`rewind_count=21`·`ambiguous_count=143`·`obs=664` | **无变化** |
+| `mqtt_messages`（`g4t%`） | — | down **7 ID / 14 行**、up **7 ID / 14 行** | **轻载 7/7 完整**（对照 `G4-R5` 突发窗口 ~9% 漏记） |
+
+## 4. 一致性判据（三条独立成立）
+
+1. **记账恒等式**：`acked_seq = 5377 + emit_total − 1` ⇒ 终态 `5 514 = 5 377 + 138 − 1` ✅
+2. **命令数 = 日志行数 = 串口 ACK 数**：`7 = 7 = 7` ✅
+3. **无复位**：`boot_seq` 恒 22、`ESP-ROM` 0 次、uptime 线性 `3 202 → 3 783 s`（+581 s ≈ 墙钟 583 s）✅
+
+## 5. 停止条件
+
+**全部未触发**（详见报告 §4）。本轮**未执行任何恢复动作**（未复位、未 rebase、未改配置）。

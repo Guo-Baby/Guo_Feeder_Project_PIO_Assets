@@ -1,0 +1,36 @@
+# 测试前基线（`2026-10-19T17:21:58Z`）
+
+## 外部基线（未触碰设备）
+
+| 项 | 值 |
+|---|---|
+| EMQX `connected` | `true` |
+| EMQX `connected_at` | `2026-10-19T16:29:35.064Z`（本轮全程未变 ⇒ 无断连） |
+| EMQX `recv_cnt` / `send_cnt` | `712` / `844` |
+| EMQX `recv_msg` / `send_msg` | `519` / `286` |
+| EMQX `mqueue_len` / `mqueue_dropped` | `0` / `0` |
+| EMQX `subscriptions_cnt` | `1` |
+| EMQX `inflight_cnt` / `awaiting_rel_cnt` | `0` / `0` |
+| `log_history`（boot 22） | `n=133` · `maxseq=5509` · `maxid=1876` · `last=17:10:25Z` |
+| `log_boot_watermark` | `max_boot_seq=21` · `epoch=2` · `prev_epoch_max=117` · `rewind_count=21` · `last_rewind_boot=20` · `ambiguous_count=143` · `obs_count=664` · `status=open` |
+
+## 设备侧基线（T0，串口读取，`uptime=3 202 s`）
+
+```
+{"s":0,"c":"result","i":"g4tT0012248","t":1792430571,"data":{
+ "available":true,"uptime_ms":3202095,
+ "queue":{"used":0,"capacity":128,"inflight":0,"retry":0,"gave_up":0,"acked_seq":5509,"hole_overflow":0,"connected":1},
+ "boot_seq":22,
+ "flash":{"ready":1,"valid_segments":1,"total_records":24,"corrupt_count":1,"seq_reliable":1},
+ "counters":{"emit_total":133,"ring_drop":0,"drop_overflow":0,"drop_unacked":0,"seg_evicted_unacked":0,
+             "cloud_batch_sent":166,"cloud_records_sent":0,"cloud_retx":10,"cloud_ack_ok":157,
+             "cloud_ack_timeout":10,"cloud_ack_lost":0,"ack_ignored":7,"ack_partial":0,
+             "replay_records":24,"offline_skip":3283,"give_up":0,"seg_deleted":0,"self_degraded":0}},
+ "command":"system"}
+{"s":0,"c":"result","i":"g4tT0012248m","t":1792430579,"data":{
+ "internal":{"total":251172,"free":66960,"used":184212,"largest_free_block":51188,"minimum_free":57356},
+ "external":{"total":8385719,"free":7993863,"used":391856,"largest_free_block":7864308,"minimum_free":7984551}},
+ "command":"system"}
+```
+
+★ `cloud_records_sent=0` 为 **`S-1` 无效字段**，不得解读为"未发送"；发送量以 `cloud_batch_sent=166` + `log_history` 行数为准。
