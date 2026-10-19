@@ -1,0 +1,37 @@
+# 烧录后设备与云端状态（`2026-10-19T16:51Z`）
+
+## 设备侧（串口 / `system.stats`，boot 22 第 1 281 s）
+
+| 项 | 值 |
+|---|---|
+| boot_seq | **22**（21 → 22，唯一一次重启） |
+| 本 boot 记录总数 `emit_total` | 132（`seq 5377–5508`） |
+| `acked_seq` | 5 508（= 5377 + 132 − 1，**130/130 及后续 2 条全部 ACK**） |
+| `queue` | `used=0` `inflight=0` `capacity=128` `hole_overflow=0` `connected=1` |
+| `flash` | `ready=1` `valid_segments=1` `total_records=24` `corrupt_count=1` `seq_reliable=1` |
+| `counters` | `ring_drop=0` `drop_overflow=0` **`drop_unacked=0`** `seg_evicted_unacked=0` `cloud_retx=9` `cloud_ack_ok=154` `cloud_ack_timeout=9` **`cloud_ack_lost=0`** `ack_ignored=7` `ack_partial=0` `replay_records=24` `offline_skip=3283` `give_up=0` **`seg_deleted=0`** `self_degraded=0` `cloud_records_sent=0`（★ 该字段无自增点，恒 0，见 `S-1`） |
+| `internal` | `total=251 172` `free=66 960` `used=184 212` `largest_free_block=51 188` `minimum_free=57 356` ⇒ 峰值占用 77.16% |
+| `external`(PSRAM) | `total=8 385 719` `free=7 993 863` `used=391 856` `minimum_free=7 984 551`（与烧录前逐字节一致） |
+| 崩溃/复位 | `ESP-ROM` 1 次（烧录启动）；`panic`/`Guru Meditation`/`abort()`/`stack overflow`/`alloc failed` **均 0**；`ack lost` / `GIVE_UP` 日志行 **0** |
+
+## 云端（D1 / EMQX）
+
+| 项 | 烧录前 | 烧录后（终态） |
+|---|---|---|
+| `log_boot_watermark.max_boot_seq` | 21 | **21（未推进，属 rebase 盲区设计行为，见 `G4-R6`）** |
+| `epoch` | 2 | 2（未 rebase） |
+| `prev_epoch_max` | 117 | 117 |
+| `ambiguous_count` | — | **141**（`boot=22` 落在 `(21,117]` 歧义带 ⇒ 只记"观测前进"） |
+| `rewind_count` | 0 | **21**（全部来自**合法补发** `boot=20` 的旧未 ACK 记录，`last_rewind_boot=20`） |
+| `obs_count` | 498 | 662 |
+| `observed_max_boot_seq` | 117 | 117（观测只增） |
+| `log_history`（`boot_seq=22`） | — | **132 行**，`seq 5377–5508`，与设备 `emit_total` 精确一致（零丢失） |
+| `mqtt_messages`（测试窗口 `16:30:00Z` 起） | — | down 210 行 / **105 个 ID**；up result 185 行 / **96 个 ID**；up ack 96 行 / **95 个 ID** ⇒ 上行漏记 ~9%，且有重复行（`G4-R5`） |
+| EMQX `dev_288485896ce4` | `connected_at=2026-10-18T20:21:42Z`，`recv_cnt=1547` | `connected_at=2026-10-19T16:29:35Z`（新会话），`recv_cnt=655` `send_cnt=782` `recv_msg=503` `send_msg=276` `mqueue_dropped=0` `send_msg.dropped=0` `recv_msg.dropped=0` `inflight_cnt=0` `awaiting_rel_cnt=0` `subscriptions_cnt=1` |
+
+## 结论
+
+- 设备侧：**boot 22 周期内 132 条记录全部被 ACK，零丢弃、零放弃、零复位**。
+- 云端：`log_history` 与设备一致（零丢失）；`mqtt_messages` 上行仍漏记并出现重复（`G4-R5`）。
+- `max_boot_seq` 停在 21、`rewind_count=21`、`ambiguous_count=141` **均非故障**，
+  是 rebase 后 `(21,117]` 盲区 + 旧记录合法补发的**预期结果**；**未做任何 rebase / 手写云端数据**。

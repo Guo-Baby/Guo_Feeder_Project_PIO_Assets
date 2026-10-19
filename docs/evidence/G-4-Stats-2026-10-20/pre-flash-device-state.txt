@@ -1,0 +1,21 @@
+# 烧录前设备与云端状态快照
+captured_utc=2026-10-19T16:23:35Z
+device_id=288485896ce4
+emqx_connected=true
+emqx_connected_at=2026-10-18T20:21:42.975+00:00
+emqx_recv_cnt=1547
+emqx_send_cnt=1585
+emqx_subscriptions_cnt=1
+emqx_mqueue_dropped=0
+emqx_mqueue_len=0
+log_history_max_id=1711
+log_history_latest_boot_seq=21
+log_history_latest_seq=5215
+log_history_latest_created=2026-10-19 16:07:17 UTC
+watermark_max_boot_seq=21
+watermark_epoch=2
+watermark_prev_epoch_max=117
+watermark_rewind_count=0
+watermark_status=open
+watermark_obs_count=498
+watermark_last_rebase_id=rb-20261019-0001
