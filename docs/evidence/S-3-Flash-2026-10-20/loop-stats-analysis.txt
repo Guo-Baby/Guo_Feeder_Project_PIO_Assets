@@ -1,0 +1,35 @@
+[S1 (t+56s)] elapsed=51649ms n=1476846 over=6 anom=0
+    恒等式 Σhist+over=1476846 vs n=1476846 -> PASS
+    p50桶=0 p99桶=0 (P99 ∈ [0,200) us) lt_gate=True
+    min=28 max=356377 mean=34 sat=0 crit_max=12us
+    coverage=0.999570  rate=28594/s (1/mean=29412/s, 偏差由 mean 的 µs 截断造成)
+[A (t+87s)] elapsed=82587ms n=2368959 over=10 anom=0
+    恒等式 Σhist+over=2368959 vs n=2368959 -> PASS
+    p50桶=0 p99桶=0 (P99 ∈ [0,200) us) lt_gate=True
+    min=28 max=356377 mean=34 sat=0 crit_max=12us
+    coverage=0.999723  rate=28684/s (1/mean=29412/s, 偏差由 mean 的 µs 截断造成)
+[B (t+198s)] elapsed=193372ms n=5452422 over=26 anom=0
+    恒等式 Σhist+over=5452422 vs n=5452422 -> PASS
+    p50桶=0 p99桶=0 (P99 ∈ [0,200) us) lt_gate=True
+    min=28 max=356377 mean=35 sat=0 crit_max=12us
+    coverage=0.999882  rate=28197/s (1/mean=28571/s, 偏差由 mean 的 µs 截断造成)
+[C (t+626s)] elapsed=621411ms n=17291753 over=29 anom=0
+    恒等式 Σhist+over=17291753 vs n=17291753 -> PASS
+    p50桶=0 p99桶=0 (P99 ∈ [0,200) us) lt_gate=True
+    min=28 max=356377 mean=35 sat=0 crit_max=12us
+    coverage=0.999964  rate=27827/s (1/mean=28571/s, 偏差由 mean 的 µs 截断造成)
+
+=== 窗口 A(87s) → B(198s) ===  (Δ110785 ms)
+  ΔN=3083463 Δover=16 Δsum=110784998us  ΣΔhist+Δover=3083463 -> PASS  负桶=none
+  rank99=3052629 -> P99 桶=0 => P99 < 200 us
+  Δmean=35us  coverage=1.000000  ≥20ms 样本=26 (0.0008%)
+
+=== 窗口 B(198s) → C(626s) ===  (Δ428039 ms)
+  ΔN=11839331 Δover=3 Δsum=428039671us  ΣΔhist+Δover=11839331 -> PASS  负桶=none
+  rank99=11720938 -> P99 桶=0 => P99 < 200 us
+  Δmean=36us  coverage=1.000002  ≥20ms 样本=3 (0.0000%)
+
+=== 10.36 分钟累积（boot 23 全周期）===
+  样本 17,291,753  覆盖 99.9964%  anomaly 0  sat 0
+  P50 < 200 us   P99 < 200 us   max 356.4 ms   (max/P99 > 1700 倍桶宽)
+  ≥20 ms 样本数 = 70 / 17,291,753 = 0.00040%
