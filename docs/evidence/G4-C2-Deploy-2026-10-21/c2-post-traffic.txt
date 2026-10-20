@@ -1,0 +1,177 @@
+# 采集时间: 2026-10-21 01:41:42 +0800（部署结束 01:39:08 后约 3 分钟）
+
+=== D-1 方向分布（探针后；期望 up/down/log/unknown，log 首次出现）===
+[
+  {
+    "results": [
+      {
+        "dir": "up",
+        "n": 2625
+      },
+      {
+        "dir": "down",
+        "n": 2249
+      },
+      {
+        "dir": "unknown",
+        "n": 876
+      },
+      {
+        "dir": "log",
+        "n": 1
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 4.6441
+      },
+      "duration": 4.6441,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 11506,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== D-2 $tenants 行归属（历史 1539 全 http_api；期望新增 1 行合法 12-hex）===
+[
+  {
+    "results": [
+      {
+        "device_id": "http_api",
+        "n": 1539,
+        "last_ms": 1792514438028
+      },
+      {
+        "device_id": "0b0077a7e402",
+        "n": 1,
+        "last_ms": 1792518021530
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.144
+      },
+      "duration": 2.144,
+      "changes": 0,
+      "last_row_id": 2075,
+      "changed_db": false,
+      "size_after": 2146304,
+      "rows_read": 7293,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== D-3 部署后新增行（created_at >= 部署时刻）===
+[
+  {
+    "results": [
+      {
+        "id": 5764,
+        "device_id": "unresolved",
+        "dir": "up",
+        "msg_id": "G4PROBE-P2-1792518018",
+        "topic": "guo_feeder/BADID/up"
+      },
+      {
+        "id": 5765,
+        "device_id": "0b0077a7e402",
+        "dir": "down",
+        "msg_id": "G4PROBE-P1T-1792518018",
+        "topic": "$tenants/n302933b/guo_feeder/0b0077a7e402/down"
+      },
+      {
+        "id": 5766,
+        "device_id": "0b0077a7e402",
+        "dir": "log",
+        "msg_id": "G4PROBE-P3-1792518018",
+        "topic": "guo_feeder/0b0077a7e402/log"
+      },
+      {
+        "id": 5767,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "G4PROBE-P4-1792518018",
+        "topic": "guo_feeder/0b0077a7e402/up"
+      },
+      {
+        "id": 5770,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "topic": "guo_feeder/0b0077a7e402/up"
+      },
+      {
+        "id": 5771,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "topic": "guo_feeder/0b0077a7e402/up"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.0312
+      },
+      "duration": 1.0312,
+      "changes": 0,
+      "last_row_id": 2075,
+      "changed_db": false,
+      "size_after": 2146304,
+      "rows_read": 5751,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== D-4 真实流量检查（排除 G4PROBE，期望 0 = 设备仍静默）===
+[
+  {
+    "results": [
+      {
+        "real_rows_since_deploy": 0,
+        "real_rows_10min": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.6965
+      },
+      "duration": 1.6965,
+      "changes": 0,
+      "last_row_id": 2075,
+      "changed_db": false,
+      "size_after": 2146304,
+      "rows_read": 11502,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

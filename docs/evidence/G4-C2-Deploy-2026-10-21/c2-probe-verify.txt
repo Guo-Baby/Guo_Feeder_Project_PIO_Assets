@@ -1,0 +1,139 @@
+# 采集时间: 2026-10-21 01:40:34 +0800
+# 探针批次 TS=1792518018 · 发出 8 次请求（P2×1 P1T×1 P3×1 P4×3 P5×2）
+# 期望落库 6 行：P2=1 P1T=1 P3=1 P4=1（去重）P5=2
+
+=== R-1 全部探针行（逐行）===
+[
+  {
+    "results": [
+      {
+        "id": 5764,
+        "device_id": "unresolved",
+        "dir": "up",
+        "msg_id": "G4PROBE-P2-1792518018",
+        "dkey": "a982b502abcb…",
+        "topic": "guo_feeder/BADID/up",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"i\\\":\\\"G4PROBE-P2-1792518018\\\",\\\"m\\\":\\\"G4PROBE-P2\\\"}\""
+      },
+      {
+        "id": 5765,
+        "device_id": "0b0077a7e402",
+        "dir": "down",
+        "msg_id": "G4PROBE-P1T-1792518018",
+        "dkey": "a1949641d43d…",
+        "topic": "$tenants/n302933b/guo_feeder/0b0077a7e402/down",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"i\\\":\\\"G4PROBE-P1T-1792518018\\\",\\\"m\\\":\\\"G4PROBE-P1T\\\"}\""
+      },
+      {
+        "id": 5766,
+        "device_id": "0b0077a7e402",
+        "dir": "log",
+        "msg_id": "G4PROBE-P3-1792518018",
+        "dkey": "71b155857cfc…",
+        "topic": "guo_feeder/0b0077a7e402/log",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"i\\\":\\\"G4PROBE-P3-1792518018\\\",\\\"m\\\":\\\"G4PROBE-P3\\\"}\""
+      },
+      {
+        "id": 5767,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "G4PROBE-P4-1792518018",
+        "dkey": "06bd92b33ac4…",
+        "topic": "guo_feeder/0b0077a7e402/up",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"i\\\":\\\"G4PROBE-P4-1792518018\\\",\\\"m\\\":\\\"G4PROBE-P4\\\"}\""
+      },
+      {
+        "id": 5770,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "dkey": "NULL",
+        "topic": "guo_feeder/0b0077a7e402/up",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"m\\\":\\\"G4PROBE-P5-1792518018\\\"}\""
+      },
+      {
+        "id": 5771,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "dkey": "NULL",
+        "topic": "guo_feeder/0b0077a7e402/up",
+        "raw_payload": "\"{\\\"c\\\":\\\"probe\\\",\\\"m\\\":\\\"G4PROBE-P5-1792518018\\\"}\""
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.167
+      },
+      "duration": 2.167,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5751,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== R-2 按探针标记汇总（期望 6 行）===
+[
+  {
+    "results": [
+      {
+        "probe": "P1T",
+        "n": 1,
+        "n_keys": 1,
+        "null_keys": 0
+      },
+      {
+        "probe": "P2",
+        "n": 1,
+        "n_keys": 1,
+        "null_keys": 0
+      },
+      {
+        "probe": "P3",
+        "n": 1,
+        "n_keys": 1,
+        "null_keys": 0
+      },
+      {
+        "probe": "P4",
+        "n": 1,
+        "n_keys": 1,
+        "null_keys": 0
+      },
+      {
+        "probe": "P5",
+        "n": 2,
+        "n_keys": 0,
+        "null_keys": 2
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.231
+      },
+      "duration": 2.231,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5757,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
