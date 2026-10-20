@@ -1,0 +1,31 @@
+# 采集时间: 2026-10-21 02:49:01 +0800
+# Q3: direction 列实际分布（解释 n_dir_not_whitelist=876 的来源）
+# Q4: 校验器 S2 = 按 topic 后缀 {/up,/down,/log} + 含 guo_feeder + payload 非空（★校验目标改为入站 topic，非 direction 列）
+
+=== Q3 direction 分布 ===
+        "dir": "up",
+        "n": 2625,
+        "min_id": 1,
+        "max_id": 5771
+        "dir": "down",
+        "n": 2252,
+        "min_id": 2,
+        "max_id": 5776
+        "dir": "unknown",
+        "n": 876,
+        "min_id": 2265,
+        "max_id": 3483
+        "dir": "log",
+        "n": 1,
+        "min_id": 5766,
+        "max_id": 5766
+
+=== Q4 影子校验 S2 ===
+        "n_total": 5754,
+        "n_suffix_up": 2625,
+        "n_suffix_down": 2252,
+        "n_suffix_log": 868,
+        "n_suffix_other": 9,
+        "n_reject_s2": 9
+      "changed_db": false,
+      "rows_written": 0,

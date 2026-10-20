@@ -1,0 +1,59 @@
+# 采集时间: 2026-10-21 02:49:25 +0800
+# Q5: S2 校验器唯一会拒绝的 9 行（空 topic）身份核实——判断是否为历史垃圾
+
+        "id": 2265,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-04 16:02:12",
+        "pl_head": "\"\""
+        "id": 2266,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-05 03:29:36",
+        "pl_head": "\"\""
+        "id": 2267,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-05 03:31:16",
+        "pl_head": "\"\""
+        "id": 2276,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-05 19:13:31",
+        "pl_head": "\"\""
+        "id": 2451,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-11 19:42:03",
+        "pl_head": "\"\""
+        "id": 2452,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-11 19:42:56",
+        "pl_head": "\"\""
+        "id": 2453,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-11 19:42:57",
+        "pl_head": "\"\""
+        "id": 2454,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-11 19:42:57",
+        "pl_head": "\"\""
+        "id": 2455,
+        "device_id": "",
+        "dir": "unknown",
+        "cmd": "",
+        "t_utc": "2026-10-11 19:43:12",
+        "pl_head": "\"\""
+      "changed_db": false,
+      "rows_written": 0,

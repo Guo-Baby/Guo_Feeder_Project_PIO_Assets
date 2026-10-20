@@ -1,0 +1,101 @@
+# 采集时间: 2026-10-21 03:13:38 +0800
+# 本地 miniflare D1（--local），**非生产**；仅验证 JS 行为与真实 SQL 语义
+
+[
+  {
+    "results": [
+      {
+        "id": 52,
+        "device_id": "unresolved",
+        "dir": "unknown",
+        "msg_id": "",
+        "dk": "NULL",
+        "topic": "$SYS/broker/uptime"
+      },
+      {
+        "id": 58,
+        "device_id": "0b0053a00e2e",
+        "dir": "up",
+        "msg_id": "S3L1-1792523599",
+        "dk": "KEY",
+        "topic": "guo_feeder/0b0053a00e2e/up"
+      },
+      {
+        "id": 59,
+        "device_id": "0b0053a00e2e",
+        "dir": "down",
+        "msg_id": "S3L2-1792523599",
+        "dk": "KEY",
+        "topic": "$tenants/n302933b/guo_feeder/0b0053a00e2e/down"
+      },
+      {
+        "id": 60,
+        "device_id": "0b0053a00e2e",
+        "dir": "log",
+        "msg_id": "S3L3-1792523599",
+        "dk": "KEY",
+        "topic": "$tenants/n302933b/guo_feeder/0b0053a00e2e/log"
+      },
+      {
+        "id": 61,
+        "device_id": "unresolved",
+        "dir": "unknown",
+        "msg_id": "S3O1-1792523599",
+        "dk": "KEY",
+        "topic": ""
+      },
+      {
+        "id": 62,
+        "device_id": "0b0053a00e2e",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "topic": "guo_feeder/0b0053a00e2e/up"
+      },
+      {
+        "id": 63,
+        "device_id": "unresolved",
+        "dir": "unknown",
+        "msg_id": "S3O3-1792523599",
+        "dk": "KEY",
+        "topic": "guo_feeder/0b0053a00e2e/upx"
+      },
+      {
+        "id": 64,
+        "device_id": "unresolved",
+        "dir": "unknown",
+        "msg_id": "S3O4-1792523599",
+        "dk": "KEY",
+        "topic": "$SYS/broker/uptime"
+      },
+      {
+        "id": 65,
+        "device_id": "0b0053a00e2e",
+        "dir": "up",
+        "msg_id": "S3DUP-1792523599",
+        "dk": "KEY",
+        "topic": "guo_feeder/0b0053a00e2e/up"
+      },
+      {
+        "id": 68,
+        "device_id": "0b0053a00e2e",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "topic": "guo_feeder/0b0053a00e2e/up"
+      },
+      {
+        "id": 69,
+        "device_id": "0b0053a00e2e",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "topic": "guo_feeder/0b0053a00e2e/up"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "duration": 1
+    }
+  }
+]

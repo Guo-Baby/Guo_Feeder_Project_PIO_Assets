@@ -1,0 +1,26 @@
+# 采集时间: 2026-10-21 03:51:28 +0800
+# 目的：证明 -DGF_HOMIE_ENABLED=1 真的改变了链接产物（不只改了命令行）
+
+baseline elf mtime: 2026-10-21 03:40:07.550219100 +0800
+homie-on elf mtime: 2026-10-21 03:48:57.671337900 +0800
+
+=== homie 相关符号数（nm | grep -c homie）===
+baseline(flag 默认0) = 2
+homie-on(flag=1)     = 21
+
+=== 仅 homie-on 出现的符号（前 15，证明实现在其中）===
+_Z14homie_id_validPKc
+_Z15homie_gate_findPKcS0_
+_Z16homie_desc_buildRK14HomieDescInputPjS2_
+_Z17homie_fnv1a32_u32jj
+_Z17homie_state_topicPKcPcj$part$6$constprop$24
+_Z18homie_desc_versionjj
+_Z18homie_float_to_strfiPcj
+_Z18homie_pending_findPK17HomiePendingTablePKc
+_Z20homie_float_decimalsPKc
+_Z21homie_parse_set_topicPKcS0_PcjS1_j
+_Z24homie_property_availablePK19DeviceModelPropertyPFbPKcPvES4_
+_ZL16homie_on_foreignPKcPKhjb
+_ZL17homie_log_outcome12HomieOutcome
+_ZL19homie_publish_statePKc
+_ZL20homie_publish_valuesb

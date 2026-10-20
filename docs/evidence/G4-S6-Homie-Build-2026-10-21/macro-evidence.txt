@@ -1,0 +1,14 @@
+# 采集时间: 2026-10-21 03:50:49 +0800
+# 证明 -DGF_HOMIE_ENABLED=1 真的进入了编译器命令行
+=== 实际编译命令（截取含该宏的一条）===
+-DGF_HOMIE_ENABLED=1
+-DGF_HOMIE_ENABLED=1
+命中次数: 386
+
+=== homie 目标文件（启用后）===
+136684 .pio/build_homie/esp32-s3-devkitc-1/src/homie/device_model.cpp.o
+266856 .pio/build_homie/esp32-s3-devkitc-1/src/homie/homie_bridge.cpp.o
+
+=== 基线构建对应目标文件（若仍在）===
+136684 .pio/build/esp32-s3-devkitc-1/src/homie/device_model.cpp.o
+266856 .pio/build/esp32-s3-devkitc-1/src/homie/homie_bridge.cpp.o

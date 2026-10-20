@@ -1,0 +1,9 @@
+# 单文件 A/B 复现（同一命令，仅切换 -DGF_HOMIE_ENABLED）
+stat: cannot stat '.pio/s6cmp/on.o': No such file or directory
+on.o  size=
+stat: cannot stat '.pio/s6cmp/off.o': No such file or directory
+off.o size=
+on  符号数=0
+off 符号数=0
+
+=== 仅 on 存在的 homie 符号（前 12）===
