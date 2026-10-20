@@ -142,7 +142,12 @@ void memwatch_init()
     s_mw.warmup_done_ms = 0;
     s_mw.boot_ms = (uint32_t)millis();
     s_mw.inited = 1;
-    memset(&s_mw.alloc, 0, sizeof(s_mw.alloc));
+
+    // ★ `2026-10-20` 修复：**不**清零 `s_mw.alloc`。
+    //   理由（真机实测暴露的缺陷）：`memwatch_init()` 在 `setup()` **末尾**调用，
+    //   而 LogManager / CapabilityRegistry / ConfigManager 的开机分配**都发生在它之前**。
+    //   清零会把"开机期分配失败"这条最有价值的证据直接抹掉（实测 `calls=0`）。
+    //   本模块的统计是"本 boot 累计"，静态存储天然从 0 起，无需清零。
 
     // H-5：探测结果**不跨 boot 重用**（口径验证属"本次固件/本次 boot"的证据）
     s_mw.probe_unit = 0;
@@ -292,10 +297,9 @@ bool memwatch_get(MemWatchInfo &out)
     out.dram_drift = memwatch_drift_calc(s_snap, n, MEMWATCH_MIN_SPAN_MS, 0u);
 
     // PSRAM 漂移：同一算法换字段（`use_psram=1`）⇒ **零额外栈/静态内存**
-    if (out.psram_total > 0u && n >= 1u)
-    {
-        out.psram_drift = memwatch_drift_calc(s_snap, n, MEMWATCH_MIN_SPAN_MS, 1u);
-    }
+    // ★ `2026-10-20` 修复：**无条件**计算。原先 `n>=1` 才计算，
+    //   导致 `n=0` 时 `psram_drift` 保持全零 ⇒ `reason=ok` + `valid=false` 自相矛盾。
+    out.psram_drift = memwatch_drift_calc(s_snap, n, MEMWATCH_MIN_SPAN_MS, 1u);
 
     // ---- H-4 ----
     out.alloc = alloc;
@@ -329,9 +333,33 @@ bool memwatch_get(MemWatchInfo &out)
         out.stack.probe_delta = probe_delta;
         out.stack.probe_depth = probe_depth;
 
-        // `probe_unit`：0 = 未验证；1 = 已确认为字节；2 = 已确认为字数
-        out.stack.unit_verified = (probe_unit != 0u) ? 1u : 0u;
-        out.stack.unit_is_bytes = (probe_unit == 1u) ? 1u : 0u;
+        // ---- 口径判定：算术排除优先，其次取双步探测结论 ----
+        //
+        // ① 算术：若 `raw × 4 > stack`，则"字数口径"物理不可能 ⇒ **必然是字节**。
+        //    真机样例：raw=9724 / stack=16384 ⇒ 38 896 > 16 384 ⇒ 字节（确定）。
+        // ② 算术无法排除（`raw × 4 ≤ stack`）⇒ 用 `mw probe` 的双步结果。
+        // ③ 两者都没有 ⇒ `unit_verified=0`，派生值一律不输出。
+        const uint8_t words_possible =
+            memwatch_stack_words_possible(hwm_raw, stack_bytes);
+
+        if (words_possible == 0u)
+        {
+            out.stack.unit_verified = 1u;
+            out.stack.unit_is_bytes = 1u;
+            out.stack.unit_source = 1u;      // arithmetic
+        }
+        else if (probe_unit != 0u)
+        {
+            out.stack.unit_verified = 1u;
+            out.stack.unit_is_bytes = (probe_unit == 1u) ? 1u : 0u;
+            out.stack.unit_source = 2u;      // probe
+        }
+        else
+        {
+            out.stack.unit_verified = 0u;
+            out.stack.unit_is_bytes = 0u;
+            out.stack.unit_source = 0u;
+        }
 
         // 只有"口径已确认 + 长度自洽"才给出派生值；否则保持 0（= 未知，不是"用满了"）
         if (out.stack.unit_verified != 0u && out.stack.consistent != 0u)
@@ -392,34 +420,45 @@ uint8_t memwatch_stack_probe(uint32_t depth_bytes)
 
     const uint32_t stack_bytes = MEMWATCH_LOOPTASK_STACK_BYTES;
 
-    // ---- 安全钳位：最少 1 KB，最多 栈的一半（留足余量给中断与调用链）----
+    // ★ 双步：d1 先刷新历史低点，d2 = d1 + PROBE_STEP 再深一步。
+    //   两次高水位之差恒等于深度增量（与当前深度无关）⇒ 可用于判口径。
+    const uint32_t PROBE_STEP = 2048u;
+    const uint32_t MAX_TOTAL  = stack_bytes / 2u;
+
+    // ---- 安全钳位：最少 1 KB；两步之和不超过 栈的一半 ----
     uint32_t depth = depth_bytes;
 
-    if (depth < 1024u)              depth = 1024u;
-    if (depth > stack_bytes / 2u)   depth = stack_bytes / 2u;
+    if (MAX_TOTAL <= PROBE_STEP + 1024u)
+    {
+        return 3u;    // 栈太小，无法做双步（拒绝执行，不冒险）
+    }
 
-    uint32_t levels = depth / PROBE_FRAME_BYTES;
-    if (levels == 0u) levels = 1u;
+    if (depth < 1024u)                    depth = 1024u;
+    if (depth > MAX_TOTAL - PROBE_STEP)   depth = MAX_TOTAL - PROBE_STEP;
 
-    const uint32_t used_bytes = levels * PROBE_FRAME_BYTES;
+    const uint32_t levels1 = (depth / PROBE_FRAME_BYTES) | 1u;                 // 至少 1 层
+    const uint32_t levels2 = ((depth + PROBE_STEP) / PROBE_FRAME_BYTES) | 1u;
 
-    const uint32_t before = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+    const uint32_t used1 = levels1 * PROBE_FRAME_BYTES;
+    const uint32_t used2 = levels2 * PROBE_FRAME_BYTES;
 
-    probe_recurse(levels);
+    probe_recurse(levels1);
+    const uint32_t hwm1 = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
 
-    const uint32_t after = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+    probe_recurse(levels2);
+    const uint32_t hwm2 = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
 
-    // 高水位是"历史最低"，探测只会让它**变小**（或不变）
-    const uint32_t delta = (before > after) ? (before - after) : 0u;
+    // 第二次更深 ⇒ hwm2 应更小（或相等：若两次都没刷新历史低点）
+    const uint32_t delta = (hwm1 > hwm2) ? (hwm1 - hwm2) : 0u;
 
-    // 容差：取深度的 40%（递归帧对齐、中断栈叠加、编译器的额外寄存器保存）
-    const uint32_t tol = used_bytes * 4u / 10u;
+    const uint32_t step = used2 - used1;          // 实际深度增量
+    const uint32_t tol  = step * 4u / 10u;        // 容差 40%
 
-    const uint8_t verdict = memwatch_stack_delta_implies_bytes(delta, used_bytes, tol);
+    const uint8_t verdict = memwatch_stack_delta_implies_bytes(delta, step, tol);
 
     portENTER_CRITICAL(&s_mw_mux);
     s_mw.probe_delta = delta;
-    s_mw.probe_depth = used_bytes;
+    s_mw.probe_depth = used2;
     s_mw.probe_unit  = (verdict == 1u) ? 1u : ((verdict == 0u) ? 2u : 0u);
     portEXIT_CRITICAL(&s_mw_mux);
 

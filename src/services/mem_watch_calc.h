@@ -201,33 +201,62 @@ static inline uint8_t memwatch_stack_consistent(uint32_t raw, uint32_t stack_byt
 }
 
 /**
- * 由"受控深栈探测"的**下降量**反推口径。
+ * "字数口径"是否**物理可能**。
  *
- * @param delta_raw   探测前后 `uxTaskGetStackHighWaterMark()` 的差值（原始单位）
- * @param depth_bytes 递归实际消耗的字节数（探针内以 `volatile` 缓冲精确控制）
- * @param tol_bytes   允许误差（编译器/中断栈叠加；建议 ≥ 25% depth）
+ * 若 `raw` 是字数，则剩余字节 = `raw × 4`；而任何时刻剩余字节 ≤ 栈总大小 ⇒
+ *   `raw × 4 ≤ stack_bytes` 是"字数口径"的**必要条件**。
  *
- * @returns 1 = 字节口径（delta ≈ depth）；0 = 字数口径（delta ≈ depth/4）；
- *          2 = 无法判定（delta 太小或超出容差）
+ * ★ 这条判据是**有效的**（与上面那条不同）：
+ *   · 返回 0 ⇒ 字数口径**不可能** ⇒ **必然是字节口径**（结论确定，无需实测）
+ *   · 返回 1 ⇒ 两种口径都可能 ⇒ **有歧义** ⇒ 交给 `mw probe` 实测
+ *
+ * 真机样例（`2026-10-20` · `loopTask`）：`raw=9724`，`stack=16384`
+ *   ⇒ `9724 × 4 = 38 896 > 16 384` ⇒ 字数口径不可能 ⇒ **字节口径确定**。
+ */
+static inline uint8_t memwatch_stack_words_possible(uint32_t raw, uint32_t stack_bytes)
+{
+    if (stack_bytes == 0u) return 1u;                 // 无基准 ⇒ 不排除任何可能
+    return (raw <= (stack_bytes / 4u)) ? 1u : 0u;
+}
+
+/**
+ * 由"**双步**深栈探测"的高水位差反推口径。
+ *
+ * ★ 为什么必须"双步"（第一版单步模型因此失败，真机实测暴露）：
+ *   高水位记的是"历史最深点"。单步探测的下降量 =
+ *     `depth − (当前深度 − 历史最深深度)`，只有当探测确实刷新了历史最深点时
+ *     才等于 `depth` —— 否则为 0 或部分值。
+ *   实测：`mw probe 4096` ⇒ delta=0（未刷新历史低点）；`mw probe 8192` ⇒ delta=3840
+ *   （既非 8192 也非 2048）⇒ 单步模型**不可用**。
+ *
+ *   双步则恒定：先探 `d1`（刷新低点），再探 `d2 = d1 + step`。
+ *   第二探必然比第一探再深 `step` ⇒ `hwm(d1) − hwm(d2) == step`（字节口径）
+ *   或 `step/4`（字数口径），**与当前深度、历史低点都无关**。
+ *
+ * @param delta_raw 两次探测高水位之差（`hwm(d1) − hwm(d2)`，原始单位）
+ * @param step_bytes 两次探测的深度增量（B）
+ * @param tol_bytes  容差（建议 = step 的 25%~40%）
+ *
+ * @returns 1 = 字节口径；0 = 字数口径；2 = 无法判定
  */
 static inline uint8_t memwatch_stack_delta_implies_bytes(uint32_t delta_raw,
-                                                         uint32_t depth_bytes,
+                                                         uint32_t step_bytes,
                                                          uint32_t tol_bytes)
 {
-    if (depth_bytes == 0u) return 2u;
-    if (delta_raw == 0u)   return 2u;
+    if (step_bytes == 0u) return 2u;
+    if (delta_raw == 0u)  return 2u;
 
-    const uint32_t d = depth_bytes;
-    const uint32_t lo = (d > tol_bytes) ? (d - tol_bytes) : 0u;
-    const uint32_t hi = d + tol_bytes;
+    const uint32_t lo = (step_bytes > tol_bytes) ? (step_bytes - tol_bytes) : 0u;
+    const uint32_t hi = step_bytes + tol_bytes;
 
     if (delta_raw >= lo && delta_raw <= hi) return 1u;          // 字节口径
 
-    const uint32_t q = d / 4u;
-    const uint32_t qlo = (q > (tol_bytes / 4u)) ? (q - tol_bytes / 4u) : 0u;
-    const uint32_t qhi = q + tol_bytes / 4u;
+    const uint32_t q = step_bytes / 4u;
+    const uint32_t tol_q = tol_bytes / 4u;
+    const uint32_t qlo = (q > tol_q) ? (q - tol_q) : 0u;
+    const uint32_t qhi = q + tol_q;
 
-    if (delta_raw >= qlo && delta_raw <= qhi) return 0u;        // 字数口径
+    if (q > 0u && delta_raw >= qlo && delta_raw <= qhi) return 0u;   // 字数口径
 
     return 2u;
 }

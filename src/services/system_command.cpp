@@ -1037,6 +1037,12 @@ bool syscmd_memwatch(JsonDocument &out)
     st["unit_verified"] = (mw.stack.unit_verified != 0u);
     st["unit"] = (mw.stack.unit_verified == 0u) ? "unverified"
                : ((mw.stack.unit_is_bytes != 0u) ? "bytes" : "words");
+    // 口径结论的**来源**：1 = 算术排除（raw×4 > stack ⇒ 字数不可能）；
+    //                    2 = 双步深栈探测；0 = 未验证
+    st["unit_source"] = (mw.stack.unit_source == 1u) ? "arithmetic_exclusion"
+                      : (mw.stack.unit_source == 2u) ? "stack_probe"
+                      : "none";
+    st["words_possible"] = (mw.stack.hwm_raw <= (mw.stack.stack_bytes / 4u));
     st["probe_depth_bytes"] = mw.stack.probe_depth;
 
     // ★ 派生值只在"口径已验证 + 长度自洽"时出现；

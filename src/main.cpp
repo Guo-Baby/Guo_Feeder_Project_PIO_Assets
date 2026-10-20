@@ -2419,13 +2419,22 @@ void mw_console(const String &cmd)
                       (unsigned)mw.alloc.last_fail_size);
 
         Serial.printf("[MW] stack task=%s stack=%u hwm_raw=%u consistent=%d "
-                      "unit_verified=%d unit=%s probe_delta=%u probe_depth=%u\n",
+                      "unit_verified=%d unit=%s src=%u probe_delta=%u probe_depth=%u\n",
                       mw.stack.name, (unsigned)mw.stack.stack_bytes,
                       (unsigned)mw.stack.hwm_raw, (int)mw.stack.consistent,
                       (int)mw.stack.unit_verified,
                       (mw.stack.unit_verified == 0) ? "unverified"
                         : ((mw.stack.unit_is_bytes != 0) ? "bytes" : "words"),
+                      (unsigned)mw.stack.unit_source,
                       (unsigned)mw.stack.probe_delta, (unsigned)mw.stack.probe_depth);
+
+        if (mw.stack.unit_verified != 0)
+        {
+            Serial.printf("[MW] stack derived: hwm_bytes=%u used_bytes=%u (%u%% of stack)\n",
+                          (unsigned)mw.stack.hwm_bytes, (unsigned)mw.stack.used_bytes,
+                          (unsigned)((mw.stack.stack_bytes > 0)
+                             ? (mw.stack.used_bytes * 100u / mw.stack.stack_bytes) : 0u));
+        }
         return;
     }
 
