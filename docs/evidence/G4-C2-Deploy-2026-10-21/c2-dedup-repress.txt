@@ -1,0 +1,7 @@
+# 采集时间: 2026-10-21 01:40:55 +0800
+# P-4 重复投递压力：再发 2 次与首次**逐字节相同**的 payload（同一 msg_id）
+# 期望：行数仍 1、HTTP 200（唯一索引 DO NOTHING，不是抛错）
+
+repress#1 http=200 body='OK'
+repress#2 http=200 body='OK'
+done at 2026-10-21 01:40:58 +0800

@@ -1,0 +1,220 @@
+# 采集时间: 2026-10-21 01:41:05 +0800
+
+=== C-1 P-4 复压后行数（期望仍 1）===
+[
+  {
+    "results": [
+      {
+        "p4_rows": 1,
+        "p4_min_id": 5767
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.0073
+      },
+      "duration": 2.0073,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5751,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-2 I-1 dedup_key 重复组（期望 0）===
+[
+  {
+    "results": [
+      {
+        "dup_key_groups": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2188
+      },
+      "duration": 0.2188,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 4,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-3 I-2 窗口内有 msg_id 却无键（期望 0）===
+[
+  {
+    "results": [
+      {
+        "null_key": 0,
+        "total": 4
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.096
+      },
+      "duration": 1.096,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5751,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-4 V-1 复检（C-1 结构须仍在，期望 1/1/1/1）===
+[
+  {
+    "results": [
+      {
+        "col": 1,
+        "idx": 1,
+        "partial_idx": 1,
+        "reg7": 1
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.5231
+      },
+      "duration": 0.5231,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 100,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-5 表规模 + id 缺口 ===
+[
+  {
+    "results": [
+      {
+        "n": 5751,
+        "mn": 1,
+        "mx": 5771,
+        "id_gap": 20,
+        "keyed": 4
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.4096
+      },
+      "duration": 1.4096,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5751,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-6 合成设备是否新建 device 行（预期变化登记）===
+[
+  {
+    "results": [
+      {
+        "device_id": "0b0077a7e402",
+        "state": "CLAIM_PENDING",
+        "last_seen": 1792518058
+      },
+      {
+        "device_id": "288485896ce4",
+        "state": "REGISTERED",
+        "last_seen": 1792509817
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2321
+      },
+      "duration": 0.2321,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 5,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== C-7 log_history 近 30 min（判据 4 参考）===
+[
+  {
+    "results": [
+      {
+        "n_30min": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.5717
+      },
+      "duration": 0.5717,
+      "changes": 0,
+      "last_row_id": 5771,
+      "changed_db": false,
+      "size_after": 2142208,
+      "rows_read": 814,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

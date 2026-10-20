@@ -1,0 +1,68 @@
+# 采集时间: 2026-10-21 01:35:10 +0800
+# SQLite unixepoch() = 1792517710（宿主时间，用于交叉核对）
+=== L-1 近 30 min / 120 min mqtt_messages 行数 ===
+[
+  {
+    "results": [
+      {
+        "n_30min": 0,
+        "n_120min": 2,
+        "max_ms": 1792514438028,
+        "age_s": 3275
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 3.777
+      },
+      "duration": 3.777,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 22980,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+=== L-2 近 120 min 10 分钟桶 ===
+[
+  {
+    "results": [
+      {
+        "bucket_s": 1792514400,
+        "n": 1,
+        "n_echo": 1
+      },
+      {
+        "bucket_s": 1792513800,
+        "n": 1,
+        "n_echo": 1
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.0918
+      },
+      "duration": 2.0918,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 5747,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

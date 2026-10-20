@@ -1,0 +1,319 @@
+# 部署前基线采集: 2026-10-21 01:34:36 +0800
+
+=== S-1 源码制品（commit + 关键文件 sha256）===
+HEAD=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+origin/main=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+worktree_dirty=0
+9e53c5e2e3506be4fff7724474a26cbef811c612b90df5d7b541a74d1b451bca *src/index.js
+cf1c6e44ea0ae8b967e6d0add98597893527dfd5977e02f2493097e967b16712 *src/mqtt-dedup.js
+ffab4a7eafb3a85c134288a1b9904d3bd7125c513c5202bfaad4549e97a19c86 *src/device-registry.js
+2e08227cc0e6e18e9ac2fe6044563c962049b801e2a72e7fc6333d5b67bb8e15 *src/history-ingest.js
+
+=== S-2 mqtt_messages 总览 ===
+[
+  {
+    "results": [
+      {
+        "n": 5745,
+        "mn": 1,
+        "mx": 5763,
+        "keyed": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 7.9888
+      },
+      "duration": 7.9888,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 5745,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-3 方向分布 ===
+[
+  {
+    "results": [
+      {
+        "dir": "up",
+        "n": 2621
+      },
+      {
+        "dir": "down",
+        "n": 2248
+      },
+      {
+        "dir": "unknown",
+        "n": 876
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 4.5954
+      },
+      "duration": 4.5954,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 11493,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-4 $tenants 行归属（部署前应全为 http_api）===
+[
+  {
+    "results": [
+      {
+        "device_id": "http_api",
+        "n": 1539,
+        "last_ms": 1792514438028
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.0839
+      },
+      "duration": 2.0839,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 7285,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-5 plain 行归属（含预期会变成 unresolved 的 clientid 回落）===
+[
+  {
+    "results": [
+      {
+        "device_id": "288485896ce4",
+        "n": 1906
+      },
+      {
+        "device_id": "guo_feeder_001",
+        "n": 1660
+      },
+      {
+        "device_id": "mqttx_9c9a7813",
+        "n": 149
+      },
+      {
+        "device_id": "phone",
+        "n": 97
+      },
+      {
+        "device_id": "wb_log_mirror",
+        "n": 88
+      },
+      {
+        "device_id": "dev_288485896ce4",
+        "n": 77
+      },
+      {
+        "device_id": "cloud_api",
+        "n": 43
+      },
+      {
+        "device_id": "wb_p15_ackprobe",
+        "n": 20
+      },
+      {
+        "device_id": "sumsang",
+        "n": 17
+      },
+      {
+        "device_id": "",
+        "n": 12
+      },
+      {
+        "device_id": "wb_cfgtest_1790441588",
+        "n": 10
+      },
+      {
+        "device_id": "wb_cfgtest_1790441350",
+        "n": 10
+      },
+      {
+        "device_id": "a5a0000000a1",
+        "n": 10
+      },
+      {
+        "device_id": "workbuddy_sys_1788184582",
+        "n": 5
+      },
+      {
+        "device_id": "hd1_run_1791966934",
+        "n": 4
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 5.7232
+      },
+      "duration": 5.7232,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 10023,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-6 device 表 ===
+[
+  {
+    "results": [
+      {
+        "n_devices": 9,
+        "max_last_seen": 1792509817
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.9121
+      },
+      "duration": 0.9121,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 9,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-7 log_history 近 30 min 行数（失败判据 4 的基线）===
+[
+  {
+    "results": [
+      {
+        "n_30min": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.186
+      },
+      "duration": 1.186,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 814,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-8 最新 5 行（时间参考）===
+[
+  {
+    "results": [
+      {
+        "id": 5763,
+        "device_id": "http_api",
+        "dir": "down",
+        "created_at": 1792514438028,
+        "msg_id": "ack:25:6160"
+      },
+      {
+        "id": 5762,
+        "device_id": "http_api",
+        "dir": "down",
+        "created_at": 1792514399443,
+        "msg_id": "ack:25:6159"
+      },
+      {
+        "id": 5761,
+        "device_id": "http_api",
+        "dir": "down",
+        "created_at": 1792510219288,
+        "msg_id": "ack:25:6158"
+      },
+      {
+        "id": 5760,
+        "device_id": "http_api",
+        "dir": "down",
+        "created_at": 1792510219066,
+        "msg_id": "ack:25:6158"
+      },
+      {
+        "id": 5759,
+        "device_id": "http_api",
+        "dir": "down",
+        "created_at": 1792510181345,
+        "msg_id": "ack:25:6158"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2582
+      },
+      "duration": 0.2582,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 5,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== S-9 采集结束: 2026-10-21 01:34:57 +0800 ===

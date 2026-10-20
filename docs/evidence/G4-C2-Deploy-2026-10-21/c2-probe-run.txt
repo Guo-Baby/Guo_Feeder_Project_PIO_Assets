@@ -1,0 +1,34 @@
+# 探针开始: 2026-10-21 01:39:48 +0800  TS=1792517988
+# 入口: https://guo-feeder-pagesdev.pages.dev/api/webhook
+# 合成设备: 0b0077a7e402
+
+--- P-2 非法设备段（期望 device_id=unresolved / reason=topic_conflict） ---
+topic   = guo_feeder/BADID/up
+payload = {"c":"probe","i":"G4PROBE-P2-1792517988","m":"G4PROBE-P2"}   (x1)
+  send#1 http=403 body='error code: 1010\n'
+
+--- P-1'-SYN $tenants 下行（期望 device_id=0b0077a7e402，不是 http_api） ---
+topic   = $tenants/n302933b/guo_feeder/0b0077a7e402/down
+payload = {"c":"probe","i":"G4PROBE-P1T-1792517988","m":"G4PROBE-P1T"}   (x1)
+  send#1 http=403 body='error code: 1010\n'
+
+--- P-3'-SYN log 方向（期望 direction=log，不是 unknown） ---
+topic   = guo_feeder/0b0077a7e402/log
+payload = {"c":"probe","i":"G4PROBE-P3-1792517988","m":"G4PROBE-P3"}   (x1)
+  send#1 http=403 body='error code: 1010\n'
+
+--- P-4 去重（同 payload 连发 3 次，期望 D1 只有 1 行） ---
+topic   = guo_feeder/0b0077a7e402/up
+payload = {"c":"probe","i":"G4PROBE-P4-1792517988","m":"G4PROBE-P4"}   (x3)
+  send#1 http=403 body='error code: 1010\n'
+  send#2 http=403 body='error code: 1010\n'
+  send#3 http=-1 body='EXC:<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1032)>'
+
+--- P-5 无 msg_id（同 payload 连发 2 次，期望 2 行且 dedup_key 均 NULL） ---
+topic   = guo_feeder/0b0077a7e402/up
+payload = {"c":"probe","m":"G4PROBE-P5-1792517988"}   (x2)
+  send#1 http=403 body='error code: 1010\n'
+  send#2 http=403 body='error code: 1010\n'
+
+# TS=1792517988  （查询用：LIKE '%G4PROBE-%' 或 msg_id LIKE '%-1792517988'）
+# 探针结束: 2026-10-21 01:40:00 +0800

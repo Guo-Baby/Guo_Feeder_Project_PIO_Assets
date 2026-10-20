@@ -1,0 +1,27 @@
+# C-2 部署记录
+# 命令: wrangler deploy
+# 工作目录: /d/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
+# 部署前源码: HEAD=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2 worktree_dirty=0
+# 部署前线上: deployment=c666aeeb-150e-4b10-a155-59a13bdaab0b version=826332ed-3a73-42c4-a090-a5bf737dc210 (v47, 100%)
+# 回滚目标: deployment=c28f2eba-2f5e-49c0-8205-206b15d9858e version=f9647a00-e079-4de9-bcf1-8c9bc5344185 (v46)
+# 开始时间: 2026-10-21 01:38:56 +0800
+----------------------------------------
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Total Upload: 157.33 KiB / gzip: 39.83 KiB
+Worker Startup Time: 2 ms
+Your Worker has access to the following bindings:
+Binding                                 Resource                  
+env.guofeeder_DB (guofeeder)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")            Environment Variable      
+
+Uploaded guo-feeder-api (3.96 sec)
+Deployed guo-feeder-api triggers (1.39 sec)
+  https://guo-feeder-api.guobaby.workers.dev
+  schedule: 0 3 * * *
+Current Version ID: d7fcd4f3-c9f3-4a7c-ba2f-c7e3bce74016
+----------------------------------------
+# 结束时间: 2026-10-21 01:39:08 +0800
+# deploy_exit=0
+# ★ 部署成功 ≠ 生效；生效只能由 P-1'/P-1''/P-3'/P-2/P-4/P-5 的行为证据判定

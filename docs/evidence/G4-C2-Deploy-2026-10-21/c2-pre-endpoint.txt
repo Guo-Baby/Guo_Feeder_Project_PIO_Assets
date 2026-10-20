@@ -1,0 +1,7 @@
+# 采集时间: 2026-10-21 01:38:45 +0800
+# 网络事实：workers.dev 在本沙箱 DNS 解析到 202.160.128.40（污染），直连超时、沙箱代理 502
+#            ⇒ 探针只能走 Pages 中转 guo-feeder-pagesdev.pages.dev（直连 200）
+# 本段仅 GET，零写入
+
+pages_root      = </html> [200]
+pages_webhook   = MQTT Router OK [200]

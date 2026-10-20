@@ -1,0 +1,12 @@
+# 采集时间: 2026-10-21 01:36:11 +0800
+# 目的：确认本地 .dev.vars 的 WEBHOOK_SECRET 是否与生产一致（零写入探测）
+# 判据：key 正确 ⇒ 400（cloud_api 在 /api/ingest 被拒，此分支在写库前 return）；key 错误 ⇒ 401
+# 目标: https://guo-feeder-api.guobaby.workers.dev/api/ingest
+
+with_key_http_code = 000
+with_key_body      = cat: /tmp/c2probe_body_1.txt: No such file or directory
+
+no_key_http_code   = 000
+no_key_body        = cat: /tmp/c2probe_body_2.txt: No such file or directory
+
+get_root_code      = 000
