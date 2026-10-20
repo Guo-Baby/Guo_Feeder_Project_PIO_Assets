@@ -1,0 +1,67 @@
+# 0007 正式 flow 端到端复现（隔离 persist: .wrangler/g4c1_repro_000821）
+# 2026-10-21 00:08:22
+
+$ d1 execute --file test/real_d1/fixtures/mqtt_messages.sql
+    }
+  }
+]
+
+$ 预置 2 行【完全重复】历史数据（模拟 0007 之前的库）
+    }
+  }
+]
+
+$ d1 migrations apply guofeeder --local --persist-to <scratch>
+│ 0007_mqtt_messages_dedup.sql      │
+🚣 15 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 3 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 8 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0003_p3_history_tables.sql        │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 4 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0003_p3_history_tables.sql        │ ✅     │
+│ 0004_log_conflict.sql             │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 4 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0003_p3_history_tables.sql        │ ✅     │
+│ 0004_log_conflict.sql             │ ✅     │
+│ 0005_log_boot_watermark.sql       │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 11 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0003_p3_history_tables.sql        │ ✅     │
+│ 0004_log_conflict.sql             │ ✅     │
+│ 0005_log_boot_watermark.sql       │ ✅     │
+│ 0006_log_boot_watermark_epoch.sql │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ 🕒️    │
+🚣 3 commands executed successfully.
+│ 0001_p1_device_lifecycle.sql      │ ✅     │
+│ 0002_p1_hard_retirement.sql       │ ✅     │
+│ 0003_p3_history_tables.sql        │ ✅     │
+│ 0004_log_conflict.sql             │ ✅     │
+│ 0005_log_boot_watermark.sql       │ ✅     │
+│ 0006_log_boot_watermark_epoch.sql │ ✅     │
+│ 0007_mqtt_messages_dedup.sql      │ ✅     │
+
+$ V-1 结构四项
+        "col": 1,
+        "idx": 1,
+        "partial_idx": 1,
+        "reg": 1
+
+$ V-2 历史行未被改动（2 行重复仍在，全部 NULL 键）
+        "rows": 2,
+        "nullkeys": 2,
+        "uniq_msg_id": 1

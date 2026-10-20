@@ -1,0 +1,35 @@
+# G4 C-1 本地实测记录（隔离 persist，未接触远端 D1 / 线上 Worker）
+# 生成时间: 2026-10-21 00:08:04    
+
+=== E-1：正式流程在【缺表】库上 apply（0007 必然失败）===
+"name": "0001_p1_device_lifecycle.sql"
+"name": "0002_p1_hard_retirement.sql"
+"name": "0003_p3_history_tables.sql"
+"name": "0004_log_conflict.sql"
+"name": "0005_log_boot_watermark.sql"
+"name": "0006_log_boot_watermark_epoch.sql"
+--- E-1 结论：仅 0001-0006 已登记；0007 未登记（apply 时 no such table: mqtt_messages）
+
+=== E-2：正式流程在【有表】库上 apply（fixture 同构 + 预置 2 行完全重复）===
+-- d1_migrations --
+"name": "0001_p1_device_lifecycle.sql"
+"name": "0002_p1_hard_retirement.sql"
+"name": "0003_p3_history_tables.sql"
+"name": "0004_log_conflict.sql"
+"name": "0005_log_boot_watermark.sql"
+"name": "0006_log_boot_watermark_epoch.sql"
+"name": "0007_mqtt_messages_dedup.sql"
+-- V-1 结构四项（期望 col=1 idx=1 partial_idx=1 reg=1）--
+        "col": 1,
+        "idx": 1,
+        "partial_idx": 1,
+        "reg": 1
+-- V-2 历史行（期望 rows=2 nullkeys=2 ⇒ 未回填、未合并）--
+        "rows": 2,
+        "nullkeys": 2
+
+=== E-3：migration 原子性（CREATE + ALTER + 故意失败语句）===
+        "col_b": 0,
+        "tbl": 0,
+        "reg": 0
+--- E-3 结论：tbl=0 / col_b=0 / reg=0 ⇒ 整文件回滚，零残留、零登记

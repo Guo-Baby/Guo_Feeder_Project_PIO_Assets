@@ -1,0 +1,110 @@
+### compile probe (wasm32 freestanding)
+### run probe (node)
+=== LoopStats host probe（wasm32 freestanding，无硬件） ===
+bucket_width_us=200 bucket_count=128 range_us=25600 gate_p99_us=20000
+
+[T1] 可用性与首样本丢弃
+  PASS  未进入 loop() 前 available=false  got=1 want=1
+  PASS  未进入 loop() 前 available 字段  got=0 want=0
+  PASS  首样本后 available=true  got=1 want=1
+  PASS  首样本**不**计入 n  got=0 want=0
+  PASS  首样本后 elapsed=0  got=0 want=0
+  PASS  第二样本后可读  got=1 want=1
+  PASS  第二样本计入 n  got=1 want=1
+  PASS  min_us  got=1000 want=1000
+  PASS  max_us  got=1000 want=1000
+  PASS  bit0 命中（1000/200=5）  got=1 want=1
+  PASS  sum_us  got=1000 want=1000
+
+[T2] 桶边界与溢出桶（桶宽 200 µs，量程 25.6 ms）
+  PASS  n = 6 个样本  got=6 want=6
+  PASS  over_cnt = 2（≥25.6 ms）  got=2 want=2
+  PASS  桶 0 计数（dt=1,199）  got=2 want=2
+  PASS  桶 1 计数（dt=200）  got=1 want=1
+  PASS  桶 127 计数（dt=25599）  got=1 want=1
+  PASS  max_us 精确（30000）  got=30000 want=30000
+  PASS  min_us 精确（1）  got=1 want=1
+  PASS  恒等式 Σhist + over = n  got=6 want=6
+
+[T3] 异常样本（dt<=0 / dt>60 s）不计入统计
+  PASS  anomaly_cnt = 3  got=3 want=3
+  PASS  n 只含 2 个有效样本  got=2 want=2
+  PASS  60 s 样本进 over（不判异常）  got=1 want=1
+  PASS  max_us = 60 000 000  got=60000000 want=60000000
+
+[T4] 分位计算（rank = ceil(p*N)）
+  PASS  N  got=10000 want=10000
+  PASS  valid  got=1 want=1
+  PASS  P50 桶 = 0（累计 9000 ≥ 5000）  got=0 want=0
+  PASS  P99 桶 = 10（累计 9900 ≥ 9900）  got=10 want=10
+  PASS  P99 下界  got=2000 want=2000
+  PASS  P99 上界  got=2200 want=2200
+  PASS  mean = sum/n（非 P50）  got=400 want=400
+  PASS  P99 桶 = 0（9900/10000 恰为 99%）  got=0 want=0
+  PASS  P99 桶 = 99  got=99 want=99
+  PASS  P99 上界 = 20 000（桶 99 = [19800,20000)）  got=20000 want=20000
+  PASS  p99_lt_gate = 1（全部 <20 ms）  got=1 want=1
+  PASS  P99 桶 = 100  got=100 want=100
+  PASS  P99 下界 = 20 000（≥20 ms）  got=20000 want=20000
+  PASS  p99_lt_gate = 0（≥20 ms）  got=0 want=0
+
+[T5] 两次快照差分（窗口统计）
+  PASS  Δn 只含窗口增量  got=10000 want=10000
+  PASS  valid  got=1 want=1
+  PASS  P50 桶 = 7（9000 ≥ 5000）  got=7 want=7
+  PASS  P99 桶 = 8（累计 9900 恰达 rank99）  got=8 want=8
+  PASS  差分不重复计入窗口前样本  got=1 want=1
+
+[T6] 桶饱和 / n 饱和 ⇒ 拒绝输出有效 P99
+  PASS  饱和桶计数不再增长  got=4294967295 want=4294967295
+  PASS  sat_buckets 按不同桶只计 1 次  got=1 want=1
+  PASS  饱和 ⇒ valid=0  got=1 want=1
+  PASS  置 INVALID_SATURATION 位  got=1 want=1
+  PASS  n 饱和 ⇒ 置 INVALID_N_SATURATED 位  got=1 want=1
+  PASS  n 饱和 ⇒ valid=0  got=1 want=1
+
+[T7] 样本不足 / P99 落在溢出区间 / 异常主导 / 空窗口
+  PASS  n=9999 ⇒ INVALID_INSUFFICIENT  got=1 want=1
+  PASS  n=9999 ⇒ valid=0  got=1 want=1
+  PASS  N 含 over 样本  got=10000 want=10000
+  PASS  P99 落在 overflow 区间  got=1 want=1
+  PASS  overflow ⇒ valid=0  got=1 want=1
+  PASS  overflow 时仍保留精确 max  got=30000 want=30000
+  PASS  overflow 时不产生伪造的 P99 桶  got=1 want=1
+  PASS  anomaly > n ⇒ INVALID_ANOMALY_DOMINANT  got=1 want=1
+  PASS  空窗口 N=0  got=0 want=0
+  PASS  空窗口不置 p99_in_overflow  got=1 want=1
+  PASS  空窗口 ⇒ INVALID_INSUFFICIENT  got=1 want=1
+
+[T8] 几何校验 / 计数回退 / 恒等式破坏
+  PASS  magic 错 ⇒ 返回 false  got=1 want=1
+  PASS  置 INVALID_GEOMETRY  got=16 want=16
+  PASS  桶宽不符 ⇒ 返回 false  got=1 want=1
+  PASS  available=0 ⇒ 返回 false  got=1 want=1
+  PASS  置 INVALID_NOT_AVAILABLE  got=1 want=1
+  PASS  桶计数回退 ⇒ INVALID_REGRESSION  got=1 want=1
+  PASS  恒等式破坏 ⇒ INVALID_REGRESSION  got=1 want=1
+  PASS  sizeof(LoopStatsSnapshot) <= 1024  got=1 want=1
+  PASS  sizeof(LoopStatsSnapshot)  got=576 want=576
+  PASS  sizeof(LoopStatsQuantiles) <= 128  got=1 want=1
+  PASS  门禁阈值是桶宽整数倍  got=0 want=0
+
+[T9] 端到端（tick → snapshot → compute）
+  PASS  快照可读  got=1 want=1
+  PASS  样本数  got=12100 want=12100
+  PASS  无溢出  got=0 want=0
+  PASS  无异常  got=0 want=0
+  PASS  elapsed ≈ 12.3 s  got=12300 want=12300
+  PASS  sum_us ≈ elapsed（采样覆盖完整）  got=12300 want=12300
+  PASS  valid  got=1 want=1
+  PASS  P50 桶 = 5（1000 µs）  got=5 want=5
+  PASS  P99 桶 = 5（3000 µs 仅占 0.8%）  got=5 want=5
+  PASS  p99_lt_gate  got=1 want=1
+  PASS  mean ≈ 1016 µs  got=1016 want=1016
+        rate_from_counts=983 rate_from_mean=984
+  PASS  n/elapsed 与 1/mean 偏差 <=1%（采样率自洽）  got=1 want=1
+
+=== SUMMARY: pass=82 fail=0 ===
+exit_failures=0
+
+### RESULT: PASS (0 failures)
