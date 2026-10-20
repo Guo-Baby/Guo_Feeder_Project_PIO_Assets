@@ -10,6 +10,7 @@
 
 #include "log/log_manager.h"   // LOG_SYS_RESET_ABNORMAL（log_emit / log_arg_*）
 #include "app/loop_stats.h"    // S-3：loop() 周期耗时统计（system.loop 只读查询）
+#include "services/mem_watch.h" // G4-R4：内存观测（system.memwatch 只读查询）
 
 #include <LittleFS.h>
 #include <ESP.h>        // ESP.getHeapSize() / getFlashChipSize() / ESP.restart()
@@ -906,6 +907,165 @@ bool syscmd_loop(JsonDocument &out)
         }
     }
     data["hist_pairs"] = pairs;
+
+    return true;
+}
+
+// =====================================================
+// system.memwatch（`G4-R4` · H-1…H-5 · 只读）
+//
+// 设计纪律（与 `G4-R4` 门禁修订草案一致）：
+//   · 只**报告**可直接测量的量，**不**判 PASS/FAIL；
+//   · 任何候选阈值只出现在 `thresholds` 段并标注 `candidate:true`，
+//     **不参与**本命令的任何判定分支；
+//   · `available:false` ⇒ 整段缺省（调用方不得当 0）；
+//   · `drift.*.valid:false` ⇒ 不给 `slope_per_hour`（窗口未建立时该值无意义）。
+//
+// 栈开销：`MemWatchInfo` 约 170 B + 一次 memcpy 快照（32×20 B，静态缓冲，不在栈上）。
+// =====================================================
+bool syscmd_memwatch(JsonDocument &out)
+{
+    JsonObject data = out["data"].to<JsonObject>();
+    if (data.isNull())
+    {
+        return false;
+    }
+
+    MemWatchInfo mw;
+    const bool available = memwatch_get(mw);
+
+    data["available"] = available;
+    if (!available)
+    {
+        return true;    // 明确"不可用"，绝不渲染成 0
+    }
+
+    data["uptime_ms"] = mw.uptime_ms;
+
+    // ---- H-1 / H-2 ----
+    JsonObject dram = data["dram"].to<JsonObject>();
+    dram["total"] = mw.dram_total;
+    dram["free"] = mw.dram_free;
+    dram["used"] = (mw.dram_total > mw.dram_free) ? (mw.dram_total - mw.dram_free) : 0u;
+    dram["largest_free_block"] = mw.dram_largest;          // H-1
+    dram["minimum_free_since_boot"] = mw.dram_min_free;    // H-2（**启动以来**低水位）
+    dram["used_pct_x100"] = (mw.dram_total > 0u)
+        ? (uint32_t)(((uint64_t)(mw.dram_total - mw.dram_free) * 10000u) / mw.dram_total)
+        : 0u;   // 仅作参考（分母 = internal.total，与 PlatformIO 的 SRAM 总量口径不同）
+
+    JsonObject psram = data["psram"].to<JsonObject>();
+    psram["total"] = mw.psram_total;
+    psram["free"] = mw.psram_free;
+    psram["largest_free_block"] = mw.psram_largest;
+    psram["minimum_free_since_boot"] = mw.psram_min_free;
+
+    // ---- H-3：稳态漂移 ----
+    JsonObject drift = data["drift"].to<JsonObject>();
+
+    auto emit_drift = [](JsonObject dst, const MemDriftResult &d)
+    {
+        dst["valid"] = (d.valid != 0u);
+        dst["reason"] = (d.reason == MEMWATCH_REASON_OK) ? "ok"
+                      : (d.reason == MEMWATCH_REASON_TOO_FEW) ? "too_few_samples"
+                      : "span_too_short";
+        dst["samples"] = d.samples;
+        dst["span_ms"] = d.span_ms;
+
+        // 直接测量：无论 valid 与否都必须给出
+        dst["free_min"] = d.free_min;
+        dst["largest_min"] = d.largest_min;   // 碎片硬指标（窗口内最差连续块）
+        dst["free_delta"] = d.free_delta;
+
+        // 推断量：仅在窗口建立后给出（否则**不写**，避免被当 0）
+        if (d.valid != 0u)
+        {
+            dst["slope_per_hour"] = d.slope_per_hour;
+        }
+    };
+
+    emit_drift(drift["dram"].to<JsonObject>(), mw.dram_drift);
+    emit_drift(drift["psram"].to<JsonObject>(), mw.psram_drift);
+
+    JsonObject win = drift["window"].to<JsonObject>();
+    win["samples"] = mw.window_samples;
+    win["span_ms"] = mw.window_span_ms;
+    win["target_ms"] = mw.window_target_ms;      // 候选配置（30 min）
+    win["capacity"] = (uint8_t)MEMWATCH_RING_SAMPLES;
+    win["sample_interval_ms"] = (uint32_t)MEMWATCH_SAMPLE_INTERVAL_MS;
+    win["warmup_ms"] = (uint32_t)MEMWATCH_WARMUP_MS;
+    win["closed"] = (mw.window_span_ms >= mw.window_target_ms);
+
+    // ---- H-4：显式分配点失败计数 ----
+    JsonObject alloc = data["alloc"].to<JsonObject>();
+    alloc["calls"] = mw.alloc.calls;
+    alloc["psram_ok"] = mw.alloc.psram_ok;
+    alloc["psram_fail"] = mw.alloc.psram_fail;
+    alloc["dram_fallback_ok"] = mw.alloc.dram_ok;
+    alloc["dram_fallback_fail"] = mw.alloc.dram_fail;
+    alloc["final_fail"] = mw.alloc.final_fail;
+    alloc["last_fail_site"] = memwatch_site_name(mw.alloc.last_fail_site);
+    alloc["last_fail_size"] = mw.alloc.last_fail_size;
+    alloc["last_fail_ms"] = mw.alloc.last_fail_ms;
+
+    JsonObject sites = alloc["sites"].to<JsonObject>();
+    for (uint8_t i = 1; i < (uint8_t)MEM_SITE_COUNT; ++i)
+    {
+        // 只输出**非零**项（省 JSON 体积）；全零 ⇒ 该段为空 ⇒ "已登记点无失败"
+        if (mw.alloc.site_final_fail[i] != 0u)
+        {
+            sites[memwatch_site_name(i)] = mw.alloc.site_final_fail[i];
+        }
+    }
+    alloc["sites_reported"] = (uint8_t)(sites.size());
+
+    // ★ 覆盖边界必须随数据一起输出，防止下游把"0"读成"系统无分配失败"
+    JsonObject cov = alloc["coverage"].to<JsonObject>();
+    cov["registered_sites"] = (uint8_t)(MEM_SITE_COUNT - 1);
+    cov["scope"] = "explicit_alloc_sites_only";
+    cov["excluded_note"] =
+        "不含 Arduino String / 第三方库(含 mbedTLS) / IDF-Freertos 自身分配";
+    cov["claim_limit"] =
+        "final_fail=0 只表示**已登记显式分配点**未失败，不代表系统无任何分配失败";
+
+    // ---- H-5：loopTask 栈高水位 ----
+    JsonObject st = data["stack"].to<JsonObject>();
+    st["available"] = (mw.stack.available != 0u);
+    st["task"] = String(mw.stack.name);
+    st["stack_bytes"] = mw.stack.stack_bytes;
+    st["hwm_raw"] = mw.stack.hwm_raw;          // **始终**给出原始值（可复核）
+    st["consistent"] = (mw.stack.consistent != 0u);
+    st["unit_verified"] = (mw.stack.unit_verified != 0u);
+    st["unit"] = (mw.stack.unit_verified == 0u) ? "unverified"
+               : ((mw.stack.unit_is_bytes != 0u) ? "bytes" : "words");
+    st["probe_depth_bytes"] = mw.stack.probe_depth;
+
+    // ★ 派生值只在"口径已验证 + 长度自洽"时出现；
+    //   否则**不写** `hwm_bytes` / `used_bytes`，避免把"未知"读成 0 或读成"用满了"。
+    if (mw.stack.unit_verified != 0u && mw.stack.consistent != 0u)
+    {
+        st["hwm_bytes"] = mw.stack.hwm_bytes;
+        st["used_bytes"] = mw.stack.used_bytes;
+        if (mw.stack.stack_bytes > 0u)
+        {
+            st["used_pct_x100"] = (mw.stack.used_bytes * 10000u) / mw.stack.stack_bytes;
+        }
+    }
+    else
+    {
+        st["derived_suppressed"] = true;
+        st["derived_note"] =
+            "hwm_bytes/used_bytes 未给出：需先用串口命令 `mw probe` 实测栈口径（bytes|words）";
+    }
+
+    // ---- 候选阈值（**未批准**；不参与任何判定）----
+    JsonObject th = data["thresholds"].to<JsonObject>();
+    th["candidate"] = true;
+    th["approved"] = false;
+    th["note"] = "全部为候选值，未经人工批准；本命令不据此判 PASS/FAIL";
+    th["dram_min_free_candidate"] = 32768u;
+    th["dram_largest_free_candidate"] = 16384u;
+    th["dram_drift_bytes_per_hour_candidate"] = -1024;
+    th["stack_used_candidate"] = (uint32_t)(MEMWATCH_LOOPTASK_STACK_BYTES * 3u / 4u);
 
     return true;
 }

@@ -13,6 +13,7 @@
 #include "services/event_manager.h"
 #include "app/oled.h"
 #include "app/loop_stats.h"   // S-3：loop() 周期耗时统计（GF_LOOP_STATS_ENABLED 门控）
+#include "services/mem_watch.h"   // G4-R4：内存观测 H-1…H-5（system.memwatch）
 #include "services/command_manager.h"
 #include "services/credential_manager.h"   // Phase D-2：凭据生命周期（gfcred 双 slot）
 #include "services/wifi_module.h"
@@ -659,6 +660,15 @@ void setup()
     // （否则首个 dt 是不完整周期）。无动态分配、无输出、不改任何其他模块。
     // =====================================================
     loop_stats_init();
+
+    // =====================================================
+    // G4-R4：内存观测 H-1…H-5 初始化
+    //
+    // 只清本模块静态状态（分配计数器 / 采样环），**不**动任何其他模块。
+    // 首个采样点在第一次 `memwatch_tick()` 时建立；但**预热 5 min 内不入环**，
+    // 以免把启动期 TLS/首次分配尖峰当作"稳态基线"。
+    // =====================================================
+    memwatch_init();
 }
 
 void serial_debug_command_process();
@@ -671,6 +681,8 @@ void cm_console(const String &cmd);
 
 // LogManager 上板测试控制台（P1.2）
 void logt_console(const String &cmd);
+// G4-R4 内存观测自测控制台（`mw probe`：栈口径实测；仅串口，不暴露给云端）
+void mw_console(const String &cmd);
 // =====================================================
 // loop
 // =====================================================
@@ -682,6 +694,10 @@ void loop()
     // 硬约束：本函数**零输出、零动态分配、无锁**（详见 src/app/loop_stats.h）。
     // GF_LOOP_STATS_ENABLED=0 时为空实现（宏在 platformio.ini，可直接关掉）。
     loop_stats_tick();
+
+    // ---- G4-R4：内存观测采样（60 s 节流，非采样轮次仅一次比较）----
+    // 硬约束：无动态分配、无串口输出、无阻塞；临界区仅覆盖 20 B 的一次写入。
+    memwatch_tick();
 
     // ---- Safe Restart 状态机（SystemCommand）----
     // 必须每轮调用：它是全系统唯一的 Restart 执行点。
@@ -796,6 +812,11 @@ void serial_debug_command_process(void)
             {
                 // LogManager 测试控制台（P1.2 上板自测用）
                 logt_console(serial_cmd_buffer);
+            }
+            else if (serial_cmd_buffer.startsWith("mw "))
+            {
+                // G4-R4 内存观测自测控制台（H-5 栈口径实测入口）
+                mw_console(serial_cmd_buffer);
             }
             else
             {
@@ -2333,4 +2354,112 @@ void cm_console(const String &cmd)
     command_manager_set_result_echo(false);
 
     Serial.printf("cm: ret=%d\n", ok ? 1 : 0);
+}
+
+// =====================================================
+// G4-R4 内存观测自测控制台（串口专用）
+//
+// 命令：
+//   mw help          显示帮助
+//   mw show          打印当前 `system.memwatch` 的关键字段（与云端读取同一数据源）
+//   mw probe [bytes] 受控深栈探测 ⇒ **实测** `uxTaskGetStackHighWaterMark` 的口径
+//                    （bytes vs words）。省略 bytes 时默认 stack/2。
+//
+// 为什么 probe 只走串口：
+//   它会临时吃掉最多"栈的一半"，属**测试行为**；放在 MQTT 命令路径上
+//   等于给生产接口增加一条会压栈的指令 —— 违反"观测不得改变被观测对象"的纪律。
+// =====================================================
+void mw_console(const String &cmd)
+{
+    String op = cmd.substring(3);
+    op.trim();
+
+    if (op.length() == 0 || op == "help")
+    {
+        Serial.println("[MW] mw show                —— 打印内存观测快照");
+        Serial.println("[MW] mw probe [bytes]       —— 受控深栈探测（实测栈高水位口径）");
+        Serial.printf("[MW] loopTask stack = %u B\n",
+                      (unsigned)MEMWATCH_LOOPTASK_STACK_BYTES);
+        return;
+    }
+
+    if (op == "show")
+    {
+        MemWatchInfo mw;
+        if (!memwatch_get(mw))
+        {
+            Serial.println("[MW] unavailable (memwatch_init not called)");
+            return;
+        }
+
+        Serial.printf("[MW] dram total=%u free=%u largest=%u min=%u\n",
+                      (unsigned)mw.dram_total, (unsigned)mw.dram_free,
+                      (unsigned)mw.dram_largest, (unsigned)mw.dram_min_free);
+        Serial.printf("[MW] psram total=%u free=%u largest=%u min=%u\n",
+                      (unsigned)mw.psram_total, (unsigned)mw.psram_free,
+                      (unsigned)mw.psram_largest, (unsigned)mw.psram_min_free);
+
+        Serial.printf("[MW] window samples=%u span=%u ms target=%u closed=%d\n",
+                      (unsigned)mw.window_samples, (unsigned)mw.window_span_ms,
+                      (unsigned)mw.window_target_ms,
+                      (mw.window_span_ms >= mw.window_target_ms) ? 1 : 0);
+
+        Serial.printf("[MW] drift dram valid=%d reason=%u slope=%ld B/h "
+                      "delta=%ld free_min=%ld largest_min=%ld\n",
+                      (int)mw.dram_drift.valid, (unsigned)mw.dram_drift.reason,
+                      (long)mw.dram_drift.slope_per_hour, (long)mw.dram_drift.free_delta,
+                      (long)mw.dram_drift.free_min, (long)mw.dram_drift.largest_min);
+
+        Serial.printf("[MW] alloc calls=%u psram_ok=%u psram_fail=%u "
+                      "dram_ok=%u dram_fail=%u final_fail=%u last=%s/%u\n",
+                      (unsigned)mw.alloc.calls, (unsigned)mw.alloc.psram_ok,
+                      (unsigned)mw.alloc.psram_fail, (unsigned)mw.alloc.dram_ok,
+                      (unsigned)mw.alloc.dram_fail, (unsigned)mw.alloc.final_fail,
+                      memwatch_site_name(mw.alloc.last_fail_site),
+                      (unsigned)mw.alloc.last_fail_size);
+
+        Serial.printf("[MW] stack task=%s stack=%u hwm_raw=%u consistent=%d "
+                      "unit_verified=%d unit=%s probe_delta=%u probe_depth=%u\n",
+                      mw.stack.name, (unsigned)mw.stack.stack_bytes,
+                      (unsigned)mw.stack.hwm_raw, (int)mw.stack.consistent,
+                      (int)mw.stack.unit_verified,
+                      (mw.stack.unit_verified == 0) ? "unverified"
+                        : ((mw.stack.unit_is_bytes != 0) ? "bytes" : "words"),
+                      (unsigned)mw.stack.probe_delta, (unsigned)mw.stack.probe_depth);
+        return;
+    }
+
+    if (op.startsWith("probe"))
+    {
+        String arg = op.substring(5);
+        arg.trim();
+
+        uint32_t depth = MEMWATCH_LOOPTASK_STACK_BYTES / 2u;
+        if (arg.length() > 0)
+        {
+            long v = strtol(arg.c_str(), nullptr, 10);
+            if (v > 0) depth = (uint32_t)v;
+        }
+
+        const uint8_t verdict = memwatch_stack_probe(depth);
+
+        MemWatchInfo mw;
+        memwatch_get(mw);
+
+        const char *name = (verdict == 1u) ? "bytes"
+                         : (verdict == 0u) ? "words"
+                         : "undetermined";
+
+        Serial.printf("[MW] probe requested=%u used=%u delta=%u => %s (code=%u)\n",
+                      (unsigned)depth, (unsigned)mw.stack.probe_depth,
+                      (unsigned)mw.stack.probe_delta, name, (unsigned)verdict);
+
+        if (verdict == 2u)
+        {
+            Serial.println("[MW] probe inconclusive —— 增大深度或降低干扰后重试（结论不得替代实测）");
+        }
+        return;
+    }
+
+    Serial.println("[MW] unknown op (try: mw help)");
 }

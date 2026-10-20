@@ -7,6 +7,7 @@
 #include "automation/workflow.h"
 
 #include "log/log_manager.h"   // P2-L：观测埋点（EventId / ParamId + log_emit）
+#include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
 
 // =====================================================
 // RAM Runtime Cache
@@ -507,14 +508,12 @@ static const char *capability_type_name(CapabilityType type)
 // =====================================================
 static void *registry_buf_alloc(size_t size, bool *all_psram)
 {
-    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
-    if (p == nullptr)
+    uint8_t in_psram = 1;
+    void *p = gf_alloc_psram_first(size, MEM_SITE_CAP_REGISTRY, &in_psram);
+    if (in_psram == 0u && all_psram != nullptr)
     {
-        p = heap_caps_malloc(size, MALLOC_CAP_8BIT);
-        if (all_psram != nullptr)
-        {
-            *all_psram = false;
-        }
+        // 与旧实现逐字一致：**只要发生回退**就置 false（无论回退是否成功）
+        *all_psram = false;
     }
     return p;
 }

@@ -218,6 +218,7 @@ static bool command_system_memory(const CommandMessage &cmd, JsonDocument &respo
 static bool command_system_flash(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_stats(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_loop(const CommandMessage &cmd, JsonDocument &response);
+static bool command_system_memwatch(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
 // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
@@ -2515,6 +2516,10 @@ static bool system_router(
         // S-3：loop() 周期耗时统计（**只读**；不 reset、不改任何计数）
         return command_system_loop(cmd, response);
     }
+    if (object == "memwatch") {
+        // G4-R4：内存观测 H-1…H-5（**只读**；不判 PASS/FAIL、不 reset 计数）
+        return command_system_memwatch(cmd, response);
+    }
     if (object == "restart") {
         return command_system_restart(cmd, response);
     }
@@ -3326,6 +3331,26 @@ static bool command_system_loop(
     if (!syscmd_loop(response))
     {
         command_send_error(cmd, CMD_ERROR_SYSTEM, "loop stats query failed");
+        return false;
+    }
+    response["status"] = "success";
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+// system: memwatch（G4-R4 · 只读）
+// object: memwatch
+// 返回 H-1…H-5 的内存观测快照（连续块 / 低水位 / 稳态漂移 / 分配失败 / 栈高水位）。
+// ⚠️ `data.available=false` ⇒ MemWatch 未初始化，**不得**当作"全为 0"。
+// ⚠️ `data.drift.*.valid=false` ⇒ 无 `slope_per_hour`（窗口未建立），**不得**当 0。
+// ⚠️ 本命令**不**输出 PASS/FAIL —— G4-R4 阈值仍为未批准候选。
+static bool command_system_memwatch(
+    const CommandMessage &cmd,
+    JsonDocument &response)
+{
+    if (!syscmd_memwatch(response))
+    {
+        command_send_error(cmd, CMD_ERROR_SYSTEM, "memwatch query failed");
         return false;
     }
     response["status"] = "success";
