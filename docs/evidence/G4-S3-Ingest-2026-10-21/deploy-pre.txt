@@ -1,0 +1,28 @@
+# 采集时间: 2026-10-21 03:15:40 +0800
+# === D-1 部署前源码标识 ===
+HEAD=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+worktree_dirty_lines=5
+branch=main
+
+# === D-2 制品哈希（部署前源码，即将被上传的字节）===
+cedbe9adebfceaf9d8c8859792b5a25fa9b0356b6f3c7af312a7e72aa4c07e90 *src/index.js
+cd52846cee4255d47f4a196083fcf008d53e7593d29fd4efb016e9859ef34b96 *src/ingest-validate.js
+c22c82322c7e9003ca46ab32ce210c1d468c01f0f16f79b43a390a7301c05248 *wrangler.toml
+d6da5410762432f3968f419f272880b9beb543d29301b25e099993c2d8dfc8e7 *test/run_all.mjs
+8ac63e64e9c144b33ebb3fbc61d5837c7d770686a2b23dd12f33737ca64fd936 *test/current/s3_ingest_validate.test.mjs
+
+# === D-3 关键默认值（必须 observe）===
+46:INGEST_VALIDATION = "observe"
+37:export const DEFAULT_INGEST_VALIDATION = "observe";
+
+# === D-4 当前生产部署 ===
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Created:     2026-10-20T17:39:04.490Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (deployment)
+Message:     -
+Version(s):  (100%) d7fcd4f3-c9f3-4a7c-ba2f-c7e3bce74016
+                 Created:  2026-10-20T17:39:03.411Z
+                     Tag:  -
+                 Message:  -

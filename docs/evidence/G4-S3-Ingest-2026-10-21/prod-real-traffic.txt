@@ -1,0 +1,99 @@
+# 采集时间: 2026-10-21 03:16:51 +0800（只读）
+# 目的：S-3 部署后真实流量是否存在、是否走 observe（不拒绝）
+
+=== R-1 最近 12 行（真实流量）===
+        "id": 5778,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6165",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 18:52:33",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+        "id": 5777,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6164",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 18:51:39",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+        "id": 5776,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6163",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:46:37",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+        "id": 5775,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6162",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:45:36",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+        "id": 5774,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6161",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:42:13",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+        "id": 5771,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "t_utc": "2026-10-20 17:40:28",
+        "topic": "guo_feeder/0b0077a7e402/up"
+        "id": 5770,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "t_utc": "2026-10-20 17:40:26",
+        "topic": "guo_feeder/0b0077a7e402/up"
+        "id": 5767,
+        "device_id": "0b0077a7e402",
+        "dir": "up",
+        "msg_id": "G4PROBE-P4-1792518018",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:40:23",
+        "topic": "guo_feeder/0b0077a7e402/up"
+        "id": 5766,
+        "device_id": "0b0077a7e402",
+        "dir": "log",
+        "msg_id": "G4PROBE-P3-1792518018",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:40:22",
+        "topic": "guo_feeder/0b0077a7e402/log"
+        "id": 5765,
+        "device_id": "0b0077a7e402",
+        "dir": "down",
+        "msg_id": "G4PROBE-P1T-1792518018",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:40:21",
+        "topic": "$tenants/n302933b/guo_feeder/0b0077a7e402/down"
+        "id": 5764,
+        "device_id": "unresolved",
+        "dir": "up",
+        "msg_id": "G4PROBE-P2-1792518018",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:40:19",
+        "topic": "guo_feeder/BADID/up"
+        "id": 5763,
+        "device_id": "http_api",
+        "dir": "down",
+        "msg_id": "ack:25:6160",
+        "dk": "NULL",
+        "t_utc": "2026-10-20 16:40:38",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+
+=== R-2 $tenants 归属（C-2 B-1b 真实版）===
+        "device_id": "288485896ce4",
+        "n": 5,
+        "mx": 5778
+        "device_id": "0b0077a7e402",
+        "n": 1,
+        "mx": 5765
+        "device_id": "http_api",
+        "n": 1539,
+        "mx": 5763

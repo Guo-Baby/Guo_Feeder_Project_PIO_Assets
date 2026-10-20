@@ -1,0 +1,201 @@
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Using secrets defined in .dev.vars
+Your Worker has access to the following bindings:
+Binding                                  Resource                  Mode
+env.guofeeder_DB (guofeeder)             D1 Database               local
+env.LOG_BOOT_WATERMARK ("1")             Environment Variable      local
+env.INGEST_VALIDATION ("observe")        Environment Variable      local
+env.ADMIN_API_TOKEN ("(hidden)")         Environment Variable      local
+env.WEBHOOK_SECRET ("(hidden)")          Environment Variable      local
+env.EMQX_APP_ID ("(hidden)")             Environment Variable      local
+env.EMQX_APP_SECRET ("(hidden)")         Environment Variable      local
+env.EMQX_API_BASE ("(hidden)")           Environment Variable      local
+
+⎔ Starting local server...
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mScheduled Workers are not automatically triggered during local development.[0m
+
+  To manually trigger a scheduled event, run:
+    curl "http://127.0.0.1:8792/cdn-cgi/local/scheduled"
+  For more details, see [4mhttps://developers.cloudflare.com/workers/configuration/cron-triggers/#test-cron-triggers-locally[0m
+
+
+[wrangler:info] Ready on http://127.0.0.1:8792
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"online","i":"S3L1-1792523696","s":"device"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3L1-1792523696
+[wrangler:info] POST / 200 OK (57ms)
+[ingest] body: {"topic":"$tenants/n302933b/guo_feeder/0b0053a00e2e/down","clientid":"http_api","payload":{"c":"execute_action","i":"S3L2-1792523696"}}
+[mqtt-dedup] outcome=inserted source=echo msg_id=S3L2-1792523696
+[wrangler:info] POST / 200 OK (10ms)
+[ingest] body: {"topic":"$tenants/n302933b/guo_feeder/0b0053a00e2e/log","clientid":"http_api","payload":{"c":"log","i":"S3L3-1792523696"}}
+[mqtt-dedup] outcome=inserted source=echo msg_id=S3L3-1792523696
+[wrangler:info] POST / 200 OK (14ms)
+[ingest] body: {"topic":"","clientid":"attacker","payload":{"c":"online","i":"S3O1-1792523696"}}
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][unresolved] {"reason":"topic_missing","topic_len":0,"count_total":1}[0m
+
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][validate] rejected {"mode":"observe","reason":"topic_missing","detail":{"kind":"not_a_string"},"count_this_reason":1,"count_total":1,"note":"observe=已写入但计数；enforce=未写入"}[0m
+
+
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3O1-1792523696
+[wrangler:info] POST / 200 OK (10ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":""}
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][validate] rejected {"mode":"observe","reason":"payload_empty","detail":{"kind":"payload"},"count_this_reason":1,"count_total":2,"note":"observe=已写入但计数；enforce=未写入"}[0m
+
+
+[mqtt-dedup] outcome=no_key source=audit msg_id=-
+[wrangler:info] POST / 200 OK (15ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/upx","payload":{"c":"online","i":"S3O3-1792523696"}}
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][unresolved] {"reason":"topic_conflict","topic_len":27,"count_total":2}[0m
+
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][validate] rejected {"mode":"observe","reason":"topic_shape_invalid","detail":{"kind":"direction","dir":"upx"},"count_this_reason":1,"count_total":3,"note":"observe=已写入但计数；enforce=未写入"}[0m
+
+
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3O3-1792523696
+[wrangler:info] POST / 200 OK (9ms)
+[ingest] body: {"topic":"$SYS/broker/uptime","payload":{"c":"sys","i":"S3O4-1792523696"}}
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1m[ingest][unresolved] {"reason":"topic_unparsable","topic_len":18,"count_total":3}[0m
+
+
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3O4-1792523696
+[wrangler:info] POST / 200 OK (8ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"online","i":"S3DUP-1792523696","s":"device"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3DUP-1792523696
+[wrangler:info] POST / 200 OK (13ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"online","i":"S3DUP-1792523696","s":"device"}}
+[mqtt-dedup] outcome=duplicate source=audit msg_id=S3DUP-1792523696
+[wrangler:info] POST / 200 OK (14ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"online","i":"S3DUP-1792523696","s":"device"}}
+[mqtt-dedup] outcome=duplicate source=audit msg_id=S3DUP-1792523696
+[wrangler:info] POST / 200 OK (14ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"system","i":"","s":"device"}}
+[mqtt-dedup] outcome=no_key source=audit msg_id=-
+[wrangler:info] POST / 200 OK (15ms)
+[ingest] body: {"topic":"guo_feeder/0b0053a00e2e/up","clientid":"dev","payload":{"c":"system","i":"","s":"device"}}
+[mqtt-dedup] outcome=no_key source=audit msg_id=-
+[wrangler:info] POST / 200 OK (14ms)
+[ingest] body: {"source":"cloud_api","device_id":"BADID","cmd":"system"}
+[wrangler:info] POST / 400 Bad Request (4ms)
+[wrangler:info] POST /api/ingest 401 Unauthorized (5ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-0"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-0
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-1"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-1
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-2"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-2
+[wrangler:info] POST / 200 OK (8ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-3"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-3
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-4"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-4
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-5"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-5
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-6"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-6
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-7"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-7
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-8"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-8
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-9"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-9
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-10"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-10
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-11"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-11
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-12"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-12
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-13"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-13
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-14"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-14
+[wrangler:info] POST / 200 OK (8ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-15"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-15
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-16"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-16
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-17"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-17
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-18"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-18
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-19"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-19
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-20"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-20
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-21"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-21
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-22"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-22
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-23"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-23
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-24"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-24
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-25"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-25
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-26"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-26
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-27"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-27
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-28"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-28
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-29"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-29
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-30"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-30
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-31"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-31
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-32"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-32
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-33"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-33
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-34"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-34
+[wrangler:info] POST / 200 OK (6ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-35"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-35
+[wrangler:info] POST / 200 OK (5ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-36"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-36
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-37"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-37
+[wrangler:info] POST / 200 OK (7ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-38"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-38
+[wrangler:info] POST / 200 OK (8ms)
+[ingest] body: {"topic":"","clientid":"flood","payload":{"i":"S3F-1792523696-39"}}
+[mqtt-dedup] outcome=inserted source=audit msg_id=S3F-1792523696-39
+[wrangler:info] POST / 200 OK (7ms)

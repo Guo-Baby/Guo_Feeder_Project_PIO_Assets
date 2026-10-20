@@ -1,0 +1,67 @@
+# 采集时间: 2026-10-21 03:24:24 +0800
+# S-1 / S-2 文档一致性检查（只读 grep）
+
+=== C-1 冲突搜索：'boot 内日志序号' / 'boot 内序号'（现行权威文档应为 0 命中）===
+docs/architecture/G4-Log-Credibility-and-Observability-Report-2026-10-20.md:133:| B-6-4 | §B.5.1「`(device_id, boot_seq, seq)` 会撞历史键」的前提是 seq 是本 boot 序号 | `seq` 由 `s_meta_slot_seq + 1` **持久化推进**（跨 boot 连续，真机样例 `boot_seq=94, seq=108289`），与 `log_envelope_contract.md:58`「boot 内序号」不符 | 不得假设"新 boot 从 1 开始"；统计必须按 `boot_seq` 分组 |
+docs/architecture/G4-Post-Decision-Execution-Plan-2026-10-21.md:56:| `G4-Real-Hardware-Acceptance-Checklist.md:44` | 已写"`seq` 也不是 boot 内序号" | 改为正向表述 |
+docs/architecture/G4-Production-Change-Plan-Review-2026-10-20.md:332:| **`SEQ-SEM`** | MINOR（文档） | `log_envelope_contract.md:58` 说 `seq` 是"boot 内序号"，实现是**跨 boot 连续** | ❌ | 修文档（本轮已在本报告登记，未改契约文件） |
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:45:> （**不是** boot 内序号，权威定义见 `docs/interfaces/log_envelope_contract.md` §2.0）。
+docs/architecture/G4-Scope-Decision-and-Pre-Hardware-Backlog-2026-10-21.md:103:4. 收益：零（boot 内序号是跨 boot 连续的子集，无任何新能力）。
+docs/interfaces/log_envelope_contract.md:80:> **修订沿革（不追溯改写历史）**：本文件 `2026-10-21` 之前写作「boot 内日志序号」，
+docs/issues/未修复的问题.md:1151:| **`PLAN-5`** | Rev.1 四条对账等式 | ③ **不可观测**（`/api/history/ingest` 不打印计数）；`seq` 非 boot 内序号 | 全部作废；分「严格不变量 / 近似 / 不可测」三类 |
+--- 结束（上述命中应全部是历史评审记录或引用原文）---
+
+=== C-2 'seq' 权威定义落点 ===
+docs/interfaces/log_envelope_contract.md:58:| `seq` | uint32 | **跨 boot 连续**日志序号（幂等键分量 ③）—— 见 §2.0 |
+docs/interfaces/log_envelope_contract.md:68:> 修订依据：用户书面裁决（`2026-10-21 03:00`，`D-2` = **保持跨 boot 连续，只改文档不改代码**）。
+docs/interfaces/log_envelope_contract.md:72:| 语义 | **跨 boot 连续**的单调递增日志序号，**不是**本 boot 内从 1 开始的序号 |
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:44:> （`/api/history/ingest` 不打印，响应只回 EMQX Action）；`seq` 是**跨 boot 连续**序号
+docs/architecture/P3-DT-WP4-History-Ingestion-Design.md:195:| `seq` | 幂等键分量 ③（**跨 boot 连续**日志序号 —— 权威定义见 `docs/interfaces/log_envelope_contract.md` §2.0，`2026-10-21` 修订） | **信封明文** |
+
+=== C-3 85% 落点（验收清单 / BT-1 / 门禁记录）===
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:147:| **6-8** | **内部 DRAM 峰值占用（★ `R-3` 现行阈值）** | 全程 + 结论 | `(internal.total − minimum_free) / internal.total` **严格 `< 85%`** ⇒ `PASS`；`≥ 85%` ⇒ `FAIL`。分母**只许** `internal.total`（≈251 KB），**禁** `327 680`。数据缺失 / `total=0` / 窗口不足 ⇒ **`NOT VERIFIED`**，不得记 `PASS` |
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:151:> 换算到 85% 只作口径说明，**不得**用于宣称 `G-4` 通过。
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:152:> `85%` 通过**不**代表 `loop()` P99（`6-3`）、连续块（`6-5`）、栈（`6-7`）通过 —— 四项互相独立。
+docs/review/BT-1-Log-ACK-Read-Only-Investigation-and-Fix-Plan.md:897:| 堆 / PSRAM | `heap_caps_get_free_size(MALLOC_CAP_8BIT / SPIRAM)` 最小水位 | 周期采样 | 同左 | 内部 DRAM 峰值占用 **< 85%** ★`2026-10-21` 批准（原 `< 70%` 已被 `G-4-Gate-Revision-Record` **`R-3`** 取代；公式与分母见该记录 §5.2）；PSRAM 无泄漏（斜率 ≈ 0） |
+docs/review/BT-1-Log-ACK-Read-Only-Investigation-and-Fix-Plan.md:1016:| `BT1-T10` | 硬件 | `BT1-T04` | **500 ms 间隔下的负载评估** | 见 §6.2 全部指标 | 埋点 + 采样 | **DRAM 项已批准为 `< 85%`**（`2026-10-21` · `R-3`）；其余指标仍未批准 | ⛔ `NOT RUN`（**除 DRAM 外仍无批准阈值**；且测量窗口未跑） |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:8:> ## ★★ `2026-10-21 03:00` 更新：正式阈值已改为 **85%**
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:62:> 正式阈值经 `R-3`（§5）改为 **`< 85%`**。该代码块保留为 `2026-10-20` 时点的决策快照。
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:94:## 5. ★ `R-3`：正式门禁阈值改为 **85%**（`2026-10-21` 批准 · **取代 §1 的 70%**）
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:104:| 批准来源 | 用户书面裁决（`2026-10-21 03:00`）：**「改成 85% 这个阈值再去考虑，如果实在不行的话，我们改成 90% 也可以」** |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:105:| 效力 | **正式 `G-4` 门禁**的「内部 DRAM 峰值占用」一项，阈值由 `< 70%` 改为 **`< 85%`** |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:106:| 与 `R-1` 的关系 | **取代** —— 未来判定一律用 85%，不再用 70% |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:107:| 与 `R-2` 的关系 | **并行保留** —— `TRIAL-DRAM`（T-1…T-4）仍用于个人试运行准入，不与 85% 互相替代 |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:108:| 备选值 | `90%`（用户预留，**仅在 85% 实测不可用时另行裁决生效**，本记录**不**预先启用） |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:120:| 判定 | **严格 `< 85%` ⇒ PASS；`≥ 85%` ⇒ FAIL** | — |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:132:| **不可替代 P99 / 连续块** | `loop()` P99 与 `largest_free_block` 是独立判据，85% 通过**不**代表它们通过 |
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:143:> **`2026-10-21` 补注（不改数、不改判）**：若把这三次测量代入 `R-3` 的 85% 阈值，
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:149:| 基线测量 | 占用率 | 距 85% |
+
+=== C-4 剩余 70% 命中（应仅历史报告 + 已被取代声明）===
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md
+docs/architecture/G-4-Personal-Trial-Final-Verification-Report.md
+docs/architecture/G-4-Root-Cause-Investigation-Report.md
+docs/architecture/G-4-System-Stats-Flashing-and-Stress-Acceptance-Report.md
+docs/architecture/G4-C1-Execution-Report-2026-10-21.md
+docs/architecture/G4-Log-Credibility-and-Observability-Report-2026-10-20.md
+docs/architecture/G4-Post-Decision-Execution-Plan-2026-10-21.md
+docs/architecture/G4-Production-Change-Plan-Review-2026-10-20.md
+docs/architecture/G4-R4-Gate-Revision-Draft-2026-10-20.md
+docs/architecture/G4-R4-R5-Joint-Investigation-Report.md
+docs/architecture/G4-R5-B1-B2-Implementation-and-Local-Acceptance-Report.md
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md
+docs/architecture/G4-Scope-Decision-and-Pre-Hardware-Backlog-2026-10-21.md
+docs/issues/未修复的问题.md
+docs/README.md
+docs/review/BT-1-Log-ACK-Read-Only-Investigation-and-Fix-Plan.md
+docs/review/G-4-Legacy-Adjudication-and-Personal-Trial-Decision.md
+
+=== C-5 分母口径：327 680 出现处必须都带'不是分母'类限定 ===
+docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md:123:**❌ 明确禁止的分母**：`327 680`（SRAM 总量，PlatformIO 构建报告用的口径）、`internal.free`（某一时刻瞬时值，不是峰值）。
+docs/architecture/G-4-System-Stats-Flashing-and-Stress-Acceptance-Report.md:290:| 2 | 内部 DRAM 峰值占用 | < 70% | **77.16%**（基线 77.08%） | **`FAIL`** | `(251 172 − 57 356) / 251 172`。★ 分母 = `ESP.getHeapSize()`（`internal.total`，本 boot 在 251 060–251 172 B 间浮动），**非** 327 680（那是 SRAM 总量，PlatformIO 的 40.5% 用的是它）。★ **基线即 77.08% > 70%** ⇒ **该阈值在本设备从未满足**（`G4-R4`），属阈值/口径缺陷，需人工裁决；就"突发是否使内存恶化"而言：**+0.09 pp / +300 B，且 `largest_free_block` 未变**。 |
+docs/architecture/G-4-System-Stats-Flashing-and-Stress-Acceptance-Report.md:343:| `G4-R4`（补充） | 门禁口径 | DRAM 分母必须是 `internal.total`（heap ≈ 251 KB），不是 327 680；按 `<70%` 口径**空载即 77.08%**，阈值不可满足 |
+docs/architecture/G4-Post-Decision-Execution-Plan-2026-10-21.md:49:（真正需要修的仍是**分母口径**：`internal.total`≈251 KB 与 SRAM 327 680 两个口径混用，见 §1.2。）
+docs/architecture/G4-R4-Gate-Revision-Draft-2026-10-20.md:42:> 公式：`占用率 = (total − minimum_free) / total`（分母 = `system.memory` 的 `internal.total`，**不是** PlatformIO 报的 SRAM 总量 327 680）
+docs/architecture/G4-R4-Gate-Revision-Draft-2026-10-20.md:50:| D-1 | **分母不统一** | `internal.total`（heap ≈ 251 KB）vs PlatformIO 构建报告 40.5% 用的 SRAM 总量 **327 680** ⇒ 同一台设备两个"占用率" |
+docs/architecture/G4-R4-R5-Joint-Investigation-Report.md:85:| **D-2** | **分母选了 heap 区而非 SRAM 总量**，且与 PlatformIO 的百分比**同形不同义** | `syscmd_memory` = 251 KB 口径；PlatformIO `RAM: 133344 (40.7%)` 的分母是 **327 680**（SRAM 总量）⇒ 两者相差 30 个百分点 | 任何"某报告说 40% 某报告说 77%"的对照**必须先对齐分母**，否则是假矛盾 |
+docs/architecture/G4-Real-Hardware-Acceptance-Checklist.md:147:| **6-8** | **内部 DRAM 峰值占用（★ `R-3` 现行阈值）** | 全程 + 结论 | `(internal.total − minimum_free) / internal.total` **严格 `< 85%`** ⇒ `PASS`；`≥ 85%` ⇒ `FAIL`。分母**只许** `internal.total`（≈251 KB），**禁** `327 680`。数据缺失 / `total=0` / 窗口不足 ⇒ **`NOT VERIFIED`**，不得记 `PASS` |

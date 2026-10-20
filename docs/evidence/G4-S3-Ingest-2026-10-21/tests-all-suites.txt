@@ -1,0 +1,395 @@
+
+============================================================================
+>>> CURRENT   O-1…O-10
+============================================================================
+===== O-1  newest presence fact is `online` ⇒ online = true =====
+  响应: {"online":true,"presence":{"online":true,"stale":false,"source":"event","age_seconds":10,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523461}}
+  PASS  O-1 online=true                                               
+  PASS  O-1 presence.source='event'                                   
+  PASS  O-1 last_event_type='online'                                  
+  PASS  O-1 纯函数：online 事实陈旧时仍 online=true（不因 age 翻假）                  
+  PASS  O-1 presence 块 7 字段齐全                                         
+  PASS  O-1 顶层 online === presence.online（兼容）                         
+
+===== O-2  `offline` authoritative iff event_at >= last_seen =====
+  (a) offline(T-10) vs last_seen(T-20): {"online":false,"s":"event"}
+  PASS  O-2a offline 更晚 ⇒ online=false                                
+  PASS  O-2a source='event'                                           
+  PASS  O-2a stale=false                                              
+  (b) offline == last_seen: {"online":false,"s":"event"}
+  PASS  O-2b 边界 event_at == last_seen ⇒ online=false                  
+  (c) offline(T-30) < last_seen(T-10): {"online":true,"s":"event"}
+  PASS  O-2c offline 更旧 ⇒ 不权威 ⇒ online=true                           
+  PASS  O-2c 纯函数同判据                                                   
+  (d) 最新事实是 online: {"online":true,"t":"online"}
+  PASS  O-2d 最新事实 online ⇒ online=true                                
+  PASS  O-2d last_event_type='online'                                 
+
+===== O-3  PROHIBITED: last_seen timeout must NEVER produce offline =====
+  PASS  O-3 穷举 22 组超时输入：无一组产出 offline                                 
+  PASS  O-3 穷举中从未出现 source='timeout'                                  
+  PASS  O-3 产出枚举 ⊆ {event, stale, no_evidence}                        
+  PASS  O-3 端点 age=301（刚过阈值）⇒ online=true                             
+  PASS  O-3 端点 age=301 ⇒ source≠'timeout'                             
+  PASS  O-3 端点 age=313（★ V-9 实测假阴性点）⇒ online=true                     
+  PASS  O-3 端点 age=313 ⇒ source≠'timeout'                             
+  PASS  O-3 端点 age=86400（陈旧一天）⇒ online=true                           
+  PASS  O-3 端点 age=86400 ⇒ source≠'timeout'                           
+  阈值=1s, age=2s: {"online":true,"presence":{"online":true,"stale":true,"source":"stale","age_seconds":2,"timeout_seconds":1,"last_event_type":"online","last_event_at":1792523469}}
+  PASS  O-3 阈值=1s 时 age=2s ⇒ 仍 online=true（只 stale）                   
+  PASS  O-3 阈值=1s 时 source='stale'                                    
+
+===== O-4  age > T_stale ⇒ online=true, stale=true, source='stale' =====
+  age=400: {"online":true,"presence":{"online":true,"stale":true,"source":"stale","age_seconds":400,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523071}}
+  PASS  O-4 online=true                                               
+  PASS  O-4 stale=true                                                
+  PASS  O-4 source='stale'                                            
+  PASS  O-4 age_seconds≈400                                           
+  PASS  O-4 timeout_seconds 随 env 回显                                  
+  PASS  O-4 边界 age == T_stale ⇒ stale=false                           
+  PASS  O-4 边界 age == T_stale ⇒ source='event'                        
+  PASS  O-4 边界 age == T_stale+1 ⇒ stale=true                          
+  PASS  O-4 边界 age == T_stale+1 ⇒ source='stale'                      
+  PASS  O-4 边界 age == T_stale+1 ⇒ 仍 online=true（不翻 offline）           
+  T_stale=60, age=120: {"online":true,"presence":{"online":true,"stale":true,"source":"stale","age_seconds":120,"timeout_seconds":60,"last_event_type":"online","last_event_at":1792523351}}
+  PASS  O-4 自定义 T_stale=60 ⇒ stale=true                               
+  PASS  O-4 自定义 T_stale=60 ⇒ timeout_seconds=60                       
+  PASS  O-4 自定义 T_stale=60 ⇒ age=30 不 stale                           
+
+===== O-5  no liveness evidence ever ⇒ online=false, source='no_evidence' =====
+  {"online":false,"presence":{"online":false,"stale":false,"source":"no_evidence","age_seconds":null,"timeout_seconds":300,"last_event_type":null,"last_event_at":null}}
+  PASS  O-5 online=false                                              
+  PASS  O-5 source='no_evidence'                                      
+  PASS  O-5 stale=false                                               
+  PASS  O-5 age_seconds=null                                          
+  PASS  O-5 纯函数：last_seen=null ⇒ no_evidence                          
+  PASS  O-5 no_evidence 与 O-3 正交（不是「超时判定」）                            
+
+===== O-6  state=REVOKED ⇒ online=false, source='device_state_revoked'（只读投影）=====
+  {"state":"REVOKED","online":false,"presence":{"online":false,"stale":false,"source":"device_state_revoked","age_seconds":2,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523469}}
+  PASS  O-6 state='REVOKED'                                           
+  PASS  O-6 online=false（覆盖 Liveness）                                 
+  PASS  O-6 source='device_state_revoked'                             
+  PASS  O-6 stale=false（不出现「离线且陈旧」的矛盾输出）                              
+  PASS  O-6 age_seconds / last_event_* 仍保留（可诊断）                       
+  语句轨迹: ["select_device","select_other","select_other","select_event","select_device","select_event"]
+  PASS  O-6 ★ 查询零写入语句                                                 
+  PASS  O-6 ★ 不改 device.state                                         
+  PASS  O-6 ★ 不动 device.last_seen                                     
+  PASS  O-6 ★ 不写 device_event                                         
+  PASS  O-6 纯函数层不产生该 source（由 deriveOnlineState 覆盖）                   
+
+===== O-7  REVOKED is the ONLY state that overrides liveness =====
+  PASS  O-7 state=FACTORY ⇒ online=true / source='event'（不覆盖）         
+  PASS  O-7 state=CLAIM_PENDING ⇒ online=true / source='event'（不覆盖）   
+  PASS  O-7 state=REGISTERED ⇒ online=true / source='event'（不覆盖）      
+  PASS  O-7 state=BOUND ⇒ online=true / source='event'（不覆盖）           
+  PASS  O-7 state=UNBOUND ⇒ online=true / source='event'（不覆盖）         
+  PASS  O-7 对照：REVOKED ⇒ 覆盖（online=false）                             
+  PASS  O-7 覆盖后的 source 唯一为 device_state_revoked                      
+  PASS  O-7 非 REVOKED 时 stale 也不被状态覆盖（source='stale'）                 
+
+===== O-8  same-second tie between online and offline ⇒ offline wins =====
+  同秒 tie（最新=offline）: {"online":false,"presence":{"online":false,"stale":false,"source":"event","age_seconds":10,"timeout_seconds":300,"last_event_type":"offline","last_event_at":1792523461}}
+  PASS  O-8 同秒 tie ⇒ offline 胜（online=false）                          
+  PASS  O-8 last_event_type='offline'                                 
+  PASS  O-8 source='event'                                            
+  PASS  O-8 纯函数：event_at == last_seen 的 offline 不被丢弃                  
+  PASS  O-8 对照：offline 早 1 秒 ⇒ 被丢弃（online 胜）                          
+
+===== O-9  ordering key is (created_at, id); arrival order must not matter =====
+  6 种到达顺序的结果: ["{\"online\":false,\"t\":\"offline\",\"s\":\"event\"}"]
+  PASS  O-9 六种到达顺序派生结果完全一致                                            
+  PASS  O-9 收敛结果 = 最新事实 offline ⇒ online=false                        
+  PASS  O-9 收敛结果 last_event_type='offline'                            
+  PASS  O-9 旧 offline 排在数组前 ⇒ online=true（旧反证被 guard 拦下）              
+  PASS  O-9 旧 offline 排在数组后 ⇒ online=true（旧反证被 guard 拦下）              
+  PASS  O-9 device-registry.js 使用 ORDER BY created_at DESC, id DESC   
+  PASS  O-9 纯函数无到达顺序入参（幂等）                                            
+
+===== O-10 stale / T_stale computed at READ TIME, never written to the DB =====
+  T_stale=300: {"stale":false,"src":"event"} | T_stale=60: {"stale":true,"src":"stale"}
+  PASS  O-10 同数据 + T_stale=300 ⇒ stale=false                          
+  PASS  O-10 同数据 + T_stale=60 ⇒ stale=true                            
+  PASS  O-10 ⇒ stale 由读时阈值决定，非落库值                                     
+  PASS  O-10 ★ 两次查询后 device 行逐字段不变                                    
+  PASS  O-10 ★ 两次查询均零写入语句                                             
+  PASS  O-10 ★ 语句轨迹中不出现 'stale' 字段写入                                  
+  PASS  O-10 ★ 未新增 device_event 行                                     
+  PASS  O-10 presence.js 不含 SQL 写语句                                   
+  PASS  O-10 device-registry.js 的 SQL 中不存在 stale 列                    
+
+===== P1-6-3 current presence contract — O-1 … O-10 ====
+  total 83 | PASS 83 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   P1-6-3-A evidence
+============================================================================
+===== Test-1  stale 限定符（超时不再产生 offline）=====
+  实际响应片段: {"online":true,"presence":{"online":true,"stale":true,"source":"stale","age_seconds":400,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523071}}
+  PASS  T1 status=200                                                 
+  PASS  T1 online=true                                                
+  PASS  T1 presence.online=true                                       
+  PASS  T1 presence.stale=true                                        
+  PASS  T1 presence.source='stale'                                    
+  PASS  T1 age_seconds≈400                                            
+  PASS  T1 timeout_seconds=300                                        
+  PASS  T1 last_event_type='online'                                   
+  PASS  T1 ★绝不产出 source='timeout'                                     
+
+===== Test-2  真实 disconnect（offline 事件权威）=====
+  实际响应片段: {"online":false,"presence":{"online":false,"stale":false,"source":"event","age_seconds":100,"timeout_seconds":300,"last_event_type":"offline","last_event_at":1792523421}}
+  PASS  T2 status=200                                                 
+  PASS  T2 online=false                                               
+  PASS  T2 presence.online=false                                      
+  PASS  T2 presence.source='event'                                    
+  PASS  T2 presence.stale=false                                       
+  PASS  T2 last_event_type='offline'                                  
+
+===== Test-3  无历史事件设备（no_evidence）=====
+  实际响应片段: {"online":false,"presence":{"online":false,"stale":false,"source":"no_evidence","age_seconds":null,"timeout_seconds":300,"last_event_type":null,"last_event_at":null}}
+  PASS  T3 status=200                                                 
+  PASS  T3 online=false                                               
+  PASS  T3 presence.source='no_evidence'                              
+  PASS  T3 presence.stale=false                                       
+  PASS  T3 age_seconds=null                                           
+
+===== Test-4  REVOKED 投影（生命周期优先）=====
+  实际响应片段: {"state":"REVOKED","online":false,"presence":{"online":false,"stale":false,"source":"device_state_revoked","age_seconds":10,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523461}}
+  PASS  T4 status=200                                                 
+  PASS  T4 state='REVOKED'                                            
+  PASS  T4 online=false                                               
+  PASS  T4 presence.source='device_state_revoked'                     
+  PASS  T4 presence.stale=false（与 online=false 不矛盾）                   
+
+===== Test-5  乱序（offline older / online newer ⇒ online 生效）=====
+  实际响应片段: {"online":true,"presence":{"online":true,"stale":false,"source":"event","age_seconds":100,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523371}}
+  PASS  T5 online=true（online 生效）                                     
+  PASS  T5 source='event'                                             
+  PASS  T5 last_event_type='online'（按 created_at 取最新）                 
+
+===== 边界 B1 —— O-3 禁令：任何情况下 timeout 不得产生 offline =====
+  实际响应片段: {"online":true,"presence":{"online":true,"stale":true,"source":"stale","age_seconds":999999,"timeout_seconds":1,"last_event_type":"online","last_event_at":1791523472}}
+  PASS  B1 online=true（不得为 false）                                     
+  PASS  B1 source='stale'（非 timeout / 非 event-offline）                
+  PASS  B1 纯函数：超时 ⇒ online:true                                       
+  PASS  B1 纯函数：超时 ⇒ source:'stale'                                    
+
+===== 边界 B2 —— stale guard（R-18）：offline 早于 last_seen ⇒ 不翻 false =====
+  实际响应片段: {"online":true,"presence":{"online":true,"stale":false,"source":"event","age_seconds":10,"timeout_seconds":300,"last_event_type":"offline","last_event_at":1792523371}}
+  PASS  B2 online=true（晚到的旧 offline 不生效）                              
+  PASS  B2 source='event'（证据新鲜）                                       
+
+===== 边界 B3 —— age == timeout 不判 stale（严格大于）=====
+  PASS  B3 age==timeout ⇒ stale=false                                 
+  PASS  B3 age==timeout ⇒ source='event'                              
+  PASS  B3 age==timeout+1 ⇒ stale=true                                
+  PASS  B3 age==timeout+1 ⇒ source='stale'                            
+
+===== 边界 B4 —— source 枚举收敛（timeout / last_seen 已移除）=====
+  覆盖到的 source: ["no_evidence","event","stale"]
+  PASS  B4 source 不含 'timeout'                                        
+  PASS  B4 source 不含 'last_seen'                                      
+  PASS  B4 source ⊆ {event, stale, no_evidence}                       
+  PASS  B4 所有分支均含 boolean stale                                       
+
+===== 边界 B5 —— 向后兼容（顶层 online 保留且与 presence.online 一致）=====
+  PASS  B5 顶层 online 存在且为 boolean                                     
+  PASS  B5 顶层 online === presence.online                              
+  PASS  B5 presence 块字段齐全                                             
+  PASS  B5 响应不含 password/secret 字段                                    
+
+===== 回归 R1/R2 —— presence 事件写入路径未被破坏 =====
+  POST online  → {"http":200,"recorded":true,"device_id":"288485896ce4","type":"online","event_id":"emqx:dev_288485896ce4:connected:1792523471"}
+  PASS  R1 online 事件 recorded                                         
+  PASS  R1 last_seen 已刷新为事件时间                                         
+  POST 重放    → {"http":200,"recorded":false,"idempotent":true,"device_id":"288485896ce4","type":"online","event_id":"emqx:dev_288485896ce4:connected:1792523471"}
+  PASS  R2 幂等（recorded:false + idempotent:true）                       
+  POST 非设备  → {"http":200,"ignored":"not_device_identity"}
+  PASS  R1 非设备身份被忽略                                                   
+  写后读: {"online":true,"presence":{"online":true,"stale":false,"source":"event","age_seconds":0,"timeout_seconds":300,"last_event_type":"online","last_event_at":1792523471}}
+  PASS  R1 写后读 online=true                                            
+
+===== P1-6-3-A evidence suite (classification: CURRENT) ====
+  total 51 | PASS 51 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   P1-6-3-D hard retirement (V-16)
+============================================================================
+===== P1-6-3-D hard retirement (V-16) ====
+  total 83 | PASS 83 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   P1-8 N-3 secret redaction (R-1…R-11)
+============================================================================
+===== P1-8 · N-3 secret redaction (R-1…R-11) ====
+  total 103 | PASS 102 | FAIL 0 | EXPECTED_FAILURE 1 | UNEXPECTED_PASS 0
+  标记为 EXPECTED_FAILURE_AFTER_P1-6-3（旧契约，仅历史追踪）:
+    - EXPECTED_FAILURE_AFTER_G4R5_B1 R-6 形态A：device_id 回落 clientid（旧语义）
+
+============================================================================
+>>> CURRENT   P3 DT:WP-4 history ingest (8 cases)
+============================================================================
+===== CURRENT   P3 DT:WP-4 history ingest (8 cases · logic-level) ====
+  total 35 | PASS 35 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   BT-1 log_ack contract (L1)
+============================================================================
+===== BT-1 log_ack contract (L1 · 逻辑替身) ====
+  total 60 | PASS 60 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   BT-1 log_ack edge (L2 · 三态/有界)
+============================================================================
+===== BT-1 log_ack edge (L2 · 逻辑替身 · 零网络) ====
+  total 48 | PASS 48 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   BT-1 publish contract predicate (L1)
+============================================================================
+===== BT-1 log_ack contract predicate (L1 · 逻辑替身 · 零网络) ====
+  total 57 | PASS 57 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   BT-1 strict publish predicate (L2 · 端到端)
+============================================================================
+===== BT-1 strict publish predicate (L2 · 端到端逻辑替身 · 零网络) ====
+  total 76 | PASS 76 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   BT-1 ACK timeout phase + budget (A)
+============================================================================
+===== log_ack_timeout_phase ====
+  total 36 | PASS 36 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 B-3 collision detection (L1)
+============================================================================
+===== HD-3 B-3 collision detection (L1 · 逻辑替身) ====
+  total 61 | PASS 61 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 H-3-7-b log_conflict tracking (L1)
+============================================================================
+===== HD-3 H-3-7-b log_conflict tracking (L1 · 逻辑替身) ====
+  total 54 | PASS 54 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 C-4 conflict retry (L1)
+============================================================================
+===== log_conflict_retry ====
+  total 38 | PASS 38 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 A-1 boot_seq rewind guard (L1)
+============================================================================
+===== HD-3 A-1 server-side boot_seq rewind guard (L1) ====
+  total 31 | PASS 31 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 A-1 boot_seq watermark (L1)
+============================================================================
+===== log_boot_watermark ====
+  total 48 | PASS 48 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 R-11 watermark rebase (L1)
+============================================================================
+===== log_boot_watermark_rebase ====
+  total 85 | PASS 85 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   HD-3 P-2 cloud_api downlink topic
+============================================================================
+===== HD-3 P-2 · cloud_api downlink topic ====
+  total 36 | PASS 36 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   Defect C mqtt TEXT columns (result frame)
+============================================================================
+===== mqtt_result_frame ====
+  total 41 | PASS 40 | FAIL 0 | EXPECTED_FAILURE 1 | UNEXPECTED_PASS 0
+  标记为 EXPECTED_FAILURE_AFTER_P1-6-3（旧契约，仅历史追踪）:
+    - EXPECTED_FAILURE_AFTER_G4R5_B2 C11 列清单未新增（仍是既有 19 列）
+
+============================================================================
+>>> CURRENT   F-C2-8 numeric log level contract
+============================================================================
+===== CURRENT   F-C2-8 numeric log level contract ====
+  total 95 | PASS 95 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   F-C2-9 nested log envelope shape
+============================================================================
+===== CURRENT   F-C2-9 nested log envelope shape ====
+  total 57 | PASS 57 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   计划:WP-7 history retention (L1 logic)
+============================================================================
+===== CURRENT   计划:WP-7 history retention (L1 logic) ====
+  total 142 | PASS 142 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   G4-R5 B-1 topic → device_id 归属 (52 cases)
+============================================================================
+===== suite ====
+  total 68 | PASS 68 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   G4-R5 B-2 K-2 幂等键与写入分支 (43 cases)
+============================================================================
+===== suite ====
+  total 49 | PASS 49 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> CURRENT   S-3 入站 S2 校验 + observe 防洪 (71 cases)
+============================================================================
+===== suite ====
+  total 71 | PASS 71 | FAIL 0 | EXPECTED_FAILURE 0 | UNEXPECTED_PASS 0
+
+============================================================================
+>>> LEGACY    P1-6-1 (7 expected failures)
+============================================================================
+===== P1-6-1 legacy suite (classification: LEGACY) ====
+  total 133 | PASS 126 | FAIL 0 | EXPECTED_FAILURE 7 | UNEXPECTED_PASS 0
+  标记为 EXPECTED_FAILURE_AFTER_P1-6-3（旧契约，仅历史追踪）:
+    - PR-13b last_seen 超时 ⇒ online=false
+    - PR-14 默认 300 内在线；阈值 30 ⇒ offline
+    - C1 无事件 + 新鲜 ⇒ online / source=last_seen
+    - C5 offline 且 evtAt < lastSeen 但已超时 ⇒ 离线 / source=timeout
+    - C7 online 事件不影响超时判定 ⇒ 超时仍离线
+    - C9 age = timeout+1 ⇒ 离线
+    - PR-21b 对照：非 REVOKED ⇒ source=last_seen / online=true
+
+============================================================================
+>>> AGGREGATE
+============================================================================
+  OK    exit=0  test\current\o1_o10_contract.test.mjs
+  OK    exit=0  test\current\p163a_evidence.test.mjs
+  OK    exit=0  test\current\hard_retirement.test.mjs
+  OK    exit=0  test\current\redaction.test.mjs
+  OK    exit=0  test\current\history_ingest.test.mjs
+  OK    exit=0  test\current\log_ack.test.mjs
+  OK    exit=0  test\current\log_ack_edge.test.mjs
+  OK    exit=0  test\current\log_ack_contract.test.mjs
+  OK    exit=0  test\current\log_ack_publish_strict.test.mjs
+  OK    exit=0  test\current\log_ack_timeout_phase.test.mjs
+  OK    exit=0  test\current\log_ack_collision.test.mjs
+  OK    exit=0  test\current\log_conflict.test.mjs
+  OK    exit=0  test\current\log_conflict_retry.test.mjs
+  OK    exit=0  test\current\log_bootseq_guard.test.mjs
+  OK    exit=0  test\current\log_boot_watermark.test.mjs
+  OK    exit=0  test\current\log_boot_watermark_rebase.test.mjs
+  OK    exit=0  test\current\cloud_api_downlink_topic.test.mjs
+  OK    exit=0  test\current\mqtt_result_frame.test.mjs
+  OK    exit=0  test\current\log_level_contract.test.mjs
+  OK    exit=0  test\current\log_envelope_shape.test.mjs
+  OK    exit=0  test\current\retention_policy.test.mjs
+  OK    exit=0  test\current\g4r5_b1_topic_device_id.test.mjs
+  OK    exit=0  test\current\g4r5_b2_dedup_key.test.mjs
+  OK    exit=0  test\current\s3_ingest_validate.test.mjs
+  OK    exit=0  test\legacy\p161_contract.test.mjs
+
+所有套件通过（含 legacy 套件的 EXPECTED_FAILURE，属预期）

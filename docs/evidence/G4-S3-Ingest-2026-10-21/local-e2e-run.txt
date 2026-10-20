@@ -1,0 +1,35 @@
+# target = http://127.0.0.1:8792   ts = 1792523696
+# 设备 = 0b0053a00e2e   租户 = n302933b
+L-1      合法 guo_feeder/<dev>/up                                     status=200  OK
+         body: OK
+L-2      合法 $tenants/.../down                                       status=200  OK
+         body: OK
+L-3      合法 $tenants/.../log                                        status=200  OK
+         body: OK
+O-1      ★ 空 topic（observe 应照旧 200 + 写入）                            status=200  OK
+         body: OK
+O-2      ★ 空 payload（observe 应照旧 200 + 写入）                          status=200  OK
+         body: OK
+O-3      ★ 非法方向 /upx（observe 应照旧写入）                                 status=200  OK
+         body: OK
+O-4      ★ 族名不符 ($SYS/...) 仍写入                                      status=200  OK
+         body: OK
+D-1      去重：第 1 次投递同一消息（应只留 1 行）                                    status=200  OK
+         body: OK
+D-2      去重：第 2 次投递同一消息（应只留 1 行）                                    status=200  OK
+         body: OK
+D-3      去重：第 3 次投递同一消息（应只留 1 行）                                    status=200  OK
+         body: OK
+N-1      缺 msg_id(i) 第 1 次（不得合并）                                    status=200  OK
+         body: OK
+N-2      缺 msg_id(i) 第 2 次（不得合并）                                    status=200  OK
+         body: OK
+C-1      cloud_api 非法 device_id ⇒ 400                               status=400  OK
+         body: {"error":"invalid_device_id","hint":"cloud_api 下发必须在 body 提供 device_id（12 位小写 hex）；不接受缺省，也不会回落到通用主题 guo_feeder/down"}
+C-2      /api/ingest 无 key（鉴权结果未改动）                                 status=401  OK
+         body: {"error":"unauthorized"}
+
+# 洪泛测试：连发 40 条空 topic 请求
+# 状态码分布: {200: 40}
+
+# cases=15  mismatched=0

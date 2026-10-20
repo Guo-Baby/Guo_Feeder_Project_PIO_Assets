@@ -1,0 +1,28 @@
+# 采集时间: 2026-10-21 03:16:15 +0800
+=== V-1 deployments status（期望 1fb56499… 100%）===
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Created:     2026-10-20T19:16:03.867Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (deployment)
+Message:     -
+Version(s):  (100%) 1fb56499-49fb-4e07-b2c6-6fd35cf60329
+                 Created:  2026-10-20T19:16:01.101Z
+                     Tag:  -
+                 Message:  -
+
+=== V-2 versions view：env 绑定必须 INGEST_VALIDATION=observe ===
+Version ID:  1fb56499-49fb-4e07-b2c6-6fd35cf60329
+Created:     2026-10-20T19:16:01.101Z
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.INGEST_VALIDATION ("observe")                                  Environment Variable      
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+
+=== V-3 确认未启用 enforce（源码默认 + toml 值）===
+46:INGEST_VALIDATION = "observe"
+
+=== V-4 D1 绑定未变 ===
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.INGEST_VALIDATION ("observe")                                  Environment Variable      
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+

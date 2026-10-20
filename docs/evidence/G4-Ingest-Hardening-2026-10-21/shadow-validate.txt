@@ -1,0 +1,77 @@
+# 采集时间: 2026-10-21 02:48:43 +0800
+# 目的：C-1 加固前影子校验（只读 SELECT）—— 若按严格校验器拒绝，历史库里有多少行会被拒
+# 校验器 S1 定义: topic 非空 且 topic 含 guo_feeder 且 direction ∈ {up,down,log} 且 payload 非空
+# ★ 不要求 msg_id（dedup_key IS NULL 是合法设计，P-5 已证）
+
+=== Q1 影子校验拒绝率 ===
+[
+  {
+    "results": [
+      {
+        "n_total": 5754,
+        "n_topic_empty": 9,
+        "n_topic_no_guofeeder": 0,
+        "n_dir_not_whitelist": 876,
+        "n_payload_empty": 0,
+        "n_msgid_empty": 1700,
+        "n_reject_strict": 876
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 13.2547
+      },
+      "duration": 13.2547,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2146304,
+      "rows_read": 11508,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== Q2 topic 形态分布 ===
+[
+  {
+    "results": [
+      {
+        "shape": "guo_feeder/<X>/<dir>",
+        "n": 4202
+      },
+      {
+        "shape": "$tenants/.../guo_feeder/<X>/<dir>",
+        "n": 1543
+      },
+      {
+        "shape": "<EMPTY>",
+        "n": 9
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 5.2178
+      },
+      "duration": 5.2178,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2146304,
+      "rows_read": 11511,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
