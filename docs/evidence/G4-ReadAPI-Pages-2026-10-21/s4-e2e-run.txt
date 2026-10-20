@@ -1,0 +1,50 @@
+== A. 未登录 ==
+  PASS  A-1    GET /api/auth/session 未登录                            actual=False expect=False 
+  PASS  A-2    turnstile_site_key 未配置时为 null                        actual=None expect=None 
+  PASS  A-3    未登录访问 /app.html 被重定向                                 actual=302 expect=302 
+  PASS  A-4    重定向目标为登录页且带 next                                     actual=True expect=True http://127.0.0.1:8793/login.html?next=%2Fapp.html
+  PASS  A-5    未登录调代理 ⇒ 401                                         actual=401 expect=401 
+== B. 登录 ==
+  PASS  B-1    错口令 ⇒ 401                                            actual=401 expect=401 
+  PASS  B-2    返回剩余尝试次数                                             actual=True expect=True 
+  PASS  B-3    正确口令 ⇒ 200                                           actual=200 expect=200 
+  PASS  B-4    响应 ok:true                                           actual=True expect=True 
+  PASS  B-5    下发 gf_session                                        actual=True expect=True 
+  PASS  B-6    HttpOnly 属性                                          actual=True expect=True 
+  PASS  B-7    带 cookie 的会话状态                                       actual=True expect=True 
+  PASS  B-8    已登录访问 /app.html 不被拦（200 或 308→/app）                  actual=True expect=True status=308
+  PASS  B-9    已登录访问 /app（clean URL）得到页面                            actual=200 expect=200 
+  PASS  B-10   ★ 未登录访问 /app（clean URL）仍被拦                           actual=302 expect=302 http://127.0.0.1:8793/login.html?next=%2Fapp
+== C. 同源代理 → 真实 Worker → 本地 D1 ==
+  PASS  C-1    metrics 经代理可达                                        actual=200 expect=200 
+  PASS  C-2    表规模为真实计数（telemetry=5）                                actual=5 expect=5 
+  PASS  C-3    ingest.scope 自陈为 isolate                             actual=isolate expect=isolate 
+  PASS  C-4    ingest.persistent 为 false                            actual=False expect=False 
+  PASS  C-5    当前生效模式为 observe                                      actual=observe expect=observe 
+  PASS  C-6    日志读端点经代理可达                                           actual=200 expect=200 
+  PASS  C-7    返回 3 条                                               actual=3 expect=3 
+  PASS  C-8    has_more=true                                        actual=True expect=True 
+  PASS  C-9    按级别过滤生效                                              actual=1 expect=1 weight not ready
+  PASS  C-10   遥测读端点经代理可达                                           actual=200 expect=200 
+  PASS  C-11   keyset 游标可用                                          actual=True expect=True 
+  PASS  C-12   设备快照经代理可达                                            actual=200 expect=200 
+  PASS  C-13   快照含设备状态                                              actual=CLAIM_PENDING expect=CLAIM_PENDING 
+  PASS  C-14   每类遥测各取最新一条（3 类）                                      actual=3 expect=3 
+  PASS  C-15   counts.telemetry=5                                   actual=5 expect=5 
+== D. 白名单（写端点不可被代理） ==
+  PASS  D-1    拒绝 /api/read/admin/reconcile                         actual=403 expect=403 
+  PASS  D-2    拒绝 /api/read/admin/device/0b0053a00e2e/revoke        actual=403 expect=403 
+  PASS  D-3    拒绝 /api/read/history/ingest                          actual=403 expect=403 
+  PASS  D-4    拒绝 /api/read/admin/device/../../x/snapshot           actual=403 expect=403 
+  PASS  D-5    拒绝 /api/read/                                        actual=403 expect=403 
+== E. EMQX 写入入口不被中间件拦 ==
+  PASS  E-1    GET /api/webhook 可达（既有状态页）                           actual=200 expect=200 MQTT Router OK
+== F. 登出 ==
+  PASS  F-1    登出 200                                               actual=200 expect=200 
+  PASS  F-2    清除 cookie（Max-Age=0）                                 actual=True expect=True 
+== G. 限流（独立 IP 段不适用，此处用同一路径连续错口令） ==
+  PASS  G-1    连续失败第 5 次起出现 429                                     actual=True expect=True codes=[401, 401, 401, 401, 429, 429]
+  PASS  G-2    封禁后即使口令正确也被拒（429）                                    actual=429 expect=429 
+
+===== S4 e2e =====
+  total 40 | PASS 40 | FAIL 0
