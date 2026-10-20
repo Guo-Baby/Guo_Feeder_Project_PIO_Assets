@@ -1,0 +1,15 @@
+# 采集时间: 2026-10-21 04:45:44 +0800（只读验证，pages.dev 直连可达）
+# 目标: https://guo-feeder-pagesdev.pages.dev
+
+=== V-1 ★ EMQX 写入入口未被影响（最关键回归）===
+GET /api/webhook        = MQTT Router OK [200]
+GET /api/history/ingest = 200
+GET /api/presence/event = 200
+
+=== V-2 访问控制 ===
+GET /app.html 无 cookie = 302 -> https://guo-feeder-pagesdev.pages.dev/login.html?next=%2Fapp.html
+GET /app 无 cookie      = 302 -> https://guo-feeder-pagesdev.pages.dev/login.html?next=%2Fapp
+GET /login.html         = 308
+GET /api/auth/session   = {"authenticated":false,"turnstile_site_key":null,"ttl_s":43200}
+GET /api/read/metrics   = 401
+POST /api/auth/login    = {"error":"unauthorized","remaining_attempts":4} [401]

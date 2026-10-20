@@ -1,0 +1,23 @@
+# 采集时间: 2026-10-21 04:42:40 +0800
+=== 部署前 HEAD ===
+7c96b1894cdd2451ff9dc7fa70f234199d2dcfab
+=== 工作区 ===
+ M guo-feeder-api/src/index.js
+ M guo-feeder-api/test/run_all.mjs
+?? guo-feeder-api/src/read-api.js
+?? guo-feeder-api/test/current/read_api.test.mjs
+?? guo-feeder-pagesdev/app.html
+?? guo-feeder-pagesdev/functions/_lib/
+?? guo-feeder-pagesdev/functions/_middleware.js
+?? guo-feeder-pagesdev/functions/api/auth/
+?? guo-feeder-pagesdev/functions/api/read/
+?? guo-feeder-pagesdev/login.html
+?? tests/
+=== 当前生效版本 ===
+Created:     2026-10-20T20:04:15.346Z
+Version(s):  (100%) 4eb8d91b-bdf7-42cb-9e22-81afd3670096
+                 Created:  2026-10-20T20:04:14.774Z
+=== INGEST_VALIDATION 必须仍为 observe ===
+46:INGEST_VALIDATION = "observe"
+=== 新增只读端点清单（必须无写操作）===
+(以上应为空)

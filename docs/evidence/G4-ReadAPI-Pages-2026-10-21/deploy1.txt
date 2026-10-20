@@ -1,0 +1,25 @@
+# Worker 部署（只读端点 + 指标端点）
+# 命令: wrangler deploy
+# 部署前版本: 4eb8d91b-bdf7-42cb-9e22-81afd3670096（100%）
+# 回滚目标(version id): 4eb8d91b-bdf7-42cb-9e22-81afd3670096
+# 开始时间: 2026-10-21 04:42:52 +0800
+----------------------------------------
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Total Upload: 173.45 KiB / gzip: 43.61 KiB
+Worker Startup Time: 2 ms
+Your Worker has access to the following bindings:
+Binding                                 Resource                  
+env.guofeeder_DB (guofeeder)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")            Environment Variable      
+env.INGEST_VALIDATION ("observe")       Environment Variable      
+
+Uploaded guo-feeder-api (7.25 sec)
+Deployed guo-feeder-api triggers (1.30 sec)
+  https://guo-feeder-api.guobaby.workers.dev
+  schedule: 0 3 * * *
+Current Version ID: 9cdcdcef-4550-4e14-9975-69f9a0c985b5
+----------------------------------------
+# 结束时间: 2026-10-21 04:43:06 +0800
+# deploy_exit=0

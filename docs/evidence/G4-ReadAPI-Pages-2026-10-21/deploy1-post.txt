@@ -1,0 +1,22 @@
+# 采集时间: 2026-10-21 04:43:13 +0800
+=== 生效状态（期望 9cdcdcef… 100%）===
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Created:     2026-10-20T20:43:03.084Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (deployment)
+Message:     -
+Version(s):  (100%) 9cdcdcef-4550-4e14-9975-69f9a0c985b5
+                 Created:  2026-10-20T20:43:02.254Z
+                     Tag:  -
+                 Message:  -
+
+=== 新版本绑定 ===
+Version ID:  9cdcdcef-4550-4e14-9975-69f9a0c985b5
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.INGEST_VALIDATION ("observe")                                  Environment Variable      
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+
+=== 制品==源码（哈希复核）===
+61c3f7e6a4bd06661eb1747cceed52531c0e3b205425163edc0348ac7f12c3e0 *src/index.js
+b9705de1faffbde22fb45f3090c4fa4fe93167909268ba52680892bf2ef87478 *src/read-api.js
