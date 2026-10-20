@@ -41,7 +41,8 @@
 > ★ **`2026-10-21` 修正**：本节原写的 `② ≈ ①`、`① ≈ accepted + duplicate`、`④ == Σ accepted`
 > 三条关系**全部作废**（原因见 `G4-Production-Change-Plan-Review-2026-10-20.md` §E.4）：
 > `cloud_ack_ok` 是**批次**数不是条数；`③` 的四个计数 **我方不可观测**
-> （`/api/history/ingest` 不打印，响应只回 EMQX Action）；`seq` 也不是 boot 内序号。
+> （`/api/history/ingest` 不打印，响应只回 EMQX Action）；`seq` 是**跨 boot 连续**序号
+> （**不是** boot 内序号，权威定义见 `docs/interfaces/log_envelope_contract.md` §2.0）。
 > 现行判据以 `G4-Production-Change-Plan-Rev2-2026-10-20.md` §5.3 的 `I-1…I-9` 为准。
 
 **目标**：在**同一时间窗口**内（且 `boot_seq` **不变**），让下面几段数字**可比**。
@@ -143,6 +144,12 @@ Arduino `String`、第三方库（含 mbedTLS）、IDF 自身分配**不在覆�
 | 6-5 | 连续块 | 全程 | `drift.dram.largest_min`（**碎片硬指标**，比占用率更有意义） |
 | 6-6 | 低水位 | 全程 | `dram.minimum_free_since_boot` |
 | 6-7 | 栈高水位 | 全程 | 先跑 `mw probe` 确认口径，再读 `stack.used_bytes` |
+| **6-8** | **内部 DRAM 峰值占用（★ `R-3` 现行阈值）** | 全程 + 结论 | `(internal.total − minimum_free) / internal.total` **严格 `< 85%`** ⇒ `PASS`；`≥ 85%` ⇒ `FAIL`。分母**只许** `internal.total`（≈251 KB），**禁** `327 680`。数据缺失 / `total=0` / 窗口不足 ⇒ **`NOT VERIFIED`**，不得记 `PASS` |
+
+> ★ **`6-8` 的权威定义**：`docs/architecture/G-4-Gate-Revision-Record-2026-10-20.md` **§5（`R-3`）**。
+> 历史 `77.08%` / `77.16%` / `82.8%` 在 70% 规则下仍记 `FAIL`（**不追溯修改**）；
+> 换算到 85% 只作口径说明，**不得**用于宣称 `G-4` 通过。
+> `85%` 通过**不**代表 `loop()` P99（`6-3`）、连续块（`6-5`）、栈（`6-7`）通过 —— 四项互相独立。
 
 ★ 配置必须**生产形态**：OLED 真实刷新、`weight.enable=true`。
 否则结论只是"缩减配置"的结论（`S-3-O3` 已踩过）。

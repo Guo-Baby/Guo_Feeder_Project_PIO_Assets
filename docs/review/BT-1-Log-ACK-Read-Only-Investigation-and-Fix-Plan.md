@@ -894,7 +894,7 @@ EMQX Action ──POST──▶ Pages 中转 ──▶ Worker /api/history/inges
 |---|---|---|---|---|
 | CPU | `loop()` 单轮耗时 P50/P99；`cloud_poll()` 单次耗时 | `micros()` 埋点 + `log` 侧信道（**注意：埋点本身会扰动 496 环计数**，优先用 INFO） | 连续 **2 h** 稳态 + 30 min 突发 | `loop()` P99 **< 20 ms**（现无基线，需先测**修复前**同一指标做对照） |
 | 实时性 | 命令下行 → 执行响应延迟 P99 | `[Cloud] MQTT RX` → `log_emit(LOG_MQTT_CMD_*)` 时间戳差 | 同左 | P99 **< 500 ms** |
-| 堆 / PSRAM | `heap_caps_get_free_size(MALLOC_CAP_8BIT / SPIRAM)` 最小水位 | 周期采样 | 同左 | 内部 DRAM 峰值占用 **< 70%**；PSRAM 无泄漏（斜率 ≈ 0） |
+| 堆 / PSRAM | `heap_caps_get_free_size(MALLOC_CAP_8BIT / SPIRAM)` 最小水位 | 周期采样 | 同左 | 内部 DRAM 峰值占用 **< 85%** ★`2026-10-21` 批准（原 `< 70%` 已被 `G-4-Gate-Revision-Record` **`R-3`** 取代；公式与分母见该记录 §5.2）；PSRAM 无泄漏（斜率 ≈ 0） |
 | LittleFS | 擦写次数 / 写入字节 / 段创建-删除频率 | `flash_drop_segment` / `flash_create_segment` 计数 | 24 h | 段删除频率 ≤ **1 次 / 10 min**（稳态）；**无** `evict seg … unacked>0` |
 | Wi-Fi / MQTT | 上下行字节/秒；重连续率；QoS1 重传数 | 路由器/EMQX 侧统计 + `cloud_*` 计数 | 24 h | 上行 **< 1 KB/s** 稳态；意外重连 **0 次/24 h** |
 | 竞争 | 喂食 / 饮水（`dispense_guard`）/ 传感器 / OLED 的时间片占用 | 各模块耗时段埋点 | 同左 | 任何非日志模块的 P99 延迟**不得**比修复前劣化 **> 20%** |
@@ -1013,7 +1013,7 @@ EMQX Action ──POST──▶ Pages 中转 ──▶ Worker /api/history/inges
 | `BT1-T07` | 硬件 | `BT1-T04` | 设备重启后的序号与缓存恢复 | `boot_seq` 增；`acked_seq/gc_seq` 归 0；重放 → `duplicate` → ACK | 串口 + D1 | D1 无新行；最终段被回收 | ⛔ `NOT RUN` |
 | `BT1-T08` | 硬件 | `BT1-T04` | 网络断开及恢复 | 离线不消费；重连补发 | 串口 `offline skip` + sweep | 无丢失 | ⛔ `NOT RUN` |
 | `BT1-T09` | 硬件 | `BT1-T04` | 缓存容量边界与淘汰策略 | 见 I-8 | 侧信道计数 | `hovf=0`；无非确认记录被删 | ⛔ `NOT RUN` |
-| `BT1-T10` | 硬件 | `BT1-T04` | **500 ms 间隔下的负载评估** | 见 §6.2 全部指标 | 埋点 + 采样 | 阈值待人工批准 | ⛔ `NOT RUN`（**阈值未批准**） |
+| `BT1-T10` | 硬件 | `BT1-T04` | **500 ms 间隔下的负载评估** | 见 §6.2 全部指标 | 埋点 + 采样 | **DRAM 项已批准为 `< 85%`**（`2026-10-21` · `R-3`）；其余指标仍未批准 | ⛔ `NOT RUN`（**除 DRAM 外仍无批准阈值**；且测量窗口未跑） |
 | `BT1-T11` | 硬件 | `BT1-T04` | 高负载 / 突发 / 积压恢复 | 见 I-8 / I-9 | 串口 + D1 | 无缺号、无重复 | ⛔ `NOT RUN` |
 | `BT1-T12` | 硬件 | `BT1-T04` | 长时间稳定性（≥72 h） | `boot_seq` 不变 · `drop_*` 增量 0 · `hovf=0` | 串口 + 侧信道 | 全部成立 | ⛔ `NOT RUN` |
 | `BT1-T13` | 硬件回归 | `BT1-T04` | 喂食 / 饮水 / 传感器 / 命令响应 / OLED **+ 日志子系统回归** | 功能与修复前一致；**且**日志子系统断言按 **§7.1 四类**重新组织 | 重设计后的回归夹具 | 见 **§7.1**；**禁止**为让旧断言通过而整体删除 `qdrop` / `evict_inf` / `replay` / 段回收类断言 | ⛔ `BLOCKED`（**夹具需按 §7.1 重设计**） |
