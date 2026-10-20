@@ -33,6 +33,11 @@
 
 ## architecture/ 架构
 
+> ★ **最近一轮（`2026-10-20`）优先读这三份**：
+> `G4-Log-Credibility-and-Observability-Report-2026-10-20.md`（A–G 总结）·
+> `G4-Production-Change-Plan-2026-10-20.md`（生产变更申请，**未授权**）·
+> `G4-Real-Hardware-Acceptance-Checklist.md`（焊接后真机验收清单）。
+
 | 文档 | 说明 |
 |---|---|
 | `docs/architecture/Cloud-APP-Platform-Plan.md` | **云端 + 安卓端正式架构规划 v2** —— EMQX Serverless + Cloudflare Worker/Pages/D1 + Homie 5 + MQTT-Tiles；含 P0–P6 实施路线、容量核算、设备身份与 ACL 模型。**P0–P6 的实施依据** |
