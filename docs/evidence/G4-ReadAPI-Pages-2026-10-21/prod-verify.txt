@@ -1,0 +1,41 @@
+已加载 [PAGES] 段的键：['ADMIN_API_TOKEN', 'SESSION_SECRET', 'UI_PASSWORD']
+
+== A. 未登录 ==
+  PASS  A-1  会话状态 authenticated                             actual=False expect=False 
+  PASS  A-2  /app 未登录被重定向                                   actual=302 expect=302 
+  PASS  A-3  代理未登录 401                                      actual=401 expect=401 
+
+== B. 登录（错口令 → 正确口令）==
+  PASS  B-1  错口令 401                                        actual=401 expect=401 unauthorized
+  PASS  B-2  正确口令 200                                       actual=200 expect=200 
+  PASS  B-3  响应 ok:true                                     actual=True expect=True 
+  PASS  B-4  下发 gf_session                                  actual=True expect=True 
+  PASS  B-5  HttpOnly + Secure + SameSite=Lax               actual=True expect=True 
+  PASS  B-6  带 cookie ⇒ authenticated                       actual=True expect=True 
+  PASS  B-7  已登录访问 /app 得到页面                                actual=200 expect=200 
+
+== C. 同源代理 → Worker → D1（真实生产数据）==
+  PASS  C-1  metrics 200                                    actual=200 expect=200 
+      表规模 = {'mqtt_messages': 5772, 'telemetry_history': 20, 'log_history': 834, 'device': 10, 'device_event': 266}
+  PASS  C-2  tables 为字典且含 log_history                       actual=True expect=True 
+  PASS  C-3  ingest.scope=isolate                           actual=isolate expect=isolate 
+  PASS  C-4  生效模式 observe                                   actual=observe expect=observe 
+      ingest 计数 = {'requests_observed': 0, 'invalid_total': 0, 'unauth_write_attempts': 0, 'unresolved_total': 0}
+  PASS  C-5  日志读端点 200                                      actual=200 expect=200 
+  PASS  C-6  返回 ≤5 条                                        actual=True expect=True count=5
+  PASS  C-7  遥测读端点 200                                      actual=200 expect=200 count=3
+  PASS  C-8  真实设备快照 200                                     actual=200 expect=200 
+      state=REGISTERED counts={'telemetry': 20, 'log': 834, 'event': 179}
+
+== D. 白名单仍生效 ==
+  PASS  D-1  拒绝 /api/read/admin/reconcile                   actual=403 expect=403 
+  PASS  D-2  拒绝 /api/read/admin/device/288485896ce4/revoke  actual=403 expect=403 
+
+== E. ★ EMQX 入口回归 ==
+  PASS  E-1  /api/webhook 仍 200                             actual=200 expect=200 MQTT Router OK
+
+== F. 登出 ==
+  PASS  F-1  登出 200                                         actual=200 expect=200 
+
+===== S4 prod verify =====
+  total 22 | PASS 22 | FAIL 0

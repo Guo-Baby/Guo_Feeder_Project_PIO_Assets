@@ -81,17 +81,44 @@ Pages dev 127.0.0.1:8793  →  Worker dev 127.0.0.1:8794  →  本地 D1（--loc
 
 另一处同类陷阱：`[[path]].js` 里 `params.path` **不含** `api/read`（曾因此白名单全线 403）。
 
-## 6. ★★ 还差 4 个环境变量（我无法代填）
+## 5.5 ★ 密钥配置 + 生产验证（`05:16–05:20`，已解除阻塞）
+
+| 步骤 | 结果 |
+|---|---|
+| 上传 3 枚 Pages secret | `secret-put.txt`：**3 secrets successfully uploaded**；`secret-list.txt` 确认三键存在（Value Encrypted） |
+| 重新部署 Pages | `deploy3.txt`：`05:17:33`、`exit=0` |
+| **生产验证** | `prod-verify.txt`：**22/22** |
+
+生产实测（真实数据，非 mock）：
+
+```
+表规模   mqtt_messages=5772 · telemetry_history=20 · log_history=834 · device=10 · device_event=266
+设备     288485896ce4  state=REGISTERED  counts={telemetry:20, log:834, event:179}
+ingest   scope=isolate · persistent=false · mode=observe
+         requests_observed=0 · invalid_total=0 · unauth_write_attempts=0 · unresolved_total=0
+★ EMQX   /api/webhook 仍 200 "MQTT Router OK"
+```
+
+★ **`invalid_total=0` 不能当作「0 次非法投递」** —— 同一份响应里 `requests_observed=0`，
+说明这个 isolate 冷启动后**还没处理过任何入站报文**。0 是「没观测到」，不是「观测到 0 次非法」。
+切 `enforce` 前必须多 isolate 采样。
+
+**密钥保管**：值**仅**存 `D:\Guo_Feeder_Project\Cloudflare_Assets\.secrets.local`
+（gitignore 第 15 行覆盖，`git ls-files` 确认从未被追踪）。文件已按
+`[WORKER]` / `[PAGES]` / `[TURNSTILE]` 三段归类。上传走 `pages secret bulk <file>`，
+值**不出现在命令行**，因此也不进 shell 历史。本证据目录**不含任何密钥**。
+
+## 6. ~~还差 4 个环境变量~~ → 只剩 Turnstile（可选）
 
 Pages 项目设置 → Settings → Environment variables（production），配完需**重新部署 Pages** 才生效：
 
-| 变量 | 必需 | 说明 |
+| 变量 | 必需 | 状态 |
 |---|---|---|
-| `UI_PASSWORD` | ✅ | 登录口令自选 |
-| `SESSION_SECRET` | ✅ | ≥16 字符随机串（如 `openssl rand -hex 32`） |
-| `ADMIN_API_TOKEN` | ✅ | **复用 Worker 现有的那个**（与 Worker secret 同值） |
-| `TURNSTILE_SECRET` | ⬜ | 启用人机验证才需要 |
-| `TURNSTILE_SITE_KEY` | ⬜ | 同上（可在 Cloudflare → Turnstile 免费创建 widget） |
+| `UI_PASSWORD` | ✅ | **已配置**（用户指定） |
+| `SESSION_SECRET` | ✅ | **已配置**（`secrets.token_hex(32)` 随机生成，64 hex） |
+| `ADMIN_API_TOKEN` | ✅ | **已配置**（与 Worker 同值） |
+| `TURNSTILE_SECRET` | ⬜ | **未创建** —— 本机无 `CLOUDFLARE_API_TOKEN`，Turnstile 只能经 API/Dashboard 创建，wrangler 无此能力（见 `UI-TURNSTILE-PENDING`） |
+| `TURNSTILE_SITE_KEY` | ⬜ | 同上 |
 
 未配置时的行为（**已实测**）：登录返回 401（**不泄露「未配置」**）、代理返回 500 或 401。
 ⇒ **现有 EMQX 链路完全不受影响**，只是 UI 暂时不可用。
