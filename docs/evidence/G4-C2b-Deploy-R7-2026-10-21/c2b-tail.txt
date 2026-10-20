@@ -1,0 +1,13 @@
+# 采集时间: 2026-10-21 04:05:05 +0800
+# 目的：真实流量存在期间抓 25 s 日志，检查 observe 是否报告 rejected（只读）
+
+--- raw 行数: 29 ---
+--- validate rejected 命中数: 0 ---
+--- unresolved 命中数: 0 ---
+--- 前 6 行原文 ---
+AggregateError [ETIMEDOUT]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+    at TCPConnectWrap.callbackTrampoline (node:internal/async_hooks:130:17) {
+  code: 'ETIMEDOUT',
+  [errors]: [

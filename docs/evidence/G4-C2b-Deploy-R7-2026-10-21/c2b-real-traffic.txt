@@ -1,0 +1,265 @@
+# 采集时间: 2026-10-21 04:04:50 +0800（只读）
+# 目的：真实流量恢复 ⇒ 核查 C-2 P-1' 的真实版（$tenants 归属）与方向分布
+
+=== T-1 最近 16 行真实流量 ===
+[
+  {
+    "results": [
+      {
+        "id": 5790,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6176",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:54",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5789,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6175",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:52",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5788,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6174",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:50",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5787,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6173",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:48",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5786,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6172",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:46",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5785,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6171",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:44",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5784,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6170",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:42",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5783,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6169",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:40",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5782,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6168",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:38",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5781,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6167",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:36",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5780,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6166",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 20:02:33",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5779,
+        "device_id": "288485896ce4",
+        "dir": "up",
+        "msg_id": "",
+        "dk": "NULL",
+        "t_utc": "2026-10-20 20:02:33",
+        "topic": "guo_feeder/288485896ce4/up"
+      },
+      {
+        "id": 5778,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6165",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 18:52:33",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5777,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6164",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 18:51:39",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5776,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6163",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:46:37",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      },
+      {
+        "id": 5775,
+        "device_id": "288485896ce4",
+        "dir": "down",
+        "msg_id": "ack:25:6162",
+        "dk": "KEY",
+        "t_utc": "2026-10-20 17:45:36",
+        "topic": "$tenants/n302933b/guo_feeder/288485896ce4/down"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.3498
+      },
+      "duration": 0.3498,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 16,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== T-2 $tenants 归属汇总（历史全 http_api，期望出现 12-hex）===
+[
+  {
+    "results": [
+      {
+        "device_id": "288485896ce4",
+        "n": 16,
+        "mn": 5774,
+        "mx": 5790,
+        "last_ms": 1792526574758
+      },
+      {
+        "device_id": "0b0077a7e402",
+        "n": 1,
+        "mn": 5765,
+        "mx": 5765,
+        "last_ms": 1792518021530
+      },
+      {
+        "device_id": "http_api",
+        "n": 1539,
+        "mn": 73,
+        "mx": 5763,
+        "last_ms": 1792514438028
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.5858
+      },
+      "duration": 1.5858,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 7327,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== T-3 方向分布 ===
+[
+  {
+    "results": [
+      {
+        "dir": "up",
+        "n": 2626,
+        "mx": 5779
+      },
+      {
+        "dir": "down",
+        "n": 2265,
+        "mx": 5790
+      },
+      {
+        "dir": "unknown",
+        "n": 876,
+        "mx": 3483
+      },
+      {
+        "dir": "log",
+        "n": 1,
+        "mx": 5766
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 4.1242
+      },
+      "duration": 4.1242,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 11540,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

@@ -1,0 +1,102 @@
+# 采集时间: 2026-10-21 04:04:35 +0800（部署 04:04:19 后，只读）
+# 目的：① 证明本次部署自身未写入生产 D1；② 记录真实流量与 G4-R7 可观测性边界
+
+=== P-1 生产规模（只读）===
+[
+  {
+    "results": [
+      {
+        "n": 5768,
+        "mn": 1,
+        "mx": 5790,
+        "id_gap": 22,
+        "keyed": 20
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.2912
+      },
+      "duration": 2.2912,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 5768,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== P-2 真实流量是否仍在（决定 observe 指标能否积累）===
+[
+  {
+    "results": [
+      {
+        "max_ms": 1792526574758,
+        "age_s": 106,
+        "n_30min": 12
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 2.0397
+      },
+      "duration": 2.0397,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 11536,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== P-3 水位表当前状态（G4-R7 只影响 rebase，不改常态）===
+[
+  {
+    "results": [
+      {
+        "device_id": "288485896ce4",
+        "epoch": 2,
+        "max_boot_seq": 21,
+        "rewind_count": 42,
+        "ambiguous_count": 335,
+        "last_rewind_at": 1792434955,
+        "last_rewind_boot": 20,
+        "last_rebase_at": 1792417227
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2328
+      },
+      "duration": 0.2328,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2154496,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

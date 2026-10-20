@@ -1,0 +1,25 @@
+# 采集时间: 2026-10-21 04:04:23 +0800
+=== V-1 deployments status（期望 4eb8d91b… 100%）===
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Created:     2026-10-20T20:04:15.346Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (deployment)
+Message:     -
+Version(s):  (100%) 4eb8d91b-bdf7-42cb-9e22-81afd3670096
+                 Created:  2026-10-20T20:04:14.774Z
+                     Tag:  -
+                 Message:  -
+
+=== V-2 versions view：env 绑定必须 INGEST_VALIDATION=observe ===
+Version ID:  4eb8d91b-bdf7-42cb-9e22-81afd3670096
+Created:     2026-10-20T20:04:14.774Z
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.INGEST_VALIDATION ("observe")                                  Environment Variable      
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+
+=== V-3 部署后源码哈希是否仍等于部署前（制品==源码）===
+cedbe9adebfceaf9d8c8859792b5a25fa9b0356b6f3c7af312a7e72aa4c07e90 *src/index.js
+cd52846cee4255d47f4a196083fcf008d53e7593d29fd4efb016e9859ef34b96 *src/ingest-validate.js
+fd5ad725a53b93ec319236cb32d69c63dc324c1da185b278d01adc57e71b8d22 *src/log-boot-watermark-rebase.js
+c22c82322c7e9003ca46ab32ce210c1d468c01f0f16f79b43a390a7301c05248 *wrangler.toml

@@ -1,0 +1,39 @@
+# 采集时间: 2026-10-21 04:03:52 +0800
+# === D-1 部署前源码标识 ===
+HEAD=7c96b1894cdd2451ff9dc7fa70f234199d2dcfab
+origin/main=7c96b1894cdd2451ff9dc7fa70f234199d2dcfab
+worktree_dirty=0
+
+# === D-2 制品哈希（即将上传的字节）===
+cedbe9adebfceaf9d8c8859792b5a25fa9b0356b6f3c7af312a7e72aa4c07e90 *src/index.js
+cd52846cee4255d47f4a196083fcf008d53e7593d29fd4efb016e9859ef34b96 *src/ingest-validate.js
+fd5ad725a53b93ec319236cb32d69c63dc324c1da185b278d01adc57e71b8d22 *src/log-boot-watermark-rebase.js
+c22c82322c7e9003ca46ab32ce210c1d468c01f0f16f79b43a390a7301c05248 *wrangler.toml
+
+# === D-3 关键默认值（必须 observe，不得 enforce）===
+46:INGEST_VALIDATION = "observe"
+37:export const DEFAULT_INGEST_VALIDATION = "observe";
+enforce 字面只允许出现在模式解析处（不可是默认值）:
+src/index.js:538:                if(mode === "enforce")
+src/ingest-validate.js:19: *   切 `enforce` 必须由 `INGEST_VALIDATION="enforce"` 显式声明（见 `resolveValidationMode`）。
+src/ingest-validate.js:34:export const INGEST_VALIDATION_MODES = Object.freeze(["observe", "enforce"]);
+src/ingest-validate.js:53: * **严格**：只有 `env.INGEST_VALIDATION`（`trim` 后）**逐字等于** `"enforce"` 才返回 `enforce`。
+src/ingest-validate.js:61: * @returns {"observe"|"enforce"}
+src/ingest-validate.js:67:    return raw.trim() === "enforce" ? "enforce" : DEFAULT_INGEST_VALIDATION;
+src/ingest-validate.js:277: * @param {"observe"|"enforce"} [mode]
+
+# === D-4 G4-R7 修复是否真在制品源码内 ===
+163: *   `last_rewind_boot`。
+183:       last_rewind_boot      = NULL,
+
+# === D-5 当前生产部署（部署前）===
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Created:     2026-10-20T19:16:03.867Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (deployment)
+Message:     -
+Version(s):  (100%) 1fb56499-49fb-4e07-b2c6-6fd35cf60329
+                 Created:  2026-10-20T19:16:01.101Z
+                     Tag:  -
+                 Message:  -
