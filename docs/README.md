@@ -33,7 +33,12 @@
 
 ## architecture/ 架构
 
-> ★ **最近一轮（`2026-10-21 01:45`）优先读这两份**：
+> ★ **最近一轮（`2026-10-21 04:00` · 真机前 S-1～S-6）优先读这三份**：
+> `G4-S1-S6-Execution-Report-2026-10-21.md`（六项状态 / 证据路径 / 未完成项 / 门禁未变）·
+> `G-4-Gate-Revision-Record-2026-10-20.md` **§5 `R-3`**（**DRAM 阈值现行为 `< 85%`**，分母 `internal.total`）·
+> `docs/interfaces/log_envelope_contract.md` **§2.0**（**`seq` = 跨 boot 连续**，实现未改）
+>
+> ★ **上一轮（`2026-10-21 01:45`）**：
 > `G4-C2-Deployment-and-Acceptance-Report-2026-10-21.md`（**C-2 已部署** `d7fcd4f3-…`：验收矩阵 /
 > P-1′ 证据边界 / **总状态 `BLOCKED`（真实流量为 0）** / 附录 A 复验 SQL）·
 > `G4-C1-Execution-Report-2026-10-21.md`（C-1 = `PASS`：门禁八项 / 六项验证逐项）。

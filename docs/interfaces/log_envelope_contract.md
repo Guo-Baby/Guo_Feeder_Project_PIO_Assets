@@ -55,12 +55,34 @@ Worker `history-ingest.js`
 |---|---|---|
 | `device_id` | string | 12 位小写 hex；**必须与 topic 中的 `<device_id>` 一致** |
 | `boot_seq` | uint32 | 设备启动序号（幂等键分量 ②） |
-| `seq` | uint32 | boot 内日志序号（幂等键分量 ③） |
+| `seq` | uint32 | **跨 boot 连续**日志序号（幂等键分量 ③）—— 见 §2.0 |
 | `ts` | uint32 | Unix 秒 |
 | `level` | **uint8（JSON number）** | 见下表 |
 | `payload_base64` | string | `Base64(log_cbor_encode_batch(count=1))` —— **业务载荷**，上限 188 B |
 
 > **幂等键（云端）**：`(device_id, boot_seq, seq)` —— **复用冻结唯一索引** `ux_lh_dedup`。
+
+### 2.0 `seq` 语义（**权威 · `2026-10-21` 修订**）
+
+> **本小节是 `seq` 的唯一权威定义**。与任何报告、评审记录、归档文本冲突时，以本小节为准。
+> 修订依据：用户书面裁决（`2026-10-21 03:00`，`D-2` = **保持跨 boot 连续，只改文档不改代码**）。
+
+| 项 | 定义 |
+|---|---|
+| 语义 | **跨 boot 连续**的单调递增日志序号，**不是**本 boot 内从 1 开始的序号 |
+| 实现 | `log_manager.cpp` → `next_seq = s_meta_slot_seq + 1`，并持久化回 A/B 双槽（`s_meta_slot_seq` 为所选槽的 `slot_seq`） |
+| 重启行为 | **不回绕、不重置** ⇒ 新 boot 的 `seq` 接着上一次继续（真机样例：`boot_seq=94, seq=108289`） |
+| 与 `boot_seq` 的关系 | `boot_seq` 标识「第几次启动」，`seq` 是**全局唯一**计数器；两者组合 `(device_id, boot_seq, seq)` 才是幂等键 |
+| 唯一性推论 | 因 `seq` 跨 boot 单调，`(device_id, seq)` 本身即近似唯一；**不得**假设"新 boot 从 1 开始" |
+| 统计约束 | 任何"按 boot 分组统计 `seq` 区间"的做法**必须**用 `boot_seq` 分组，**不得**用 `seq` 是否从 1 起算来判断新 boot |
+| DEBUG 影响 | `DEBUG` 不上云但**仍消耗 `seq`** ⇒ `seq` 空间**天然有洞**，空洞**不是**丢失证据 |
+
+> **修订沿革（不追溯改写历史）**：本文件 `2026-10-21` 之前写作「boot 内日志序号」，
+> 与实现不符（登记为 `SEQ-SEM`）。本次**只改文档**，实现未动。
+> 历史评审记录（`G4-Production-Change-Plan-Review-2026-10-20.md` §A-8/§5、`G4-Log-Credibility-and-Observability-Report-2026-10-20.md` `B-6-4`）
+> **原文保留**，其"文档与实现不符"的判断在当时是**正确**的。
+
+---
 
 ### 2.1 `level` 数值契约（**严格** · 权威 = `cloud_protocol.md` §8.2.1）
 

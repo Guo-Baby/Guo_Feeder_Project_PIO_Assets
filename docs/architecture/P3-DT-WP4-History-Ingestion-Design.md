@@ -192,7 +192,7 @@
 |---|---|---|
 | `device_id` | 幂等键分量 ① —— **必须与 topic 解析结果一致**（§2.6 `ID-6`） | **信封明文**（**不得由解码 CBOR 取得**） |
 | `boot_seq` | 幂等键分量 ②（设备启动序号） | **信封明文** |
-| `seq` | 幂等键分量 ③（boot 内日志序号） | **信封明文** |
+| `seq` | 幂等键分量 ③（**跨 boot 连续**日志序号 —— 权威定义见 `docs/interfaces/log_envelope_contract.md` §2.0，`2026-10-21` 修订） | **信封明文** |
 | `payload_base64` | **CBOR 原始字节的 `Base64` 承载** | **透明数据** —— **Worker 不解码** |
 
 > **★ 铁律（`H-WP4-16`）**：**Worker 不得通过解析 CBOR 获取上述任一字段**；**CBOR `payload`（`payload_base64`）保持透明数据**；**不引入第二套幂等键**（仍为 `(device_id, boot_seq, seq)`，`U-2` §3.4）。
