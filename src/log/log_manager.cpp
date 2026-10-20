@@ -28,6 +28,10 @@
 // 依赖方向：LogManager → CloudManager（单向，CloudManager 不反向依赖）
 #include "cloud/cloud_manager.h"
 
+// G4-R4 · H-4：显式分配点统一经 `gf_alloc_psram_first()` 记账
+//（**行为逐字等价**：同样 PSRAM 优先、同样 MALLOC_CAP_8BIT 回退）
+#include "services/mem_watch.h"
+
 // P1.4：CBOR 批次编码器（独立头文件，可主机编译验证）
 #include "log/log_cbor.h"
 
@@ -2373,17 +2377,10 @@ static bool flash_init()
     // 批量工作缓冲（§31/§33：优先 PSRAM）
     s_flash_batch_bytes = (uint32_t)LOG_FLUSH_RECORDS * LOG_RECORD_SIZE;
 
-    void *mem = heap_caps_malloc(s_flash_batch_bytes, MALLOC_CAP_SPIRAM);
-
-    if (mem != nullptr)
-    {
-        s_flash_batch_in_psram = true;
-    }
-    else
-    {
-        mem = heap_caps_malloc(s_flash_batch_bytes, MALLOC_CAP_8BIT);
-        s_flash_batch_in_psram = false;
-    }
+    uint8_t in_psram = 0;
+    void *mem = gf_alloc_psram_first(s_flash_batch_bytes, MEM_SITE_LOG_FLASH_BATCH,
+                                    &in_psram);
+    s_flash_batch_in_psram = (in_psram != 0u);
 
     if (mem == nullptr)
     {
@@ -2429,16 +2426,9 @@ bool log_init()
     const uint32_t bytes = (uint32_t)LOG_RAM_QUEUE_SLOTS * (uint32_t)LOG_RECORD_SIZE;
 
     // 项目铁律：PSRAM 优先，失败回退内部 DRAM
-    void *mem = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
-    if (mem != nullptr)
-    {
-        s_in_psram = true;
-    }
-    else
-    {
-        mem = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
-        s_in_psram = false;
-    }
+    uint8_t in_psram = 0;
+    void *mem = gf_alloc_psram_first(bytes, MEM_SITE_LOG_RING, &in_psram);
+    s_in_psram = (in_psram != 0u);
 
     if (mem == nullptr)
     {
@@ -3660,6 +3650,17 @@ static bool cloud_try_send_batch(uint8_t n)
 
     portENTER_CRITICAL(&s_mux);
     s_stats.cloud_batch_sent++;
+
+    // ★ `G4-R4`/对账修复（`2026-10-20`）：`cloud_records_sent` 此前**没有自增点**
+    //   ⇒ `system.stats.counters.cloud_records_sent` 恒为 0（`S-1` 登记项）。
+    //   后果：设备侧"发出多少条"不可测量 ⇒ §4.3 要求的
+    //   「设备发出 / Broker 接收 / 云端接收 / 入库」四段对账**缺第一段**。
+    //   语义（与字段名注释一致）：只计**首次发出**；ACK 超时后的重发由
+    //   `cloud_retx` 单独计数（`s_cloud_retry_n > 0` ⇒ 本次是重发）。
+    if (s_cloud_retry_n == 0)
+    {
+        s_stats.cloud_records_sent += n;
+    }
     portEXIT_CRITICAL(&s_mux);
 
     return true;
@@ -3855,17 +3856,9 @@ static bool cloud_init_buffers()
 
     bool psram = true;
 
-    void *mem = heap_caps_malloc(q_bytes, MALLOC_CAP_SPIRAM);
-
-    if (mem != nullptr)
-    {
-        psram = true;
-    }
-    else
-    {
-        mem = heap_caps_malloc(q_bytes, MALLOC_CAP_8BIT);
-        psram = false;
-    }
+    uint8_t q_in_psram = 0;
+    void *mem = gf_alloc_psram_first(q_bytes, MEM_SITE_LOG_CLOUD_Q, &q_in_psram);
+    psram = (q_in_psram != 0u);
 
     if (mem == nullptr)
     {
@@ -3879,12 +3872,7 @@ static bool cloud_init_buffers()
     s_cloud_q_bytes = (uint32_t)q_bytes;
     memset(s_cloud_q, 0, q_bytes);
 
-    void *bmem = heap_caps_malloc(b_bytes, MALLOC_CAP_SPIRAM);
-
-    if (bmem == nullptr)
-    {
-        bmem = heap_caps_malloc(b_bytes, MALLOC_CAP_8BIT);
-    }
+    void *bmem = gf_alloc_psram_first(b_bytes, MEM_SITE_LOG_CLOUD_BATCH, nullptr);
 
     if (bmem == nullptr)
     {
@@ -3896,12 +3884,7 @@ static bool cloud_init_buffers()
     s_cloud_batch = (LogRecord *)bmem;
     memset(s_cloud_batch, 0, b_bytes);
 
-    void *cmem = heap_caps_malloc(LOG_BATCH_MAX_PAYLOAD, MALLOC_CAP_SPIRAM);
-
-    if (cmem == nullptr)
-    {
-        cmem = heap_caps_malloc(LOG_BATCH_MAX_PAYLOAD, MALLOC_CAP_8BIT);
-    }
+    void *cmem = gf_alloc_psram_first(LOG_BATCH_MAX_PAYLOAD, MEM_SITE_LOG_CBOR, nullptr);
 
     if (cmem == nullptr)
     {
@@ -4708,12 +4691,8 @@ bool log_seg_truncate(uint32_t seg, uint32_t bytes)
     }
 
     // 读回原内容（≤ 3984 B，PSRAM 优先）
-    uint8_t *buf = (uint8_t *)heap_caps_malloc(LOG_SEGMENT_SIZE, MALLOC_CAP_SPIRAM);
-
-    if (buf == nullptr)
-    {
-        buf = (uint8_t *)heap_caps_malloc(LOG_SEGMENT_SIZE, MALLOC_CAP_8BIT);
-    }
+    uint8_t *buf = (uint8_t *)gf_alloc_psram_first(LOG_SEGMENT_SIZE,
+                                                   MEM_SITE_LOG_SEG_BUF, nullptr);
 
     if (buf == nullptr)
     {

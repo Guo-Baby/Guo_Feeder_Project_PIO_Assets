@@ -15,6 +15,7 @@
 
 // PSRAM 分配接口（heap_caps_malloc / heap_caps_free）
 #include <esp_heap_caps.h>
+#include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
 
 // esp_reset_reason()
 #include <esp_system.h>
@@ -1887,7 +1888,8 @@ static bool value_slot_from_variant(
         }
 
         // 长对象放 PSRAM，由 value_slot_free() 负责释放
-        char *buf = (char *)heap_caps_malloc(n + 1, CONFIG_MEM_SPIRAM);
+        // G4-R4 · H-4：仅 PSRAM（不回退）—— 与原 `CONFIG_MEM_SPIRAM` 语义一致
+        char *buf = (char *)gf_alloc_psram_only(n + 1, MEM_SITE_CONFIG_BUF);
 
         if (buf == nullptr)
         {

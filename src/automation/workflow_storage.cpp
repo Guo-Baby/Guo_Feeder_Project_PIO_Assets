@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <esp_heap_caps.h>
+#include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
 
 // =====================================================
 // 常量一致性校验
@@ -1602,15 +1603,9 @@ WorkflowStorageResult workflow_storage_delete(
 
 WorkflowDefinition *workflow_storage_alloc_definition(void)
 {
-    void *p = heap_caps_malloc(
-        sizeof(WorkflowDefinition), MALLOC_CAP_SPIRAM);
-
-    if (p == NULL)
-    {
-        // PSRAM 不可用 / 不足时回退内部 RAM（MALLOC_CAP_8BIT）
-        p = heap_caps_malloc(
-            sizeof(WorkflowDefinition), MALLOC_CAP_8BIT);
-    }
+    // G4-R4 · H-4：PSRAM 优先、回退内部 RAM（MALLOC_CAP_8BIT）—— 语义与原先一致
+    void *p = gf_alloc_psram_first(sizeof(WorkflowDefinition),
+                                   MEM_SITE_WF_STORAGE, nullptr);
 
     return (WorkflowDefinition *)p;
 }

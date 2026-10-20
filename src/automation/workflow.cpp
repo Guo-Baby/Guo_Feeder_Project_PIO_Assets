@@ -10,6 +10,7 @@
 #include "automation/workflow.h"
 #include "automation/workflow_storage.h"
 #include "log/log_manager.h"   // P2-F：观测埋点（EventId / ParamId + log_emit）
+#include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
 // =====================================================
 // 注册表
 // =====================================================
@@ -780,8 +781,12 @@ bool workflow_init()
     size_t trigger_size = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP * sizeof(WorkflowTriggerInstance);
     size_t action_size = WORKFLOW_MAX_COUNT * WORKFLOW_MAX_STEP * sizeof(WorkflowActionInstance);
 
-    trigger_instances = (WorkflowTriggerInstance*)heap_caps_malloc(trigger_size, MALLOC_CAP_SPIRAM);
-    action_instances = (WorkflowActionInstance*)heap_caps_malloc(action_size, MALLOC_CAP_SPIRAM);
+    // G4-R4 · H-4：经统一分配节流记账（**行为等价**：原实现即**仅 PSRAM**，
+    // 失败即 nullptr，不回退 DRAM ⇒ 这里用 `gf_alloc_psram_only()`）
+    trigger_instances = (WorkflowTriggerInstance*)gf_alloc_psram_only(
+        trigger_size, MEM_SITE_WF_INSTANCES);
+    action_instances = (WorkflowActionInstance*)gf_alloc_psram_only(
+        action_size, MEM_SITE_WF_INSTANCES);
     if(trigger_instances != nullptr)
     {
         trigger_instances_psram = true;
@@ -825,14 +830,17 @@ bool workflow_init()
 
     // ---- Step Definition 池：优先 PSRAM，失败回退普通 RAM ----
     size_t def_size = instance_count * sizeof(WorkflowStepDef);
-    step_definitions = (WorkflowStepDef*)heap_caps_malloc(def_size, MALLOC_CAP_SPIRAM);
+    // G4-R4 · H-4：同上；原实现在 PSRAM 失败时退 `malloc()`（= DRAM 堆），
+    // 现统一走 `gf_alloc_psram_first()`（回退 caps = `MALLOC_CAP_8BIT`，语义等价）
+    uint8_t step_in_psram = 0;
+    step_definitions = (WorkflowStepDef*)gf_alloc_psram_first(
+        def_size, MEM_SITE_WF_STEPS, &step_in_psram);
     if(step_definitions != nullptr)
     {
-        step_definitions_psram = true;
+        step_definitions_psram = (step_in_psram != 0u);
     }
     else
     {
-        step_definitions = (WorkflowStepDef*)malloc(def_size);
         step_definitions_psram = false;
     }
 

@@ -214,3 +214,28 @@ bool syscmd_restart_status(JsonDocument &out);
 //   改为 valid:false + invalid_reasons，杜绝"误导性的有效 P99"
 // 返回 true=成功；false=结果构造失败（**不得**降级为"全部为 0"）
 bool syscmd_loop(JsonDocument &out);
+
+// system.memwatch —— `G4-R4` 内存观测（H-1…H-5 · 只读）
+//
+// 写入 out["data"] = {
+//     available:true|false,             // false ⇒ MemWatch 未初始化（≠ 全零）
+//     uptime_ms,
+//     dram:{ total, free, used, largest_free_block, minimum_free_since_boot },
+//     psram:{ total, free, largest_free_block, minimum_free_since_boot },
+//     drift:{ dram:{valid,reason,samples,span_ms,free_delta,slope_per_hour,
+//                   free_min,largest_min},
+//             psram:{...},
+//             window:{ target_ms, samples, span_ms, warmup_ms } },
+//     alloc:{ calls, psram_ok, psram_fail, dram_fallback_ok, dram_fallback_fail,
+//             final_fail, last_fail_site, last_fail_size, last_fail_ms,
+//             sites:{ <name>:{final_fail} }, coverage:{...} },
+//     stack:{ available, task, stack_bytes, hwm_raw, hwm_bytes, used_bytes,
+//             unit:"bytes"|"words", unit_verified },
+//     thresholds:{ note, ... }          // ★ 全部为**候选**，未批准，非门禁
+// }
+//
+// ★ 本命令**不**输出 PASS/FAIL：`G4-R4` 阈值尚未人工裁决（`HUMAN_REQUIRED`）。
+// ★ `drift.dram.valid=false` ⇒ `slope_per_hour` 无意义（窗口未建立），
+//   调用方**不得**把它当 0 解读（与 `system.stats.available:false` 同一纪律）。
+// 返回 true=成功；false=结果构造失败（**不得**降级为"全部为 0"）
+bool syscmd_memwatch(JsonDocument &out);

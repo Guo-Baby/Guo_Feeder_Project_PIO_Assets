@@ -46,6 +46,7 @@
 
 #include <esp_random.h>
 #include <esp_heap_caps.h>
+#include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
 
 // =====================================================
 // 编译期开关（FROZEN §37：默认 0 ⇒ 生产零代价）
@@ -307,12 +308,9 @@ static bool homie_build_and_publish_description()
 {
     if(s_desc_buf == nullptr)
     {
-        s_desc_buf = (char*)heap_caps_malloc(HOMIE_DESC_CAP, MALLOC_CAP_SPIRAM);
-        if(s_desc_buf == nullptr)
-        {
-            // 回退 DRAM 堆（有总比没有强；失败仍安全停在 init）
-            s_desc_buf = (char*)heap_caps_malloc(HOMIE_DESC_CAP, MALLOC_CAP_8BIT);
-        }
+        // G4-R4 · H-4：PSRAM 优先，失败回退 DRAM（有总比没有强；失败仍安全停在 init）
+        s_desc_buf = (char*)gf_alloc_psram_first(HOMIE_DESC_CAP,
+                                                 MEM_SITE_HOMIE_DESC, nullptr);
         if(s_desc_buf == nullptr)
         {
             homie_log('E', "desc buf alloc fail");
