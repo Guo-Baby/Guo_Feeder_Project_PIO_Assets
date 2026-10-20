@@ -33,7 +33,12 @@
 
 ## architecture/ 架构
 
-> ★ **最近一轮（`2026-10-21 04:00` · 真机前 S-1～S-6）优先读这三份**：
+> ★ **最近一轮（`2026-10-21 04:06` · `G4-R7` 上线 + `P-1'` 真实版闭合）优先读这两份**：
+> `docs/evidence/G4-C2b-Deploy-R7-2026-10-21/README.md`（第二次部署门禁 / 生效验证 /
+> **`$tenants` 真实权重归属正确** / 未验证项）·
+> `G4-S1-S6-Execution-Report-2026-10-21.md`（S-1～S-6 六项状态 / 证据路径 / 门禁未变）
+>
+> ★ **上一轮（`2026-10-21 04:00` · 真机前 S-1～S-6）**：
 > `G4-S1-S6-Execution-Report-2026-10-21.md`（六项状态 / 证据路径 / 未完成项 / 门禁未变）·
 > `G-4-Gate-Revision-Record-2026-10-20.md` **§5 `R-3`**（**DRAM 阈值现行为 `< 85%`**，分母 `internal.total`）·
 > `docs/interfaces/log_envelope_contract.md` **§2.0**（**`seq` = 跨 boot 连续**，实现未改）
