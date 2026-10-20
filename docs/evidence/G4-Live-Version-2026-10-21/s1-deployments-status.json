@@ -1,0 +1,16 @@
+{
+  "id": "YOUR_RESOURCE_ID",
+  "source": "wrangler",
+  "strategy": "percentage",
+  "author_email": "you@example.com",
+  "annotations": {
+    "workers/triggered_by": "deployment"
+  },
+  "versions": [
+    {
+      "version_id": "YOUR_RESOURCE_ID",
+      "percentage": 100
+    }
+  ],
+  "created_on": "2026-10-19T12:56:06.861548Z"
+}

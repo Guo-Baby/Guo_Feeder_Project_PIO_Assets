@@ -1,0 +1,145 @@
+# 查询时间: 2026-10-21 00:28:38    
+[
+  {
+    "id": "YOUR_WORKER_VERSION_ID",
+    "number": 38,
+    "metadata": {
+      "created_on": "2026-10-05T19:12:54.205148Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 39,
+    "metadata": {
+      "created_on": "2026-10-07T16:54:22.941906Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/message": "N-3 secret redaction (d604f2e)",
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 40,
+    "metadata": {
+      "created_on": "2026-10-11T19:59:13.391743Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 41,
+    "metadata": {
+      "created_on": "2026-10-15T14:25:09.782817Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/message": "P3 F-C2-8/F-C2-9 fix @ e328a11 (numeric level + nested log envelope) [WB 2026-10-15]",
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 42,
+    "metadata": {
+      "created_on": "2026-10-16T17:28:43.039201Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 43,
+    "metadata": {
+      "created_on": "2026-10-16T17:48:27.387082Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 44,
+    "metadata": {
+      "created_on": "2026-10-17T15:24:57.911504Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 45,
+    "metadata": {
+      "created_on": "2026-10-18T17:36:32.05858Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 46,
+    "metadata": {
+      "created_on": "2026-10-18T20:18:43.792673Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "YOUR_RESOURCE_ID",
+    "number": 47,
+    "metadata": {
+      "created_on": "2026-10-19T12:56:06.205581Z",
+      "source": "wrangler",
+      "author_id": "YOUR_CLOUDFLARE_AUTHOR_ID",
+      "author_email": "you@example.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  }
+]
