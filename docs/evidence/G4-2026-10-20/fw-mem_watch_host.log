@@ -1,0 +1,49 @@
+### compile probe (wasm32 freestanding)
+### run probe (node)
+=== MemWatch calc probe (wasm32 freestanding) ===
+  PASS  M-1-1 线性泄漏 ⇒ valid
+  PASS  M-1-2 斜率 = -6000 B/h
+  PASS  M-1-3 样本数入结果
+  PASS  M-1-4 free_delta = -900
+  PASS  M-1-5 span = 540000 ms
+  PASS  M-2-1 无漂移 ⇒ valid
+  PASS  M-2-2 斜率 = 0
+  PASS  M-2-3 delta = 0
+  PASS  M-3-1 抖动 ⇒ 斜率接近 0（|slope| < 1000 B/h）
+  PASS  M-3-2 对照：首末点 delta = 0（漏掉抖动）
+  PASS  M-3-3 而窗口 free_min 记录了抖动最低点 99800
+  PASS  M-4-1 折线 ⇒ 斜率介于 -4000 与 -2000 B/h
+  PASS  M-5-1 样本 < 4 ⇒ valid=0
+  PASS  M-5-2 reason = too_few
+  PASS  M-5-3 跨度 7 min < 30 min ⇒ valid=0
+  PASS  M-5-4 reason = span_too_short
+  PASS  M-6-1 窗口不足 ⇒ valid=0
+  PASS  M-6-2 但仍给出 free_min=89950
+  PASS  M-6-3 且给出 largest_min=12000（碎片硬指标）
+  PASS  M-6-4 且给出 free_delta=-50
+  PASS  M-7-1 DRAM 斜率 0
+  PASS  M-7-2 PSRAM 斜率 -60000 B/h
+  PASS  M-7-3 PSRAM delta = -7000
+  PASS  M-7-4 DRAM largest_min 不受 PSRAM 影响
+  PASS  M-8-1 raw 7000 ≤ stack 16384 ⇒ 自洽
+  PASS  M-8-2 raw 16385 > stack ⇒ 不自洽（物理不可能）
+  PASS  M-8-3 ★ raw 9724 / stack 16384 ⇒ 字数**不可能**（9724×4 > 16384）
+  PASS  M-8-4 raw 2000 / stack 16384 ⇒ 字数仍可能（歧义）
+  PASS  M-8-5 raw 4096 = stack/4 ⇒ 边界：字数仍可能
+  PASS  M-8-6 raw 4097 > stack/4 ⇒ 字数不可能
+  PASS  M-8-7 双步 delta 2048 ≈ step ⇒ 判定**字节**
+  PASS  M-8-8 双步 delta 512 ≈ step/4 ⇒ 判定**字数**
+  PASS  M-8-9 双步 delta 3840（真机实测值，非 step 也非 step/4）⇒ 无法判定
+  PASS  M-8-10 双步 delta=0（两次都未刷新低点）⇒ 无法判定
+  PASS  M-8-11 step=0 ⇒ 无法判定（不除零）
+  PASS  M-9-1 nullptr ⇒ valid=0 且不崩
+  PASS  M-9-2 n=0 ⇒ valid=0 且不崩
+  PASS  M-10-1 32 点满环 ⇒ valid
+  PASS  M-10-2 斜率 = -120000 B/h（每 60 s -2000 B）
+  PASS  M-10-3 span = 1860000 ms
+
+===== summary =====
+  failures = 0
+exit_failures=0
+
+### RESULT: PASS (0 failures)

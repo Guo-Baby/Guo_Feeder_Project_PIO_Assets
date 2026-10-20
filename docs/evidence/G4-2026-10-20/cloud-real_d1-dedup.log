@@ -1,0 +1,42 @@
+=== 隔离自检 ===
+  PASS  R-00 ★ 隔离自检：可执行行中远端标志出现 0 次
+  persist = /d/Guo_Feeder_Project/Cloudflare_Assets/.wrangler/g4r5_dedup_20261020230125/state
+
+=== 阶段 1：建立历史数据（模拟 0007 之前的库）===
+  PASS  R-01 fixture 建表成功（生产同构）
+  PASS  R-0  历史数据已建立（应 4 行，含 1 组完全重复）
+
+=== 阶段 2：应用 0007（**在已有数据的库上**） ===
+  PASS  R-1a 0007 应用后 dedup_key 列存在
+  PASS  R-1b 唯一索引 ux_mm_dedup_key 已建立
+  PASS  R-1c 索引为**部分**索引（WHERE dedup_key IS NOT NULL）
+  PASS  R-1d ★ 应用 0007 **不改变**历史行数（零删除/零重写）
+  PASS  R-1e 历史行 dedup_key 全为 NULL（未回填）
+  PASS  R-1f ★ 历史重复行**保留**（0007 不追溯合并历史）
+
+=== R-2：NULL 键多行可共存（不误合并） ===
+  PASS  R-2  两个 NULL 键行**都**写入（NULL 互不相等）
+
+=== R-2b：★ 无 msg_id 的独立事件（等级 B 已停用）⇒ 必须各写一行 ===
+  PASS  R-2b ★ 同 payload 的两条独立心跳 ⇒ **2 行都保留**（不做 payload-only 去重）
+
+=== R-3：同键重复投递 ⇒ 幂等 ===
+  PASS  R-3  ★ 同一 audit 帧投递 3 次 ⇒ 只落 1 行
+
+=== R-4：audit 与 echo 键不同 ⇒ 两条都保留 ===
+  PASS  R-4  ★ 同一业务消息的 audit + echo ⇒ **2 行都保留**（回环证据不被吃）
+
+=== R-5：同 msg_id 但内容不同 ⇒ 不合并 ===
+  PASS  R-5  ★ 同 msg_id 不同内容 ⇒ 2 行都保留（宁可多留，不静默丢）
+
+=== R-7：★ 真实错误不被吞（ON CONFLICT 只忽略唯一冲突） ===
+  PASS  R-7  ★ NOT NULL 违反 ⇒ **报错**（未被静默吞掉）
+  PASS  R-7b 报错行**未**落库（错误未被吞，写入被拒）
+
+=== R-8：回滚（删索引 ⇒ 恢复无去重语义） ===
+  PASS  R-8a DROP INDEX 成功
+  PASS  R-8b 删索引后同键可再插入（回滚有效）
+  PASS  R-8c 列仍保留（无害，回滚只删索引）
+
+===== suite ====
+  total 19 | PASS 19 | FAIL 0

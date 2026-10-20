@@ -28,6 +28,16 @@ desktop.ini
 serial*.log
 *.log
 
+# ★ 例外：`docs/evidence/**` 下的**非串口**日志应入库
+#   否则证据 README 里"已归档"的声明与仓库事实不符
+#   （2026-10-21 发现：G4-2026-10-20 的 6 个 .log 全部未入库，只进了 .bin / README）。
+#   ⚠️ 例外必须写在 `*.log` 之后，否则前面的规则会先生效。
+!docs/evidence/**/*.log
+
+# ★ 但串口 dump 仍然排除：可能包含 WiFi/MQTT 凭据、内网地址等，
+#   属本机敏感产物 ⇒ 只在其出现的那一轮 README 里写明"本机留存、不入库"。
+docs/evidence/**/*serial*.log
+
 # ============================================================
 # LittleFS 源目录
 #   含真实 MQTT 凭据（host / port / 用户名 / 密码）
