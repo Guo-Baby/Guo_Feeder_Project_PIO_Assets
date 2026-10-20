@@ -1,0 +1,13 @@
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 3.329
+      },
+      "duration": 3.329,
+      "changes": 0,
+      "changed_db": false,
+      "rows_read": 5745,
+      "rows_written": 0,

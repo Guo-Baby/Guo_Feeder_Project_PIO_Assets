@@ -1,0 +1,23 @@
+# 采集时间: 2026-10-21 00:30:18    
+# API base: https://n302933b.ala.cn-hangzhou.emqxsl.cn:8443/api/v5
+# 凭据: EMQX_APP_ID/SECRET 来自 EMQX_Assets/.env（不打印值）
+# 方式: HTTP GET，只读
+
+GET /status  => HTTP 403  (0B)
+
+GET /stats  => HTTP 403  (0B)
+
+GET /nodes  => HTTP 403  (0B)
+
+GET /clients?limit=3  => HTTP 200  (3663B)
+GET /rules  => HTTP 403  (0B)
+
+GET /connectors  => HTTP 403  (0B)
+
+GET /actions  => HTTP 403  (0B)
+
+GET /sources  => HTTP 403  (0B)
+
+GET /subscriptions?limit=3  => HTTP 200  (215B)
+GET /monitor_current  => HTTP 403  (0B)
+

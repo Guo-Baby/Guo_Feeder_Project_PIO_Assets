@@ -1,0 +1,145 @@
+# 查询时间: 2026-10-21 00:28:38    
+[
+  {
+    "id": "f10e29a4-f5dc-4f5e-b3ec-890cf59369b2",
+    "number": 38,
+    "metadata": {
+      "created_on": "2026-10-05T19:12:54.205148Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "846384cd-8b84-488b-a7a1-3ee5f9fae52a",
+    "number": 39,
+    "metadata": {
+      "created_on": "2026-10-07T16:54:22.941906Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/message": "N-3 secret redaction (d604f2e)",
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "99e6d937-4408-47b7-8170-4bfa71c9dfec",
+    "number": 40,
+    "metadata": {
+      "created_on": "2026-10-11T19:59:13.391743Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "dd5ab824-ec39-41f3-9990-a37903aaf61f",
+    "number": 41,
+    "metadata": {
+      "created_on": "2026-10-15T14:25:09.782817Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/message": "P3 F-C2-8/F-C2-9 fix @ e328a11 (numeric level + nested log envelope) [WB 2026-10-15]",
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "3e1b2e0b-ac4b-4b92-983a-62e68730e2a8",
+    "number": 42,
+    "metadata": {
+      "created_on": "2026-10-16T17:28:43.039201Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "1ffbbe2e-ed09-43f9-b576-06380bdec8e0",
+    "number": 43,
+    "metadata": {
+      "created_on": "2026-10-16T17:48:27.387082Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "72023596-657a-4a65-aa62-81848540f324",
+    "number": 44,
+    "metadata": {
+      "created_on": "2026-10-17T15:24:57.911504Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "508461f3-0dcf-443c-98f9-d185f412174e",
+    "number": 45,
+    "metadata": {
+      "created_on": "2026-10-18T17:36:32.05858Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "f9647a00-e079-4de9-bcf1-8c9bc5344185",
+    "number": 46,
+    "metadata": {
+      "created_on": "2026-10-18T20:18:43.792673Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "826332ed-3a73-42c4-a090-a5bf737dc210",
+    "number": 47,
+    "metadata": {
+      "created_on": "2026-10-19T12:56:06.205581Z",
+      "source": "wrangler",
+      "author_id": "fd8ff14b3cfb13de46c5ea74c8f2ecd2",
+      "author_email": "wyl94@foxmail.com",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  }
+]

@@ -1,0 +1,34 @@
+# G4 · C-1 执行前最终复核（纯只读）
+# 采集时间: 2026-10-21 00:58:36    
+# 仓库: /d/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
+# branch=main  HEAD=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2  origin/main=e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2  worktree=0
+
+=== R-1 ① whoami ===
+👋 You are logged in with an OAuth Token, associated with the email wyl94@foxmail.com.
+🔐 Credentials are stored in: C:\Users\wang\AppData\Roaming\xdg.config\.wrangler\config\default.toml
+┌─────────────────────────────┬──────────────────────────────────┐
+│ Account Name                │ Account ID                       │
+├─────────────────────────────┼──────────────────────────────────┤
+│ Wyl94@foxmail.com's Account │ 9e72d201efec6925b3a468a0e3fb4928 │
+└─────────────────────────────┴──────────────────────────────────┘
+🔓 Token Permissions:
+
+=== R-1 ② wrangler.toml 绑定 ===
+1:name="guo-feeder-api"
+5:compatibility_date="2026-08-21"
+9:[[d1_databases]]
+11:binding="guofeeder_DB"
+13:database_name="guofeeder"
+15:database_id="0d8385ba-a1a6-4fcc-8e43-ae61c014c43d"
+39:[vars]
+40:LOG_BOOT_WATERMARK = "1"
+
+=== R-1 ③ d1 list（名称→id）===
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+┌──────────────────────────────────────┬───────────┬──────────────────────────┬────────────┬────────────┬───────────┬──────────────┐
+│ uuid                                 │ name      │ created_at               │ version    │ num_tables │ file_size │ jurisdiction │
+├──────────────────────────────────────┼───────────┼──────────────────────────┼────────────┼────────────┼───────────┼──────────────┤
+│ 0d8385ba-a1a6-4fcc-8e43-ae61c014c43d │ guofeeder │ 2026-08-23T14:38:03.528Z │ production │ 0          │ 2134016   │              │
+└──────────────────────────────────────┴───────────┴──────────────────────────┴────────────┴────────────┴───────────┴──────────────┘

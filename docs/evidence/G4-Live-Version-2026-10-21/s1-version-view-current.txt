@@ -1,0 +1,22 @@
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Version ID:  826332ed-3a73-42c4-a090-a5bf737dc210
+Created:     2026-10-19T12:56:06.205Z
+Author:      wyl94@foxmail.com
+Source:      Unknown (version_upload)
+Tag:         -
+Message:     -
+
+Handlers:            fetch, scheduled
+Compatibility Date:  2026-08-21
+Secrets:
+Secret Name:  ADMIN_API_TOKEN
+Secret Name:  EMQX_APP_ID
+Secret Name:  EMQX_APP_SECRET
+Secret Name:  WEBHOOK_SECRET
+Your Worker has access to the following bindings:
+Binding                                                            Resource                  
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+

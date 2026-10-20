@@ -1,0 +1,51 @@
+# D1 只读查询（与 EMQX 会话窗口对齐）
+# 采集时间: 2026-10-21 00:32:03    
+# 会话锚点 connected_at = 2026-10-20T15:22:26.468Z ⇒ ms=1792509746468 / s=1792509746
+
+## Q-A mqtt_messages 窗口内 device_id × direction
+    "results": [
+      {
+        "device_id": "http_api",
+        "dir": "down",
+        "n": 16
+      },
+      {
+        "device_id": "288485896ce4",
+        "dir": "up",
+        "n": 4
+      }
+    ],
+
+## Q-B log_history 窗口内
+    "results": [
+      {
+        "rows": 14,
+        "uniq_seq": 14,
+        "min_seq": 6145,
+        "max_seq": 6158,
+        "first_s": 1792509747,
+        "last_s": 1792510158
+      }
+    ],
+
+## Q-C 该设备 mqtt_messages 全历史方向分布
+    "results": [
+      {
+        "dir": "unknown",
+        "n": 867,
+        "first_ms": 1791879641174,
+        "last_ms": 1792084822324
+      },
+      {
+        "dir": "up",
+        "n": 846,
+        "first_ms": 1791049535716,
+        "last_ms": 1792509817148
+      },
+      {
+        "dir": "down",
+        "n": 193,
+        "first_ms": 1792414678194,
+        "last_ms": 1792435819032
+      }
+    ],

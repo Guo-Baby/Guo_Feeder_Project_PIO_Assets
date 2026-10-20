@@ -1,0 +1,55 @@
+# 采集时间: 2026-10-21 00:29:22    
+# 仓库: /d/Guo_Feeder_Project/Cloudflare_Assets
+branch      = main
+HEAD        = e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+origin/main = e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+worktree    = 0 处改动
+# wrangler: 4.145.0
+# node: v22.22.2
+
+=== whoami（已剔除 token 值，只保留账号与 scope）===
+👋 You are logged in with an OAuth Token, associated with the email wyl94@foxmail.com.
+🔐 Credentials are stored in: C:\Users\wang\AppData\Roaming\xdg.config\.wrangler\config\default.toml
+┌─────────────────────────────┬──────────────────────────────────┐
+│ Account Name                │ Account ID                       │
+├─────────────────────────────┼──────────────────────────────────┤
+│ Wyl94@foxmail.com's Account │ 9e72d201efec6925b3a468a0e3fb4928 │
+└─────────────────────────────┴──────────────────────────────────┘
+🔓 Token Permissions:
+Scope (Access)
+- user (read)
+- offline_access 
+- account (read)
+- workers (write)
+- workers_kv (write)
+- workers_routes (write)
+- workers_scripts (write)
+- workers_tail (read)
+- d1 (write)
+- pages (write)
+- zone (read)
+- ssl_certs (write)
+- ai (write)
+- ai-search (write)
+- ai-search (run)
+- websearch.run 
+- agent-memory (write)
+- queues (write)
+- pipelines (write)
+- secrets_store (write)
+- artifacts (write)
+- flagship (write)
+- containers (write)
+- cloudchamber (write)
+- connectivity (admin)
+- email_routing (write)
+- email_sending (write)
+- browser (write)
+- challenge-widgets.write 
+
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mWrangler is missing some expected Oauth scopes. To fix this, run `wrangler login` to refresh your token. The missing scopes are:[0m
+
+  - k2.read
+  - k2.write
+
+

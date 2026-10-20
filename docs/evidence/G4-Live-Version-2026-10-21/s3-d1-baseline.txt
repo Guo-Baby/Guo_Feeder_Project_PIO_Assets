@@ -1,0 +1,51 @@
+# C-1 生产 D1 只读核实
+# 采集时间: 2026-10-21 00:33:56    
+# 目标: D1 guofeeder / binding guofeeder_DB / id 0d8385ba-a1a6-4fcc-8e43-ae61c014c43d
+
+## V-1 结构四子项（期望 col=0 idx=0 partial_idx=0 reg=0 变更前）
+    "results": [
+      {
+        "col": 0,
+        "idx": 0,
+        "partial_idx": 0,
+        "reg": 0
+      }
+    ],
+
+## A-3 规模与基线（含 MAX(id)）
+    "results": [
+      {
+        "n": 5743,
+        "min_id": 1,
+        "max_id": 5761,
+        "devs": 73,
+        "pl_len": 817566,
+        "id_len": 36129,
+        "tp_len": 154790
+      }
+    ],
+
+## 表清单（0003/0004/0005/0006 是否在位）
+"name": "_cf_KV"
+"name": "d1_migrations"
+"name": "device"
+"name": "device_binding"
+"name": "device_credential"
+"name": "device_event"
+"name": "log_boot_watermark"
+"name": "log_boot_watermark_audit"
+"name": "log_conflict"
+"name": "log_history"
+"name": "mqtt_messages"
+"name": "sqlite_sequence"
+"name": "telemetry_history"
+    "results": [
+      {
+        "n_old": 5743,
+        "min_id": 1,
+        "max_id": 5761,
+        "pl_len": 817566,
+        "id_len": 36129,
+        "tp_len": 154790
+      }
+    ],

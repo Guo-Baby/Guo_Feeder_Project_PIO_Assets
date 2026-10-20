@@ -1,0 +1,9 @@
+=== R-1 ④ 线上 version 的绑定（当前 v47 = 826332ed）===
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+
+=== R-2 制品三方一致性 ===
+90dc0ec0da0335e8f55cab22121843dc83fd1dacbb7b6d0379bbd9d7ff7e2f1e *migrations/0007_mqtt_messages_dedup.sql
+worktree_blob=eb300070be913ab272550cde4860448ed03575d2
+HEAD_blob    =eb300070be913ab272550cde4860448ed03575d2
+wc -l: 74

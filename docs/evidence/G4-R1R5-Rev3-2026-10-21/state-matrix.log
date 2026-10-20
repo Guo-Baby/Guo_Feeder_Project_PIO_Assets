@@ -1,0 +1,69 @@
+# G4 · R-5 状态矩阵实测日志
+# 生成: 2026-10-21 00:53:09    
+# 环境: wrangler 4.145.0 · local D1 engine
+# 说明: 全部在隔离 persist 目录 + 假 database_id 下执行；未接触生产 D1。
+
+############ S0 对照：干净表 ############
+│ 0007_mqtt_messages_dedup.sql │
+🚣 3 commands executed successfully.
+│ 0007_mqtt_messages_dedup.sql │ ✅     │
+"results":[{"col":1,"idx":1,"partial_idx":1,"reg7":1,"reg8":0,"reg9":0}],
+
+############ S3 列在 / 索引缺 / 0007 未登记 ############
+🚣 1 command executed successfully.
+│ 0007_mqtt_messages_dedup.sql │
+X [ERROR] duplicate column name: dedup_key: SQLITE_ERROR
+"results":[{"col":1,"idx":0,"partial_idx":0,"reg7":0,"reg8":0,"reg9":0}],
+
+############ S3+0008 同状态但已放入 0008（关键：0008 会被执行吗？）############
+🚣 1 command executed successfully.
+│ 0007_mqtt_messages_dedup.sql │
+│ 0008_only_index.sql          │
+X [ERROR] duplicate column name: dedup_key: SQLITE_ERROR
+"results":[{"col":1,"idx":0,"partial_idx":0,"reg7":0,"reg8":0,"reg9":0}],
+
+############ S4 列+索引都在 / 0007 未登记 ############
+🚣 1 command executed successfully.
+🚣 1 command executed successfully.
+│ 0007_mqtt_messages_dedup.sql │
+X [ERROR] duplicate column name: dedup_key: SQLITE_ERROR
+"results":[{"col":1,"idx":1,"partial_idx":1,"reg7":0,"reg8":0,"reg9":0}],
+
+############ S5a 0007 已登记 / 索引被删 / 放入 0008（索引型）############
+🚣 1 command executed successfully.
+-- drop 后 --
+"results":[{"col":1,"idx":0,"partial_idx":0,"reg7":1,"reg8":0,"reg9":0}],
+-- 换用含 0008 的配置 apply --
+│ 0008_only_index.sql │
+🚣 2 commands executed successfully.
+│ 0008_only_index.sql │ ✅     │
+"results":[{"col":1,"idx":1,"partial_idx":1,"reg7":1,"reg8":1,"reg9":0}],
+
+############ S5 0007 已登记 / 列与索引都缺 —— 伪成功陷阱 ############
+-- 先 DROP COLUMN（索引还在，预期被拒）--
+X [ERROR] error in index ux_mm_dedup_key after drop column: no such column: dedup_key: SQLITE_ERROR
+🚣 1 command executed successfully.
+-- 再 DROP COLUMN --
+🚣 1 command executed successfully.
+-- 结构：col=0 idx=0 reg7=1 --
+"results":[{"col":0,"idx":0,"partial_idx":0,"reg7":1,"reg8":0,"reg9":0}],
+-- 此时 apply（关键：是否报 No migrations to apply 且 exit=0）--
+✅ No migrations to apply!
+apply_exit=0
+-- 结构仍坏 --
+"results":[{"col":0,"idx":0,"partial_idx":0,"reg7":1,"reg8":0,"reg9":0}],
+-- 换用含 0009（加列+建索引）的配置 --
+│ 0009_add_col_and_index.sql │
+🚣 3 commands executed successfully.
+│ 0009_add_col_and_index.sql │ ✅     │
+"results":[{"col":1,"idx":1,"partial_idx":1,"reg7":1,"reg8":0,"reg9":1}],
+
+############ S6 结构在但索引定义错（非部分索引）############
+🚣 1 command executed successfully.
+🚣 1 command executed successfully.
+-- 错误索引 sql --
+"results":[{"sql":"CREATEUNIQUEINDEXux_mm_dedup_keyONmqtt_messages(dedup_key)"}],
+│ 0007_mqtt_messages_dedup.sql │
+X [ERROR] duplicate column name: dedup_key: SQLITE_ERROR
+"results":[{"col":1,"idx":1,"partial_idx":0,"reg7":0,"reg8":0,"reg9":0}],
+############ 结束（BASE=.wrangler/g4r5_matrix_20261021005312）############

@@ -1,0 +1,4 @@
+        "sql": "CREATE TABLE mqtt_messages (     id INTEGER PRIMARY KEY AUTOINCREMENT,      device_id TEXT NOT NULL,      topic TEXT,     direction TEXT,       raw_payload TEXT,       cmd TEXT,     msg_id TEXT,       object TEXT,     stable_id INTEGER,      version INTEGER,       status INTEGER,      error_code INTEGER,       message TEXT,       timestamp INTEGER,       payload_json TEXT,       created_at INTEGER , status_text TEXT, error_text TEXT, msg_type_text TEXT, msg_type INTEGER)"
+      }
+    ],
+    "success": true,
