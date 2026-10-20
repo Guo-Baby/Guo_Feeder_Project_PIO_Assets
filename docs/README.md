@@ -33,9 +33,13 @@
 
 ## architecture/ 架构
 
-> ★ **最近一轮（`2026-10-20`）优先读这三份**：
-> `G4-Log-Credibility-and-Observability-Report-2026-10-20.md`（A–G 总结）·
-> `G4-Production-Change-Plan-2026-10-20.md`（生产变更申请，**未授权**）·
+> ★ **最近一轮（`2026-10-21`）优先读这两份**：
+> `G4-Production-Change-Plan-Rev2-2026-10-20.md`（**唯一**执行手册：C-1/C-2/C-3 + 审批表 + 最终 SQL）·
+> `G4-Production-Change-Plan-Review-2026-10-20.md`（A–G 审阅：Rev.1 的 10 处差异 + 逐条 SQL 审查）。
+> ⚠️ `G4-Production-Change-Plan-2026-10-20.md`（Rev.1）**已失效**，仅作审计留痕。
+>
+> ★ **上一轮（`2026-10-20`）**：
+> `G4-Log-Credibility-and-Observability-Report-2026-10-20.md`（A–G 总结，含 `§B.6 勘误`）·
 > `G4-Real-Hardware-Acceptance-Checklist.md`（焊接后真机验收清单）。
 
 | 文档 | 说明 |

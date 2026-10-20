@@ -1,14 +1,58 @@
 # 交接文档 · Guo Feeder Project
 
 > **用途**：跨会话 / 跨人交接。新开会话时**先读本文件**，再按 §1 的清单读对应文档。
-> **最后更新**：**2026-10-20**（**G4 日志可信度 + G4-R4 观测 + 烧录验证** —— 见 **§1.0**；
+> **最后更新**：**2026-10-21**（**G4 生产变更计划 Rev.2 + 上线前核实** —— 见 **§1.0**；
 > §1.0-旧 与 §2–§11 为历史，仅作沿革参考）
 
 ---
 
 ## 1. 给下一个会话的启动指令（直接复制粘贴）
 
-### 1.0 ★ 最新交接（`2026-10-20` · G4 日志可信度 + 内存观测 + 烧录）
+### 1.0 ★ 最新交接（`2026-10-21` · G4 生产变更计划 Rev.2 + 上线前核实）
+
+#### 一句话状态
+
+**生产变更计划已修订为可逐项审批的形态（C-1/C-2/C-3 分开），但一个字节都没上生产。**
+门禁仍全部未动：`G-4 = BLOCKED` · `WP-5` 未解锁 · `BT-1 = CLOSED` · `STOP-R1` 无解除。
+`0007` = **NOT APPLIED** · Worker **未部署** · `B-3` 仍**根因未定**。
+
+#### 必读（2 个文件）
+
+| # | 文件 | 为什么 |
+|---|---|---|
+| 1 | `docs/architecture/G4-Production-Change-Plan-Rev2-2026-10-20.md` | **唯一**执行手册：C-1/C-2/C-3 的执行、判据、回滚、审批表；全部最终 SQL 只在这里一份 |
+| 2 | `docs/architecture/G4-Production-Change-Plan-Review-2026-10-20.md` | A–G 审阅报告：**Rev.1 的 10 处差异**、E.1 逐条 SQL 审查、E.4 四条对账等式为何作废 |
+
+#### 本轮改了什么（**只有文档，没有代码**）
+
+| 文件 | 动作 |
+|---|---|
+| `G4-Production-Change-Plan-Rev2-2026-10-20.md` | 新增（执行手册，取代 Rev.1） |
+| `G4-Production-Change-Plan-2026-10-20.md` | 顶部加横幅：已被 Rev.2 取代 + 4 处实质错误清单（**原文未删**） |
+| `G4-Log-Credibility-and-Observability-Report-2026-10-20.md` | 追加 `§B.6 勘误`（不改原文） |
+| `docs/issues/未修复的问题.md` | 更正 `LOG-BOOT-WM`；新增 `PLAN-1..5` 与 9 项遗留 |
+| `docs/evidence/G4-ChangePlan-Rev2-2026-10-21/` | 新增（本地 migration 实验 E-1/E-2/E-3 + 端到端复现） |
+
+#### 三个**最容易踩错**的点（本轮实测）
+
+1. **回滚传 version id，不是 deployment id** —— `wrangler 4.145.0` 的 `rollback [version-id]`
+2. **`LOG_BOOT_WATERMARK` 生产已启用**（`wrangler.toml:40`，`362ddfd` 2026-10-19）——
+   本轮纪律是**不得改动**，不是"不得开启"
+3. **对账第三段不可观测** —— `/api/history/ingest` 不打印 `{accepted,duplicate,rejected,filtered}`，
+   响应只回 EMQX Action ⇒ 只能用 `log_history` 增量替代 `accepted`，其余标 `NOT MEASURABLE`
+
+#### 下一轮 P0（未变，但前置更清楚）
+
+1. **采集线上 `version_id`/`deployment_id`**（`C2-VER`，C-2 的唯一硬阻塞）
+2. 人工**逐项**批准 C-1 → C-2 → C-3（`Rev.2 §8` 三张审批表）
+3. `G4-R4` 阈值人工裁决（`<70%` 仍是未批准的历史建议值）
+4. `B-3` 取证：EMQX 控制台只读截图（API 403）
+5. `LOG-COUNTERS`（可选、需**单独授权**的 Worker 改动）：让第三段可观测
+
+---
+
+### 1.0-旧1 ★ 交接（`2026-10-20` · G4 日志可信度 + 内存观测 + 烧录）
+
 
 #### 一句话状态
 

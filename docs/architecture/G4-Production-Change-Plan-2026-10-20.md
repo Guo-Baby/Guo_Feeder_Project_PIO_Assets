@@ -1,7 +1,18 @@
 # G4 生产变更申请（云端 `0007` + Worker 部署 + 生产验证）
 
+> ## ⚠️ 本文件（Rev.1）**已被 Rev.2 取代，不再具备执行效力**
+>
+> - **执行手册**：`G4-Production-Change-Plan-Rev2-2026-10-20.md`（**只看这一份**）
+> - **修订理由**：`G4-Production-Change-Plan-Review-2026-10-20.md`（A–G，逐条列明本文件的 10 处问题）
+>
+> **本文件已知的 4 处实质错误（保留原文作审计留痕，请勿据此执行）**：
+> 1. §4.1/§4.4「回滚用 **deployment id**」❌ —— `wrangler rollback [version-id]` 的位置参数是 **version id**
+> 2. §3.3「行数未变 = 成功」❌ —— 生产持续有并发写入，该判据会**稳定误报**
+> 3. §5.3「`② cloud_ack_ok ≈ ③ accepted`」❌ —— `cloud_ack_ok` 是**批次**数，`accepted` 是**行**数，量纲不同
+> 4. §5.2「`Q-2` 同 `msg_id` 重复率」❌ —— 同 `msg_id` 的 audit/echo **天然两行**，同 `msg_id` 不同 payload 也合法两行
+
 - 日期：`2026-10-20`
-- 状态：**申请中 —— 尚未执行任何生产变更**
+- 状态：**已被 Rev.2 取代（SUPERSEDED）—— 原文保留，不再更新**
 - 适用仓库：`Cloudflare_Assets/guo-feeder-api`（云端）
 - 关联文档：
   - `docs/architecture/G4-R4-R5-Joint-Investigation-Report.md`
