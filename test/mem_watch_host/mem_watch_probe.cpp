@@ -232,34 +232,39 @@ extern "C" int probe_run()
         check("M-7-4 DRAM largest_min 不受 PSRAM 影响", d.largest_min == 50000, d.largest_min, 50000);
     }
 
-    // ---------------- M-8 栈单位：一致性 + 实测反推 ----------------
+    // ---------------- M-8 栈单位：一致性 + 算术排除 + 双步反推 ----------------
     //
-    // ★ 设计缺陷留痕：第一版曾用"raw > stack ⇒ words，故 ×4"做自动换算。
-    //   该判据**数学上永不成立**（见 `mem_watch_calc.h` 说明）——
-    //   两种口径下 raw 都必然 ≤ stack。主机探针当场暴露了它，故改为：
-    //     ① 一致性只做**必要条件**校验（raw ≤ stack）
-    //     ② 口径由**受控深栈探测的下降量**反推（真机可执行）
+    // ★ 两条设计缺陷留痕（都由主机探针/真机实测暴露）：
+    //   ① `raw > stack ⇒ words` **永不成立**（两种口径下 raw 都 ≤ stack）⇒ 已废弃。
+    //   ② 单步探测的下降量 = depth − (当前深度 − 历史最深)，会被历史低点稀释
+    //      ⇒ 真机实测 `probe 4096` delta=0、`probe 8192` delta=3840 ⇒ 已改双步。
     {
         check("M-8-1 raw 7000 ≤ stack 16384 ⇒ 自洽",
               memwatch_stack_consistent(7000u, 16384u) == 1u, 1, 1);
-        check("M-8-2 raw 16384 = stack ⇒ 自洽（边界）",
-              memwatch_stack_consistent(16384u, 16384u) == 1u, 1, 1);
-        check("M-8-3 raw 16385 > stack ⇒ **不自洽**（物理不可能）",
+        check("M-8-2 raw 16385 > stack ⇒ 不自洽（物理不可能）",
               memwatch_stack_consistent(16385u, 16384u) == 0u, 0, 0);
-        check("M-8-4 stack=0 ⇒ 不判假（视为自洽，避免误报）",
-              memwatch_stack_consistent(5000u, 0u) == 1u, 1, 1);
 
-        // 下降量反推：depth=8192
-        check("M-8-5 delta 8192 ≈ depth ⇒ 判定**字节**口径",
-              memwatch_stack_delta_implies_bytes(8192u, 8192u, 3276u) == 1u, 1, 1);
-        check("M-8-6 delta 2048 ≈ depth/4 ⇒ 判定**字数**口径",
-              memwatch_stack_delta_implies_bytes(2048u, 8192u, 3276u) == 0u, 0, 0);
-        check("M-8-7 delta 5000（既非 depth 也非 depth/4）⇒ 无法判定(2)",
-              memwatch_stack_delta_implies_bytes(5000u, 8192u, 819u) == 2u, 2, 2);
-        check("M-8-8 delta=0（探测未生效）⇒ 无法判定(2)",
-              memwatch_stack_delta_implies_bytes(0u, 8192u, 3276u) == 2u, 2, 2);
-        check("M-8-9 depth=0 ⇒ 无法判定(2)",
-              memwatch_stack_delta_implies_bytes(8192u, 0u, 0u) == 2u, 2, 2);
+        // ---- ★ 算术排除（有效判据）----
+        check("M-8-3 ★ raw 9724 / stack 16384 ⇒ 字数**不可能**（9724×4 > 16384）",
+              memwatch_stack_words_possible(9724u, 16384u) == 0u, 0, 0);
+        check("M-8-4 raw 2000 / stack 16384 ⇒ 字数仍可能（歧义）",
+              memwatch_stack_words_possible(2000u, 16384u) == 1u, 1, 1);
+        check("M-8-5 raw 4096 = stack/4 ⇒ 边界：字数仍可能",
+              memwatch_stack_words_possible(4096u, 16384u) == 1u, 1, 1);
+        check("M-8-6 raw 4097 > stack/4 ⇒ 字数不可能",
+              memwatch_stack_words_possible(4097u, 16384u) == 0u, 0, 0);
+
+        // ---- 双步反推（step=2048）----
+        check("M-8-7 双步 delta 2048 ≈ step ⇒ 判定**字节**",
+              memwatch_stack_delta_implies_bytes(2048u, 2048u, 819u) == 1u, 1, 1);
+        check("M-8-8 双步 delta 512 ≈ step/4 ⇒ 判定**字数**",
+              memwatch_stack_delta_implies_bytes(512u, 2048u, 819u) == 0u, 0, 0);
+        check("M-8-9 双步 delta 3840（真机实测值，非 step 也非 step/4）⇒ 无法判定",
+              memwatch_stack_delta_implies_bytes(3840u, 2048u, 819u) == 2u, 2, 2);
+        check("M-8-10 双步 delta=0（两次都未刷新低点）⇒ 无法判定",
+              memwatch_stack_delta_implies_bytes(0u, 2048u, 819u) == 2u, 2, 2);
+        check("M-8-11 step=0 ⇒ 无法判定（不除零）",
+              memwatch_stack_delta_implies_bytes(1024u, 0u, 0u) == 2u, 2, 2);
     }
 
     // ---------------- M-9 边界 ----------------

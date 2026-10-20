@@ -94,8 +94,9 @@ struct MemWatchStackInfo
 {
     uint8_t  available;          // 0 = 无法取得（任务不存在 / API 失败）
     uint8_t  consistent;         // 1 = `hwm_raw <= stack_bytes`（与字节口径自洽）
-    uint8_t  unit_verified;      // 1 = 已由**深栈探测**确认口径（否则"未验证"）
+    uint8_t  unit_verified;      // 1 = 口径**已确定**（算术排除 或 实测反推）
     uint8_t  unit_is_bytes;      // 仅 `unit_verified=1` 时有意义
+    uint8_t  unit_source;        // 0 = 未验证；1 = 算术排除（words 不可能）；2 = 双步探测
     uint32_t stack_bytes;        // 该任务栈总大小（B）
     uint32_t hwm_raw;            // API 原始返回值（**始终**给出，便于复核）
     uint32_t hwm_bytes;          // 剩余字节（**仅** `unit_verified && unit_is_bytes` 时填）
@@ -158,7 +159,11 @@ const char *memwatch_site_name(uint8_t site);
 //   结果缓存在模块内，`memwatch_get()` 以 `unit_verified` 反映。
 //
 // 安全约束（硬性）：
-//   · `depth_bytes` 被钳到 `[1024, 栈大小/2]` ⇒ 绝不可能击穿栈
+//   ★ **双步**探测（`2026-10-20` 修正）：先探 `depth_bytes`，再探
+//     `depth_bytes + 2048`；用两次高水位之差对 2048 反推口径。
+//     单步探测的下降量会被"历史最深点"稀释，真机实测已证（见 calc 头注释）。
+//
+//   · `depth_bytes` 被钳到 `[1024, 栈大小/2 − 2048]` ⇒ 连"两步之和"也不会击穿栈
 //   · 只在串口控制台调用，**不**在 loop()/命令路径调用
 //   · 不分配堆、不阻塞、无输出（输出由调用方负责）
 //
