@@ -157,7 +157,7 @@ Arduino `String`、第三方库（含 mbedTLS）、IDF 自身分配**不在覆�
 |---|---|---|---|
 | 7-1 | 设备没产生 | 设备侧 `emit_total` | ✅ `system.stats` |
 | 7-2 | 设备未上云（**不可直接读成「未发出」**） | `emit_total − cloud_records_sent`（`cloud_records_sent` 于 `2026-10-20` 修好，原恒 0） | ⚠️ 可得，但**差额含多种分量**：DEBUG（本就不上云）+ 仍在队列/Flash 的在途 + 被 `drop_*` 淘汰的；**不可**把差额整体写成「设备未发出」 |
-| 7-3 | Broker 未接收 | EMQX `/clients/{id}` 的 `recv_cnt` | ✅（只读 API 可用） |
+| 7-3 | Broker 未接收 | EMQX `/clients/{id}` 的 **`recv_msg`**（**不是** `recv_cnt`） | ✅（只读 API 可用）。★ `recv_cnt` 是**报文数**（含 CONNECT/PINGREQ/PUBACK），`recv_msg` 才是 PUBLISH 条数；实测同窗口 `recv_cnt=116` vs `recv_msg=35`，**混用会得出"丢 80%"的假结论** |
 | 7-4 | 规则未匹配 | EMQX 数据集成 → 规则 matched 计数 | ❌ API **403**，需控制台截图 |
 | 7-5 | Action 未转发 | Action 的 success/failed/retry | ❌ 同上 |
 | 7-6 | Pages 未收到 | Cloudflare Pages 请求数 | ⚠️ 部分可得 |
@@ -166,6 +166,29 @@ Arduino `String`、第三方库（含 mbedTLS）、IDF 自身分配**不在覆�
 
 ★ 7-4/7-5 的截图**必须**包含时间范围与规则名，否则无法与 7-7 对齐。
 ★ 在拿到 7-4/7-5 之前，**不得**定案"丢在哪一层"。
+
+### 7.9 归因分布判据（`R-6` 修订，**按方向分开，不得混算**）
+
+`2026-10-21` 只读取证确定的真实分布：**全库 `echo` 只存在于 `direction='down'`（1 539 行），
+从未出现 `echo/up`** ⇒ 任何"audit 与 echo 必须都 > 0"的表述，只要没限定方向，
+就会在 `up` 上**永久误报**。
+
+| # | 方向 | 必须验证 | 判据 | 明确**不**要求 |
+|---|---|---|---|---|
+| 7-9 | `down` | `echo` 存在性 | `n_echo > 0`（窗口 ≥ 10 min，echo 实测晚 33–37 s） | 不要求 `audit > 0`（`audit/down` 自 `2026-10-20 02:50` 起归零，**原因未查明**） |
+| 7-10 | `up` | 上行仍在 + 归属合法 | `n_up > 0`；`device_id` 合法（见 7-11） | **不得**要求 `echo/up`（不存在是**正确状态**） |
+| 7-11 | `up`/`down` | `$tenants` 归属 | `$tenants/*` 行 `device_id` 为合法 12-hex | 允许 `unresolved`（仅来自真实畸形 topic） |
+| 7-12 | `log` | 日志契约 | 看 `log_history`（`rows == COUNT(DISTINCT seq)`）+ 设备计数 | **不得**套用 up/down 的 audit/echo；**不得**用 `mqtt_messages` 当唯一证据 |
+| 7-13 | `unknown` | 旧路由残留 | 窗口内计数 = **0** | — |
+
+统计口径（三句必须写进记录）：
+
+1. 统计窗口**同一**（`:ts0_ms` 起），且 `boot_seq` 未变；
+2. 全部查询排除探针行：`AND COALESCE(raw_payload,'') NOT LIKE '%G4PROBE-%'`；
+3. `audit`/`echo` **按 `substr(topic,1,9)='$tenants/'` 区分**，并按 `direction` 分组 —— 二者不可省。
+
+★ 反方向声明：本节修订**只是**消除不适用于 `up` 的 `echo` 断言，
+**不构成** B-3 已解决的任何证据，也**不证明** `up` 的审计/去重链路正确。
 
 ---
 

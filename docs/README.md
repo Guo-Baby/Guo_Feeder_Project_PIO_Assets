@@ -33,9 +33,15 @@
 
 ## architecture/ 架构
 
-> ★ **最近一轮（`2026-10-21`）优先读这两份**：
-> `G4-Production-Change-Plan-Rev2-2026-10-20.md`（**唯一**执行手册：C-1/C-2/C-3 + 审批表 + 最终 SQL）·
-> `G4-Production-Change-Plan-Review-2026-10-20.md`（A–G 审阅：Rev.1 的 10 处差异 + 逐条 SQL 审查）。
+> ★ **最近一轮（`2026-10-21 01:10`）优先读这三份**：
+> `G4-Production-Change-Plan-Rev2-2026-10-20.md`（已升 **Rev.2.1**：`R-1`…`R-6` 全关闭，
+> 含 §2.A 身份四源 / §2.C 制品哈希 / §3.3 六项验证 / **§3.7 六状态矩阵**）·
+> `G4-R1-R5-Rev3-and-R6-Report-2026-10-21.md`（阶段 1：修订前后对照 + 六状态实测）·
+> `G4-C1-Final-Pre-Execution-Report-2026-10-21.md`（阶段 2：**`READY FOR HUMAN APPROVAL`**，非执行许可）。
+>
+> ★ **前一轮（`2026-10-21 00:30`）**：
+> `G4-Production-Change-Plan-Review-2026-10-20.md`（A–G 审阅：Rev.1 的 10 处差异 + 逐条 SQL 审查）·
+> `G4-Live-Evidence-and-C1-Review-Summary-2026-10-21.md`（S1/S2/S3 三阶段只读取证汇总，含 `§4.1-B` 更正）。
 > ⚠️ `G4-Production-Change-Plan-2026-10-20.md`（Rev.1）**已失效**，仅作审计留痕。
 >
 > ★ **上一轮（`2026-10-20`）**：
