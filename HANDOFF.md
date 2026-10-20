@@ -47,9 +47,25 @@
 
 #### 下一轮 P0
 
-1. **`enforce` 切换**仍缺前提：需要真实流量下 `invalid_total=0` 的**可读证据** ⇒ 先决定是否加只读指标端点
-2. **`G-4` 真机批次**（2 h + 30 min 窗口 + DRAM 85% 复测）→ 之后才是 `WP-5` → Homie 上板 → `C-3`
-3. **UI 前置**：`GET /api/history/*` 与设备快照端点**尚未实现**（A-1/A-2，用户曾指示暂不开工）
+1. ★★ **配置 Pages 的 4 个环境变量**（`UI_PASSWORD` / `SESSION_SECRET` / `ADMIN_API_TOKEN`
+   + 可选 Turnstile）⇒ 配完**重新部署 Pages**，UI 才可用。见问题册 `UI-ENV-PENDING`
+2. **`enforce` 切换**：现在有了 `GET /api/admin/metrics` 可读 `invalid_total`，
+   但它是 **per-isolate** ⇒ 需在真实流量下多 isolate 采样均为 0，再单独授权切换
+3. **`G-4` 真机批次**（2 h + 30 min 窗口 + DRAM 85% 复测）→ 之后 `WP-5` → Homie 上板 → `C-3`
+4. **UI 界面**：`app.html` 只是最小看板（指标卡 + 日志表 + 设备快照），
+   正式 UI 走 Quasar（Vue）改写，**同一套代码可用 Capacitor 打包安卓 APK**
+   ⚠️ 历史曲线暂时无数据（`mqtt.telemetry_enable` 默认 `false`，见 `UI-TELEMETRY-EMPTY`）
+
+#### 架构要点（改 UI 前必读）
+
+```
+浏览器 → Pages（gf_session cookie，HttpOnly）
+       → Pages 服务端注入 Bearer ADMIN_API_TOKEN
+       → Worker 只读端点 → D1
+```
+★ **`ADMIN_API_TOKEN` 绝不能进前端代码** —— 它是单令牌全权管理凭据。
+★ Worker **零 CORS**，所以前端**只能**走 Pages 同源代理，不能直连 `workers.dev`。
+★ 中间件**默认放行**，只保护 `/app.html` `/app` `/` ⇒ 绝不要把 EMQX 入口加进保护名单。
 
 ---
 
