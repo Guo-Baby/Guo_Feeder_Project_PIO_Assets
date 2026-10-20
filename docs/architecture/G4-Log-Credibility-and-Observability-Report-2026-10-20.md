@@ -121,6 +121,21 @@ log_emit()       RAM 环 64×128B (PSRAM优)  →  云队列 128 槽 (PSRAM优) 
    `G4-R5` B-3 已证它会漏记（`up/result` 96/105 个 ID），且历史上有伪 `device_id`。
    ⇒ **凡以 `mqtt_messages` 为证据的验收必须用串口或设备计数交叉验证**（本轮已遵守：所有日志结论来自 `system.stats` + 串口）。
 
+### B.6 ★ 勘误（`2026-10-21` · 审阅核实后追加，**不改动上文原文**）
+
+> 来源：`G4-Production-Change-Plan-Review-2026-10-20.md` §A.3。以下每条都是**本轮读码/读配置核实**的结果。
+
+| # | 本文原表述 | 实际 | 影响 |
+|---|---|---|---|
+| B-6-1 | §B.5.1「`LOG_BOOT_WATERMARK` 仍是默认关闭的开关」 | ❌ **已启用**：`wrangler.toml:40` `[vars] LOG_BOOT_WATERMARK = "1"`，由 `362ddfd`（`2026-10-19`）引入 | ①"不得擅自开启"实际是"**不得改动**"；②`log_conflict` / `log_boot_watermark` **可作 C-3 的现成监测源** |
+| B-6-2 | §B.1 链路图/§B.2 未区分 `mqtt_messages.timestamp` 语义 | `timestamp` 存设备 `t` 字段，而 `t` **被复用**：普通上行是 `time_get()`（**秒**）；分片 BEGIN 帧是**消息类型**；`log_ack.p.t` 是 `seq_to` | 任何"入库延迟"类计算必须加时间区间过滤 |
+| B-6-3 | §B.2「云端入库 `written[k]=true`」隐含可观测 | `/api/history/ingest` **不打印** `{accepted,duplicate,rejected,filtered}`，响应只回 EMQX Action | 对账第三段在**我方不可观测** ⇒ 只能用 `log_history` 增量替代 `accepted` |
+| B-6-4 | §B.5.1「`(device_id, boot_seq, seq)` 会撞历史键」的前提是 seq 是本 boot 序号 | `seq` 由 `s_meta_slot_seq + 1` **持久化推进**（跨 boot 连续，真机样例 `boot_seq=94, seq=108289`），与 `log_envelope_contract.md:58`「boot 内序号」不符 | 不得假设"新 boot 从 1 开始"；统计必须按 `boot_seq` 分组 |
+| B-6-5 | 未提 | `seq` 在 `log_emit_internal()` 对**所有等级**分配，但 **DEBUG 不上云** ⇒ 云端 `seq` 空间**天然有洞** | **禁止**用"seq 连续"作完整性判据 |
+
+★ 未发现差异、经复核确认无误的部分：§B.3 的四个缺陷描述、§C.1/§C.2 的 B-1/B-2 语义、
+§D 的 H-1…H-5 定义与覆盖边界、§E 的烧录与串口数据。
+
 ---
 
 ## C. G4-R5 修复报告

@@ -38,34 +38,48 @@
 
 ## 2. 日志端到端对账（最高优先级）
 
-**目标**：在**同一时间窗口**内，让下面五段数字可比。
+> ★ **`2026-10-21` 修正**：本节原写的 `② ≈ ①`、`① ≈ accepted + duplicate`、`④ == Σ accepted`
+> 三条关系**全部作废**（原因见 `G4-Production-Change-Plan-Review-2026-10-20.md` §E.4）：
+> `cloud_ack_ok` 是**批次**数不是条数；`③` 的四个计数 **我方不可观测**
+> （`/api/history/ingest` 不打印，响应只回 EMQX Action）；`seq` 也不是 boot 内序号。
+> 现行判据以 `G4-Production-Change-Plan-Rev2-2026-10-20.md` §5.3 的 `I-1…I-9` 为准。
 
-| # | 段 | 取值 | 期望关系 |
-|---|---|---|---|
-| 2-1 | ① 设备发出 | `system.stats.counters.cloud_records_sent` | 基准 |
-| 2-2 | ② 设备已确认 | `counters.cloud_ack_ok` | ≈ ① |
-| 2-3 | ③ 云端 accepted | `/api/history/ingest` 响应（Pages 日志） | ① ≈ accepted + duplicate |
-| 2-4 | ④ D1 行数 | `SELECT COUNT(*) FROM log_history WHERE device_id=:dev AND boot_seq=:b` | ④ == Σ accepted |
-| 2-5 | ⑤ 丢弃类 | `drop_overflow` / `drop_unacked` / `ack_lost` / `give_up` | 全 0 才能写"无丢弃" |
+**目标**：在**同一时间窗口**内（且 `boot_seq` **不变**），让下面几段数字**可比**。
+
+| # | 段 | 取值 | 关系 | 性质 |
+|---|---|---|---|---|
+| 2-1 | ① 设备首发出 | `counters.cloud_records_sent`（RAM，重启归零） | 基准 | 直接测量 |
+| 2-2 | ② 设备已确认（**批次**） | `counters.cloud_ack_ok` | `Δ② ≤ Δcloud_batch_sent` | ✅ 严格不变量 |
+| 2-3 | ③ 云端入库 | **Δ`log_history` 行数**（按 `device_id`+`boot_seq`+`created_at`） | `④ ≤ Δ①`；`④ == COUNT(DISTINCT seq)` | ✅ 严格不变量 |
+| 2-4 | ③′ 响应四计数 | `/api/history/ingest` 的 `{accepted,duplicate,rejected,filtered}` | — | ❌ **NOT MEASURABLE**（不落日志，见 `LOG-COUNTERS`） |
+| 2-5 | ⑤ 丢弃类 | `drop_overflow` / `drop_unacked` / `ack_lost` / `give_up` | 全 0 才能写"无丢弃" | ✅ 严格 |
+| 2-6 | ⑥ `cloud_batch_sent` / `cloud_retx` | 同上 | `Δretx ≤ Δbatch_sent` | 记录项 |
 
 操作序列：
 
 ```
-1) 记 t0 = 当前时刻；读 system.stats 存盘（基线 A）
+1) 记 t0 与 boot_seq；读 system.stats 存盘（基线 A）
 2) 制造 ≥ 20 条可预期日志（例如连续 5 次阀动作 + 3 次配置查询）
 3) 等 ≥ 60 s（确保上传 + ACK 窗口完整）
-4) 读 system.stats 存盘（快照 B）；Δ = B − A
-5) 用 t0 查 log_history 与 Pages 日志
+4) 读 system.stats 存盘（快照 B）；Δ = B − A；★ 先确认 boot_seq 未变，变了则整轮作废
+5) 用 t0 查 log_history（秒单位）与 mqtt_messages（毫秒单位）—— 不要混用
 6) 逐项填下表
 ```
 
 | # | 项 | 判定 |
 |---|---|---|
-| 2-6 | Δ① == log_history 新增（本 boot） | PASS / FAIL |
-| 2-7 | Δ② == Δ①（无 give_up） | PASS / FAIL |
-| 2-8 | Δ`drop_*` 全 0 | PASS / FAIL |
-| 2-9 | `acked_seq == 该窗口最后一条 seq` | PASS / FAIL |
-| 2-10 | 时间戳语义正确（`log_history.ts` 与设备本地时间一致，允许时区偏移已记录） | PASS / FAIL |
+| 2-7 | `boot_seq` 在窗口内未变 | PASS / **作废重来** |
+| 2-8 | `Δ② ≤ Δcloud_batch_sent` | PASS / FAIL |
+| 2-9 | `Δlog_history 行数 ≤ Δ①` | PASS / FAIL |
+| 2-10 | `log_history 行数 == COUNT(DISTINCT seq)`（同一 `device_id`+`boot_seq`） | PASS / FAIL |
+| 2-11 | `Δdrop_*` 全 0 | PASS / FAIL |
+| 2-12 | `acked_seq` 单调不减（窗口 B ≥ 窗口 A） | PASS / FAIL |
+| 2-13 | **记录项（不判 PASS/FAIL）**：`Δ① − Δlog_history` 的差额 | 附解释：在途 / 被过滤 / 被拒收 / 被去重 / Flash 补发，**当前不可分解** |
+
+★ **禁止**：把 `Δ① − Δlog_history` 的差额直接写成"丢了多少条"（它含多个不可观测分量，见 `A-1`）。
+★ **禁止**：用 `cloud_ack_ok` 与 `log_history` 行数相比（量纲不同）。
+★ **禁止**：把本轮的 2 小时量产窗口当作 `S-3-L3` 的 2.5 小时门禁窗口。
+| 2-14 | 时间戳语义正确（`log_history.ts` 与设备本地时间一致，允许时区偏移已记录） | PASS / FAIL |
 
 ★ **任一 FAIL 都不允许**用"再跑一次就好了"结案，必须留下差分快照。
 
@@ -142,7 +156,7 @@ Arduino `String`、第三方库（含 mbedTLS）、IDF 自身分配**不在覆�
 | # | 阶段 | 数据源 | 是否可得 |
 |---|---|---|---|
 | 7-1 | 设备没产生 | 设备侧 `emit_total` | ✅ `system.stats` |
-| 7-2 | 设备未发出 | `emit_total − cloud_records_sent`（**本轮新修，原恒 0**） | ✅ |
+| 7-2 | 设备未上云（**不可直接读成「未发出」**） | `emit_total − cloud_records_sent`（`cloud_records_sent` 于 `2026-10-20` 修好，原恒 0） | ⚠️ 可得，但**差额含多种分量**：DEBUG（本就不上云）+ 仍在队列/Flash 的在途 + 被 `drop_*` 淘汰的；**不可**把差额整体写成「设备未发出」 |
 | 7-3 | Broker 未接收 | EMQX `/clients/{id}` 的 `recv_cnt` | ✅（只读 API 可用） |
 | 7-4 | 规则未匹配 | EMQX 数据集成 → 规则 matched 计数 | ❌ API **403**，需控制台截图 |
 | 7-5 | Action 未转发 | Action 的 success/failed/retry | ❌ 同上 |
@@ -174,7 +188,7 @@ Arduino `String`、第三方库（含 mbedTLS）、IDF 自身分配**不在覆�
 ```
 | ID  | 场景 | 结论 | 证据路径 | 时间 | 备注 |
 |-----|------|------|----------|------|------|
-| 2-6 | Δ① 对账 | PASS | docs/evidence/.../stats-A.json, stats-B.json | 2026-MM-DD HH:MM | Δ①=23, 入库=23 |
+| 2-9 | Δlog_history ≤ Δ① 对账 | PASS | docs/evidence/.../stats-A.json, stats-B.json | 2026-MM-DD HH:MM | Δ①=23, 入库=23（**差额需附解释**，见 2-13） |
 ```
 
 结论取值只允许：`PASS` / `FAIL` / `BLOCKED` / `NOT RUN`。
