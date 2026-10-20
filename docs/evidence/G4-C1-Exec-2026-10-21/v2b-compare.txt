@@ -1,0 +1,13 @@
+# V-2b 25 行固定抽样 · 执行前后逐行比对（脚本生成，可复现）
+# 输入: g1-pre-v2b-sample.txt（执行前 2026-10-21 01:21:39）· v2b-sample-post.txt（执行后 01:23:xx）
+# 比对字段: device_id / dir / cmd / msg_id / tp_len / pl_len / pl_head
+
+pre_rows=25 post_rows=25
+missing_in_post=[]
+extra_in_post=[]
+field_diffs=0
+
+VERDICT=MATCH_25
+
+# ★ 局限声明（R-3）：25 行抽样是补充证据，不是全表证明；
+#   只能写「这 25 行未被改动」，不得写「历史数据绝对未变」。
