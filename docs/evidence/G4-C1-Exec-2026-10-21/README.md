@@ -25,6 +25,7 @@
 | `v3-keyed.txt` | 验证 | `V-3` `keyed_total=0` + `EXPLAIN` 走 `COVERING INDEX ux_mm_dedup_key` | `01:23:49` |
 | `v1d-post-state.txt` | 补充 | 登记二次确认（`No migrations to apply`）、21 列结构、索引清单 | `01:24:19` |
 | `v1e-recheck-3min.txt` | 补充 | apply 后 3 分钟复检：仍 `1/1/1/1`、`keyed=0` | `01:24:57` |
+| `v1f-final-snapshot.txt` | 补充 | apply 后 8 分钟收尾快照：仍 `1/1/1/1`、`keyed=0`、`n_all=5745` | `01:27:36` |
 
 ## 三个必须随结论一起引用的限制
 
