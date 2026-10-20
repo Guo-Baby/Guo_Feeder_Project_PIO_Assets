@@ -1,0 +1,60 @@
+# 采集时间: 2026-10-21 01:21:56 +0800
+# 命令: d1 execute guofeeder --remote --json（仅 SELECT；changed_db / rows_written 见各段 meta）
+
+=== A-1 mqtt_messages 结构原文 ===
+[
+  {
+    "results": [
+      {
+        "sql": "CREATE TABLE mqtt_messages (     id INTEGER PRIMARY KEY AUTOINCREMENT,      device_id TEXT NOT NULL,      topic TEXT,     direction TEXT,       raw_payload TEXT,       cmd TEXT,     msg_id TEXT,       object TEXT,     stable_id INTEGER,      version INTEGER,       status INTEGER,      error_code INTEGER,       message TEXT,       timestamp INTEGER,       payload_json TEXT,       created_at INTEGER , status_text TEXT, error_text TEXT, msg_type_text TEXT, msg_type INTEGER)"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.1668
+      },
+      "duration": 0.1668,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2134016,
+      "rows_read": 38,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+
+=== A-2 dedup_key 列计数（期望 0）===
+[
+  {
+    "results": [
+      {
+        "n": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2265
+      },
+      "duration": 0.2265,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2134016,
+      "rows_read": 20,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

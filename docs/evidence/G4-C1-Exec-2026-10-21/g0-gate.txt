@@ -1,0 +1,98 @@
+# 门禁采集时间: 2026-10-21 01:22:45 +0800
+# wrangler: 4.145.0
+
+=== G-0 云端仓状态（期望 HEAD == origin/main，工作区干净）===
+e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+e1e8b791e3d00fa1ac80b6f6d3c3646390ad2dc2
+
+=== G-1a 账号身份（whoami）===
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Getting User settings...
+🔐 Credentials are stored in: C:\Users\wang\AppData\Roaming\xdg.config\.wrangler\config\default.toml
+┌─────────────────────────────┬──────────────────────────────────┐
+│ Account Name                │ Account ID                       │
+├─────────────────────────────┼──────────────────────────────────┤
+│ Wyl94@foxmail.com's Account │ 9e72d201efec6925b3a468a0e3fb4928 │
+└─────────────────────────────┴──────────────────────────────────┘
+Scope (Access)
+- user (read)
+- offline_access 
+- account (read)
+- workers (write)
+- workers_kv (write)
+- workers_routes (write)
+- workers_scripts (write)
+- workers_tail (read)
+- d1 (write)
+- pages (write)
+- zone (read)
+- ssl_certs (write)
+- ai (write)
+- ai-search (write)
+- ai-search (run)
+- websearch.run 
+- agent-memory (write)
+- queues (write)
+- pipelines (write)
+- secrets_store (write)
+- artifacts (write)
+- flagship (write)
+- containers (write)
+- cloudchamber (write)
+- connectivity (admin)
+- email_routing (write)
+- email_sending (write)
+- browser (write)
+- challenge-widgets.write 
+
+
+  - k2.read
+  - k2.write
+
+
+
+=== G-1b d1 list（同名多库判定）===
+    "uuid": "0d8385ba-a1a6-4fcc-8e43-ae61c014c43d",
+    "name": "guofeeder",
+
+=== G-1c 线上 version 元数据里的实际绑定 ===
+Created:     2026-10-19T12:56:06.861Z
+Version(s):  (100%) 826332ed-3a73-42c4-a090-a5bf737dc210
+                 Created:  2026-10-19T12:56:06.205Z
+Version ID:  826332ed-3a73-42c4-a090-a5bf737dc210
+env.guofeeder_DB (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")                                       Environment Variable      
+
+=== G-2 制品三方哈希（期望 sha256=90dc0ec0… / blob=eb300070… / HEAD 同）===
+90dc0ec0da0335e8f55cab22121843dc83fd1dacbb7b6d0379bbd9d7ff7e2f1e *migrations/0007_mqtt_messages_dedup.sql
+worktree_blob=eb300070be913ab272550cde4860448ed03575d2
+HEAD_blob=eb300070be913ab272550cde4860448ed03575d2
+
+=== G-3 migration 登记（期望只列 0007）===
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Resource location: remote 
+
+Migrations to be applied:
+┌──────────────────────────────┐
+│ Name                         │
+├──────────────────────────────┤
+│ 0007_mqtt_messages_dedup.sql │
+└──────────────────────────────┘
+
+=== G-4 半成品状态 S-PROBE（期望 col/idx/partial_idx/col_ok/reg7 全 0 ⇒ S0）===
+        "col": 0,
+        "idx": 0,
+        "partial_idx": 0,
+        "col_ok": 0,
+        "reg7": 0,
+        "nn": null,
+        "dflt": null,
+        "ctype": null
+      "changed_db": false,
+      "rows_written": 0,
+
+=== 门禁结束: 2026-10-21 01:23:09 +0800 ===

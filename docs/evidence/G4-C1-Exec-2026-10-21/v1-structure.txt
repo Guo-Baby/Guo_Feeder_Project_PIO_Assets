@@ -1,0 +1,77 @@
+# 采集时间: 2026-10-21 01:23:34 +0800
+=== V-1 结构：col / idx / partial_idx / reg7（期望 1/1/1/1）===
+[
+  {
+    "results": [
+      {
+        "col": 1,
+        "idx": 1,
+        "partial_idx": 1,
+        "reg7": 1
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.3257
+      },
+      "duration": 0.3257,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 100,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+=== V-1b 列属性（期望 type=TEXT / notnull=0 / dflt_value=NULL / pk=0）===
+
+{
+  "error": {
+    "text": "A request to the Cloudflare API (/accounts/9e72d201efec6925b3a468a0e3fb4928/d1/database/0d8385ba-a1a6-4fcc-8e43-ae61c014c43d/query) failed.",
+    "notes": [
+      {
+        "text": "near \"notnull\": syntax error at offset 32: SQLITE_ERROR [code: 7500]"
+      }
+    ],
+    "kind": "error",
+    "name": "APIError",
+    "code": 7500,
+    "accountTag": "9e72d201efec6925b3a468a0e3fb4928"
+  }
+}
+=== V-1c 索引定义全文（期望 UNIQUE + 单列 dedup_key + WHERE dedup_key IS NOT NULL）===
+[
+  {
+    "results": [
+      {
+        "name": "ux_mm_dedup_key",
+        "sql": "CREATE UNIQUE INDEX ux_mm_dedup_key\n    ON mqtt_messages(dedup_key)\n    WHERE dedup_key IS NOT NULL"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2582
+      },
+      "duration": 0.2582,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 39,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

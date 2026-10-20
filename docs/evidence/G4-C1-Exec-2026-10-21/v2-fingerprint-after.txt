@@ -1,0 +1,37 @@
+# 采集时间: 2026-10-21 01:23:42 +0800
+# MAX_ID_BEFORE = 5763（执行前基线）
+# FINGERPRINT_BEFORE = n_old=5745 min_id=1 max_id=5763 pl_len=817694 id_len=36151 tp_len=154882
+=== V-2 重放（期望四项与基线逐项相等；keyed 必为 0）===
+[
+  {
+    "results": [
+      {
+        "n_old": 5745,
+        "min_id_old": 1,
+        "max_id_old": 5763,
+        "pl_len": 817694,
+        "id_len": 36151,
+        "tp_len": 154882,
+        "keyed": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 6.1166
+      },
+      "duration": 6.1166,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 5745,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

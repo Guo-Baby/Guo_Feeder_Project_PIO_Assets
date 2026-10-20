@@ -1,0 +1,279 @@
+# 采集时间: 2026-10-21 01:22:22 +0800
+# MAX_ID_BEFORE = 5763（固定 id 上界，后续一律按此重放）
+# n_old = 5745 · 抽样 rn(0-based) = 0-4 / 1430-1434 / 2870-2874 / 4300-4304 / 5740-5744
+# ★ 抽样是补充证据，不是全表证明
+
+[
+  {
+    "results": [
+      {
+        "id": 1,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 2,
+        "device_id": "mqttx_9c9a7813",
+        "dir": "down",
+        "cmd": "query_workflow_registry",
+        "msg_id": "test001",
+        "tp_len": 15,
+        "pl_len": 52,
+        "pl_head": "{\"c\":\"query_workflow_registry\",\""
+      },
+      {
+        "id": 3,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "ack",
+        "msg_id": "test001",
+        "tp_len": 13,
+        "pl_len": 66,
+        "pl_head": "{\"c\":\"ack\",\"i\":\"test001\",\"p\":{\"r"
+      },
+      {
+        "id": 4,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "result",
+        "msg_id": "test001",
+        "tp_len": 13,
+        "pl_len": 138,
+        "pl_head": "{\"c\":\"result\",\"i\":\"test001\",\"s\":"
+      },
+      {
+        "id": 5,
+        "device_id": "mqttx_9c9a7813",
+        "dir": "down",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 15,
+        "pl_len": 82,
+        "pl_head": "{\"cmd\":\"execute_workflow\",\"ob\":\""
+      },
+      {
+        "id": 1431,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 1432,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 1433,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 1434,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 1435,
+        "device_id": "guo_feeder_001",
+        "dir": "up",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 13,
+        "pl_len": 45,
+        "pl_head": "{\"cmd\":\"system\",\"id\":\"online\",\"s"
+      },
+      {
+        "id": 2889,
+        "device_id": "288485896ce4",
+        "dir": "unknown",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 27,
+        "pl_len": 305,
+        "pl_head": "{\"device_id\":\"288485896ce4\",\"boo"
+      },
+      {
+        "id": 2890,
+        "device_id": "288485896ce4",
+        "dir": "unknown",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 27,
+        "pl_len": 305,
+        "pl_head": "{\"device_id\":\"288485896ce4\",\"boo"
+      },
+      {
+        "id": 2891,
+        "device_id": "288485896ce4",
+        "dir": "unknown",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 27,
+        "pl_len": 305,
+        "pl_head": "{\"device_id\":\"288485896ce4\",\"boo"
+      },
+      {
+        "id": 2892,
+        "device_id": "288485896ce4",
+        "dir": "unknown",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 27,
+        "pl_len": 305,
+        "pl_head": "{\"device_id\":\"288485896ce4\",\"boo"
+      },
+      {
+        "id": 2893,
+        "device_id": "288485896ce4",
+        "dir": "unknown",
+        "cmd": "",
+        "msg_id": "",
+        "tp_len": 27,
+        "pl_len": 305,
+        "pl_head": "{\"device_id\":\"288485896ce4\",\"boo"
+      },
+      {
+        "id": 4319,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:12:9003",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:12:9003\""
+      },
+      {
+        "id": 4320,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:100:9001",
+        "tp_len": 46,
+        "pl_len": 66,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:100:9001"
+      },
+      {
+        "id": 4321,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:120:9002",
+        "tp_len": 46,
+        "pl_len": 66,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:120:9002"
+      },
+      {
+        "id": 4322,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:12:9003",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:12:9003\""
+      },
+      {
+        "id": 4323,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:18:4364",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:18:4364\""
+      },
+      {
+        "id": 5759,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:25:6158",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:25:6158\""
+      },
+      {
+        "id": 5760,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:25:6158",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:25:6158\""
+      },
+      {
+        "id": 5761,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:25:6158",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:25:6158\""
+      },
+      {
+        "id": 5762,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:25:6159",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:25:6159\""
+      },
+      {
+        "id": 5763,
+        "device_id": "http_api",
+        "dir": "down",
+        "cmd": "log_ack",
+        "msg_id": "ack:25:6160",
+        "tp_len": 46,
+        "pl_len": 64,
+        "pl_head": "{\"c\":\"log_ack\",\"i\":\"ack:25:6160\""
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 11.8487
+      },
+      "duration": 11.8487,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2134016,
+      "rows_read": 17261,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

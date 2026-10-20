@@ -1,0 +1,38 @@
+# 采集时间: 2026-10-21 01:22:14 +0800
+# FINGERPRINT_BEFORE = (n_old, min_id, max_id, pl_len, id_len, tp_len)
+# MAX_ID_BEFORE = max_id（后续 V-2 一律用 id <= MAX_ID_BEFORE 重放）
+
+[
+  {
+    "results": [
+      {
+        "n": 5745,
+        "min_id": 1,
+        "max_id": 5763,
+        "devs": 73,
+        "pl_len": 817694,
+        "id_len": 36151,
+        "tp_len": 154882,
+        "no_msg_id": 1698
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 14.3573
+      },
+      "duration": 14.3573,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2134016,
+      "rows_read": 5746,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

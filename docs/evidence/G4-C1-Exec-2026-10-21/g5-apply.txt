@@ -1,0 +1,31 @@
+# C-1 执行记录
+# 命令: wrangler d1 migrations apply guofeeder --remote
+# 工作目录: /d/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
+# 开始时间: 2026-10-21 01:23:15 +0800
+----------------------------------------
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Resource location: remote 
+
+Migrations to be applied:
+┌──────────────────────────────┐
+│ name                         │
+├──────────────────────────────┤
+│ 0007_mqtt_messages_dedup.sql │
+└──────────────────────────────┘
+? About to apply 1 migration(s)
+Your database may not be available to serve requests during the migration, continue?
+🤖 Using fallback value in non-interactive context: yes
+🌀 Executing on remote database guofeeder (0d8385ba-a1a6-4fcc-8e43-ae61c014c43d):
+🌀 To execute on your local development database, remove the --remote flag from your wrangler command.
+🚣 Executed 3 commands in 2.93ms
+┌──────────────────────────────┬────────┐
+│ name                         │ status │
+├──────────────────────────────┼────────┤
+│ 0007_mqtt_messages_dedup.sql │ ✅     │
+└──────────────────────────────┴────────┘
+----------------------------------------
+# 结束时间: 2026-10-21 01:23:20 +0800
+# apply_exit=0
+# ★ apply_exit=0 不是成功信号；成功只由 V-1/V-1b/V-1c/V-2/V-2b/V-3 判定

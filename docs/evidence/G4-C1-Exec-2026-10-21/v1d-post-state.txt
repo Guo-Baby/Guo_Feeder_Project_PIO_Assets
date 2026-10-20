@@ -1,0 +1,33 @@
+# 采集时间: 2026-10-21 01:24:19 +0800
+=== P-1 登记二次确认（期望 No migrations to apply）===
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Resource location: remote 
+
+✅ No migrations to apply!
+
+=== P-2 执行后 mqtt_messages 结构原文（期望 21 列，含 dedup_key TEXT）===
+        "sql": "CREATE TABLE mqtt_messages (     id INTEGER PRIMARY KEY AUTOINCREMENT,      device_id TEXT NOT NULL,      topic TEXT,     direction TEXT,       raw_payload TEXT,       cmd TEXT,     msg_id TEXT,       object TEXT,     stable_id INTEGER,      version INTEGER,       status INTEGER,      error_code INTEGER,       message TEXT,       timestamp INTEGER,       payload_json TEXT,       created_at INTEGER , status_text TEXT, error_text TEXT, msg_type_text TEXT, msg_type INTEGER, dedup_key TEXT)"
+
+=== P-3 列数 + 末列名 ===
+        "n_cols": 21,
+        "max_cid": 20
+
+=== P-4 索引清单 ===
+    "name": "APIError",
+
+=== P-5 全表规模（含 migration 后新增写入，仅记录不判定）===
+        "n": 5745,
+        "mn": 1,
+        "mx": 5763
+# 采集时间: 2026-10-21 01:24:39 +0800
+# 说明：P-4 首次用 pragma_index_list() 触发 D1 APIError（该 pragma 在 D1 不可用），
+#       索引存在性已由 V-1c（sqlite_master.sql）与 V-3b（EXPLAIN 走 COVERING INDEX）证明；
+#       本段改用 sqlite_master 列全部索引，作为 P-4 的替代证据。
+=== P-4' mqtt_messages 全部索引（sqlite_master）===
+        "name": "ux_mm_dedup_key",
+        "type": "index",
+        "tbl_name": "mqtt_messages"
+=== P-4'' 索引总数（期望 1）===
+        "n_idx": 1

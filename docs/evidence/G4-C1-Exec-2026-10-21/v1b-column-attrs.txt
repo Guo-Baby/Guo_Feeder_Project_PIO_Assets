@@ -1,0 +1,35 @@
+# 采集时间: 2026-10-21 01:24:03 +0800
+# 说明：首次尝试因别名用了关键字 AS notnull 触发 syntax error（SQL 未执行，非结构问题）
+#       本文件为修正后重跑：去掉别名，直接取 pragma 列名
+=== V-1b 列属性（期望 type=TEXT / notnull=0 / dflt_value=NULL / pk=0）===
+[
+  {
+    "results": [
+      {
+        "name": "dedup_key",
+        "type": "TEXT",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2265
+      },
+      "duration": 0.2265,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 21,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

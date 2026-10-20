@@ -1,0 +1,60 @@
+# 采集时间: 2026-10-21 01:23:49 +0800
+=== V-3 keyed_total（期望 0：不回填）===
+[
+  {
+    "results": [
+      {
+        "keyed_total": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.1953
+      },
+      "duration": 0.1953,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 1,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
+=== V-3b 索引是否可被引用（EXPLAIN QUERY PLAN，只读）===
+[
+  {
+    "results": [
+      {
+        "id": 2,
+        "parent": 0,
+        "notused": 43,
+        "detail": "SEARCH mqtt_messages USING COVERING INDEX ux_mm_dedup_key (dedup_key=?)"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.1632
+      },
+      "duration": 0.1632,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 2138112,
+      "rows_read": 0,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
