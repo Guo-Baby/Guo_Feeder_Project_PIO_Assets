@@ -1,0 +1,28 @@
+# C-2b 部署记录（带 G4-R7 修复，保持 observe）
+# 命令: wrangler deploy
+# 工作目录: /d/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
+# 部署前版本: YOUR_RESOURCE_ID（100%）
+# 回滚目标(version id): YOUR_RESOURCE_ID
+# 源码: 7c96b18（含 b061a1c S-3 + 7c96b18 S-4）
+# 开始时间: 2026-10-21 04:04:08 +0800
+----------------------------------------
+
+ ⛅️ wrangler 4.145.0 (update available 4.151.3)
+───────────────────────────────────────────────
+Total Upload: 163.43 KiB / gzip: 41.60 KiB
+Worker Startup Time: 1 ms
+Your Worker has access to the following bindings:
+Binding                                 Resource                  
+env.guofeeder_DB (YOUR_OLD_D1_DATABASE_NAME)            D1 Database               
+env.LOG_BOOT_WATERMARK ("1")            Environment Variable      
+env.INGEST_VALIDATION ("observe")       Environment Variable      
+
+Uploaded guo-feeder-api (4.29 sec)
+Deployed guo-feeder-api triggers (1.32 sec)
+  https://YOUR_WORKER.YOUR-SUBDOMAIN.workers.dev
+  schedule: 0 3 * * *
+Current Version ID: YOUR_RESOURCE_ID
+----------------------------------------
+# 结束时间: 2026-10-21 04:04:19 +0800
+# deploy_exit=0
+# ★ 部署成功 ≠ 生效；生效须由 versions view 的 env 绑定 + deployments status 的 100% 证明
