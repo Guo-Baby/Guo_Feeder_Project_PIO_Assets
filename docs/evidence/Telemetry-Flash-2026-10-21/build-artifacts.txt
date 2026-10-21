@@ -1,0 +1,82 @@
+# Telemetry 启用构建产物归档（2026-10-21 20:45，固件仓 wb @ 043bc7e，工作树干净）
+
+## 构建方式（同树双变体，独立构建目录，TMP/TEMP 指到工作区）
+
+```
+OFF: PLATFORMIO_BUILD_DIR=.pio/build/telem_off pio run
+ON : PLATFORMIO_BUILD_DIR=.pio/build/telem_on PLATFORMIO_BUILD_FLAGS="-DGF_TELEMETRY_ENABLED=1" pio run
+```
+
+- 环境变量追加宏 = platformio.ini 注释认可的 `GF_ENV_PRODUCTION=1` 同模式（不改 ini）。
+- OFF 变体 exit=124：构建实际已完成（0 error、bin 时间戳新、Took 187.71 s），
+  是 SCons atexit 清理撞沙箱批量删除保护后被 timeout 190 收尾（技能 §14.1 已知现象）。
+- ON 变体 exit=0。
+
+## [telem_off]（当前生产等价构建）
+
+| 项 | 值 |
+|---|---|
+| firmware.bin | 1,416,976 B |
+| PlatformIO Flash | 1,416,605 / 2,097,152 = 67.5% |
+| PlatformIO RAM | 134,720 / 327,680 = 41.1% |
+| .flash.text | 1,041,739 |
+| .flash.rodata | 267,440 |
+| .dram0.data | 24,088 |
+| .dram0.bss | 110,632 |
+
+## [telem_on]（待烧录目标，本目录 flash-target-93febcc0.bin）
+
+| 项 | 值 |
+|---|---|
+| firmware.bin | 1,418,688 B |
+| PlatformIO Flash | 1,418,329 / 2,097,152 = 67.6% |
+| PlatformIO RAM | 134,768 / 327,680 = 41.1% |
+| .flash.text | 1,043,183 |
+| .flash.rodata | 267,720 |
+| .dram0.data | 24,088 |
+| .dram0.bss | 110,680 |
+
+## 同树严格增量（ON − OFF）
+
+| 维度 | 增量 | 构成 |
+|---|---|---|
+| Flash | **+1,724 B** | text +1,444 / rodata +280 |
+| RAM | **+48 B** | 全部 .bss；.data 逐字节不变 |
+
+对照 2026-10-13 同树实测 +1,720 B / +48 B —— 树漂移（Homie 合入 + S-5）后几乎不变。
+
+## 生效判据（ELF/bin 字符串命中，`grep -ac`）
+
+| 字符串 | OFF bin | OFF elf | ON bin | ON elf |
+|---|---|---|---|---|
+| `climate.temperature` | 0 | 0 | **1** | **1** |
+| `schema_version` | — | 0 | — | **2** |
+
+⇒ 遥测代码确在 ON 镜像内、被 `--gc-sections` 从 OFF 镜像完整剔除。
+
+## H-WP4-FW-08 Guard 复核（覆盖裁决 2026-10-12 的新政策 = 整体余量检查）
+
+| Guard | 要求 | 实测 | 判定 |
+|---|---|---|---|
+| G-1 | Flash 总占用 < 85% | 67.6% | PASS（余 17.4 pp） |
+| G-2 | RAM 沿用既有检查不放宽 | 41.1%（+48 B） | PASS |
+| G-3 | 新 capability 须重新评估 | 本次为既有能力启用，已重新实测 | 已履行 |
+| G-4 | 不放宽 PSRAM/栈/CPU/MQTT/网络/协议 | 零改动 | PASS |
+
+## 设备端前置（已完成，2026-10-21 19:35-19:36）
+
+`mqtt.telemetry_enable = true` 已 `config_set` + `config_save` 落盘：
+设备重启一次（uptime 1,104,442 → 13,995 ms），重启后 `config_query` 复核值 = true。
+
+## 云端链路（无需改动）
+
+- EMQX 规则 B `r-n302933b-cf0cf2` **已启用**：谓词
+  `(schema_version ∧ seq ∧ ts ∧ type ∧ value) ∧ ¬c ∧ ¬cmd` on `guo_feeder/+/up`
+  → `/api/history/ingest` → `telemetry_history`。
+- D1 基线（20:44）：`telemetry_history` = 20 行（2026-10-14 验证遗留，此后冻结）。
+
+## 烧录窗口与验证（执行时回填）
+
+- **必须等 G-4 2.5 h 采样窗口结束（~22:06）**：烧录重启会清零 loop 累积计数、废掉窗口。
+- 烧录方式：仅写 app 分区 0x10000，esptool `--after no_reset`，串口会话脉冲 RTS 一次启动。
+- 验证判据：`[CFG] boot validated` + 无 panic；`telemetry_history` > 20 且出现 `climate.*` 行。
