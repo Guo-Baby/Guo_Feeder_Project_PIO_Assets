@@ -23,6 +23,8 @@
 #include "app/weight.h"
 #include "app/valve.h"
 #include "app/computer_reset.h"
+#include "app/stepper.h"       // DRV8825 步进电机（STEP/DIR/EN + RMT）
+#include "app/vibration.h"     // 振动马达（单 GPIO，双马达共路）
 #include "automation/workflow.h"
 #include "app/dispense_guard.h"
 #include "test/test_mqtt.h"
@@ -552,6 +554,8 @@ void setup()
     weight_init();
     valve_init();
     computer_reset_init();     // GPIO8 脉冲（电脑重启），注册 COMPUTER_RESET Action
+    stepper_init();            // DRV8825 步进电机（注册 3 个 Action，默认禁用）
+    vibration_init();          // 振动马达（注册 2 个 Action，默认禁用）
     dispense_guard_init();
     oled_init();
     oled_event_init();
@@ -729,6 +733,8 @@ void loop()
     weight_task();
     valve_task();
     computer_reset_task();     // 手动脉冲回收 + GPIO8 安全兜底
+    stepper_task();            // 步进：使能等待 / 脉冲完成 / 30s 超时兜底
+    vibration_task();          // 振动：定时到期关闭 / 30s 超时兜底
     MiThermometer_task();
     // ---- P3 · WP4-FW-TELEMETRY：遥测上行（非阻塞；每轮最多 1 条）----
     // 放在 MiThermometer_task() / weight_task() **之后** ⇒ 本轮状态最新；
@@ -792,6 +798,96 @@ void serial_debug_command_process(void)
                     computer_reset_is_active(),
                     COMPUTER_RESET_PIN,
                     COMPUTER_RESET_HOLD_MS);
+            }
+            // =====================================================
+            // 步进电机 / 振动马达 —— 开发期串口调试命令
+            //
+            // ★ 这些命令走【正式 Action 链路】（workflow_enqueue_action），
+            //   不绕过 CommandManager / WorkflowManager，仅用于本地验证；
+            //   最终验收必须使用 MQTT 命令链路（见规划文档 §真机验收）。
+            // =====================================================
+            else if (serial_cmd_buffer == "stepper_dispense")
+            {
+                uint32_t plan = stepper_plan_dispense_pulses();
+                bool ok = workflow_enqueue_action("STEPPER_DISPENSE_ROTATE",
+                                                  String(""), nullptr,
+                                                  String("serial"), nullptr, 30000);
+                Serial.printf("stepper_dispense enqueue ret = %d (planned pulses=%u)\n",
+                              ok, (unsigned)plan);
+            }
+            else if (serial_cmd_buffer.startsWith("stepper_steps "))
+            {
+                // 用法: stepper_steps <pulses> <direction(0|1)>
+                String arg = serial_cmd_buffer.substring(14);
+                arg.trim();
+                int sp = arg.indexOf(' ');
+                if (sp < 0)
+                {
+                    Serial.println("usage: stepper_steps <pulses> <direction 0|1>");
+                }
+                else
+                {
+                    long pulses = arg.substring(0, sp).toInt();
+                    long dir    = arg.substring(sp + 1).toInt();
+                    String payload = String("{\"pulses\":") + String((int)pulses) +
+                                     String(",\"direction\":") + String((int)dir) + String("}");
+                    bool ok = workflow_enqueue_action("STEPPER_ROTATE_STEPS", payload,
+                                                      nullptr, String("serial"),
+                                                      nullptr, 30000);
+                    Serial.printf("stepper_steps enqueue ret = %d (payload=%s)\n",
+                                  ok, payload.c_str());
+                }
+            }
+            else if (serial_cmd_buffer == "stepper_estop")
+            {
+                bool ok = workflow_enqueue_action("STEPPER_EMERGENCY_STOP",
+                                                  String(""), nullptr,
+                                                  String("serial"), nullptr, 5000);
+                Serial.printf("stepper_estop enqueue ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "stepper_status")
+            {
+                Serial.printf("Stepper: enable=%d busy=%d driver_en=%d last_result=%d "
+                              "last_pulses=%u dispense_count=%u issued_total=%u "
+                              "next_plan=%u (step=%d dir=%d en=%d)\n",
+                              stepper_is_enabled(), stepper_is_busy(),
+                              stepper_is_driver_enabled(), stepper_get_last_result(),
+                              (unsigned)stepper_get_last_pulses(),
+                              (unsigned)stepper_get_dispense_count(),
+                              (unsigned)stepper_get_issued_total(),
+                              (unsigned)stepper_plan_dispense_pulses(),
+                              stepper_get_step_pin(), stepper_get_dir_pin(),
+                              stepper_get_en_pin());
+            }
+            else if (serial_cmd_buffer.startsWith("vib_start"))
+            {
+                // 用法: vib_start [duration_ms]（省略 = 0 持续振动）
+                String arg = serial_cmd_buffer.substring(9);
+                arg.trim();
+                long ms = (arg.length() > 0) ? arg.toInt() : 0;
+                String payload = String("{\"duration_ms\":") + String((int)ms) + String("}");
+                bool ok = workflow_enqueue_action("VIBRATION_START", payload,
+                                                  nullptr, String("serial"),
+                                                  nullptr, 30000);
+                Serial.printf("vib_start enqueue ret = %d (payload=%s)\n",
+                              ok, payload.c_str());
+            }
+            else if (serial_cmd_buffer == "vib_stop")
+            {
+                bool ok = workflow_enqueue_action("VIBRATION_STOP", String(""),
+                                                  nullptr, String("serial"),
+                                                  nullptr, 5000);
+                Serial.printf("vib_stop enqueue ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "vib_status")
+            {
+                Serial.printf("Vibration: enable=%d active=%d active_ms=%u "
+                              "last_result=%d last_duration=%u (pin=%d)\n",
+                              vibration_is_enabled(), vibration_is_active(),
+                              (unsigned)vibration_get_active_ms(),
+                              vibration_get_last_result(),
+                              (unsigned)vibration_get_last_duration_ms(),
+                              vibration_get_pin());
             }
             else if (serial_cmd_buffer.startsWith("wfst "))
             {

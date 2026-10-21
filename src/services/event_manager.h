@@ -44,13 +44,30 @@ enum SystemEvent
       //阀门模块
     EVENT_VALVE_OPEN,      // 阀门打开事件
     EVENT_VALVE_CLOSE,     // 阀门关闭事件
-    EVENT_VALVE_ERROR     // 阀门错误事件（可选）
+    EVENT_VALVE_ERROR,     // 阀门错误事件（可选）
+
+    //步进电机模块（stepper）
+    //
+    // ★ 不按"每一种错误"各建事件：失败/超时/急停/拒绝统一用 ERROR，
+    //   具体原因写在 data 字段并由串口日志明确记录。
+    // ★ 驱动器使能状态变化不建事件，由 STATE_STEPPER_* 表达。
+    EVENT_STEPPER_START,   // 步进动作开始（data = 计划脉冲数）
+    EVENT_STEPPER_DONE,    // 步进动作成功完成（data = 计划脉冲数）
+    EVENT_STEPPER_ERROR,   // 步进动作失败 / 超时 / 急停 / 被拒（data = "<code>:<原因>"）
+
+    //振动模块（vibration）
+    EVENT_VIBRATION_START, // 振动输出开启（data = duration_ms，0 = 持续）
+    EVENT_VIBRATION_STOP,  // 振动输出关闭（data = 关闭原因）
+    EVENT_VIBRATION_ERROR  // 振动异常 / 超时 / 被拒（data = "<code>:<原因>"）
 };
 
 // =====================================================
 // 事件总数（新增事件时自动更新）
 // =====================================================
-#define SYSTEM_EVENT_COUNT (EVENT_VALVE_ERROR + 1)
+// ⚠️ 该宏实际是**手写**的（不是自动推导），新增事件后必须同步改成
+//    最后一个枚举值 + 1，否则新事件会被事件队列边界检查丢弃。
+//    （上方注释"自动更新"与实现不符，已按实现修正为本行写法。）
+#define SYSTEM_EVENT_COUNT (EVENT_VIBRATION_ERROR + 1)
 
 // =====================================================
 // 字符串 ↔ 事件枚举 转换，用于workflow模块响应事件

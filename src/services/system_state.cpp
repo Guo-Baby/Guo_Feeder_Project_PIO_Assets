@@ -44,8 +44,18 @@ static const struct {
     {"mi_thermo_bat_ts", STATE_MI_THERMO_BAT_TS, STATE_TYPE_LONG, true},
     {"mi_thermo_valid", STATE_MI_THERMO_VALID, STATE_TYPE_BOOL, true},
     {"mi_thermo_enable", STATE_MI_THERMO_ENABLE, STATE_TYPE_BOOL, true},
-    
 
+    // 步进电机（stepper）
+    {"stepper_enable", STATE_STEPPER_ENABLE, STATE_TYPE_BOOL, true},
+    {"stepper_busy", STATE_STEPPER_BUSY, STATE_TYPE_BOOL, true},
+    {"stepper_last_result", STATE_STEPPER_LAST_RESULT, STATE_TYPE_INT, true},
+    {"stepper_last_pulses", STATE_STEPPER_LAST_PULSES, STATE_TYPE_INT, true},
+
+    // 振动马达（vibration）
+    {"vibration_enable", STATE_VIBRATION_ENABLE, STATE_TYPE_BOOL, true},
+    {"vibration_active", STATE_VIBRATION_ACTIVE, STATE_TYPE_BOOL, true},
+    {"vibration_last_result", STATE_VIBRATION_LAST_RESULT, STATE_TYPE_INT, true},
+    {"vibration_last_duration_ms", STATE_VIBRATION_LAST_DURATION_MS, STATE_TYPE_INT, true},
 };
 
 static const uint8_t STATE_MAP_COUNT = sizeof(state_map) / sizeof(state_map[0]);

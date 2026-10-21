@@ -35,7 +35,7 @@
 // =====================================================
 
 // 模块数量（与 kModuleNames 一致）
-#define CONFIG_MODULE_COUNT     8
+#define CONFIG_MODULE_COUNT     10
 
 // 路径缓冲区大小
 // 最长路径形如 /config/mi_thermo.json.bak
@@ -75,7 +75,9 @@ static const char *const kModuleNames[CONFIG_MODULE_COUNT] = {
     CONFIG_MODULE_WEIGHT,
     CONFIG_MODULE_MQTT,
     CONFIG_MODULE_MITHERMO,
-    CONFIG_MODULE_RTC
+    CONFIG_MODULE_RTC,
+    CONFIG_MODULE_STEPPER,
+    CONFIG_MODULE_VIBRATION
 };
 
 // =====================================================
@@ -1230,17 +1232,58 @@ bool config_init()
         if (load_module(&s_modules[i], true))
         {
             loaded++;
+            continue;
         }
-        else
+
+        // ---------------------------------------------------------
+        // 新模块首次上线引导（2026-10-22，stepper / vibration）
+        //
+        // 背景：新模块随固件一起发布，但设备 LittleFS 的 /config 里
+        //   没有对应文件（禁止 uploadfs 覆盖设备既有配置）。
+        //   而 config_set / config_delete / config_set_module 都要求
+        //   `m->loaded`，缺失文件的模块会永远返回 "module not found"
+        //   ⇒ 用户无法启用新模块。
+        //
+        // 处理：仅当 Active 与 Backup 文件【都不存在】时，写入一个空的
+        //   Active 文件（{}），并把该模块标记为已加载。
+        //   空对象 + getter 的 `| 默认值` ⇒ 行为与"走默认值"完全一致，
+        //   但模块变为可写，config_set 正常工作。
+        //
+        // ★ 边界：解析失败 / Backup 存在 等真实故障【不】引导，
+        //   必须保留下面的 WARN 告警，不得掩盖问题。
+        // ---------------------------------------------------------
         {
-            // 模块加载失败 = 该模块所有配置走默认值。
-            // 必须逐模块留下痕迹，否则设备行为异常却毫无提示。
-            cfg_log(
-                "W",
-                "module not loaded, defaults will be used: %s",
-                s_modules[i].name
-            );
+            char act[CONFIG_PATH_MAX];
+            char bak[CONFIG_PATH_MAX];
+
+            bool act_absent = module_path(s_modules[i].name, false,
+                                          act, sizeof(act)) &&
+                              !json_storage_exists(act);
+            bool bak_absent = module_path(s_modules[i].name, true,
+                                          bak, sizeof(bak)) &&
+                              !json_storage_exists(bak);
+
+            if (act_absent && bak_absent && json_storage_write(act, "{}"))
+            {
+                s_modules[i].data.clear();
+                s_modules[i].loaded = true;
+                loaded++;
+                cfg_log(
+                    "I",
+                    "bootstrap empty config for new module: %s",
+                    s_modules[i].name
+                );
+                continue;
+            }
         }
+
+        // 模块加载失败 = 该模块所有配置走默认值。
+        // 必须逐模块留下痕迹，否则设备行为异常却毫无提示。
+        cfg_log(
+            "W",
+            "module not loaded, defaults will be used: %s",
+            s_modules[i].name
+        );
     }
 
     cfg_log("I", "init done, loaded %d/%d modules", loaded, CONFIG_MODULE_COUNT);
@@ -3556,6 +3599,116 @@ bool config_get_valve_enable()
 int config_get_valve_safety_timeout_sec()
 {
     return module_ro(CONFIG_MODULE_VALVE)["safety_timeout_sec"] | 300;
+}
+
+// ---------------- 步进电机（stepper） ----------------
+//
+// ★ 默认 enable=false：新模块默认禁用，未接线/未验证时不得动作。
+// ★ 数值型默认值与代码层硬限制（stepper.cpp）一致；配置只能收紧。
+bool config_get_stepper_enable()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["enable"] | false;
+}
+
+int config_get_stepper_step_pin()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["step_pin"] | 13;
+}
+
+int config_get_stepper_dir_pin()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["dir_pin"] | 14;
+}
+
+int config_get_stepper_en_pin()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["en_pin"] | 15;
+}
+
+int config_get_stepper_en_active_level()
+{
+    // DRV8825 的 nENBL 为低电平使能 ⇒ 默认 0
+    return module_ro(CONFIG_MODULE_STEPPER)["en_active_level"] | 0;
+}
+
+bool config_get_stepper_dir_invert()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["dir_invert"] | false;
+}
+
+int config_get_stepper_steps_per_rev()
+{
+    // 1.8° 整步 ⇒ 200 整步/圈；1/8 微步 ⇒ 1600 有效 STEP 上升沿/圈
+    return module_ro(CONFIG_MODULE_STEPPER)["steps_per_rev"] | 1600;
+}
+
+int config_get_stepper_dispense_angle_deg()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["dispense_angle_deg"] | 120;
+}
+
+int config_get_stepper_pulse_period_us()
+{
+    // 10000 us = 10 ms ⇒ 约 100 Hz
+    return module_ro(CONFIG_MODULE_STEPPER)["pulse_period_us"] | 10000;
+}
+
+int config_get_stepper_enable_delay_ms()
+{
+    // 应用层保守等待值（50 ms），非芯片数据手册的最小值
+    return module_ro(CONFIG_MODULE_STEPPER)["enable_delay_ms"] | 50;
+}
+
+int config_get_stepper_max_pulses()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["max_pulses"] | 6400;
+}
+
+int config_get_stepper_action_timeout_ms()
+{
+    // 30 秒最长运行时间（代码层硬上限同为 30000）
+    return module_ro(CONFIG_MODULE_STEPPER)["action_timeout_ms"] | 30000;
+}
+
+bool config_get_stepper_disable_after_action()
+{
+    return module_ro(CONFIG_MODULE_STEPPER)["disable_after_action"] | true;
+}
+
+// ---------------- 振动马达（vibration） ----------------
+//
+// ★ 单 GPIO：两个物理马达共路，同时启停。
+// ★ GPIO 为驱动电路的逻辑控制信号，不假定直接给马达供电。
+bool config_get_vibration_enable()
+{
+    return module_ro(CONFIG_MODULE_VIBRATION)["enable"] | false;
+}
+
+int config_get_vibration_relay_pin()
+{
+    return module_ro(CONFIG_MODULE_VIBRATION)["relay_pin"] | 16;
+}
+
+int config_get_vibration_active_level()
+{
+    // 默认高电平启动；实际极性必须由驱动电路确认
+    return module_ro(CONFIG_MODULE_VIBRATION)["active_level"] | 1;
+}
+
+int config_get_vibration_max_duration_ms()
+{
+    return module_ro(CONFIG_MODULE_VIBRATION)["max_duration_ms"] | 30000;
+}
+
+int config_get_vibration_safety_timeout_ms()
+{
+    // 模块 30 秒最长运行时间兜底
+    return module_ro(CONFIG_MODULE_VIBRATION)["safety_timeout_ms"] | 30000;
+}
+
+int config_get_vibration_min_interval_ms()
+{
+    return module_ro(CONFIG_MODULE_VIBRATION)["min_interval_ms"] | 200;
 }
 
 // ---------------- 时间 ----------------
