@@ -58,6 +58,22 @@ enum SystemStateKey
     STATE_MI_THERMO_ENABLE,
     STATE_MI_THERMO_VALID,
 
+    // 步进电机（stepper）
+    //
+    // ★ 三个概念严格分开，绝不合并成同一个布尔：
+    //   stepper_enable  = 配置是否允许使用该模块
+    //   stepper_busy    = 当前是否有动作正在运行
+    //   stepper_last_result = 最近一次动作结果（StepperResult）
+    STATE_STEPPER_ENABLE,
+    STATE_STEPPER_BUSY,
+    STATE_STEPPER_LAST_RESULT,
+    STATE_STEPPER_LAST_PULSES,
+
+    // 振动马达（vibration，单 GPIO 双马达共路）
+    STATE_VIBRATION_ENABLE,
+    STATE_VIBRATION_ACTIVE,
+    STATE_VIBRATION_LAST_RESULT,
+    STATE_VIBRATION_LAST_DURATION_MS,
 
     //新增state需要写在上方，同时维护cpp内的state_map映射表，state_get_field_count()和state_get_field_name()函数会自动更新，无需维护
     // 状态数量

@@ -55,6 +55,10 @@
 #define CONFIG_MODULE_MQTT      "mqtt"
 #define CONFIG_MODULE_MITHERMO  "mi_thermo"
 #define CONFIG_MODULE_RTC       "rtc"
+// 步进电机（DRV8825）与振动马达（单 GPIO）
+// 对应 /config/stepper.json 与 /config/vibration.json
+#define CONFIG_MODULE_STEPPER   "stepper"
+#define CONFIG_MODULE_VIBRATION "vibration"
 
 // 配置目录与后缀
 #define CONFIG_DIR              "/config"
@@ -596,6 +600,41 @@ int config_get_valve_active_level();     // 控制 GPIO 输出电平的逻辑极
 int config_get_valve_open_duration_ms(); // 阀门打开持续时间，0=持续打开
 bool config_get_valve_enable();          // 是否启用阀门模块
 int config_get_valve_safety_timeout_sec(); // 阀门最大开启时间，默认 300s，合法值 10~300，如需修改上下限去 valve.cpp 修改
+
+// =============================
+// Stepper 步进电机配置读取（DRV8825）
+//
+// ★ 所有默认值均为安全值；代码层还有硬限制（stepper.cpp）：
+//   · action_timeout_ms 上限 30000（30 秒最长运行时间）
+//   · max_pulses 上限 6400
+//   配置只能收紧，不能放大这些限制。
+// =============================
+bool config_get_stepper_enable();            // 是否启用步进模块，默认 false（安全）
+int  config_get_stepper_step_pin();          // STEP 脉冲输出 GPIO，默认 13（由 RMT 驱动）
+int  config_get_stepper_dir_pin();           // DIR 方向 GPIO，默认 14
+int  config_get_stepper_en_pin();            // EN 使能 GPIO，默认 15
+int  config_get_stepper_en_active_level();   // 0=低电平使能（DRV8825 默认），1=高电平使能
+bool config_get_stepper_dir_invert();        // 方向取反（实际机械方向与预期相反时使用）
+int  config_get_stepper_steps_per_rev();     // 每圈有效 STEP 上升沿数，1.8°+1/8 微步 = 1600
+int  config_get_stepper_dispense_angle_deg();// 单次标准出粮角度，默认 120
+int  config_get_stepper_pulse_period_us();   // STEP 脉冲周期(us)，默认 10000 ≈ 100 Hz
+int  config_get_stepper_enable_delay_ms();   // 使能后到首个脉冲的保守等待，默认 50（应用层值，非数据手册最小值）
+int  config_get_stepper_max_pulses();        // 单次动作脉冲上限，默认 6400
+int  config_get_stepper_action_timeout_ms(); // 单次动作最长运行时间，默认 30000，代码硬上限 30000
+bool config_get_stepper_disable_after_action(); // 动作结束后是否禁用驱动器，默认 true
+
+// =============================
+// Vibration 振动马达配置读取（单 GPIO，两个马达共路）
+//
+// ★ GPIO 只是驱动电路的【逻辑控制信号】，不假定其直接给马达供电。
+//   高低电平的启停语义由 active_level 决定，需按实际电路确认。
+// =============================
+bool config_get_vibration_enable();          // 是否启用振动模块，默认 false（安全）
+int  config_get_vibration_relay_pin();       // 振动控制 GPIO，默认 16
+int  config_get_vibration_active_level();    // 1=高电平启动，0=低电平启动（按驱动电路确认）
+int  config_get_vibration_max_duration_ms(); // 定时振动允许的最大时长，默认 30000，代码硬上限 30000
+int  config_get_vibration_safety_timeout_ms(); // 模块 30 秒最长运行时间兜底，默认 30000
+int  config_get_vibration_min_interval_ms(); // 启停最小间隔（防风暴），默认 200
 
 // ==========================
 // 时间配置
