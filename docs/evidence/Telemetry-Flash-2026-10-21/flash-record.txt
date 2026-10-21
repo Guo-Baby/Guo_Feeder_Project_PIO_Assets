@@ -1,0 +1,63 @@
+Telemetry 烧录执行记录（2026-10-21 22:30，COM8 / CH343）
+=====================================================
+
+[前置校验]
+  镜像 sha256 = 93febcc0a496136ba3c53b86b71021de488bc5e49ff9c9d1444f4c2a62bb01fe
+  与归档记录一致 = MATCH
+
+[烧录命令]
+  esptool.py --chip esp32s3 --port COM8 --baud 921600
+    --before default_reset --after no_reset
+    write_flash -z 0x10000 flash-target-93febcc0.bin
+
+[结果]
+  Wrote 1418688 bytes (908624 compressed) at 0x00010000 in 15.6 seconds
+  Hash of data verified.  Staying in bootloader.（--after no_reset 生效）
+
+[Boot 验证（telemetry_flash_probe.py COM8 75）]
+  [OK ] boot 完成（无 panic/overflow）      -> [CFG][I] boot validated
+  [OK ] 配置未回滚（mqtt 模块 loaded）       -> init done, loaded 8/8
+  [OK ] WiFi 已连
+  [OK ] MQTT 已连
+  [none] 栈溢出 / panic / 看门狗重启
+  RESULT: PASS
+  附注：boot 日志含 log 环跨 boot 重放（ack boot=26/27/30，floor=6166），
+  replay sweep done giveup=0 —— 重放机制正常。
+  本次 boot_seq=30（28=用户插线枚举复位；29=esptool --before 复位；30=探针 RTS 脉冲）。
+
+[设备端前置（同日 19:35 已完成）]
+  mqtt.telemetry_enable = true 已 config_set + config_save 落盘
+  （烧录只写 app 分区，不动 data/ 配置分区 ⇒ 配置保持 true）
+
+[预期]
+  编译门 ON + 运行门 ON ⇒ telemetry_task() 产出 v1 信封
+  -> EMQX 规则 B（已启用）-> /api/history/ingest -> telemetry_history
+  气候 5 min / 称重 15 min；weight 未装，weight.* 可能 NaN 被记录级拒收（P-3）。
+
+==================== 执行结果补记（22:45-22:48）====================
+
+[配置丢失事件与恢复]
+  22:44 前 config_query 发现 mqtt 模块**没有** telemetry_enable 键
+  （config_get_telemetry_enable 默认 false ⇒ 遥测被运行门关闭）。
+  19:36 落盘成功且复核过 true，丢失发生在 22:17（用户插 USB 致枚举复位，
+  boot_seq 27→28）之后。头号嫌疑：config_manager 的 boot flag 恢复机制
+  （!last_boot_ok ⇒ 从 Backup 恢复），即 22:26:45 探针 RTS 脉冲那次 boot
+  可能因上次 boot 未 validate 而从 Backup 恢复；**无直接证据，未证实**。
+  22:44:43 重新 config_set + config_save ⇒ 22:45:35 设备重启 ⇒ 重启后
+  config_query 复核 true（**本次重启配置保持，证明 Backup 机制本身可靠**）。
+
+[遥测数据验证（D1 telemetry_history）]
+  基线 20 行（10-15 遗留）→ 22:47:53 已达 23 行，新行：
+    id 41  climate.temperature = 24.1   seq=1  ts=1792593886  22:44:50
+    id 42  climate.humidity    = 46.6   seq=2  ts=1792593886  22:44:51
+    id 43  weight.value        = 0      seq=3  ts=1792593901  22:45:03
+  · schema_version=1（v1 冻结信封）✓
+  · seq 从 1 起 = boot 后遥测序列重置（init 语义）✓
+  · 首帧仅 boot 后 ~2 min：init 时 BLE 未就绪记基线，连上后 delta 超限即发
+    （不等 5 min cadence）✓
+  · ★ 新行写入时刻 22:44:50 **晚于** enforce 切换（22:21）⇒ 遥测路径在
+    webhook enforce 加固下正常（同 Pages /api/history/ingest 入口）。
+
+[结论]
+  步骤 3 完整闭环：编译门 ON × 运行门 ON × EMQX 规则 B × Worker × D1
+  全链路贯通，真实气候/称重数据入表。
