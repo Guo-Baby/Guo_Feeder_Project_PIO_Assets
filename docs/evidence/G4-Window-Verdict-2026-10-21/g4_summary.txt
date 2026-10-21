@@ -1,0 +1,51 @@
+G-4 窗口归档（2026-10-21 19:36:41 - 22:06:04，150 min 计划 / 31 计划样本）
+device=288485896ce4 started=20261021-193641 samples_got=29 (有 loop 回帧 27)
+missing_samples=[2, 3, 9]（2/3 = 我的错误 Pages 部署；9 = memwatch 单帧漏记）
+
+== 末帧 loop（scope=uptime，boot 累积口径）==
+  uptime_ms          8881294
+  samples            208946608
+  over               76
+  anomaly            0
+  sum_us             8876629836
+  min_us             29
+  max_us             395474
+  mean_us            42
+  p50_low_us         0
+  p50_high_us        200
+  p99_low_us         0
+  p99_high_us        200
+  valid              True
+  p99_lt_gate        True
+  sat_buckets        0
+  n_saturated        False
+  snap_crit_max_us   23
+  snap_count         29
+  window_samples     208946608
+  window_over        76
+
+== 末帧 memwatch ==
+  dram_free                    63812
+  dram_largest_free_block      53236
+  dram_min_free_since_boot     46984
+  dram_total                   248844
+  dram_used                    185032
+  dram_used_pct                74.36
+  psram_largest_free_block     7864308
+  psram_min_free_since_boot    7984551
+  stack_hwm_bytes              9740
+  stack_task                   loopTask
+  stack_unit                   bytes
+  stack_unit_verified          True
+  uptime_ms                    8888048
+
+== 派生判定 ==
+  DRAM 最差自 boot = (248844-46984)/248844 = 81.12% < 85%  PASS
+  栈 HWM 9740/16384 = 59.4%                            PASS
+  P99 0-200 us < 20000 us（余 100 倍）                   PASS
+
+== 末帧直方图（bucket=200us 宽；仅列非零且显著桶）==
+  b0=208760858  b1=6727  b2=405  b3=634  b4=117  b11=108  b31=8073  b32=156234  b33=10427  b34=1583  b35=416  b36=270
+
+== 全窗口 memwatch 峰值（采集器口径）==
+  dram_used_pct_peak=74.44  dram_largest_free_block_min=53236  psram_largest_free_block_min=7864308  stack_hwm_bytes_min=9740
