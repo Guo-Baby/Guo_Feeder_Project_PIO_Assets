@@ -1,0 +1,173 @@
+# 开阀瞬间被强制关闭 —— 根因诊断报告
+
+- 日期：2026-10-23（02:52–03:05 真机测试窗口）
+- 设备：`288485896ce4` · boot_seq 62
+- 结论：**不是「强关策略」写错了，是 HX711 采样值被污染，固件把污染样本当成有效重量。**
+  策略本身是安全方向，但它对**无效样本**没有任何防线。
+
+---
+
+## 一、现象（用户观察）
+
+- 02:54 之后接上真实电磁阀 + 电子秤
+- 发开阀命令 → **一瞬间就关**
+- 03:00 再发一次 → 同样一瞬间关
+- 导致 `wf_valve_20g` 无法正常执行
+
+---
+
+## 二、日志统计（02:52–03:05，共 273 条记录，全部解码自 CBOR）
+
+| 事件 | 次数 | 首次 ~ 末次 |
+|---|---|---|
+| `LOG_DISPENSE_SAFETY_RESPONSE` | **118** | 02:55:02 ~ 03:01:55 |
+| `LOG_VALVE_FORCE_CLOSE` | **64** | 02:55:02 ~ 03:01:50 |
+| `LOG_WEIGHT_ERROR_EXIT` | 58 | 02:55:07 ~ 03:01:55 |
+| `LOG_WEIGHT_ERROR_ENTER` | 19 | 02:55:08 ~ 03:01:37 |
+| `LOG_VALVE_OPEN` | 5 | 02:55:36 ~ 02:59:53 |
+| `LOG_EVT_STORM_DROPPED` | 4 | 02:56:24 ~ 03:00:28 |
+| `LOG_WF_START` | 2 | 02:57:28 ~ 02:59:53 |
+| `LOG_WF_FAILED` | 1 | 02:57:28 |
+
+**5 次开阀 / 64 次强关** —— 阀根本没机会保持开启。
+`LOG_EVT_STORM_DROPPED`（事件风暴丢弃）已出现 4 次 ⇒ 实际错误次数**比日志显示的更多**，
+事件系统自身已经进入限流保护。
+
+---
+
+## 三、根因：`cause = 4`（重量跳变），源头是 HX711 采样被污染
+
+### 3.1 关键参数（解码 `LOG_WEIGHT_ERROR_ENTER` 得到）
+
+| 时间 | 事件 | cause | 权重(g) | raw |
+|---|---|---|---|---|
+| 02:55:07 | ERR_EXIT | 4 | **1080.6** | — |
+| 02:55:08 | ERR_ENTER | 4 | **2024.0** | `-1` |
+| 02:55:22 | ERR_ENTER | 4 | **2967.4** | `2097151` (`0x1FFFFF`) |
+| 02:55:39 | ERR_ENTER | 4 | **1139.6** | `4194303` (`0x3FFFFF`) |
+| 02:56:55 | ERR_ENTER | 4 | **2024.0** | `1048575` (`0xFFFFF`) |
+| 02:57:25 | ERR_ENTER | 4 | **2967.4** | `4194303` |
+
+- **稳态读数 = 1080.6 g**（稳定、反复出现）
+- **异常读数 = 2024.0 / 2967.4 / 1200~1550 g**（跳变）
+- `cause = 4` = `jump_error` 位（`0x01`=no_data、`0x02`=raw_zero、`0x04`=jump）
+
+### 3.2 `raw` 的位型是决定性的
+
+观测到的 raw：`-1`、`0xFFFFF`（20 个 1）、`0x1FFFFF`（21 个 1）、`0x3FFFFF`（22 个 1）。
+
+它们都是**末尾连续 1** 的位型。HX711 库对这种现象有明确说明
+（`.pio/libdeps/esp32-s3-devkitc-1/HX711/HX711.cpp:117-129`）：
+
+> If an interrupt occurs during the time the PD_SCK signal is high it can stretch the length
+> of the clock pulse. If the total pulse time exceeds 60 uSec this will cause the HX711 to enter
+> power down mode during the middle of the read sequence... The result is that **all subsequent
+> bits read by shiftIn() will read back as 1**, corrupting the value returned by read().
+
+⇒ 24 位全 1 经 **符号扩展正好等于 `-1`**。所以 `-1` 不是「库的失败哨兵」，
+而是**读取被中途打断后剩下的全 1 位型**。
+
+`0xFFFFF / 0x1FFFFF / 0x3FFFFF` 则是 DOUT 在第 4/3/2 位就拉高，后 20/21/22 位全读成 1。
+⇒ **每次都在读取刚启动时就失锁**，指向时序/电气层，而不是"偶发噪声"。
+
+### 3.3 固件的真实缺陷：不校验样本
+
+`src/app/weight.cpp:440-456`：
+
+```c
+raw_value = scale.read();          // ← 返回值完全不校验
+if(raw_value == 0) { ... }          // 只处理 0
+filter_samples[sample_index] = (int)raw_value;   // -1 / 0x1FFFFF 直接进滤波窗口
+```
+
+于是：
+
+```
+污染样本进窗口 → filtered 被拉偏 → gram = (filtered - zero_offset)/scale
+  → 1080.6 g 跳到 2024.0 / 2967.4 g
+  → |Δ| ≥ WEIGHT_JUMP_DELTA_G(50 g)（weight.cpp:66,499）
+  → weight_record_jump() ×5 次/5 s（WEIGHT_MAX_JUMP_EVENTS=5）
+  → EVENT_WEIGHT_ERROR（CRITICAL，weight.cpp:252-276）
+  → DispenseGuard::dispense_guard_event_callback()（dispense_guard.cpp:64-102）
+  → valve_force_close()  →  LOG_VALVE_FORCE_CLOSE（64 次）
+```
+
+### 3.4 顺带解释了 workflow 为什么失败
+
+02:57:28 那条 `LOG_WF_FAILED` 的参数是 `SLOT=3, FAIL_STEP=2, CAUSE=3`。
+
+`CAUSE=3` = `WF_CAUSE_TRIGGER_FAILED`（`workflow.cpp:1359`）。
+第 2 步（index 2）= `weight_decrease`，它的 `start()` 第一步就是：
+
+```c
+if(state_get_bool(STATE_WEIGHT_ERROR)) { ... trigger->state = TRIGGER_FAILED; }   // weight.cpp:555
+```
+
+即：**开出阀 → 到达第 3 步 → 此刻秤正处于错误态 ⇒ 触发器直接判失败 ⇒ 整个 workflow 终止**。
+03:00 那次的机制完全相同。
+
+---
+
+## 四、所以：改策略还是改别的？
+
+**结论：策略本身不用改，但要补两道防线；首要任务是把污染源挡住。**
+
+### 为什么策略不该大改
+
+`DispenseGuard` 在"秤数据不可信"时关阀，是**正确的安全方向**。
+若为了让它不误触发而放宽（例如去掉强关、或延迟 30 s 再关），
+一旦真的出现异常（阀开着、秤读不到），水就会一直流。
+
+⇒ **不建议动"是否强关"这个决定**，建议动"凭什么判定要强关"。
+
+### 建议的三层修复（按优先级）
+
+| 优先级 | 层 | 修法 | 风险 | 效果 |
+|---|---|---|---|---|
+| **P0** | 固件 · 采样有效性 | 在 `raw_value = scale.read()` 后加**样本合法性校验**：把全 1 位型（`-1` / 末尾连续 ≥16 个 1）或相对上次滤波值偏离 > 200 g 的样本**丢弃**，不写入窗口，并计入 `no_data` 而非 `jump_error` | 低（纯增加过滤，不改安全决策） | 直接掐断污染源，跳变告警不再误触发 |
+| **P1** | 固件 · 错误分类 | 把"无效样本"从 `0x04 jump_error` 拆成独立 cause 位（如 `0x08 invalid_sample`），`weight_refresh_error_state()` 对它用更长的去抖窗口 | 低 | 以后一眼能区分"真跳变"和"读坏了" |
+| **P1** | 固件 · 触发器容错 | `weight_trigger_start()` 遇 `STATE_WEIGHT_ERROR` 时不要**立刻** `TRIGGER_FAILED`，改为等待 N 秒内恢复（如 10 s），超时才失败 | 中（会影响安全语义，需评审） | 单次抖动不再直接废掉整个 workflow |
+| **P2** | 固件 · DispenseGuard 去抖 | 连续 K 次错误（如 3 次 / 2 s 内）才强关 | 中（降低安全性） | 只治标，且与安全目标冲突，**建议不做** |
+
+⇒ **先做 P0**。P0 做完再看现象是否消失，再决定 P1 要不要做。
+
+### 硬件侧（根因方向，与固件并行）
+
+`raw` 全是"读一半就变全 1"，这类失锁最常见的原因是**读取时序被打断**或**信号完整性**问题：
+
+1. **续流二极管仍缺**（上一轮已指出）：继电器/电磁阀每次通断都会在共地轨上打尖峰，
+   而 HX711 的 DOUT/SCK 与它同地 —— 这是最可疑的耦合路径。**1N4007 反并联线圈**，阴极接正、阳极接负。
+2. **DOUT/SCK 走线**：避免与 12V/继电器线并行；有条件用双绞 + 短走线。
+3. **HX711 电源去耦**：VCC-GND 就近加 100 nF + 10 µF。
+4. **降低 SCK 速率**：HX711 支持 10 Hz / 80 Hz，若当前在 80 Hz 可先降速试（时序余量变大）。
+5. **5V 轨储能**：MP1584 带阀浪涌，开阀瞬间压降可能让 HX711 复位。
+
+> 注：错误在**阀关闭期间也持续出现**（02:55:02 强关后仍每 5 s 一组），
+> 说明污染源不只来自阀动作，**电源质量/时序**的嫌疑同样成立。
+> ⇒ 二极管是必要的，但**不能保证单独解决**。
+
+---
+
+## 五、下一步验证清单（不改代码也能先缩小范围）
+
+| 动作 | 观察 | 结论 |
+|---|---|---|
+| 拔掉继电器 IN（阀完全不动），静置 2 分钟 | `WEIGHT_ERROR_ENTER` 是否还出现 | 仍出现 ⇒ 与阀无关，是电源/时序/走线 |
+| HX711 单独用 3.3V LDO 供电 | 错误率是否下降 | 下降 ⇒ 电源耦合 |
+| 秤上放固定重物不动，看串口 `[Weight] raw=` | raw 是否成片出现全 1 | 是 ⇒ 确认读取失锁 |
+| 加二极管后重测 | `FORCE_CLOSE` 次数 | 归零 ⇒ 硬件侧闭环 |
+
+---
+
+## 六、本次已确认的事实边界
+
+**已证实**（有日志/代码双重证据）：
+- 强关由 `EVENT_WEIGHT_ERROR` 触发，其 `cause=4`（重量跳变）
+- 跳变源头是 raw 全 1 位型的污染样本
+- 固件不校验 `scale.read()` 返回值，污染样本直接进入滤波
+- workflow 失败原因是第 3 步触发器在错误态下判 `TRIGGER_FAILED`（`CAUSE=3`）
+
+**未证实**（不得当结论）：
+- 全 1 位型的**具体**成因（中断打断 / 电源跌落 / EMI / 走线）—— 需上面 §5 的对照实验
+- 加二极管能否单独解决
+- 阀本身是否真的能动作（5 次 `VALVE_OPEN` 后都被强关，**从未观察到持续出水**）
