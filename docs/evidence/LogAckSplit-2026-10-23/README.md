@@ -276,3 +276,74 @@ WHERE
   `LOG_CLOUD_QUEUE_SLOTS`（128）条 ⇒ 需要查 `cloud_poll()` 的清除条件
   （要求"补发 sweep 完成 **且** 队列中已无上一 Boot 的记录"）。
 - 本次**不改**：属于独立缺陷，改动面在 at-least-once 契约上，需单独评审。
+
+---
+
+## 九、用户改完 EMQX 后的复测（04:00–04:10）
+
+### 9.1 规则 B 的 WHERE 排除 —— ✅ 已生效
+
+`guo_feeder/<id>/log/ack`（plain 形态）**不再入库**。
+残留的只有 `$tenants/n302933b/guo_feeder/<id>/log/ack`（tenant 副本），
+且它被 Worker 判 `unknown_topic` 400 拒收 ⇒ **不产生 D1 行**（只是仍占 webhook 调用）。
+
+### 9.2 ACL 的 subscribe 授权 —— ❌ **未生效**
+
+把 `LOG_ACK_DUAL_PUBLISH` 置 `"0"`（只发新 topic）重新部署，然后下发重启（boot 67）：
+
+```
+[Cloud] MQTT subscribe(log-ack) filter=guo_feeder/288485896ce4/log/ack qos=1 msg_id=57450
+[Cloud] MQTT subscribed msg_id=57450          ← SUBACK 照常
+[Log Cloud] ack timeout retry=1/5 backoff=2000ms
+[Log Cloud] ack timeout retry=2/5 backoff=4000ms
+ack ok = 0 | timeout = 3
+```
+
+串口里**没有任何 SUBACK 错误**（esp-mqtt 对 0x80 不打印）——这正是"静默拒绝"。
+
+诊断闭环：把开关恢复 `"1"` 后同一设备立刻恢复
+`ack ok = 9 / timeout = 1`（boot 68）⇒ 与 topic 内容无关，就是新 topic 没被授权。
+
+> 交叉证据：04:03 那一分钟内，`ack:66:17701` 在 `$tenants/.../down` 与
+> `$tenants/.../log/ack` 两份都能在 D1 查到 ⇒ **Worker 的 publish 本身是成功的**
+> （否则双发分支不会触发），消息确实进了 EMQX，只是没投到订阅者。
+
+### 9.3 新增（本次）：Worker 侧**载荷级**闸门
+
+`index.js` 在写 `mqtt_messages` 之前加了：
+
+```js
+if(cmd === LOG_ACK_COMMAND)          // "log_ack"
+{
+    return jsonResponse({ ok: true, ignored: "log_ack" }, 200);
+}
+```
+
+为什么 topic 拆分之外还要这一道：
+
+| 理由 | 说明 |
+|---|---|
+| 拆分依赖**两处云端手工配置** | EMQX 规则的 `WHERE` + ACL 的 subscribe，任一失效就静默回潮 |
+| 与 topic 形态无关 | 切换期双发（回执仍走 `/down`）时不重复污染；有人把 topic 改回去也不复发 |
+| 立刻见效 | 不依赖 EMQX 权限，部署即可用 |
+
+语义影响：只少记"回执"这类机械帧；命令 / 遥测 / result 的审计行不变
+（早退发生在 `insertMqttMessage()` 之前，`log_ack` 是下行帧，
+后续 `handleRegistrySideEffects()` 与 `cloud_api` 发布分支对它都无作用）。
+
+**实测**：部署（`107cf13c`）后 `log_ack` 入库行数 **0**（04:07 之后再无新增）；
+普通命令下行不受影响 —— 同一时段 `query` 命令仍正常落两行
+（`id=10420` plain / `id=10421` tenant，`cmd=query`）。
+
+### 9.4 当前状态
+
+| 项 | 状态 |
+|---|---|
+| 固件双订阅 | ✅ 生效（`msg_id` 两次 SUBACK） |
+| Worker 双发 | ✅ `LOG_ACK_DUAL_PUBLISH="1"`（保命，日志通道正常） |
+| 新 topic 送达 | ❌ ACL 未授权 |
+| D1 的 `log_ack` 污染 | ✅ 已归零（载荷级闸门） |
+| MQTTX 里 `/down` 看到 ack | ⚠️ **仍有** —— 双发阶段回执还在 `/down`，只有 ACL 通了才能撤掉双发 |
+
+⇒ **下一步只有一件事：把 ACL 的第 4 条真正写进去**，
+然后 `LOG_ACK_DUAL_PUBLISH` 置 `"0"` 复测，`ack ok` 仍增长即完成。

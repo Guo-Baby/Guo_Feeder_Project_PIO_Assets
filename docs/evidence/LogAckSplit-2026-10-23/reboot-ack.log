@@ -1,0 +1,342 @@
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:67:17926","p":{"b":67,"f":17926,"t":17926}}
+[Cloud LOG] ack rx boot=67 from=17926 to=17926
+[Log Cloud] ack ok boot=67 to=17926 covered=1/1 acked=17926 gc=17047 floor=17048 r=2
+[Cloud] ENQ id=65399 qos=1 store=1 outbox=0->334 len=300 t=230465
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=230476
+=================
+[Cloud] MQTT RX
+{"device_id":"288485896ce4","c":"system","i":"rb699640","p":{"o":"reboot"},"source":"cloud_api"}
+[Cloud] UP-ACK id=rb699640 obj=reboot t=230530
+[Cloud UP JSON]
+{"c":"ack","i":"rb699640","o":"reboot","p":{"result":"received"},"t":1792699641}
+[Cloud] enqueue OK id=58120 qos=1 store=1 len=80
+[Cloud UP] OK
+[CMD][INFO] Received command
+[Cloud] UP-RESULT len=93 t=230541
+[Cloud UP JSON]
+{"s":2,"c":"result","i":"rb699640","t":1792699641,"type":"command"}
+[Cloud] enqueue OK id=11432 qos=1 store=1 len=67
+[Cloud] MQTT published/ack msg_id=65399 outbox=211 t=230555
+[Cloud UP] OK
+[CMD][INFO] System reboot requested
+[SYSCMD][W] restart requested (critical=0), waiting for drain
+[Cloud] Command execution failed (error result sent)
+[Cloud] MQTT published/ack msg_id=58120 outbox=99 t=230627
+[SYSCMD][W] critical operations drained, restart pending 10000 ms
+[Cloud] MQTT published/ack msg_id=11432 outbox=0 t=230666
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:67:17927","p":{"b":67,"f":17927,"t":17927}}
+[Cloud LOG] ack rx boot=67 from=17927 to=17927
+[Log Cloud] ack ok boot=67 to=17927 covered=1/1 acked=17927 gc=17047 floor=17048 r=2
+[Cloud] ENQ id=39763 qos=1 store=1 outbox=0->334 len=300 t=232303
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=232314
+[Cloud] MQTT published/ack msg_id=39763 outbox=0 t=233327
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:67:17928","p":{"b":67,"f":17928,"t":17928}}
+[Cloud LOG] ack rx boot=67 from=17928 to=17928
+[Log Cloud] ack ok boot=67 to=17928 covered=1/1 acked=17928 gc=17047 floor=17048 r=2
+[Cloud] ENQ id=45901 qos=1 store=1 outbox=0->334 len=300 t=235371
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=235382
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=45901 outbox=0 t=236413
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:67:17929","p":{"b":67,"f":17929,"t":17929}}
+[Cloud LOG] ack rx boot=67 from=17929 to=17929
+[Log Cloud] ack ok boot=67 to=17929 covered=1/1 acked=17929 gc=17047 floor=17048 r=2
+[Cloud] ENQ id=28944 qos=1 store=1 outbox=0->334 len=300 t=237624
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=237635
+[Cloud] MQTT published/ack msg_id=28944 outbox=0 t=238662
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:67:17930","p":{"b":67,"f":17930,"t":17930}}
+[Cloud LOG] ack rx boot=67 from=17930 to=17930
+[Log Cloud] ack ok boot=67 to=17930 covered=1/1 acked=17930 gc=17047 floor=17048 r=2
+[Cloud] ENQ id=49501 qos=1 store=1 outbox=0->334 len=300 t=239877
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=239888
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[SYSCMD][W] safe window elapsed, restarting now
+E (240378) TRANSPORT_BASE: poll_read select error 113, errno = Software caused connection abort, fd = 48
+E (240378) MQTT_CLIENT: Poll read error: 119, aborting connection
+[Cloud] MQTT disconnected outbox=334
+€øøESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4205b8dd
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (280) esp_core_dump_flash: No core dump partition found!
+E (280) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[LogContract] v=2 rec=128 seg=3984 x16 cap=496 fmt=2 check=PASS
+[Identity] device_id=288485896ce4 (nvs ok)
+[Log] RAM ring ready: 64 slots x 128 B = 8192 B in PSRAM (boot_seq=1)
+[  1338][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+[Log] Flash ring ready: seg=16 x 31 rec, seg_size=3984 B, valid=16, oldest=13, newest=12, append=12@13, total_rec=478, batch=1024 B in PSRAM
+[  2901][E][vfs_api.cpp:105] open(): /littlefs/log/quarantine.bin does not exist, no permits for creation
+[Log] recovery=NVS boot_hw=67 -> boot_seq=68 reserved=18176 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+[Log] seq: boot_seq=68 base=18177 limit=18432 reserved=18432 reliable=1 corrupt=1 src=0 failclosed=0
+[Log] Cloud queue ready: 128 slots x 128 B = 16384 B (q=PSRAM), batch=2048 B, cbor=4096 B in PSRAM
+[JStg][I] ready
+[FStg][I] ready
+[Bin][I] ready
+[CFG][I] init done, loaded 10/10 modules
+Event manager init OK
+[BLE] init OK
+
+WiFi init...
+
+Connecting to:wqs1
+[Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B) | PSRAM total=8385927 B
+[Weight] Init...
+[Weight] Init OK (dt=6 sck=7 scale=741.0 zero_offset=-800750)
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[ComputerReset] Init OK (pin=8, hold=800 ms)
+[Stepper] Init: enable=1 pins_ready=1 rmt=1 (step=13 dir=14 en=15, steps/rev=1600 angle=120 period=10000us delay=50ms max=6400 timeout=30000ms)
+[Vibration] Init: enable=1 pins_ready=1 (pin=16 active_level=1, max_duration=30000ms safety_timeout=30000ms)
+[TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+
+Time manager init...
+[Time] timezone offset = GMT+8
+[Time] RTC probe failed (addr=0x51 err=2), chip not present?
+[Time] RTC init failed (wait SNTP)
+[Time] SNTP servers=ntp.aliyun.com/cn.pool.ntp.org interval=86400s
+Time manager init done
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+[CredStore] NVS 'gfcred' ready
+[Cred] init: store=ok active_slot=-1
+[SYSCMD][I] init done, reset reason=software, safe delay=10000 ms
+
+Cloud manager init...
+MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+MQTT port=8883
+MQTT client_id=dev_288485896ce4
+[Cloud] credential source: config (fallback)
+MQTT subscribe=guo_feeder/288485896ce4/down
+MQTT publish=guo_feeder/288485896ce4/up
+MQTT log=guo_feeder/288485896ce4/log
+MQTT log-ack=guo_feeder/288485896ce4/log/ack
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[WF][DBG] load wf=0 id=daily_valve_test steps=4 variant=1
+[WF][DBG] load wf=1 id=daily_valve_test1 steps=4 variant=1
+[WF][DBG] load wf=2 id=queue_test steps=4 variant=1
+[WF][DBG] load wf=3 id=wf_valve_20g steps=4 variant=2
+[OK] Workflow loaded from Flash BIN
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] ACTION reuse version=4 count=14
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] TRIGGER reuse version=2 count=3
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] WORKFLOW reuse version=3 count=4
+capability_registry_init: OK
+[CFG][I] boot validated
+[  6662][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Time] SNTP started (waiting first sync)
+[Time] Event: TIME_VALID
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=n302933b.ala.cn-hangzhou.emqxsl.cn
+port=8883
+client_id=dev_288485896ce4
+username=(hidden)
+password=(hidden)
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=22463
+[Cloud] MQTT subscribe(log-ack) filter=guo_feeder/288485896ce4/log/ack qos=1 msg_id=26090
+[Cloud] MQTT connected outbox=73
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=24131 qos=1 store=1 len=45
+[Cloud] ENQ id=9696 qos=1 store=1 outbox=150->475 len=291 t=7594
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=7594
+[Cloud] MQTT subscribed msg_id=22463
+[Cloud] MQTT subscribed msg_id=26090
+[Cloud] MQTT published/ack msg_id=24131 outbox=325 t=7749
+[Cloud] MQTT published/ack msg_id=9696 outbox=0 t=7809
+[Time] SNTP sync OK (2026-10-23 04:07:42)
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Weight] STATE_WEIGHT_ERROR -> 1
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Weight] STATE_WEIGHT_ERROR -> 0
+[Log Cloud] ack timeout retry=1/5 backoff=2000ms
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] ENQ id=25104 qos=1 store=1 outbox=0->325 len=291 t=24610
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=24610
+[Cloud] MQTT published/ack msg_id=25104 outbox=0 t=24876
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18177","p":{"b":68,"f":18177,"t":18177}}
+[Cloud LOG] ack rx boot=68 from=18177 to=18177
+[Log Cloud] ack ok boot=68 to=18177 covered=1/1 acked=18177 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=26357 qos=1 store=1 outbox=0->325 len=291 t=26324
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=26334
+[Cloud] MQTT published/ack msg_id=26357 outbox=0 t=27369
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18178","p":{"b":68,"f":18178,"t":18178}}
+[Cloud LOG] ack rx boot=68 from=18178 to=18178
+[Log Cloud] ack ok boot=68 to=18178 covered=1/1 acked=18178 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=36970 qos=1 store=1 outbox=0->325 len=291 t=28578
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=28588
+[Cloud] MQTT published/ack msg_id=36970 outbox=0 t=29618
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] ENQ id=3849 qos=1 store=1 outbox=0->114 len=82 t=30000
+[Cloud] MQTT published/ack msg_id=3849 outbox=0 t=30669
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18179","p":{"b":68,"f":18179,"t":18179}}
+[Cloud LOG] ack rx boot=68 from=18179 to=18179
+[Log Cloud] ack ok boot=68 to=18179 covered=1/1 acked=18179 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=42195 qos=1 store=1 outbox=0->325 len=291 t=30817
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=30828
+[Cloud] MQTT published/ack msg_id=42195 outbox=0 t=31869
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18180","p":{"b":68,"f":18180,"t":18180}}
+[Cloud LOG] ack rx boot=68 from=18180 to=18180
+[Log Cloud] ack ok boot=68 to=18180 covered=1/1 acked=18180 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=60569 qos=1 store=1 outbox=0->325 len=291 t=33081
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=33092
+[Cloud] MQTT published/ack msg_id=60569 outbox=0 t=34121
