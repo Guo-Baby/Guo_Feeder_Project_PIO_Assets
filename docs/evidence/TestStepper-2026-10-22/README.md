@@ -279,3 +279,68 @@ return 0;   // 全部失败
 | 2000 | 1.22 | ✓（精度略降，实测误差 <1%） |
 
 整个 10~2000 Hz 范围在 res=14 下均可用，因此 `ts_setup_ledc()` 实际几乎总在 res=14 一次命中。
+
+---
+
+## 十、新增 `weight.enable=true` 后的 Registry 变化（2026-10-23 02:03 实测）
+
+### 10.1 为什么要连带处理
+
+`weight_init()` 里 `enable=false` 走的是**提前 return** 分支（`weight.cpp:716`）：
+
+- 不注册 `weight_decrease` 触发器
+- 不注册 `WEIGHT_ZERO` 动作
+- 不发任何 weight 事件、不置 `STATE_WEIGHT_ERROR`
+
+⇒ 开秤会**改变两个 Registry 的版本号**，所有硬编码 `v` 的云端/客户端必须同步。
+
+### 10.2 实测 Registry（权威值，2026-10-23 02:05）
+
+查询报文：`{"c":"registry","i":"<id>","k":<0|1>," device_id":"..."}` —— **`k` 必须在顶层**，放进 `p` 里会被忽略。
+
+**Action Registry `v=4` / `n=14`**
+
+| k | Action | 变化 |
+|---|---|---|
+| 0 | COMPUTER_RESET | |
+| 1 | MI_THERMO_START_SCAN | |
+| 2 | MI_THERMO_STOP_SCAN | |
+| 3 | MQTT_TEST | |
+| 4 | STEPPER_DISPENSE_ROTATE | |
+| 5 | STEPPER_EMERGENCY_STOP | |
+| 6 | STEPPER_ROTATE_STEPS | |
+| **7** | **TEST_STEPPER_START** | 不变 |
+| **8** | **TEST_STEPPER_STOP** | 不变 |
+| 9 | VALVE_CLOSE | |
+| 10 | VALVE_OPEN | |
+| 11 | VIBRATION_START | |
+| 12 | VIBRATION_STOP | |
+| **13** | **WEIGHT_ZERO** | ★ 新增 |
+
+**Trigger Registry `v=2` / `n=3`**
+
+| k | Trigger | 变化 |
+|---|---|---|
+| 0 | delay | |
+| 1 | timer | |
+| 2 | **weight_decrease** | ★ 新增 |
+
+### 10.3 ⚠️ `test_stepper` 的 `v` 必须从 3 改为 4
+
+`k=7/8` 未变（`WEIGHT_ZERO` 按字符串升序排在最后，不影响前面），但**版本号已递增**。
+继续用 `v=3` 会返回 `e=3 s=4 "action registry version mismatch"`。
+
+```json
+{"c":"action","i":"t5","v":4,"k":7,"p":{"hz":100,"direction":0}}
+{"c":"action","i":"t6","v":4,"k":8}
+```
+
+### 10.4 开秤后的健康状态（query_state 实测）
+
+| 键 | 值 | 含义 |
+|---|---|---|
+| `weight_valid` | **true** | HX711 初始化成功，秤可用 |
+| `weight_value` | **3.3**（g） | 正在实时采样 |
+| `weight_error` | 未观察到 | — |
+
+⇒ 不是"只把开关打开"，硬件侧确实通了。
