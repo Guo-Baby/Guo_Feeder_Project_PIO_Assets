@@ -28,6 +28,16 @@
 #define GF_TOPIC_TPL_DOWN        "guo_feeder/<device_id>/down"
 #define GF_TOPIC_TPL_UP          "guo_feeder/<device_id>/up"
 #define GF_TOPIC_TPL_LOG         "guo_feeder/<device_id>/log"
+// ★ `LOG-ACK-SPLIT`（2026-10-23）：日志回执**独立下行 topic**，脱离 `.../down`。
+//   动机：停等协议下每条日志记录必然产生 1 上 + 1 下，回执与命令共用 `/down`
+//   会把业务下行流量淹没（实测 `log_ack` 占 60 分钟 MQTT 流量 46.7%）。
+//   形态固定 **4 段**：`guo_feeder/<device_id>/log/ack`。
+//   ★ 4 段是**有意**的：Worker 的 `domainFromTopic()` 只认 3 段
+//     ⇒ 即使 EMQX 规则忘了排除，也会被判 `unknown_topic` 400 挡在入库之外
+//     （兜底保险，不靠"记得改规则"）。
+//   ★ 该模板**不走配置**（不新增配置键）：它必须与 Worker 侧
+//     `log-ack.js::logAckTopic()` 逐字一致，做成可配只会增加漂移面。
+#define GF_TOPIC_TPL_ACK         "guo_feeder/<device_id>/log/ack"
 #define GF_CLIENT_ID_TPL         "dev_<device_id>"
 
 // ---- 渲染自检开关（默认 0 = 生产固件；DEBUG / 测试环境置 1）----

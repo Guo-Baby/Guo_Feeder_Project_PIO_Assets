@@ -126,6 +126,10 @@ static String mqtt_sub_topic;
 static String mqtt_pub_topic;
 // P1.4：LogManager 专用上行 Topic（独立于 up / down）
 static String mqtt_log_topic;
+// ★ LOG-ACK-SPLIT（2026-10-23）：日志回执专用下行 Topic。
+//   为切换期原子性：**同时订阅** `mqtt_sub_topic`（旧，兼容）与 `mqtt_ack_topic`（新）。
+//   两者都走业务分派 ⇒ 收到哪条都能进 `c=="log_ack"` 分支，不存在断链窗口。
+static String mqtt_ack_topic;
 // P1.5：log_ack 回调（由 LogManager 注入，CloudManager 不反向依赖它）
 static CloudLogAckCallback s_log_ack_cb = nullptr;
 
@@ -446,8 +450,19 @@ static void cloud_transport_dispatch_rx(
     size_t len,
     bool retain)
 {
-    const MqttRouteKind kind =
+    MqttRouteKind kind =
         mqtt_route_topic(topic, mqtt_sub_topic.c_str(), s_foreign_subs);
+
+    // ★ LOG-ACK-SPLIT（2026-10-23）：日志回执的独立 topic 也**判为业务**。
+    //   这样它复用既有 `c=="log_ack"` bypass 分支（`cloud_manager.cpp` 的
+    //   `log_ack` 处理），**零新增 handler**；也避免引入 foreign 路径 ——
+    //   全仓没有任何模块注册 foreign handler（`s_foreign_cb` 恒为 null），
+    //   走那条路等于启用一条从未在生产跑过的分支。
+    if(kind != MQTT_ROUTE_BUSINESS && mqtt_ack_topic.length() > 0
+       && mqtt_topic_matches_filter(mqtt_ack_topic.c_str(), topic))
+    {
+        kind = MQTT_ROUTE_BUSINESS;
+    }
 
     if(kind == MQTT_ROUTE_BUSINESS)
     {
@@ -536,6 +551,23 @@ static void mqtt_event_handler(
                     "[Cloud] MQTT subscribe QoS=%d msg_id=%d\n",
                     CLOUD_MQTT_QOS,
                     msg_id);
+            }
+            // ★ LOG-ACK-SPLIT：**同时订阅**日志回执专用 topic。
+            //   与上一段并存 ⇒ 无论 Worker 发旧 `/down` 还是新 `/log/ack`，
+            //   设备都能收到 ACK，切换过程不存在"收不到 ack ⇒ 停等超时"的断链窗口。
+            //   ★ 该订阅必须在 ACL 里被授权（`credential.js::buildAclRules`），
+            //     ACL 缺失时 broker **静默拒绝**（不会报错，只表现为收不到消息）。
+            if(mqtt_ack_topic.length() > 0)
+            {
+                int ack_msg_id = esp_mqtt_client_subscribe(
+                    mqtt_client,
+                    mqtt_ack_topic.c_str(),
+                    CLOUD_MQTT_QOS);
+                Serial.printf(
+                    "[Cloud] MQTT subscribe(log-ack) filter=%s qos=%d msg_id=%d\n",
+                    mqtt_ack_topic.c_str(),
+                    CLOUD_MQTT_QOS,
+                    ack_msg_id);
             }
             // ★ P2-2（T-2）：重放注册表中已登记的 **foreign** 订阅。
             //   业务订阅保持上面那段**逐字不变**（filter/QoS/日志一致）。
@@ -1993,6 +2025,11 @@ void cloud_init()
                                         GF_TOPIC_TPL_LOG, "log_topic");
     Serial.print("MQTT log=");
     Serial.println(mqtt_log_topic);
+    // ★ LOG-ACK-SPLIT：ack topic 由固定模板渲染（不读配置，避免与 Worker 漂移）
+    mqtt_ack_topic = cloud_render_topic(String(GF_TOPIC_TPL_ACK),
+                                        GF_TOPIC_TPL_ACK, "ack_topic");
+    Serial.print("MQTT log-ack=");
+    Serial.println(mqtt_ack_topic);
 
     // =====================================================
     // P1-7 / F-3：MQTT 上线前置检查（**判定一次**，结果供 cloud_connect() 读）
