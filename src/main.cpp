@@ -25,6 +25,7 @@
 #include "app/computer_reset.h"
 #include "app/stepper.h"       // DRV8825 步进电机（STEP/DIR/EN + RMT）
 #include "app/vibration.h"     // 振动马达（单 GPIO，双马达共路）
+#include "app/test_stepper.h"  // ★ 步进纯测试模块（无 30s 限制、频率可调、LEDC 脉冲）
 #include "automation/workflow.h"
 #include "app/dispense_guard.h"
 #include "test/test_mqtt.h"
@@ -556,6 +557,7 @@ void setup()
     computer_reset_init();     // GPIO8 脉冲（电脑重启），注册 COMPUTER_RESET Action
     stepper_init();            // DRV8825 步进电机（注册 3 个 Action，默认禁用）
     vibration_init();          // 振动马达（注册 2 个 Action，默认禁用）
+    test_stepper_init();       // 步进纯测试（注册 2 个 Action；复用 stepper 引脚配置）
     dispense_guard_init();
     oled_init();
     oled_event_init();
@@ -735,6 +737,7 @@ void loop()
     computer_reset_task();     // 手动脉冲回收 + GPIO8 安全兜底
     stepper_task();            // 步进：使能等待 / 脉冲完成 / 30s 超时兜底
     vibration_task();          // 振动：定时到期关闭 / 30s 超时兜底
+    test_stepper_task();       // 步进测试：硬上限守护 + 心跳日志
     MiThermometer_task();
     // ---- P3 · WP4-FW-TELEMETRY：遥测上行（非阻塞；每轮最多 1 条）----
     // 放在 MiThermometer_task() / weight_task() **之后** ⇒ 本轮状态最新；
@@ -858,6 +861,56 @@ void serial_debug_command_process(void)
                               (unsigned)stepper_plan_dispense_pulses(),
                               stepper_get_step_pin(), stepper_get_dir_pin(),
                               stepper_get_en_pin());
+            }
+            // =====================================================
+            // test_stepper —— 纯测试（无 30s 限制、频率可调）
+            //
+            // ★ 同样走正式 Action 链路，不直接调 GPIO。
+            // =====================================================
+            else if (serial_cmd_buffer.startsWith("tstep_start"))
+            {
+                // 用法: tstep_start [hz] [dir]   省略 = 100 Hz / 正向
+                String arg = serial_cmd_buffer.substring(11);
+                arg.trim();
+                long hz = TEST_STEPPER_HZ_DEFAULT;
+                long dir = 0;
+                if (arg.length() > 0)
+                {
+                    int sp = arg.indexOf(' ');
+                    if (sp < 0) { hz = arg.toInt(); }
+                    else
+                    {
+                        hz  = arg.substring(0, sp).toInt();
+                        dir = arg.substring(sp + 1).toInt();
+                    }
+                }
+                String payload = String("{\"hz\":") + String((int)hz) +
+                                 String(",\"direction\":") + String((int)dir) + String("}");
+                bool ok = workflow_enqueue_action("TEST_STEPPER_START", payload,
+                                                  nullptr, String("serial"),
+                                                  nullptr, 10000);
+                Serial.printf("tstep_start enqueue ret = %d (payload=%s)\n",
+                              ok, payload.c_str());
+            }
+            else if (serial_cmd_buffer == "tstep_stop")
+            {
+                bool ok = workflow_enqueue_action("TEST_STEPPER_STOP", String(""),
+                                                  nullptr, String("serial"),
+                                                  nullptr, 10000);
+                Serial.printf("tstep_stop enqueue ret = %d\n", ok);
+            }
+            else if (serial_cmd_buffer == "tstep_status")
+            {
+                Serial.printf("TStep: running=%d hz=%u dir=%d elapsed=%lu ms "
+                              "(step=%d dir=%d en=%d, max_run=%lu ms)\n",
+                              test_stepper_is_running(),
+                              (unsigned)test_stepper_get_hz(),
+                              test_stepper_get_direction(),
+                              (unsigned long)test_stepper_get_running_ms(),
+                              test_stepper_get_step_pin(),
+                              test_stepper_get_dir_pin(),
+                              test_stepper_get_en_pin(),
+                              (unsigned long)TEST_STEPPER_MAX_RUN_MS);
             }
             else if (serial_cmd_buffer.startsWith("vib_start"))
             {
