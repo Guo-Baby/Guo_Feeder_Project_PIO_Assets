@@ -1,0 +1,36 @@
+%% Guo Feeder UI v1 —— 页面树 / 导航
+%% 说明：一级页 = 底部 tab（手机）/ 左侧导航（桌面）；二级页从右侧推入并带返回箭头
+graph TD
+  L["登录 · /login.html<br/>口令 + 可选 Turnstile"] --> H
+
+  subgraph TABS["一级页面（底部 tab 5 项）"]
+    H["① 首页 · 设备总览<br/>/app"]
+    C["② 设备控制<br/>/app#control"]
+    W["③ Workflow<br/>/app#workflows"]
+    R["④ 记录<br/>/app#records"]
+    D["⑤ 设备<br/>/app#device"]
+  end
+
+  H --> Q["①a 快捷操作管理<br/>排序 / 启用"]
+  C --> CR["②a 参数输入弹层<br/>（有参数的 Action）"]
+  W --> WD["③a Workflow 详情<br/>只读 + 运行"]
+  WD --> WE["③b Workflow 编辑器<br/>草稿态 + 两阶段保存"]
+  R --> RL["④a 设备日志<br/>已解码事件 + 参数"]
+  R --> RA["④b 操作审计<br/>谁发的 / 结果如何"]
+  D --> DI["⑤a 设备信息<br/>在线 / 固件 / 凭据四态"]
+  D --> DC["⑤b 模块配置<br/>enable（会重启）"]
+  D --> DG["⑤c 诊断<br/>memory / flash / stats"]
+
+  subgraph STATES["状态页（全屏，非 toast）"]
+    X1["会话过期"]
+    X2["权限 / 凭据失效"]
+    X3["设备离线"]
+    X4["首次使用 · 无数据"]
+    X5["接口错误"]
+  end
+
+  H -.401.-> X1
+  C -.离线.-> X3
+  C -.403.-> X2
+  R -.空表.-> X4
+  R -.5xx.-> X5

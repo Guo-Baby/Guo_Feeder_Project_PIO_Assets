@@ -1,0 +1,49 @@
+%% Guo Feeder UI v1 —— 命令交互与幂等
+%% 关键点：一次点击 = 一个 cmd_id，重试复用同一 id，绝不换新 id 重发危险操作
+stateDiagram-v2
+    direction TB
+
+    [*] --> Editing: 用户点按
+    Editing --> Confirming: 风险 H / C
+    Editing --> Submitting: 风险 S / M（关阀·查询）
+
+    Confirming --> [*]: 取消
+    Confirming --> Submitting: 确认（800ms 后可点）
+
+    Submitting --> Rejected: 4xx / 5xx
+    Submitting --> Published: Worker 200（EMQX 已接受）
+    Submitting --> SubmitUnknown: 网络中断 / 10s 超时
+
+    Published --> DeviceAcked: c:"ack"
+    Published --> NoAck: 15s 内无 ack
+
+    DeviceAcked --> Queued: s=1 "Action queued"
+    DeviceAcked --> Failed: s!=0 且 s!=1
+    Queued --> Succeeded: 终态 s=0
+    Queued --> Failed: 终态 s!=0
+
+    NoAck --> Expired: 再等 15s
+    Queued --> Expired: 超过 timeout_ms 无终态
+    SubmitUnknown --> Published: 复用同一 cmd_id 重试后收到回帧
+    SubmitUnknown --> Rejected: 重试被拒
+
+    Expired --> Unknown: 查不到设备状态
+    Expired --> Succeeded: 查到"确实已生效"
+    Expired --> Failed: 查到"确实没生效"
+
+    Rejected --> [*]
+    Succeeded --> [*]
+    Failed --> [*]
+    Unknown --> [*]
+
+    note right of Submitting
+        cmd_id 在进入此状态前生成一次，
+        之后整条链路（含重试）复用
+    end note
+
+    note right of Unknown
+        危险操作（开阀/跑流程/秤清零）
+        禁止自动重发；
+        必须由用户"我已知晓，重新发起"，
+        且新操作使用【新】cmd_id
+    end note
