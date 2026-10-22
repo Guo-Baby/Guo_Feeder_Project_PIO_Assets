@@ -347,3 +347,82 @@ if(cmd === LOG_ACK_COMMAND)          // "log_ack"
 
 ⇒ **下一步只有一件事：把 ACL 的第 4 条真正写进去**，
 然后 `LOG_ACK_DUAL_PUBLISH` 置 `"0"` 复测，`ack ok` 仍增长即完成。
+
+---
+
+## 十、★★ 真正的根因：设备登录的**不是** `dev_<device_id>`
+
+### 10.1 发现过程（04:20 复测）
+
+用户在控制台把 ACL 第 4 条加到 `dev_288485896ce4`（该账号权限数 3 → 4），再测：
+
+**非破坏性指纹探测**（不部署、不重启，只采串口 40 s）：
+
+```
+RX log_ack frames : 17
+unique seq        : 17
+duplicates        : NONE          ← 同一 seq 只到 1 次
+range             : 18501 .. 18517
+```
+
+两条 topic 都在发（`LOG_ACK_DUAL_PUBLISH="1"`），**同一个 seq 只到达 1 次**
+⇒ 仍然只有一条链路在送 ⇒ 新 topic 还是没被授权。**但 ACL 明明加了。**
+
+### 10.2 根因
+
+EMQX 客户端列表（用户截图）里：
+
+| 客户端 ID | **用户名** |
+|---|---|
+| `dev_288485896ce4` | **`GuoFeederDevice`** |
+
+设备侧配置（`data/config/mqtt.json`，与设备实值一致）：
+
+```json
+"client_id": "dev_<device_id>",     // → 渲染成 dev_288485896ce4
+"username":  "GuoFeederDevice"      // ← 认证用的是这个
+```
+
+⇒ **client_id 是 `dev_288485896ce4`，但认证账号是 `GuoFeederDevice`**。
+ACL 挂在**用户名**上 ⇒ 加到 `dev_288485896ce4` 的规则**根本不参与本设备的授权判定**。
+`dev_288485896ce4` 那个账号从未被设备使用过（它是 Worker `provisionCredential()`
+按 `usernameFor()` 推出来的规范账号，凭证下发流程在这台设备上没走完）。
+
+### 10.3 由此暴露的架构级问题（P1，未修）
+
+1. **per-device ACL 事实上全部失效**：所有设备若都用共享账号 `GuoFeederDevice`，
+   则 `credential.js::buildAclRules()` 写的按设备隔离规则**不被采纳**
+   ⇒ P1 的核心不变量「跨设备隔离（X-1）」在**配置层被绕过**。
+2. **共享账号 + 弱口令**：`GuoFeederDevice` 是全局共享账号，
+   任何拿到它的客户端都能订阅**全部设备**的主题。
+3. **凭证下发链路未闭环**：`provisionCredential()` 会做
+   `PUT 密码 → 全量 ACL → 下发 credential_set`，这台设备的 `mqtt.username`
+   仍是历史值 ⇒ 该流程要么从未成功，要么之后被配置覆盖。
+
+### 10.4 处置
+
+**临时（立刻可做）**：把 ACL 写到设备**实际使用的账号**上。
+`/api/admin/device/:id/acl` 已支持覆盖账号名（`2026-10-23` 新增）：
+
+```bash
+curl -X POST \
+  "https://guo-feeder-api.guobaby.workers.dev/api/admin/device/288485896ce4/acl" \
+  -H "Authorization: Bearer <ADMIN_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"GuoFeederDevice"}'
+```
+
+规则内容仍按 `device_id=288485896ce4` 生成（topic 里是 device_id），
+只有**账号名**被覆盖 ⇒ 6 条规则落到真正参与认证的账号上，返回体会原样列出。
+
+**根治（后续单独立项）**：把设备的 `mqtt.username` 迁到 `dev_288485896ce4`
+（需要 Worker 重新签发凭据并让设备 `credential_set` 成功应用），
+然后删掉 `GuoFeederDevice` / `GuoFeederDevice001` 这两个共享账号。
+
+### 10.5 另一个教训
+
+`MQTT_EVENT_SUBSCRIBED` 不能证明订阅成功（见 §三），
+而**"ACL 加了但没生效"也不能直接怪 EMQX** ——
+先确认"这个账号到底是不是这台设备在用的账号"。
+判断依据只有一处：EMQX **客户端列表里的"用户名"列**（`client_id` 会骗人，
+因为 `client_id` 是按模板渲染的，`username` 是另一份配置）。
