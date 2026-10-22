@@ -133,3 +133,22 @@ test001              ← 你的 MQTTX
 | topic 前缀 | `guo_feeder/288485896ce4/…` |
 | 4 条 topic | `…/down`、`…/up`、`…/log`、**`…/log/ack`** |
 | ACL 应挂在哪 | **`GuoFeederDevice`**（当前）／`dev_288485896ce4`（迁移后） |
+
+---
+
+## 六、执行状态（2026-10-23 04:30 更新）
+
+| 动作 | 状态 |
+|---|---|
+| 给 `GuoFeederDevice` 配置 6 条 ACL（含 `/log/ack` subscribe） | ✅ 已完成 |
+| 清除 `dev_d163d0000001`、`dev_deadbeef0001` 两个「永不过期」僵尸会话 | ✅ 已完成（它们自 10-05 起一直在线） |
+| 清除 `dev_d163d0000002/3`、`dev_a5a0000000a1`、`dev_b5b0000000b1`、`dev_c5c0000000c1`、`dev_3cfb56c8a5fc`、`GuoFeederDevice001` | ⏳ 待办（本次未清） |
+| `workbuddy` / `shouji` 是否保留 | ⏳ 待用户确认 |
+| 设备 `mqtt.username` 迁移到 `dev_288485896ce4`（根治共享账号） | ⏳ 未立项 |
+
+★ 清完僵尸会话后，`/log/ack` 的 ACL 才真正起作用 —— 这一点容易误判：
+**会话存在不等于权限正确**，而「永不过期」的会话会让旧的错误状态一直挂着。
+
+配套文档：
+- 规则与 ACL 的完整 SQL / 6 条清单：`docs/operations/EMQX-Authorization-Changes-2026-10-23.md`
+- 切换过程与实测证据：`docs/evidence/LogAckSplit-2026-10-23/README.md`

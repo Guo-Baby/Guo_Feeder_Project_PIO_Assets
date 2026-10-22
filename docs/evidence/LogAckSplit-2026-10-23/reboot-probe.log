@@ -1,0 +1,926 @@
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18810","p":{"b":68,"f":18810,"t":18810}}
+[Cloud LOG] ack rx boot=68 from=18810 to=18810
+[Log Cloud] ack ok boot=68 to=18810 covered=1/1 acked=18810 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=53224 qos=1 store=1 outbox=0->334 len=300 t=1709995
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=1710005
+=================
+[Cloud] MQTT RX
+{"device_id":"288485896ce4","c":"system","i":"rb701360","p":{"o":"reboot"},"source":"cloud_api"}
+[Cloud] UP-ACK id=rb701360 obj=reboot t=1711011
+[Cloud UP JSON]
+{"c":"ack","i":"rb701360","o":"reboot","p":{"result":"received"},"t":1792701362}
+[Cloud] enqueue OK id=50990 qos=1 store=1 len=80
+[Cloud UP] OK
+[CMD][INFO] Received command
+[Cloud] UP-RESULT len=93 t=1711023
+[Cloud UP JSON]
+{"s":2,"c":"result","i":"rb701360","t":1792701362,"type":"command"}
+[Cloud] enqueue OK id=58073 qos=1 store=1 len=67
+[Cloud UP] OK
+[CMD][INFO] System reboot requested
+[SYSCMD][W] restart requested (critical=0), waiting for drain
+[Cloud] Command execution failed (error result sent)
+[Cloud] MQTT published/ack msg_id=53224 outbox=211 t=1711063
+[Cloud] MQTT published/ack msg_id=50990 outbox=99 t=1711170
+[Cloud] MQTT published/ack msg_id=58073 outbox=0 t=1711216
+[SYSCMD][W] critical operations drained, restart pending 10000 ms
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18811","p":{"b":68,"f":18811,"t":18811}}
+[Cloud LOG] ack rx boot=68 from=18811 to=18811
+[Log Cloud] ack ok boot=68 to=18811 covered=1/1 acked=18811 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=16190 qos=1 store=1 outbox=0->334 len=300 t=1712451
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=1712462
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18811","p":{"b":68,"f":18811,"t":18811}}
+[Cloud LOG] ack rx boot=68 from=18811 to=18811
+[Log Cloud] ack ignored boot=68 from=18811 to=18811 r=0
+[Cloud] MQTT published/ack msg_id=16190 outbox=0 t=1713500
+[Weight] STATE_WEIGHT_ERROR -> 1
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18812","p":{"b":68,"f":18812,"t":18812}}
+[Cloud LOG] ack rx boot=68 from=18812 to=18812
+[Log Cloud] ack ok boot=68 to=18812 covered=1/1 acked=18812 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=39505 qos=1 store=1 outbox=0->334 len=300 t=1716157
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=1716168
+[Cloud] MQTT published/ack msg_id=39505 outbox=0 t=1717186
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18812","p":{"b":68,"f":18812,"t":18812}}
+[Cloud LOG] ack rx boot=68 from=18812 to=18812
+[Log Cloud] ack ignored boot=68 from=18812 to=18812 r=0
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18813","p":{"b":68,"f":18813,"t":18813}}
+[Cloud LOG] ack rx boot=68 from=18813 to=18813
+[Log Cloud] ack ok boot=68 to=18813 covered=1/1 acked=18813 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=48504 qos=1 store=1 outbox=0->334 len=300 t=1718507
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=1718517
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=48504 outbox=0 t=1719547
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18814","p":{"b":68,"f":18814,"t":18814}}
+[Cloud LOG] ack rx boot=68 from=18814 to=18814
+[Log Cloud] ack ok boot=68 to=18814 covered=1/1 acked=18814 gc=17156 floor=17157 r=2
+[Cloud] ENQ id=16026 qos=1 store=1 outbox=0->334 len=300 t=1720846
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=1720856
+[SYSCMD][W] safe window elapsed, restarting now
+E (1721304) TRANSPORT_BASE: poll_read select error 113, errno = Software caused connection abort, fd = 48
+E (1721304) MQTT_CLIENT: Poll read error: 119, aborting connection
+[Cloud] MQTT disconnected outbox=334
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x420fc622
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (280) esp_core_dump_flash: No core dump partition found!
+E (280) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[LogContract] v=2 rec=128 seg=3984 x16 cap=496 fmt=2 check=PASS
+[Identity] device_id=288485896ce4 (nvs ok)
+[Log] RAM ring ready: 64 slots x 128 B = 8192 B in PSRAM (boot_seq=1)
+[  1336][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+[Log] Flash ring ready: seg=16 x 31 rec, seg_size=3984 B, valid=16, oldest=14, newest=13, append=13@17, total_rec=482, batch=1024 B in PSRAM
+[  2552][E][vfs_api.cpp:105] open(): /littlefs/log/quarantine.bin does not exist, no permits for creation
+[Log] recovery=NVS boot_hw=68 -> boot_seq=69 reserved=18944 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+[Log] seq: boot_seq=69 base=18945 limit=19200 reserved=19200 reliable=1 corrupt=1 src=0 failclosed=0
+[Log] Cloud queue ready: 128 slots x 128 B = 16384 B (q=PSRAM), batch=2048 B, cbor=4096 B in PSRAM
+[JStg][I] ready
+[FStg][I] ready
+[Bin][I] ready
+[CFG][I] init done, loaded 10/10 modules
+Event manager init OK
+[BLE] init OK
+
+WiFi init...
+
+Connecting to:wqs1
+[Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B) | PSRAM total=8385927 B
+[Weight] Init...
+[Weight] Init OK (dt=6 sck=7 scale=741.0 zero_offset=-800750)
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[ComputerReset] Init OK (pin=8, hold=800 ms)
+[Stepper] Init: enable=1 pins_ready=1 rmt=1 (step=13 dir=14 en=15, steps/rev=1600 angle=120 period=10000us delay=50ms max=6400 timeout=30000ms)
+[Vibration] Init: enable=1 pins_ready=1 (pin=16 active_level=1, max_duration=30000ms safety_timeout=30000ms)
+[TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+
+Time manager init...
+[Time] timezone offset = GMT+8
+[Time] RTC probe failed (addr=0x51 err=2), chip not present?
+[Time] RTC init failed (wait SNTP)
+[Time] SNTP servers=ntp.aliyun.com/cn.pool.ntp.org interval=86400s
+Time manager init done
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+[CredStore] NVS 'gfcred' ready
+[Cred] init: store=ok active_slot=-1
+[SYSCMD][I] init done, reset reason=software, safe delay=10000 ms
+
+Cloud manager init...
+MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+MQTT port=8883
+MQTT client_id=dev_288485896ce4
+[Cloud] credential source: config (fallback)
+MQTT subscribe=guo_feeder/288485896ce4/down
+MQTT publish=guo_feeder/288485896ce4/up
+MQTT log=guo_feeder/288485896ce4/log
+MQTT log-ack=guo_feeder/288485896ce4/log/ack
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[WF][DBG] load wf=0 id=daily_valve_test steps=4 variant=1
+[WF][DBG] load wf=1 id=daily_valve_test1 steps=4 variant=1
+[WF][DBG] load wf=2 id=queue_test steps=4 variant=1
+[WF][DBG] load wf=3 id=wf_valve_20g steps=4 variant=2
+[OK] Workflow loaded from Flash BIN
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] ACTION reuse version=4 count=14
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] TRIGGER reuse version=2 count=3
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+[CapRegistry] WORKFLOW reuse version=3 count=4
+capability_registry_init: OK
+[CFG][I] boot validated
+[  6909][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Time] SNTP started (waiting first sync)
+[Time] Event: TIME_VALID
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=n302933b.ala.cn-hangzhou.emqxsl.cn
+port=8883
+client_id=dev_288485896ce4
+username=(hidden)
+password=(hidden)
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=40587
+[Cloud] MQTT subscribe(log-ack) filter=guo_feeder/288485896ce4/log/ack qos=1 msg_id=22815
+[Cloud] MQTT connected outbox=73
+[Cloud] ENQ id=228 qos=1 store=1 outbox=73->398 len=291 t=7707
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=7707
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=3421 qos=1 store=1 len=45
+[Cloud] MQTT subscribed msg_id=40587
+[Cloud] MQTT subscribed msg_id=22815
+[Cloud] MQTT published/ack msg_id=228 outbox=77 t=7834
+[Cloud] MQTT published/ack msg_id=3421 outbox=0 t=7870
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Time] SNTP sync OK (2026-10-23 04:36:23)
+[Weight] STATE_WEIGHT_ERROR -> 1
+[Weight] STATE_WEIGHT_ERROR -> 0
+[Log Cloud] ack timeout retry=1/5 backoff=2000ms
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] ENQ id=42948 qos=1 store=1 outbox=0->325 len=291 t=24718
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=24718
+[Cloud] MQTT published/ack msg_id=42948 outbox=0 t=24930
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18945","p":{"b":69,"f":18945,"t":18945}}
+[Cloud LOG] ack rx boot=69 from=18945 to=18945
+[Log Cloud] ack ok boot=69 to=18945 covered=1/1 acked=18945 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=65319 qos=1 store=1 outbox=0->325 len=291 t=26101
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=26112
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18945","p":{"b":69,"f":18945,"t":18945}}
+[Cloud LOG] ack rx boot=69 from=18945 to=18945
+[Log Cloud] ack ignored boot=69 from=18945 to=18945 r=0
+[Cloud] MQTT published/ack msg_id=65319 outbox=0 t=26395
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18946","p":{"b":69,"f":18946,"t":18946}}
+[Cloud LOG] ack rx boot=69 from=18946 to=18946
+[Log Cloud] ack ok boot=69 to=18946 covered=1/1 acked=18946 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=1724 qos=1 store=1 outbox=0->325 len=291 t=27344
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=27354
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18946","p":{"b":69,"f":18946,"t":18946}}
+[Cloud LOG] ack rx boot=69 from=18946 to=18946
+[Log Cloud] ack ignored boot=69 from=18946 to=18946 r=0
+[Cloud] MQTT published/ack msg_id=1724 outbox=0 t=27495
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18947","p":{"b":69,"f":18947,"t":18947}}
+[Cloud LOG] ack rx boot=69 from=18947 to=18947
+[Log Cloud] ack ok boot=69 to=18947 covered=1/1 acked=18947 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=11872 qos=1 store=1 outbox=0->325 len=291 t=28464
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=28474
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18947","p":{"b":69,"f":18947,"t":18947}}
+[Cloud LOG] ack rx boot=69 from=18947 to=18947
+[Log Cloud] ack ignored boot=69 from=18947 to=18947 r=0
+[Cloud] MQTT published/ack msg_id=11872 outbox=0 t=28698
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18948","p":{"b":69,"f":18948,"t":18948}}
+[Cloud LOG] ack rx boot=69 from=18948 to=18948
+[Log Cloud] ack ok boot=69 to=18948 covered=1/1 acked=18948 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=30979 qos=1 store=1 outbox=0->325 len=291 t=29686
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=29696
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18948","p":{"b":69,"f":18948,"t":18948}}
+[Cloud LOG] ack rx boot=69 from=18948 to=18948
+[Log Cloud] ack ignored boot=69 from=18948 to=18948 r=0
+[Cloud] MQTT published/ack msg_id=30979 outbox=0 t=29876
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] ENQ id=48978 qos=1 store=1 outbox=0->114 len=82 t=30497
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18949","p":{"b":69,"f":18949,"t":18949}}
+[Cloud LOG] ack rx boot=69 from=18949 to=18949
+[Log Cloud] ack ok boot=69 to=18949 covered=1/1 acked=18949 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=56526 qos=1 store=1 outbox=114->448 len=300 t=30911
+[Cloud] MQTT published/ack msg_id=48978 outbox=334 t=30917
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=30922
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18949","p":{"b":69,"f":18949,"t":18949}}
+[Cloud LOG] ack rx boot=69 from=18949 to=18949
+[Log Cloud] ack ignored boot=69 from=18949 to=18949 r=0
+[Cloud] MQTT published/ack msg_id=56526 outbox=0 t=31010
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18950","p":{"b":69,"f":18950,"t":18950}}
+[Cloud LOG] ack rx boot=69 from=18950 to=18950
+[Log Cloud] ack ok boot=69 to=18950 covered=1/1 acked=18950 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=34754 qos=1 store=1 outbox=0->334 len=300 t=32458
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=32469
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18950","p":{"b":69,"f":18950,"t":18950}}
+[Cloud LOG] ack rx boot=69 from=18950 to=18950
+[Log Cloud] ack ignored boot=69 from=18950 to=18950 r=0
+[Cloud] MQTT published/ack msg_id=34754 outbox=0 t=32535
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18951","p":{"b":69,"f":18951,"t":18951}}
+[Cloud LOG] ack rx boot=69 from=18951 to=18951
+[Log Cloud] ack ok boot=69 to=18951 covered=1/1 acked=18951 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=13523 qos=1 store=1 outbox=0->334 len=300 t=33576
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=33586
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18951","p":{"b":69,"f":18951,"t":18951}}
+[Cloud LOG] ack rx boot=69 from=18951 to=18951
+[Log Cloud] ack ignored boot=69 from=18951 to=18951 r=0
+[Cloud] MQTT published/ack msg_id=13523 outbox=0 t=33734
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18952","p":{"b":69,"f":18952,"t":18952}}
+[Cloud LOG] ack rx boot=69 from=18952 to=18952
+[Log Cloud] ack ok boot=69 to=18952 covered=1/1 acked=18952 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=32024 qos=1 store=1 outbox=0->334 len=300 t=34913
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=34913
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18952","p":{"b":69,"f":18952,"t":18952}}
+[Cloud LOG] ack rx boot=69 from=18952 to=18952
+[Log Cloud] ack ignored boot=69 from=18952 to=18952 r=0
+[Cloud] MQTT published/ack msg_id=32024 outbox=0 t=35943
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18953","p":{"b":69,"f":18953,"t":18953}}
+[Cloud LOG] ack rx boot=69 from=18953 to=18953
+[Log Cloud] ack ok boot=69 to=18953 covered=1/1 acked=18953 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=25211 qos=1 store=1 outbox=0->334 len=300 t=37275
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=37285
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18953","p":{"b":69,"f":18953,"t":18953}}
+[Cloud LOG] ack rx boot=69 from=18953 to=18953
+[Log Cloud] ack ignored boot=69 from=18953 to=18953 r=0
+[Cloud] MQTT published/ack msg_id=25211 outbox=0 t=38302
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18954","p":{"b":69,"f":18954,"t":18954}}
+[Cloud LOG] ack rx boot=69 from=18954 to=18954
+[Log Cloud] ack ok boot=69 to=18954 covered=1/1 acked=18954 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=53993 qos=1 store=1 outbox=0->334 len=300 t=39310
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=39320
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18954","p":{"b":69,"f":18954,"t":18954}}
+[Cloud LOG] ack rx boot=69 from=18954 to=18954
+[Log Cloud] ack ignored boot=69 from=18954 to=18954 r=0
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=53993 outbox=0 t=39493
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18955","p":{"b":69,"f":18955,"t":18955}}
+[Cloud LOG] ack rx boot=69 from=18955 to=18955
+[Log Cloud] ack ok boot=69 to=18955 covered=1/1 acked=18955 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=61709 qos=1 store=1 outbox=0->334 len=300 t=40547
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=40557
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18955","p":{"b":69,"f":18955,"t":18955}}
+[Cloud LOG] ack rx boot=69 from=18955 to=18955
+[Log Cloud] ack ignored boot=69 from=18955 to=18955 r=0
+[Cloud] MQTT published/ack msg_id=61709 outbox=0 t=40732
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18956","p":{"b":69,"f":18956,"t":18956}}
+[Cloud LOG] ack rx boot=69 from=18956 to=18956
+[Log Cloud] ack ok boot=69 to=18956 covered=1/1 acked=18956 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=27257 qos=1 store=1 outbox=0->334 len=300 t=41775
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=41785
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18956","p":{"b":69,"f":18956,"t":18956}}
+[Cloud LOG] ack rx boot=69 from=18956 to=18956
+[Log Cloud] ack ignored boot=69 from=18956 to=18956 r=0
+[Cloud] MQTT published/ack msg_id=27257 outbox=0 t=41993
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18957","p":{"b":69,"f":18957,"t":18957}}
+[Cloud LOG] ack rx boot=69 from=18957 to=18957
+[Log Cloud] ack ok boot=69 to=18957 covered=1/1 acked=18957 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=1550 qos=1 store=1 outbox=0->334 len=300 t=43005
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=43015
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18957","p":{"b":69,"f":18957,"t":18957}}
+[Cloud LOG] ack rx boot=69 from=18957 to=18957
+[Log Cloud] ack ignored boot=69 from=18957 to=18957 r=0
+[Cloud] MQTT published/ack msg_id=1550 outbox=0 t=43163
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18958","p":{"b":69,"f":18958,"t":18958}}
+[Cloud LOG] ack rx boot=69 from=18958 to=18958
+[Log Cloud] ack ok boot=69 to=18958 covered=1/1 acked=18958 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=44862 qos=1 store=1 outbox=0->334 len=300 t=44123
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=44134
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18958","p":{"b":69,"f":18958,"t":18958}}
+[Cloud LOG] ack rx boot=69 from=18958 to=18958
+[Log Cloud] ack ignored boot=69 from=18958 to=18958 r=0
+[Cloud] MQTT published/ack msg_id=44862 outbox=0 t=44373
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18959","p":{"b":69,"f":18959,"t":18959}}
+[Cloud LOG] ack rx boot=69 from=18959 to=18959
+[Log Cloud] ack ok boot=69 to=18959 covered=1/1 acked=18959 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=57990 qos=1 store=1 outbox=0->334 len=300 t=45353
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=45363
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18959","p":{"b":69,"f":18959,"t":18959}}
+[Cloud LOG] ack rx boot=69 from=18959 to=18959
+[Log Cloud] ack ignored boot=69 from=18959 to=18959 r=0
+[Cloud] MQTT published/ack msg_id=57990 outbox=0 t=45575
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18960","p":{"b":69,"f":18960,"t":18960}}
+[Cloud LOG] ack rx boot=69 from=18960 to=18960
+[Log Cloud] ack ok boot=69 to=18960 covered=1/1 acked=18960 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=28973 qos=1 store=1 outbox=0->334 len=300 t=46790
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=46800
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18960","p":{"b":69,"f":18960,"t":18960}}
+[Cloud LOG] ack rx boot=69 from=18960 to=18960
+[Log Cloud] ack ignored boot=69 from=18960 to=18960 r=0
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Log] ring pressure: evict seg=14 unacked=31 acked=18960 gc=18244
+[ 47050][E][vfs_api.cpp:105] open(): /littlefs/log/s0000014.log does not exist, no permits for creation
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=28973 outbox=0 t=47827
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18961","p":{"b":69,"f":18961,"t":18961}}
+[Cloud LOG] ack rx boot=69 from=18961 to=18961
+[Log Cloud] ack ok boot=69 to=18961 covered=1/1 acked=18961 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=11070 qos=1 store=1 outbox=0->334 len=300 t=48840
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=48850
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18961","p":{"b":69,"f":18961,"t":18961}}
+[Cloud LOG] ack rx boot=69 from=18961 to=18961
+[Log Cloud] ack ignored boot=69 from=18961 to=18961 r=0
+[Cloud] MQTT published/ack msg_id=11070 outbox=0 t=49022
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18962","p":{"b":69,"f":18962,"t":18962}}
+[Cloud LOG] ack rx boot=69 from=18962 to=18962
+[Log Cloud] ack ok boot=69 to=18962 covered=1/1 acked=18962 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=29510 qos=1 store=1 outbox=0->334 len=300 t=49975
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=49986
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18962","p":{"b":69,"f":18962,"t":18962}}
+[Cloud LOG] ack rx boot=69 from=18962 to=18962
+[Log Cloud] ack ignored boot=69 from=18962 to=18962 r=0
+[Cloud] MQTT published/ack msg_id=29510 outbox=0 t=50192
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18963","p":{"b":69,"f":18963,"t":18963}}
+[Cloud LOG] ack rx boot=69 from=18963 to=18963
+[Log Cloud] ack ok boot=69 to=18963 covered=1/1 acked=18963 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=21710 qos=1 store=1 outbox=0->334 len=300 t=51191
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=51201
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18963","p":{"b":69,"f":18963,"t":18963}}
+[Cloud LOG] ack rx boot=69 from=18963 to=18963
+[Log Cloud] ack ignored boot=69 from=18963 to=18963 r=0
+[Cloud] MQTT published/ack msg_id=21710 outbox=0 t=51413
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18964","p":{"b":69,"f":18964,"t":18964}}
+[Cloud LOG] ack rx boot=69 from=18964 to=18964
+[Log Cloud] ack ok boot=69 to=18964 covered=1/1 acked=18964 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=20416 qos=1 store=1 outbox=0->334 len=300 t=52521
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=52531
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18964","p":{"b":69,"f":18964,"t":18964}}
+[Cloud LOG] ack rx boot=69 from=18964 to=18964
+[Log Cloud] ack ignored boot=69 from=18964 to=18964 r=0
+[Cloud] MQTT published/ack msg_id=20416 outbox=0 t=53565
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18965","p":{"b":69,"f":18965,"t":18965}}
+[Cloud LOG] ack rx boot=69 from=18965 to=18965
+[Log Cloud] ack ok boot=69 to=18965 covered=1/1 acked=18965 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=59794 qos=1 store=1 outbox=0->334 len=300 t=54575
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=54586
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18965","p":{"b":69,"f":18965,"t":18965}}
+[Cloud LOG] ack rx boot=69 from=18965 to=18965
+[Log Cloud] ack ignored boot=69 from=18965 to=18965 r=0
+[Cloud] MQTT published/ack msg_id=59794 outbox=0 t=54759
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18966","p":{"b":69,"f":18966,"t":18966}}
+[Cloud LOG] ack rx boot=69 from=18966 to=18966
+[Log Cloud] ack ok boot=69 to=18966 covered=1/1 acked=18966 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=52248 qos=1 store=1 outbox=0->334 len=300 t=55807
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=55817
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18966","p":{"b":69,"f":18966,"t":18966}}
+[Cloud LOG] ack rx boot=69 from=18966 to=18966
+[Log Cloud] ack ignored boot=69 from=18966 to=18966 r=0
+[Cloud] MQTT published/ack msg_id=52248 outbox=0 t=56131
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18967","p":{"b":69,"f":18967,"t":18967}}
+[Cloud LOG] ack rx boot=69 from=18967 to=18967
+[Log Cloud] ack ok boot=69 to=18967 covered=1/1 acked=18967 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=2316 qos=1 store=1 outbox=0->334 len=300 t=57138
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=57148
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18967","p":{"b":69,"f":18967,"t":18967}}
+[Cloud LOG] ack rx boot=69 from=18967 to=18967
+[Log Cloud] ack ignored boot=69 from=18967 to=18967 r=0
+[Cloud] MQTT published/ack msg_id=2316 outbox=0 t=57355
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18968","p":{"b":69,"f":18968,"t":18968}}
+[Cloud LOG] ack rx boot=69 from=18968 to=18968
+[Log Cloud] ack ok boot=69 to=18968 covered=1/1 acked=18968 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=61384 qos=1 store=1 outbox=0->334 len=300 t=58358
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=58368
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18968","p":{"b":69,"f":18968,"t":18968}}
+[Cloud LOG] ack rx boot=69 from=18968 to=18968
+[Log Cloud] ack ignored boot=69 from=18968 to=18968 r=0
+[Cloud] MQTT published/ack msg_id=61384 outbox=0 t=58558
+[Weight] STATE_WEIGHT_ERROR -> 1
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18969","p":{"b":69,"f":18969,"t":18969}}
+[Cloud LOG] ack rx boot=69 from=18969 to=18969
+[Log Cloud] ack ok boot=69 to=18969 covered=1/1 acked=18969 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=29983 qos=1 store=1 outbox=0->334 len=300 t=59587
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=59597
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18969","p":{"b":69,"f":18969,"t":18969}}
+[Cloud LOG] ack rx boot=69 from=18969 to=18969
+[Log Cloud] ack ignored boot=69 from=18969 to=18969 r=0
+[Cloud] MQTT published/ack msg_id=29983 outbox=0 t=59916
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18970","p":{"b":69,"f":18970,"t":18970}}
+[Cloud LOG] ack rx boot=69 from=18970 to=18970
+[Log Cloud] ack ok boot=69 to=18970 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=51171 qos=1 store=1 outbox=0->334 len=300 t=60962
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=60962
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18970","p":{"b":69,"f":18970,"t":18970}}
+[Cloud LOG] ack rx boot=69 from=18970 to=18970
+[Log Cloud] ack ignored boot=69 from=18970 to=18970 r=0
+[Cloud] MQTT published/ack msg_id=51171 outbox=0 t=61106
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18286","p":{"b":68,"f":18286,"t":18286}}
+[Cloud LOG] ack rx boot=68 from=18286 to=18286
+[Log Cloud] ack ok boot=68 to=18286 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=50192 qos=1 store=1 outbox=0->334 len=300 t=62249
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=62259
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18286","p":{"b":68,"f":18286,"t":18286}}
+[Cloud LOG] ack rx boot=68 from=18286 to=18286
+[Log Cloud] ack ignored boot=68 from=18286 to=18286 r=0
+[Cloud] MQTT published/ack msg_id=50192 outbox=0 t=62476
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18287","p":{"b":68,"f":18287,"t":18287}}
+[Cloud LOG] ack rx boot=68 from=18287 to=18287
+[Log Cloud] ack ok boot=68 to=18287 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=35995 qos=1 store=1 outbox=0->334 len=300 t=63889
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=63899
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18287","p":{"b":68,"f":18287,"t":18287}}
+[Cloud LOG] ack rx boot=68 from=18287 to=18287
+[Log Cloud] ack ignored boot=68 from=18287 to=18287 r=0
+[Cloud] MQTT published/ack msg_id=35995 outbox=0 t=64931
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18289","p":{"b":68,"f":18289,"t":18289}}
+[Cloud LOG] ack rx boot=68 from=18289 to=18289
+[Log Cloud] ack ok boot=68 to=18289 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=3871 qos=1 store=1 outbox=0->334 len=300 t=66143
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=66154
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18289","p":{"b":68,"f":18289,"t":18289}}
+[Cloud LOG] ack rx boot=68 from=18289 to=18289
+[Log Cloud] ack ignored boot=68 from=18289 to=18289 r=0
+[Cloud] MQTT published/ack msg_id=3871 outbox=0 t=66329
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18290","p":{"b":68,"f":18290,"t":18290}}
+[Cloud LOG] ack rx boot=68 from=18290 to=18290
+[Log Cloud] ack ok boot=68 to=18290 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=47914 qos=1 store=1 outbox=0->334 len=300 t=67582
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=67593
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18290","p":{"b":68,"f":18290,"t":18290}}
+[Cloud LOG] ack rx boot=68 from=18290 to=18290
+[Log Cloud] ack ignored boot=68 from=18290 to=18290 r=0
+[Cloud] MQTT published/ack msg_id=47914 outbox=0 t=67762
+[Weight] STATE_WEIGHT_ERROR -> 1
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18291","p":{"b":68,"f":18291,"t":18291}}
+[Cloud LOG] ack rx boot=68 from=18291 to=18291
+[Log Cloud] ack ok boot=68 to=18291 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=9747 qos=1 store=1 outbox=0->334 len=300 t=69015
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=69025
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18291","p":{"b":68,"f":18291,"t":18291}}
+[Cloud LOG] ack rx boot=68 from=18291 to=18291
+[Log Cloud] ack ignored boot=68 from=18291 to=18291 r=0
+[Cloud] MQTT published/ack msg_id=9747 outbox=0 t=69234
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18293","p":{"b":68,"f":18293,"t":18293}}
+[Cloud LOG] ack rx boot=68 from=18293 to=18293
+[Log Cloud] ack ok boot=68 to=18293 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=8289 qos=1 store=1 outbox=0->334 len=300 t=70551
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=70561
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18293","p":{"b":68,"f":18293,"t":18293}}
+[Cloud LOG] ack rx boot=68 from=18293 to=18293
+[Log Cloud] ack ignored boot=68 from=18293 to=18293 r=0
+[Cloud] MQTT published/ack msg_id=8289 outbox=0 t=70913
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18294","p":{"b":68,"f":18294,"t":18294}}
+[Cloud LOG] ack rx boot=68 from=18294 to=18294
+[Log Cloud] ack ok boot=68 to=18294 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=58318 qos=1 store=1 outbox=0->334 len=300 t=72081
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=72092
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18294","p":{"b":68,"f":18294,"t":18294}}
+[Cloud LOG] ack rx boot=68 from=18294 to=18294
+[Log Cloud] ack ignored boot=68 from=18294 to=18294 r=0
+[Cloud] MQTT published/ack msg_id=58318 outbox=0 t=72300
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18295","p":{"b":68,"f":18295,"t":18295}}
+[Cloud LOG] ack rx boot=68 from=18295 to=18295
+[Log Cloud] ack ok boot=68 to=18295 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=35912 qos=1 store=1 outbox=0->334 len=300 t=73732
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=73742
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18295","p":{"b":68,"f":18295,"t":18295}}
+[Cloud LOG] ack rx boot=68 from=18295 to=18295
+[Log Cloud] ack ignored boot=68 from=18295 to=18295 r=0
+[Cloud] MQTT published/ack msg_id=35912 outbox=0 t=73899
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18296","p":{"b":68,"f":18296,"t":18296}}
+[Cloud LOG] ack rx boot=68 from=18296 to=18296
+[Log Cloud] ack ok boot=68 to=18296 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=45971 qos=1 store=1 outbox=0->334 len=300 t=75259
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=75259
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18296","p":{"b":68,"f":18296,"t":18296}}
+[Cloud LOG] ack rx boot=68 from=18296 to=18296
+[Log Cloud] ack ignored boot=68 from=18296 to=18296 r=0
+[Cloud] MQTT published/ack msg_id=45971 outbox=0 t=76299
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18297","p":{"b":68,"f":18297,"t":18297}}
+[Cloud LOG] ack rx boot=68 from=18297 to=18297
+[Log Cloud] ack ok boot=68 to=18297 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=14530 qos=1 store=1 outbox=0->334 len=300 t=77507
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=77517
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18297","p":{"b":68,"f":18297,"t":18297}}
+[Cloud LOG] ack rx boot=68 from=18297 to=18297
+[Log Cloud] ack ignored boot=68 from=18297 to=18297 r=0
+[Cloud] MQTT published/ack msg_id=14530 outbox=0 t=77734
+[Weight] STATE_WEIGHT_ERROR -> 1
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18298","p":{"b":68,"f":18298,"t":18298}}
+[Cloud LOG] ack rx boot=68 from=18298 to=18298
+[Log Cloud] ack ok boot=68 to=18298 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=15750 qos=1 store=1 outbox=0->334 len=300 t=78947
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=78957
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18298","p":{"b":68,"f":18298,"t":18298}}
+[Cloud LOG] ack rx boot=68 from=18298 to=18298
+[Log Cloud] ack ignored boot=68 from=18298 to=18298 r=0
+[Cloud] MQTT published/ack msg_id=15750 outbox=0 t=79092
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18299","p":{"b":68,"f":18299,"t":18299}}
+[Cloud LOG] ack rx boot=68 from=18299 to=18299
+[Log Cloud] ack ok boot=68 to=18299 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=24102 qos=1 store=1 outbox=0->334 len=300 t=80384
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=80395
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18299","p":{"b":68,"f":18299,"t":18299}}
+[Cloud LOG] ack rx boot=68 from=18299 to=18299
+[Log Cloud] ack ignored boot=68 from=18299 to=18299 r=0
+[Cloud] MQTT published/ack msg_id=24102 outbox=0 t=80599
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18300","p":{"b":68,"f":18300,"t":18300}}
+[Cloud LOG] ack rx boot=68 from=18300 to=18300
+[Log Cloud] ack ok boot=68 to=18300 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=47390 qos=1 store=1 outbox=0->334 len=300 t=81918
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=81928
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18300","p":{"b":68,"f":18300,"t":18300}}
+[Cloud LOG] ack rx boot=68 from=18300 to=18300
+[Log Cloud] ack ignored boot=68 from=18300 to=18300 r=0
+[Cloud] MQTT published/ack msg_id=47390 outbox=0 t=82061
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18301","p":{"b":68,"f":18301,"t":18301}}
+[Cloud LOG] ack rx boot=68 from=18301 to=18301
+[Log Cloud] ack ok boot=68 to=18301 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=2135 qos=1 store=1 outbox=0->334 len=300 t=83343
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=83353
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18301","p":{"b":68,"f":18301,"t":18301}}
+[Cloud LOG] ack rx boot=68 from=18301 to=18301
+[Log Cloud] ack ignored boot=68 from=18301 to=18301 r=0
+[Cloud] MQTT published/ack msg_id=2135 outbox=0 t=83535
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18303","p":{"b":68,"f":18303,"t":18303}}
+[Cloud LOG] ack rx boot=68 from=18303 to=18303
+[Log Cloud] ack ok boot=68 to=18303 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=35459 qos=1 store=1 outbox=0->334 len=300 t=84884
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=84895
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18303","p":{"b":68,"f":18303,"t":18303}}
+[Cloud LOG] ack rx boot=68 from=18303 to=18303
+[Log Cloud] ack ignored boot=68 from=18303 to=18303 r=0
+[Cloud] MQTT published/ack msg_id=35459 outbox=0 t=85918
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18305","p":{"b":68,"f":18305,"t":18305}}
+[Cloud LOG] ack rx boot=68 from=18305 to=18305
+[Log Cloud] ack ok boot=68 to=18305 covered=1/1 acked=18970 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=55600 qos=1 store=1 outbox=0->334 len=300 t=87242
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=87252
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:68:18305","p":{"b":68,"f":18305,"t":18305}}
+[Cloud LOG] ack rx boot=68 from=18305 to=18305
+[Log Cloud] ack ignored boot=68 from=18305 to=18305 r=0
+[Cloud] MQTT published/ack msg_id=55600 outbox=0 t=88278
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18971","p":{"b":69,"f":18971,"t":18971}}
+[Cloud LOG] ack rx boot=69 from=18971 to=18971
+[Log Cloud] ack ok boot=69 to=18971 covered=1/1 acked=18971 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=5821 qos=1 store=1 outbox=0->334 len=300 t=89397
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=89407
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18971","p":{"b":69,"f":18971,"t":18971}}
+[Cloud LOG] ack rx boot=69 from=18971 to=18971
+[Log Cloud] ack ignored boot=69 from=18971 to=18971 r=0
+[Cloud] MQTT published/ack msg_id=5821 outbox=0 t=90426
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18972","p":{"b":69,"f":18972,"t":18972}}
+[Cloud LOG] ack rx boot=69 from=18972 to=18972
+[Log Cloud] ack ok boot=69 to=18972 covered=1/1 acked=18972 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=42554 qos=1 store=1 outbox=0->334 len=300 t=91554
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=91564
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18972","p":{"b":69,"f":18972,"t":18972}}
+[Cloud LOG] ack rx boot=69 from=18972 to=18972
+[Log Cloud] ack ignored boot=69 from=18972 to=18972 r=0
+[Cloud] MQTT published/ack msg_id=42554 outbox=0 t=92578
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18973","p":{"b":69,"f":18973,"t":18973}}
+[Cloud LOG] ack rx boot=69 from=18973 to=18973
+[Log Cloud] ack ok boot=69 to=18973 covered=1/1 acked=18973 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=59088 qos=1 store=1 outbox=0->334 len=300 t=93598
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=93608
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18973","p":{"b":69,"f":18973,"t":18973}}
+[Cloud LOG] ack rx boot=69 from=18973 to=18973
+[Log Cloud] ack ignored boot=69 from=18973 to=18973 r=0
+[Cloud] MQTT published/ack msg_id=59088 outbox=0 t=93816
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18974","p":{"b":69,"f":18974,"t":18974}}
+[Cloud LOG] ack rx boot=69 from=18974 to=18974
+[Log Cloud] ack ok boot=69 to=18974 covered=1/1 acked=18974 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=60218 qos=1 store=1 outbox=0->334 len=300 t=94815
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=94825
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18974","p":{"b":69,"f":18974,"t":18974}}
+[Cloud LOG] ack rx boot=69 from=18974 to=18974
+[Log Cloud] ack ignored boot=69 from=18974 to=18974 r=0
+[Cloud] MQTT published/ack msg_id=60218 outbox=0 t=95002
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18975","p":{"b":69,"f":18975,"t":18975}}
+[Cloud LOG] ack rx boot=69 from=18975 to=18975
+[Log Cloud] ack ok boot=69 to=18975 covered=1/1 acked=18975 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=57022 qos=1 store=1 outbox=0->334 len=300 t=96153
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=96154
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18975","p":{"b":69,"f":18975,"t":18975}}
+[Cloud LOG] ack rx boot=69 from=18975 to=18975
+[Log Cloud] ack ignored boot=69 from=18975 to=18975 r=0
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=57022 outbox=0 t=97187
+[Weight] STATE_WEIGHT_ERROR -> 1
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18976","p":{"b":69,"f":18976,"t":18976}}
+[Cloud LOG] ack rx boot=69 from=18976 to=18976
+[Log Cloud] ack ok boot=69 to=18976 covered=1/1 acked=18976 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=57880 qos=1 store=1 outbox=0->334 len=300 t=98200
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=98210
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18976","p":{"b":69,"f":18976,"t":18976}}
+[Cloud LOG] ack rx boot=69 from=18976 to=18976
+[Log Cloud] ack ignored boot=69 from=18976 to=18976 r=0
+[Cloud] MQTT published/ack msg_id=57880 outbox=0 t=98358
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18977","p":{"b":69,"f":18977,"t":18977}}
+[Cloud LOG] ack rx boot=69 from=18977 to=18977
+[Log Cloud] ack ok boot=69 to=18977 covered=1/1 acked=18977 gc=18244 floor=18245 r=2
+[Cloud] ENQ id=3041 qos=1 store=1 outbox=0->334 len=300 t=99336
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=99336
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:69:18977","p":{"b":69,"f":18977,"t":18977}}
+[Cloud LOG] ack rx boot=69 from=18977 to=18977
+[Log Cloud] ack ignored boot=69 from=18977 to=18977 r=0
+[Cloud] MQTT published/ack msg_id=3041 outbox=0 t=99630
