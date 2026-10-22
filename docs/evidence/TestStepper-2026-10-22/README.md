@@ -196,3 +196,86 @@ tstep_stop
 - ❌ **`TEST_STEPPER_START/STOP` 的 MQTT 链路尚未实测**（烧录后验证）
 - ❌ **`v` / `k` 值为推算，需烧录后 `registry` 查询确认**
 - ❌ 电机是否因此转动 —— 这正是本模块要排查的目标，不作为已知结论
+
+---
+
+## 九、LEDC 参数约束（2026-10-22 首版失败后的实测修正）
+
+### 9.1 ESP32-S3 的真实限制
+
+来源：`tools/sdk/esp32s3/include/soc/esp32s3/include/soc/ledc_caps.h`
+
+| 常量 | 值 | 含义 |
+|---|---|---|
+| `SOC_LEDC_CHANNEL_NUM` | **8** | 通道号 0~7（S3 无 HS mode，`LEDC_CHANNELS = 8`） |
+| `SOC_LEDC_TIMER_BIT_WIDE_NUM` | **14** | **分辨率上限 14 bit** |
+| `SOC_LEDC_SUPPORT_XTAL_CLOCK` | **1** | ⇒ `LEDC_DEFAULT_CLK = LEDC_USE_XTAL_CLK`，**时钟源是 XTAL 40 MHz，不是 APB 80 MHz** |
+
+### 9.2 两个坑
+
+**坑 1：分辨率不能超过 14**
+
+首版代码用 `res=16`，`ledcSetup()` 直接返回 0，并打印 HAL 的**固定文案**：
+
+```
+[E][esp32-hal-ledc.c:60] ledcSetup(): No more LEDC channels available! (maximum 8) or bit width too big (maximum 14)
+```
+
+⚠️ **这句文案有歧义**：它同时覆盖「通道号 ≥8」和「bit width >14」两种情况，容易被误读成「通道被占用」。实际是 **bit width 超限**，与通道无关（`ledcSetup` 不检查通道是否已被别的用途占用，它会直接重配）。
+
+后果：`TEST_STEPPER_START` 返回 `s=3`（failed），日志 `[TStep] start failed: ledcSetup(hz=100, res=16) rejected`。
+
+**坑 2：时钟源是 40 MHz，按 80 MHz 推算 divider 会选错档**
+
+首版用 `div = 80_000_000 / (hz × 2^res)` 预先选分辨率。若实际时钟是 40 MHz，选出的 div 只有真实值的一半，可能 <1 导致 `ledc_timer_config()` 失败。
+
+### 9.3 修正方式
+
+不再自行推算 divider，改为**直接逐个尝试**：
+
+```c
+for (int res = 14; res >= 6; --res) {
+    double actual = ledcSetup(TS_LEDC_CH, hz, res);
+    if (actual <= 0) continue;                       // 该档不可用
+    if (fabs(actual - hz) / hz <= 0.05) {            // 频率误差 <5% 即采用
+        return res;
+    }
+}
+return 0;   // 全部失败
+```
+
+优点：不依赖时钟源假设，由 HAL 自己判断可行性。
+
+### 9.4 实测结果（2026-10-22 22:54，串口验证）
+
+```
+[TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+[TStep] START: 100 Hz (actual 100.0 Hz, res=14 bit, duty=50%), dir=0, step=13 dir=14 en=15; 无 30s 限制，最长 600000 ms
+[TStep] WARN: stepper 模块处于启用状态，STEP 引脚已被本测试模块接管；测试结束后请重启设备以恢复 stepper 的 RMT 输出
+[TStep] STOP (user_stop): ran 2146 ms at 100 Hz, dir=0; EN disabled
+```
+
+| 断言 | 结果 |
+|---|---|
+| `[TStep] Init` | **OK** |
+| LEDC 报错 | **OK（无）** |
+| START 成功（res=14, actual 100.0 Hz） | **OK** |
+| STOP 成功 | **OK** |
+| `boot validated` | **OK** |
+| panic / 看门狗 | **OK（无）** |
+
+> 本次验证**只通电 2.1 秒**（只验证 LEDC 能建立），未做动作测试。
+> 电机是否转动**仍未验证** —— 这正是需要用户实测的目标。
+
+### 9.5 各频率可用性（按 res=14 / XTAL 40 MHz 推算）
+
+| hz | divider | 可用 |
+|---|---|---|
+| 10 | 244.1 | ✓ |
+| 20 | 122.1 | ✓ |
+| 100 | 24.4 | ✓ |
+| 200 | 12.2 | ✓ |
+| 500 | 4.88 | ✓ |
+| 2000 | 1.22 | ✓（精度略降，实测误差 <1%） |
+
+整个 10~2000 Hz 范围在 res=14 下均可用，因此 `ts_setup_ledc()` 实际几乎总在 res=14 一次命中。

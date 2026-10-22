@@ -83,23 +83,42 @@ static void ts_write_dir(int direction)
 }
 
 // =====================================================
-// 选择 LEDC 分辨率
+// 设置 LEDC 方波
 //
-// LEDC: f = 80MHz / (2^res * divider)，divider ∈ [1, 1023.996]
-// 从高分辨率往低找第一个满足的档位（分辨率越高，占空比越精确）
-// 返回 0 表示该频率在 LEDC 能力之外
+// ★ 不自己算 divider：Arduino HAL 的时钟源在不同目标上可能是
+//   APB 80 MHz 或 XTAL 40 MHz（见 esp32-hal-ledc.c 的 LEDC_DEFAULT_CLK），
+//   自己按 80 MHz 推算会导致选出的分辨率在 40 MHz 下 div<1 而失败。
+//   因此改为「从高分辨率往低逐个试，取 HAL 实际接受且频率误差小的那个」。
+//
+// ★ 分辨率硬上限 14：SOC_LEDC_TIMER_BIT_WIDE_NUM = 14（ESP32-S3）。
+//   超过会命中 HAL 的固定报错文案
+//   "No more LEDC channels available! (maximum 8) or bit width too big (maximum 14)"
+//   （该文案有歧义：实际往往是 bit width 超限，而不是通道耗尽）
+//
+// 返回实际使用的分辨率（0 = 全部失败）
 // =====================================================
-static uint8_t ts_pick_res(uint32_t hz)
+#define TS_LEDC_RES_MAX   14
+#define TS_LEDC_RES_MIN   6
+#define TS_LEDC_FREQ_TOL  0.05   // 允许 5% 频率偏差
+
+static uint8_t ts_setup_ledc(uint32_t hz, double *out_actual)
 {
-    if (hz == 0) {
-        return 0;
-    }
-    const uint64_t base = 80000000ULL;      // APB 80 MHz
-    for (int res = 16; res >= 6; --res) {
-        uint64_t div = base / ((uint64_t)hz * (1ULL << res));
-        if (div >= 1 && div <= 1023) {
+    for (int res = TS_LEDC_RES_MAX; res >= TS_LEDC_RES_MIN; --res) {
+        double actual = ledcSetup(TS_LEDC_CH, (double)hz, (uint8_t)res);
+        if (actual <= 0) {
+            continue;                       // 该分辨率不可用，继续降
+        }
+        double diff = (actual > (double)hz) ? (actual - (double)hz)
+                                            : ((double)hz - actual);
+        double err  = diff / (double)hz;
+        if (err <= TS_LEDC_FREQ_TOL) {
+            if (out_actual != nullptr) {
+                *out_actual = actual;
+            }
             return (uint8_t)res;
         }
+        ts_log("res=%d -> actual %.1f Hz (err %.1f%%), trying lower res",
+               res, actual, err * 100.0);
     }
     return 0;
 }
@@ -177,12 +196,6 @@ bool test_stepper_start(uint32_t hz, int direction)
         ts_stop_internal("restart_with_new_params");
     }
 
-    uint8_t res = ts_pick_res(hz);
-    if (res == 0) {
-        ts_log("start refused: hz=%lu unsupported by LEDC", (unsigned long)hz);
-        return false;
-    }
-
     // ① 方向先建立（避免方向未定时的任何脉冲）
     //    注意：DIR/EN 可能在 stepper 未启用时尚未配置为输出，此处幂等配置
     gpio_config_t io;
@@ -198,10 +211,12 @@ bool test_stepper_start(uint32_t hz, int direction)
     ts_write_en(true);               // 最后使能
 
     // ② LEDC 起振（50% 占空比）
-    double actual = ledcSetup(TS_LEDC_CH, (double)hz, res);
-    if (actual <= 0) {
-        ts_log("start failed: ledcSetup(hz=%lu, res=%u) rejected",
-               (unsigned long)hz, (unsigned)res);
+    double actual = 0;
+    uint8_t res = ts_setup_ledc(hz, &actual);
+    if (res == 0) {
+        ts_log("start failed: no usable LEDC resolution for %lu Hz "
+               "(tried res %d..%d on channel %d)",
+               (unsigned long)hz, TS_LEDC_RES_MIN, TS_LEDC_RES_MAX, TS_LEDC_CH);
         ts_write_en(false);
         return false;
     }
