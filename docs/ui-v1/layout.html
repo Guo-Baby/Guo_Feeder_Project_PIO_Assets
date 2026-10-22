@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guo Feeder · 响应式布局示意（手机 / 平板 / 桌面）</title>
+<!--
+  纯静态设计示意：同一个"首页"在三种宽度下如何**重排**（不是拉伸）。
+  不连接任何真实接口。
+-->
+<style>
+:root{
+  --bg:#f4f4f1; --surface:#fff; --surface-2:#fafaf8;
+  --text:#1b1b19; --text-2:#5f5f58; --text-3:#8a8a82;
+  --line:#e3e2dc; --line-2:#efeee9;
+  --accent:#3b6d11; --accent-soft:#eaf3de;
+  --warn:#8a5308; --warn-soft:#fdf3e0; --danger:#a32d2d; --danger-soft:#fbeaea;
+  --info:#23557a; --info-soft:#e7f0f7;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:
+    radial-gradient(1200px 600px at 8% -10%, #eef3e6 0%, transparent 60%),
+    radial-gradient(900px 500px at 95% 0%, #eef1f6 0%, transparent 55%),
+    var(--bg);
+  color:var(--text);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+.page{max-width:1460px;margin:0 auto;padding:30px 22px 80px}
+h1{font-size:21px;margin:0 0 6px;font-weight:600;letter-spacing:-.01em}
+.sub{color:var(--text-2);font-size:13.5px;margin-bottom:8px}
+.notice{margin-top:12px;background:var(--warn-soft);border:1px solid #f0dcb8;border-left:3px solid var(--warn);
+        color:#6c4506;border-radius:10px;padding:10px 14px;font-size:12.8px;max-width:900px}
+.section{margin-top:34px}
+.section h2{font-size:15px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:9px}
+.section h2 .w{font-size:11.5px;font-weight:500;color:var(--text-3);background:var(--surface);
+               border:1px solid var(--line);border-radius:999px;padding:2px 9px}
+.section .note{color:var(--text-2);font-size:12.6px;margin:0 0 14px;max-width:900px}
+hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+
+/* ---- 通用组件（与 prototype 一致） ---- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px}
+.sec-t{font-size:11.5px;color:var(--text-3);margin:14px 0 8px}
+.row{display:flex;align-items:center;gap:8px}
+.row.between{justify-content:space-between}
+.tiny{font-size:11.5px;color:var(--text-3)}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:999px;
+      background:var(--surface-2);border:1px solid var(--line);color:var(--text-2)}
+.chip.ok{background:var(--accent-soft);border-color:#cfe2b4;color:var(--accent)}
+.chip.warn{background:var(--warn-soft);border-color:#f0dcb8;color:var(--warn)}
+.readout{font-size:47px;font-weight:600;letter-spacing:-.03em;line-height:1.05;font-variant-numeric:tabular-nums}
+.readout small{font-size:17px;font-weight:500;color:var(--text-3);margin-left:4px}
+.qbtn{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 11px}
+.qbtn .k{font-size:13px;font-weight:600}
+.qbtn .s{font-size:11px;color:var(--text-3);margin-top:2px}
+.qbtn.water{border-color:#cfe2b4;background:linear-gradient(180deg,#f6fbf0,#fff)}
+.qbtn.dangerish{border-color:#f0c9c9;background:linear-gradient(180deg,#fdf3f3,#fff)}
+.btn{font:inherit;font-size:13px;padding:9px 13px;border-radius:10px;border:1px solid var(--line);
+     background:var(--surface);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:#fff;font-weight:600}
+
+/* ---- 手机 ---- */
+.phone{width:376px;height:748px;border-radius:34px;padding:9px;background:linear-gradient(160deg,#26262b,#111114);
+       box-shadow:0 24px 60px -30px rgba(0,0,0,.5)}
+.screen{width:100%;height:100%;border-radius:26px;overflow:hidden;background:var(--bg);display:flex;flex-direction:column}
+.sbar{height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;
+      font-size:10.5px;color:var(--text-3);background:var(--surface)}
+.appbar{padding:11px 14px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+.appbar .title{font-size:14.5px;font-weight:600;flex:1}
+.body{flex:1;overflow:auto;padding:13px}
+.tabbar{height:54px;display:flex;background:var(--surface);border-top:1px solid var(--line)}
+.tabbar div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+            font-size:10.5px;color:var(--text-3)}
+.tabbar div.on{color:var(--accent);font-weight:600}
+.quick{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+
+/* ---- 平板：两列，仍保留底部 tab ---- */
+.tablet{width:min(860px,100%);height:660px;border-radius:20px;padding:10px;background:#22222a;
+        box-shadow:0 24px 60px -30px rgba(0,0,0,.45)}
+.tablet .screen{border-radius:14px}
+.tb-main{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;align-items:start}
+
+/* ---- 桌面：左侧导航 + 主区两列 + 右栏常驻 ---- */
+.desk{width:1180px;height:720px;border-radius:14px;padding:8px;background:#1d1d22;
+      box-shadow:0 24px 70px -34px rgba(0,0,0,.5)}
+.desk .screen{border-radius:9px}
+.desk-wrap{width:100%;overflow:hidden}
+.desk-scale{transform:scale(var(--s,.62));transform-origin:top left}
+.dk-layout{display:grid;grid-template-columns:188px 1fr 286px;height:100%}
+.dk-nav{background:var(--surface);border-right:1px solid var(--line);padding:14px 10px}
+.dk-nav .brand{font-size:13.5px;font-weight:600;padding:0 8px 14px;letter-spacing:-.01em}
+.dk-nav a{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text-2);
+          text-decoration:none;padding:9px 10px;border-radius:9px}
+.dk-nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.dk-main{padding:16px 18px;overflow:auto}
+.dk-side{background:var(--surface);border-left:1px solid var(--line);padding:15px 14px;overflow:auto}
+.dk-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th{text-align:left;color:var(--text-3);font-weight:400;font-size:11.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--line-2)}
+.tbl td.num{font-variant-numeric:tabular-nums}
+
+.anno{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.4px;color:var(--text-2)}
+.anno div{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 12px;max-width:330px}
+.anno b{color:var(--text);display:block;margin-bottom:2px;font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Guo Feeder · 响应式布局示意</h1>
+  <div class="sub">同一个「首页」，在三种宽度下如何<b>重排</b> —— 不是把手机页面拉宽。</div>
+  <div class="notice">纯静态示意，数据为示例值，不连接任何接口。</div>
+
+  <!-- 手机 -->
+  <div class="section">
+    <h2>手机竖屏 <span class="w">&lt; 900 px · 376×748</span></h2>
+    <p class="note">底部 5 tab；状态区在首屏第一位；快捷方格 2×2。</p>
+    <div class="phone"><div class="screen">
+      <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+      <div class="appbar"><div class="title">Guo Feeder</div><span class="chip ok">● 在线 12 s</span></div>
+      <div class="body">
+        <div class="card" style="padding:16px 15px">
+          <div class="row between" style="align-items:flex-start">
+            <div><div class="readout">1759.9<small>g</small></div>
+              <div class="tiny" style="margin-top:3px">水箱重量 · 12 秒前</div></div>
+            <div style="text-align:right">
+              <span class="chip ok">阀门 关闭</span><div style="height:6px"></div>
+              <span class="chip ok">秤 有效</span></div>
+          </div>
+          <div class="row tiny" style="margin-top:12px;gap:12px">
+            <span>WiFi −51 dBm</span><span>MQTT ✓</span><span>RTC 未接</span></div>
+        </div>
+        <div class="sec-t">快捷操作</div>
+        <div class="quick">
+          <div class="qbtn dangerish"><div class="k">开阀</div><div class="s">需二次确认</div></div>
+          <div class="qbtn"><div class="k">关阀</div><div class="s">立即执行</div></div>
+          <div class="qbtn water"><div class="k">跑 21 g 流程</div><div class="s">上次 45 秒</div></div>
+          <div class="qbtn"><div class="k">秤清零</div><div class="s">需空载</div></div>
+        </div>
+        <div class="sec-t">今日</div>
+        <div class="card"><div class="row between">
+          <div><div style="font-size:19px;font-weight:600">3 次</div><div class="tiny">运行流程</div></div>
+          <div><div style="font-size:19px;font-weight:600">63 g</div><div class="tiny">累计供水</div></div>
+          <div><div style="font-size:19px;font-weight:600">24.1 ℃</div><div class="tiny">环境温度</div></div>
+        </div></div>
+      </div>
+      <div class="tabbar">
+        <div class="on"><span>◉</span>首页</div><div><span>◈</span>控制</div>
+        <div><span>≡</span>流程</div><div><span>☰</span>记录</div><div><span>⚙</span>设备</div>
+      </div>
+    </div></div>
+    <div class="anno">
+      <div><b>首屏优先</b>重量、阀、秤、在线四件事不滚动可见。</div>
+      <div><b>触控尺寸</b>所有可点元素 ≥ 44 px（这里做了视觉放大示意）。</div>
+      <div><b>表格变卡片</b>桌面表格在手机上变成卡片堆叠（见记录页）。</div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- 平板 -->
+  <div class="section">
+    <h2>平板横屏 <span class="w">900–1200 px · 860×660</span></h2>
+    <p class="note">变成两列：左列状态 + 快捷，右列今日概要与最近操作；底部 tab 保留（更易触达）。</p>
+    <div class="tablet"><div class="screen">
+      <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+      <div class="appbar"><div class="title">Guo Feeder</div><span class="chip ok">● 在线 12 s</span></div>
+      <div class="body">
+        <div class="tb-main">
+          <div>
+            <div class="card" style="padding:18px 17px">
+              <div class="readout">1759.9<small>g</small></div>
+              <div class="tiny" style="margin-top:3px">水箱重量 · 12 秒前</div>
+              <div class="row" style="margin-top:12px;gap:8px">
+                <span class="chip ok">阀门 关闭</span><span class="chip ok">秤 有效</span>
+                <span class="chip">WiFi −51 dBm</span><span class="chip">MQTT ✓</span>
+              </div>
+            </div>
+            <div class="sec-t">快捷操作</div>
+            <div class="quick">
+              <div class="qbtn dangerish"><div class="k">开阀</div><div class="s">需二次确认</div></div>
+              <div class="qbtn"><div class="k">关阀</div><div class="s">立即执行</div></div>
+              <div class="qbtn water"><div class="k">跑 21 g 流程</div><div class="s">上次 45 秒</div></div>
+              <div class="qbtn"><div class="k">秤清零</div><div class="s">需空载</div></div>
+            </div>
+          </div>
+          <div>
+            <div class="sec-t" style="margin-top:0">今日</div>
+            <div class="card">
+              <div class="row between"><span class="tiny">运行流程</span><b>3 次</b></div>
+              <div class="row between" style="margin-top:8px"><span class="tiny">累计供水</span><b>63 g</b></div>
+              <div class="row between" style="margin-top:8px"><span class="tiny">环境温度</span><b>24.1 ℃</b></div>
+            </div>
+            <div class="sec-t">最近操作</div>
+            <div class="card">
+              <div class="row between"><span style="font-size:12.5px">跑流程 21 g</span><span class="chip ok">成功</span></div>
+              <div class="tiny" style="margin-top:2px">05:16 · 45.4 s</div>
+              <div class="row between" style="margin-top:9px"><span style="font-size:12.5px">关阀</span><span class="chip ok">成功</span></div>
+              <div class="tiny" style="margin-top:2px">05:16 · 0.4 s</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="on"><span>◉</span>首页</div><div><span>◈</span>控制</div>
+        <div><span>≡</span>流程</div><div><span>☰</span>记录</div><div><span>⚙</span>设备</div>
+      </div>
+    </div></div>
+  </div>
+
+  <hr>
+
+  <!-- 桌面 -->
+  <div class="section">
+    <h2>桌面 <span class="w">≥ 1200 px · 1180×720（缩放显示）</span></h2>
+    <p class="note">左侧固定导航替代底部 tab；手机上"状态区"上移到右栏<b>常驻</b>，主区腾给列表与图表；控制页在同一断点变成两列网格。</p>
+
+    <div class="desk-wrap" style="height:452px">
+      <div class="desk-scale"><div class="desk"><div class="screen">
+        <div class="dk-layout">
+
+          <div class="dk-nav">
+            <div class="brand">Guo Feeder</div>
+            <a class="on" href="#">◉ 首页</a>
+            <a href="#">◈ 控制</a>
+            <a href="#">≡ 流程</a>
+            <a href="#">☰ 记录</a>
+            <a href="#">⚙ 设备</a>
+          </div>
+
+          <div class="dk-main">
+            <div class="row between" style="margin-bottom:14px">
+              <div style="font-size:16px;font-weight:600">设备总览</div>
+              <div class="row" style="gap:8px">
+                <span class="chip ok">● 在线 12 s</span>
+                <button class="btn" style="padding:6px 11px">刷新</button>
+              </div>
+            </div>
+
+            <div class="dk-grid">
+              <div class="card">
+                <div class="tiny">快捷操作</div>
+                <div class="quick" style="margin-top:9px">
+                  <div class="qbtn dangerish"><div class="k">开阀</div><div class="s">需确认</div></div>
+                  <div class="qbtn"><div class="k">关阀</div><div class="s">即时</div></div>
+                  <div class="qbtn water"><div class="k">跑 21 g</div><div class="s">45 s</div></div>
+                  <div class="qbtn"><div class="k">秤清零</div><div class="s">需空载</div></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="tiny">今日</div>
+                <div class="row between" style="margin-top:9px"><span class="tiny">运行流程</span><b>3 次</b></div>
+                <div class="row between" style="margin-top:7px"><span class="tiny">累计供水</span><b>63 g</b></div>
+                <div class="row between" style="margin-top:7px"><span class="tiny">环境温度</span><b>24.1 ℃</b></div>
+              </div>
+            </div>
+
+            <div class="sec-t">最近日志（已解码）</div>
+            <div class="card" style="padding:6px 12px">
+              <table class="tbl">
+                <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>参数</th></tr></thead>
+                <tbody>
+                  <tr><td class="num">05:16:12</td><td><span class="chip ok">INFO</span></td>
+                      <td>流程结束</td><td class="num">slot 3 · 45.4 s</td></tr>
+                  <tr><td class="num">05:16:12</td><td><span class="chip ok">INFO</span></td>
+                      <td>减重触发</td><td class="num">目标 21.0 / 实际 21.04 g</td></tr>
+                  <tr><td class="num">05:16:12</td><td><span class="chip ok">INFO</span></td>
+                      <td>电磁阀关</td><td class="num">开启 45364 ms</td></tr>
+                  <tr><td class="num">05:05:09</td><td><span class="chip ok">INFO</span></td>
+                      <td>流程失败</td><td class="num">第 3 步 · 触发器失败</td></tr>
+                  <tr><td class="num">05:13:54</td><td><span class="chip warn">WARN</span></td>
+                      <td>RTC 探测</td><td class="num">0x51 无应答（未接）</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="dk-side">
+            <div class="tiny">当前设备</div>
+            <div style="font-size:12.5px;font-family:ui-monospace,monospace;margin-top:2px">288485896ce4</div>
+            <div class="card" style="margin-top:12px;padding:14px">
+              <div class="readout" style="font-size:38px">1759.9<small>g</small></div>
+              <div class="tiny" style="margin-top:3px">水箱重量 · 12 秒前</div>
+              <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+                <span class="chip ok">阀门 关闭</span>
+                <span class="chip ok">秤 有效</span>
+                <span class="chip">RTC 未接（预期）</span>
+              </div>
+            </div>
+            <div class="tiny" style="margin-top:14px">最近操作</div>
+            <div class="card" style="margin-top:6px;padding:11px">
+              <div class="row between"><span style="font-size:12.5px">跑流程 21 g</span><span class="chip ok">成功</span></div>
+              <div class="tiny" style="margin-top:2px">05:16 · 45.4 s</div>
+            </div>
+            <div class="card" style="margin-top:8px;padding:11px">
+              <div class="row between"><span style="font-size:12.5px">关阀</span><span class="chip ok">成功</span></div>
+              <div class="tiny" style="margin-top:2px">05:16 · 0.4 s</div>
+            </div>
+          </div>
+
+        </div>
+      </div></div></div>
+    </div>
+
+    <div class="anno">
+      <div><b>导航迁移</b>底部 tab → 左侧固定导航；页面主体不变，减少重复渲染逻辑。</div>
+      <div><b>状态右栏常驻</b>手机首屏的状态卡变右栏，滚动主区时仍可见。</div>
+      <div><b>表格回归</b>手机上卡片化的日志，在桌面恢复为真表格（列更易比较）。</div>
+      <div><b>控制页同期变化</b>同一断点下，控制按钮从"单列分组"变"两列网格"（执行机构 / 传感器与配置）。</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
