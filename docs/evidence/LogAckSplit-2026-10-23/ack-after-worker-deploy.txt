@@ -1,0 +1,266 @@
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16989","p":{"b":65,"f":16989,"t":16989}}
+[Cloud LOG] ack rx boot=65 from=16989 to=16989
+[Log Cloud] ack ok boot=65 to=16989 covered=1/1 acked=16989 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=31153 qos=1 store=1 outbox=0->334 len=300 t=530587
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=530597
+[Cloud] MQTT published/ack msg_id=31153 outbox=0 t=531624
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16990","p":{"b":65,"f":16990,"t":16990}}
+[Cloud LOG] ack rx boot=65 from=16990 to=16990
+[Log Cloud] ack ok boot=65 to=16990 covered=1/1 acked=16990 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=65343 qos=1 store=1 outbox=0->334 len=300 t=532952
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=532962
+[Cloud] MQTT published/ack msg_id=65343 outbox=0 t=533996
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16991","p":{"b":65,"f":16991,"t":16991}}
+[Cloud LOG] ack rx boot=65 from=16991 to=16991
+[Log Cloud] ack ok boot=65 to=16991 covered=1/1 acked=16991 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=28085 qos=1 store=1 outbox=0->334 len=300 t=535297
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=535307
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=28085 outbox=0 t=536367
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16992","p":{"b":65,"f":16992,"t":16992}}
+[Cloud LOG] ack rx boot=65 from=16992 to=16992
+[Log Cloud] ack ok boot=65 to=16992 covered=1/1 acked=16992 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=14750 qos=1 store=1 outbox=0->334 len=300 t=537571
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=537582
+[Cloud] MQTT published/ack msg_id=14750 outbox=0 t=538619
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16993","p":{"b":65,"f":16993,"t":16993}}
+[Cloud LOG] ack rx boot=65 from=16993 to=16993
+[Log Cloud] ack ok boot=65 to=16993 covered=1/1 acked=16993 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=7468 qos=1 store=1 outbox=0->334 len=300 t=539914
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=539924
+[Log] ring pressure: evict seg=12 unacked=31 acked=16993 gc=15721
+[540725][E][vfs_api.cpp:105] open(): /littlefs/log/s0000012.log does not exist, no permits for creation
+[Cloud] MQTT published/ack msg_id=7468 outbox=0 t=540978
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Weight] STATE_WEIGHT_ERROR -> 1
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16994","p":{"b":65,"f":16994,"t":16994}}
+[Cloud LOG] ack rx boot=65 from=16994 to=16994
+[Log Cloud] ack ok boot=65 to=16994 covered=1/1 acked=16994 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=29083 qos=1 store=1 outbox=0->334 len=300 t=542264
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=542275
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=29083 outbox=0 t=543313
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16995","p":{"b":65,"f":16995,"t":16995}}
+[Cloud LOG] ack rx boot=65 from=16995 to=16995
+[Log Cloud] ack ok boot=65 to=16995 covered=1/1 acked=16995 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=10867 qos=1 store=1 outbox=0->334 len=300 t=544518
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=544529
+[Cloud] MQTT published/ack msg_id=10867 outbox=0 t=545549
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16996","p":{"b":65,"f":16996,"t":16996}}
+[Cloud LOG] ack rx boot=65 from=16996 to=16996
+[Log Cloud] ack ok boot=65 to=16996 covered=1/1 acked=16996 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=27214 qos=1 store=1 outbox=0->334 len=300 t=547018
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=547029
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=27214 outbox=0 t=547905
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16998","p":{"b":65,"f":16998,"t":16998}}
+[Cloud LOG] ack rx boot=65 from=16998 to=16998
+[Log Cloud] ack ok boot=65 to=16998 covered=1/1 acked=16998 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=953 qos=1 store=1 outbox=0->334 len=300 t=549233
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=549243
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=953 outbox=0 t=550263
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:16999","p":{"b":65,"f":16999,"t":16999}}
+[Cloud LOG] ack rx boot=65 from=16999 to=16999
+[Log Cloud] ack ok boot=65 to=16999 covered=1/1 acked=16999 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=1848 qos=1 store=1 outbox=0->334 len=300 t=551484
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=551495
+[Cloud] MQTT published/ack msg_id=1848 outbox=0 t=552605
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17000","p":{"b":65,"f":17000,"t":17000}}
+[Cloud LOG] ack rx boot=65 from=17000 to=17000
+[Log Cloud] ack ok boot=65 to=17000 covered=1/1 acked=17000 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=6514 qos=1 store=1 outbox=0->334 len=300 t=553838
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=553848
+[Cloud] MQTT published/ack msg_id=6514 outbox=0 t=554877
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17001","p":{"b":65,"f":17001,"t":17001}}
+[Cloud LOG] ack rx boot=65 from=17001 to=17001
+[Log Cloud] ack ok boot=65 to=17001 covered=1/1 acked=17001 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=44152 qos=1 store=1 outbox=0->334 len=300 t=556089
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=556099
+[Cloud] MQTT published/ack msg_id=44152 outbox=0 t=557137
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17002","p":{"b":65,"f":17002,"t":17002}}
+[Cloud LOG] ack rx boot=65 from=17002 to=17002
+[Log Cloud] ack ok boot=65 to=17002 covered=1/1 acked=17002 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=59044 qos=1 store=1 outbox=0->334 len=300 t=558551
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=558562
+[Cloud] MQTT published/ack msg_id=59044 outbox=0 t=559595
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17003","p":{"b":65,"f":17003,"t":17003}}
+[Cloud LOG] ack rx boot=65 from=17003 to=17003
+[Log Cloud] ack ok boot=65 to=17003 covered=1/1 acked=17003 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=64840 qos=1 store=1 outbox=0->334 len=300 t=560809
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=560820
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Weight] STATE_WEIGHT_ERROR -> 1
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=64840 outbox=0 t=561844
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17004","p":{"b":65,"f":17004,"t":17004}}
+[Cloud LOG] ack rx boot=65 from=17004 to=17004
+[Log Cloud] ack ok boot=65 to=17004 covered=1/1 acked=17004 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=15291 qos=1 store=1 outbox=0->334 len=300 t=563056
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=563066
+[Weight] STATE_WEIGHT_ERROR -> 0
+[Weight] STATE_WEIGHT_ERROR -> 1
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=15291 outbox=0 t=564129
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17005","p":{"b":65,"f":17005,"t":17005}}
+[Cloud LOG] ack rx boot=65 from=17005 to=17005
+[Log Cloud] ack ok boot=65 to=17005 covered=1/1 acked=17005 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=1658 qos=1 store=1 outbox=0->334 len=300 t=565309
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=565319
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[Cloud] MQTT published/ack msg_id=1658 outbox=0 t=566340
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17006","p":{"b":65,"f":17006,"t":17006}}
+[Cloud LOG] ack rx boot=65 from=17006 to=17006
+[Log Cloud] ack ok boot=65 to=17006 covered=1/1 acked=17006 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=64499 qos=1 store=1 outbox=0->334 len=300 t=567573
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=567583
+[Cloud] MQTT published/ack msg_id=64499 outbox=0 t=568613
+[Weight] STATE_WEIGHT_ERROR -> 0
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17007","p":{"b":65,"f":17007,"t":17007}}
+[Cloud LOG] ack rx boot=65 from=17007 to=17007
+[Log Cloud] ack ok boot=65 to=17007 covered=1/1 acked=17007 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=39003 qos=1 store=1 outbox=0->334 len=300 t=569908
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=569919
+[Cloud] MQTT published/ack msg_id=39003 outbox=0 t=570951
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17008","p":{"b":65,"f":17008,"t":17008}}
+[Cloud LOG] ack rx boot=65 from=17008 to=17008
+[Log Cloud] ack ok boot=65 to=17008 covered=1/1 acked=17008 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=7707 qos=1 store=1 outbox=0->334 len=300 t=572278
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=572288
+[Cloud] MQTT published/ack msg_id=7707 outbox=0 t=573373
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+[DispenseGuard] Weight error received
+[Valve] FORCE CLOSE (pin=12, level=0)
+[DispenseGuard] Valve force closed
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:65:17009","p":{"b":65,"f":17009,"t":17009}}
+[Cloud LOG] ack rx boot=65 from=17009 to=17009
+[Log Cloud] ack ok boot=65 to=17009 covered=1/1 acked=17009 gc=15721 floor=15722 r=2
+[Cloud] ENQ id=28055 qos=1 store=1 outbox=0->334 len=300 t=574518
+[Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=574529
