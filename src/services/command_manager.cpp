@@ -1302,6 +1302,50 @@ static bool command_query_workflow_registry(JsonDocument &response)
 // =====================================================
 // 查询 Action 列表
 // =====================================================
+// [2026-10-24] WorkflowParamType → 协议字符串（自发现：参数元数据上云）
+static const char *workflow_param_type_name(WorkflowParamType t)
+{
+    switch (t)
+    {
+    case PARAM_INT:    return "int";
+    case PARAM_FLOAT:  return "float";
+    case PARAM_BOOL:   return "bool";
+    case PARAM_STRING: return "string";
+    default:           return "string";
+    }
+}
+
+// [2026-10-24] 输出描述符的 params 元数据（name/type/unit/description）。
+//   之前 query_actions/triggers 只回 id/name/module/description —— 云端
+//   编辑器只能拿目录里的参数 schema（同源自代码确认），设备自发现缺一块。
+//   纯只读输出扩展，向后兼容（多一个键，旧云端忽略）。
+static void workflow_write_params_json(
+    JsonObject item,
+    const WorkflowParam *params,
+    uint8_t param_count
+)
+{
+    if (params == nullptr || param_count == 0)
+    {
+        return;   // 无参数的动作/触发器不带 params 键（与 param_count=0 语义一致）
+    }
+    JsonArray pa = item["params"].to<JsonArray>();
+    for (uint8_t j = 0; j < param_count && j < WORKFLOW_MAX_PARAM; j++)
+    {
+        JsonObject po = pa.add<JsonObject>();
+        po["name"] = params[j].name;
+        po["type"] = workflow_param_type_name(params[j].type);
+        if (params[j].unit != nullptr && params[j].unit[0] != '\0')
+        {
+            po["unit"] = params[j].unit;
+        }
+        if (params[j].description != nullptr && params[j].description[0] != '\0')
+        {
+            po["description"] = params[j].description;
+        }
+    }
+}
+
 static bool command_query_actions(JsonDocument &response)
 {
     JsonArray arr = response["actions"].to<JsonArray>();
@@ -1323,6 +1367,8 @@ static bool command_query_actions(JsonDocument &response)
         if (capability_get_action_stable_id(desc->id, stable_id)) {
             item["stable_id"] = stable_id;
         }
+        // [2026-10-24] 参数元数据自发现（name/type/unit/description）
+        workflow_write_params_json(item, desc->params, desc->param_count);
     }
 
     response["status"] = "success";
@@ -1355,6 +1401,8 @@ static bool command_query_triggers(JsonDocument &response)
         if (capability_get_trigger_stable_id(desc->id, stable_id)) {
             item["stable_id"] = stable_id;
         }
+        // [2026-10-24] 参数元数据自发现（name/type/unit/description）
+        workflow_write_params_json(item, desc->params, desc->param_count);
     }
 
     response["status"] = "success";
