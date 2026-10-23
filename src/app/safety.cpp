@@ -237,6 +237,11 @@ bool safety_is_latched()
 //
 // 指针数组 + 长度，无堆分配、无 String 比较副作用。
 // 新增 Action 时**必须**回到这里决定放行还是拒绝 —— 默认是拒绝。
+//
+// ★ 2026-10-23 裁决：只保留**停止类**。
+//   移除 `WEIGHT_ZERO`（置皮重会让"秤是否被改动"变得不可判定）
+//   与 `MI_THERMO_START_SCAN`（启动持续扫描不是停止动作）。
+//   判据只有一条：**这个 Action 会不会让系统离开"更停"的状态**。
 // =====================================================
 static const char *const kLatchAllowedActions[] = {
     "VALVE_CLOSE",             // 只关阀
@@ -244,8 +249,6 @@ static const char *const kLatchAllowedActions[] = {
     "TEST_STEPPER_STOP",       // 只停测试步进
     "VIBRATION_STOP",          // 只停振动
     "MI_THERMO_STOP_SCAN",     // 只停扫描
-    "MI_THERMO_START_SCAN",    // 只驱动 I2C/BLE 扫描
-    "WEIGHT_ZERO",             // 只置皮重基准
 };
 
 bool safety_action_blocked_by_latch(const String &action_id)

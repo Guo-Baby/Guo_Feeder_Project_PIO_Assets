@@ -300,10 +300,11 @@ check(
     "safety_action_blocked_by_latch" in SAFETY_H and "safety_action_blocked_by_latch" in SAFETY,
 )
 _ALLOW = ("VALVE_CLOSE", "STEPPER_EMERGENCY_STOP", "TEST_STEPPER_STOP",
-          "VIBRATION_STOP", "MI_THERMO_STOP_SCAN", "MI_THERMO_START_SCAN",
-          "WEIGHT_ZERO")
+          "VIBRATION_STOP", "MI_THERMO_STOP_SCAN")
+# 2026-10-23 裁决：这两项**必须**在锁存期间被拒绝（已从白名单移除）
 _BLOCK = ("VALVE_OPEN", "STEPPER_DISPENSE_ROTATE", "STEPPER_ROTATE_STEPS",
-          "TEST_STEPPER_START", "VIBRATION_START", "COMPUTER_RESET")
+          "TEST_STEPPER_START", "VIBRATION_START", "COMPUTER_RESET",
+          "WEIGHT_ZERO", "MI_THERMO_START_SCAN")
 _wl = SAFETY[SAFETY.find("kLatchAllowedActions"):] if "kLatchAllowedActions" in SAFETY else ""
 _wl = _wl[:_wl.find("};") + 2] if "};" in _wl else _wl
 check(

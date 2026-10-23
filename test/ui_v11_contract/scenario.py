@@ -286,6 +286,9 @@ def run_t4(p, allow_actuators):
         ("T4-03", "STEPPER_ROTATE_STEPS"),
         ("T4-04", "VIBRATION_START"),
         ("T4-05", "TEST_STEPPER_START"),
+        # 2026-10-23 裁决：这两项已移出白名单，锁存期间必须被拒
+        ("T4-05b", "MI_THERMO_START_SCAN"),
+        ("T4-05c", "WEIGHT_ZERO"),
     ]:
         frame, err = build_action(p, act_id)
         if frame is None:
