@@ -1,0 +1,131 @@
+{
+  "results": [
+    {
+      "case": "V-01",
+      "desc": "weight.enable == false",
+      "status": "PASS",
+      "detail": "weight.enable=False"
+    },
+    {
+      "case": "V-02",
+      "desc": "valve.safety_timeout_sec == 60",
+      "status": "PASS",
+      "detail": "safety_timeout_sec=60"
+    },
+    {
+      "case": "V-03",
+      "desc": "急停未锁存",
+      "status": "PASS",
+      "detail": "latched=False"
+    },
+    {
+      "case": "V-04",
+      "desc": "阀门初始关闭",
+      "status": "PASS",
+      "detail": "valve_status='false'"
+    },
+    {
+      "case": "V-05",
+      "desc": "无 RUNNING/WAITING 的 Workflow（避免定时触发起阀）",
+      "status": "PASS",
+      "detail": "runs=[]"
+    },
+    {
+      "case": "V-06",
+      "desc": "VALVE_OPEN 受理",
+      "status": "PASS",
+      "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"vt-open\", \"o\": \"VALVE_OPEN\", \"t\": 1792767616, \"m\": \"Action queued\", \"instance_id\": 1, \"command\": \"execute_action\"}"
+    },
+    {
+      "case": "V-07",
+      "desc": "串口出现 [Valve] Safety timeout 行",
+      "status": "PASS",
+      "detail": "['[Valve] Safety timeout! Forced close (open > 60000 ms)']"
+    },
+    {
+      "case": "V-08",
+      "desc": "超时阈值就是 60000 ms",
+      "status": "PASS",
+      "detail": "实测阈值=['60000']"
+    },
+    {
+      "case": "V-09",
+      "desc": "实际开启时长 ≈ 60 s（59.0~61.5 s）",
+      "status": "PASS",
+      "detail": "实测=60.00 s"
+    },
+    {
+      "case": "V-10",
+      "desc": "关阀前 400 字符内没有 DispenseGuard 强关（排除误判触发源）",
+      "status": "PASS",
+      "detail": "segment 含 FORCE CLOSE=False"
+    },
+    {
+      "case": "V-11",
+      "desc": "超时后 valve_status=false",
+      "status": "PASS",
+      "detail": "最后轮询='false'"
+    },
+    {
+      "case": "V-12",
+      "desc": "全程只开阀一次（关闭后未被重新打开）",
+      "status": "PASS",
+      "detail": "OPEN 行数=1"
+    },
+    {
+      "case": "V-13",
+      "desc": "END 状态：阀门关闭",
+      "status": "PASS",
+      "detail": "valve_status='false'"
+    }
+  ],
+  "polls": [
+    [
+      8.2,
+      "true"
+    ],
+    [
+      13.6,
+      "true"
+    ],
+    [
+      19.4,
+      "true"
+    ],
+    [
+      25.0,
+      "true"
+    ],
+    [
+      30.7,
+      "true"
+    ],
+    [
+      36.3,
+      "true"
+    ],
+    [
+      42.7,
+      "true"
+    ],
+    [
+      49.0,
+      "true"
+    ],
+    [
+      55.2,
+      "true"
+    ],
+    [
+      61.0,
+      "true"
+    ],
+    [
+      67.3,
+      "false"
+    ]
+  ],
+  "open_serial_ts": 30.795713901519775,
+  "stop_serial_ts": 90.79523086547852,
+  "duration_s": 59.99951696395874
+}
