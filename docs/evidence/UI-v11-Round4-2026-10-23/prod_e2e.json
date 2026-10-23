@@ -1,0 +1,170 @@
+[
+  {
+    "case": "A1-1",
+    "desc": "提交只读查询 → 202 published",
+    "status": "PASS",
+    "detail": "http=202 state='published' executed=False verified=False"
+  },
+  {
+    "case": "A1-2",
+    "desc": "响应不谎称已执行/已验证",
+    "status": "PASS",
+    "detail": "executed=False verified=False"
+  },
+  {
+    "case": "A1-3",
+    "desc": "真实回帧把审计推进到 done",
+    "status": "PASS",
+    "detail": "state='done' terminal=True"
+  },
+  {
+    "case": "A1-4",
+    "desc": "first_frame_at / finished_at 已落",
+    "status": "PASS",
+    "detail": "first=1792772289 finished=1792772290 duration_ms=5000"
+  },
+  {
+    "case": "A2-1",
+    "desc": "注入迟到 running 帧",
+    "status": "PASS",
+    "detail": "http=200"
+  },
+  {
+    "case": "A2-2",
+    "desc": "终态 done 未被迟到 running 覆盖",
+    "status": "PASS",
+    "detail": "state='done'"
+  },
+  {
+    "case": "A3-1",
+    "desc": "params.id=3 被接受并发布",
+    "status": "PASS",
+    "detail": "http=202 err=None"
+  },
+  {
+    "case": "A3-2",
+    "desc": "workflow.get(id=3) 真机返回 done",
+    "status": "PASS",
+    "detail": "state='done' code=None"
+  },
+  {
+    "case": "A3-3",
+    "desc": "旧字段 o 必须被 400 拒绝（不静默改 slot）",
+    "status": "PASS",
+    "detail": "http=400 err='invalid_params' field='id'"
+  },
+  {
+    "case": "A4-1",
+    "desc": "config_query 提交",
+    "status": "PASS",
+    "detail": "http=202"
+  },
+  {
+    "case": "A4-2",
+    "desc": "第二帧到达后终态 done",
+    "status": "PASS",
+    "detail": "state='done'（早期观察到 'acked'）"
+  },
+  {
+    "case": "A4-3",
+    "desc": "两帧都关联到同一条审计（只有一条记录）",
+    "status": "PASS",
+    "detail": "cmd_id='prd472306551' device='288485896ce4'"
+  },
+  {
+    "case": "A5-1",
+    "desc": "带 device_id 精确命中",
+    "status": "PASS",
+    "detail": "http=200 device='288485896ce4'"
+  },
+  {
+    "case": "A5-2",
+    "desc": "不带 device_id：单设备命中 200 / 多设备 409（不静默取最新）",
+    "status": "PASS",
+    "detail": "http=200 err=None device_ids=None"
+  },
+  {
+    "case": "A6-1",
+    "desc": "system.restart 提交（安全重启，不动执行器）",
+    "status": "PASS",
+    "detail": "http=202 err=None"
+  },
+  {
+    "case": "A6-2",
+    "desc": "设备已重新上线但命令**仍不是** done",
+    "status": "PASS",
+    "detail": "state='accepted' terminal=False rebooting=True"
+  },
+  {
+    "case": "A6-3",
+    "desc": "标记为 rebooting（供操作员判断，不作因果证明）",
+    "status": "PASS",
+    "detail": "rebooting=True"
+  },
+  {
+    "case": "A6-4",
+    "desc": "重启后设备恢复可下发（在线）",
+    "status": "PASS",
+    "detail": "http=202"
+  },
+  {
+    "case": "A7-1",
+    "desc": "safety.stop_all 提交",
+    "status": "PASS",
+    "detail": "http=202 err=None"
+  },
+  {
+    "case": "A7-2",
+    "desc": "急停命令终态 done（云端只证明命令执行了）",
+    "status": "PASS",
+    "detail": "state='done'"
+  },
+  {
+    "case": "B-1",
+    "desc": "签发 D1 会话",
+    "status": "PASS",
+    "detail": "http=200 err=None mode=None revocable=None"
+  },
+  {
+    "case": "B-2",
+    "desc": "新会话校验通过",
+    "status": "PASS",
+    "detail": "http=200 ok=True sid='2c568ce038d315f18f5a0373412c6d76'"
+  },
+  {
+    "case": "B-3",
+    "desc": "撤销会话",
+    "status": "PASS",
+    "detail": "http=200 revoked=True already=False"
+  },
+  {
+    "case": "B-4",
+    "desc": "撤销后旧 secret 立即失效（登出即失效的真实判据）",
+    "status": "PASS",
+    "detail": "http=401 ok=False reason='revoked'"
+  },
+  {
+    "case": "B2-1",
+    "desc": "无 Bearer ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "B2-2",
+    "desc": "错 Bearer ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "B2-3",
+    "desc": "不存在/无效会话 ⇒ 拒绝（不降级放行）",
+    "status": "PASS",
+    "detail": "http=401 err=None"
+  },
+  {
+    "case": "C-1",
+    "desc": "收尾解除锁存",
+    "status": "PASS",
+    "detail": "http=202 err=None"
+  }
+]
