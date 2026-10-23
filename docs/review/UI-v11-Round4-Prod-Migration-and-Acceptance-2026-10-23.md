@@ -302,4 +302,4 @@ cmd_id=prd371835097 family=query  action_id=workflow.get         state=done
 
 - `docs/evidence/UI-v11-Round4-2026-10-23/prod_e2e.json` —— 生产端到端 28 项结果
 - `docs/evidence/UI-v11-Round4-2026-10-23/serial_latch.json` —— 串口锁存复核 6 项
-- `Cloudflare_Assets/backups/guofeeder-pre0008-20261023.sql` —— 迁移前全量备份
+- `Cloudflare_Assets/backups/guofeeder-pre0008-20261023.sql` —— 迁移前全量备份（**本地保留、未入库**；云端仓已把 `backups/` 写进 `.gitignore`，该文件含 `mqtt_messages`/`log_history` 等设备流量原文）
