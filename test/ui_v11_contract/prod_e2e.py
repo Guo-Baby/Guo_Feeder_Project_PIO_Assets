@@ -254,20 +254,24 @@ def main():
                                                  b.get("mode"), b.get("revocable")))
     sid = (b or {}).get("sid")
     secret = (b or {}).get("secret")
+    # ★ 接口形状：verify 成功 = {ok:true,...}；失败 = {ok:false, reason} + 401/503
+    #   （**没有** state 字段 —— 第一轮脚本按 state 断言是错的）
     if sid and secret:
         st, b2 = http("POST", "/api/ui/session", token=token,
                       body={"action": "verify", "sid": sid, "secret": secret})
-        rec("B-2", "新会话校验通过（active）",
-            st == 200 and b2.get("state") == "active", "state=%r" % (b2.get("state"),))
+        rec("B-2", "新会话校验通过", st == 200 and b2.get("ok") is True,
+            "http=%s ok=%r sid=%r" % (st, b2.get("ok"), b2.get("sid")))
 
         st, b3 = http("POST", "/api/ui/session", token=token,
                       body={"action": "revoke", "sid": sid, "reason": "logout"})
-        rec("B-3", "撤销会话", st == 200, "http=%s err=%r" % (st, b3.get("error")))
+        rec("B-3", "撤销会话", st == 200 and b3.get("revoked") is True,
+            "http=%s revoked=%r already=%r" % (st, b3.get("revoked"), b3.get("already")))
 
         st, b4 = http("POST", "/api/ui/session", token=token,
                       body={"action": "verify", "sid": sid, "secret": secret})
         rec("B-4", "撤销后旧 secret 立即失效（登出即失效的真实判据）",
-            st == 200 and b4.get("state") == "revoked", "state=%r" % (b4.get("state"),))
+            st == 401 and b4.get("ok") is False,
+            "http=%s ok=%r reason=%r" % (st, b4.get("ok"), b4.get("reason")))
     else:
         rec("B-2", "新会话校验", False, "未取到 sid/secret", "BLOCKED")
         rec("B-3", "撤销会话", False, "未取到 sid/secret", "BLOCKED")
