@@ -1,0 +1,749 @@
+   0.00 ESP-ROM:esp32s3-20210327
+   0.00 Build:Mar 27 2021
+   0.00 rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+   0.00 SPIWP:0xee
+   0.00 mode:DIO, clock div:1
+   0.00 load:0x3fce3808,len:0x4bc
+   0.00 load:0x403c9700,len:0xbd8
+   0.00 load:0x403cc700,len:0x2a0c
+   0.00 entry 0x403c98d0
+   0.23 E (276) esp_core_dump_flash: No core dump partition found!
+   0.24 E (276) esp_core_dump_flash: No core dump partition found!
+   1.27 [System] LittleFS mounted
+   1.27 PSRAM size: 8386279
+   1.27 PSRAM free: 8386035
+   1.28 [LogContract] v=2 rec=128 seg=3984 x16 cap=496 fmt=2 check=PASS
+   1.28 [Identity] device_id=288485896ce4 (nvs ok)
+   1.29 [Log] RAM ring ready: 64 slots x 128 B = 8192 B in PSRAM (boot_seq=1)
+   1.29 [  1331][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+   2.41 [Log] Flash ring ready: seg=16 x 31 rec, seg_size=3984 B, valid=16, oldest=7, newest=6, append=6@3, total_rec=468, batch=1024 B in PSRAM
+   2.42 [  2460][E][vfs_api.cpp:105] open(): /littlefs/log/quarantine.bin does not exist, no permits for creation
+   2.58 [Log] recovery=NVS boot_hw=82 -> boot_seq=83 reserved=23296 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+   3.15 [Log] seq: boot_seq=83 base=23297 limit=23552 reserved=23552 reliable=1 corrupt=1 src=0 failclosed=0
+   3.16 [Log] Cloud queue ready: 128 slots x 128 B = 16384 B (q=PSRAM), batch=2048 B, cbor=4096 B in PSRAM
+   3.26 [JStg][I] ready
+   3.38 [FStg][I] ready
+   3.38 [Bin][I] ready
+   3.80 [CFG][I] init done, loaded 10/10 modules
+   3.80 [Safety] valve: pin=12 safe_level=0
+   3.80 [Safety] stepper_en: pin=15 safe_level=1
+   3.81 [Safety] vibration: pin=16 safe_level=0
+   3.81 [Safety] outputs init done (network not started yet)
+   3.81 Event manager init OK
+   3.84 [BLE] init OK
+   3.84 WiFi init...
+   3.86 Connecting to:wqs1
+   3.87 [Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B) | PSRAM total=8385927 B
+   3.90 [Weight] Init...
+   3.91 [Weight] Disabled by config (HX711 not installed) -> weight_decrease / WEIGHT_ZERO NOT registered, no weight events emitted
+   3.91 [Valve] Init OK (pin=12, active_level=1, safety=60 s)
+   3.91 [Valve] System state registered: STATE_VALVE_STATUS
+   3.92 [ComputerReset] Init OK (pin=8, hold=800 ms)
+   3.93 [Stepper] Init: enable=1 pins_ready=1 rmt=1 (step=13 dir=14 en=15, steps/rev=1600 angle=120 period=10000us delay=50ms max=6400 timeout=30000ms)
+   3.94 [Vibration] Init: enable=1 pins_ready=1 (pin=16 active_level=1, max_duration=30000ms safety_timeout=30000ms)
+   3.95 [TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+   3.95 [DispenseGuard] Init OK
+   3.95 OLED init...
+   4.26 OLED init OK
+   4.26 OLED event registered
+   4.26 Time manager init...
+   4.26 [Time] timezone offset = GMT+8
+   4.27 [Time] RTC probe failed (addr=0x51 err=2), chip not present?
+   4.27 [Time] RTC init failed (wait SNTP)
+   4.27 [Time] SNTP servers=ntp.aliyun.com/cn.pool.ntp.org interval=86400s
+   4.28 Time manager init done
+   4.28 [TestMQTT] Action registered
+   4.29 [MiThermo] register workflow action
+   4.29 [MiThermo] init OK
+   4.29 [CredStore] NVS 'gfcred' ready
+   4.29 [Cred] init: store=ok active_slot=-1
+   4.30 [SYSCMD][I] init done, reset reason=power_on, safe delay=10000 ms
+   4.30 Cloud manager init...
+   4.30 MQTT server=n302933b.ala.cn-hangzhou.emqxsl.cn
+   4.31 MQTT port=8883
+   4.31 MQTT client_id=dev_288485896ce4
+   4.31 [Cloud] credential source: config (fallback)
+   4.32 MQTT subscribe=guo_feeder/288485896ce4/down
+   4.32 MQTT publish=guo_feeder/288485896ce4/up
+   4.32 MQTT log=guo_feeder/288485896ce4/log
+   4.33 MQTT log-ack=guo_feeder/288485896ce4/log/ack
+   4.33 MQTT CA=/emqxsl-ca.crt
+   4.33 MQTT Config:
+   4.33 [Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+   5.22 [WF][DBG] load wf=0 id=daily_valve_test steps=4 variant=1
+   5.62 [WF][DBG] load wf=1 id=daily_valve_test1 steps=4 variant=1
+   6.03 [WF][DBG] load wf=2 id=queue_test steps=4 variant=1
+   6.41 [WF][DBG] load wf=3 id=wf_valve_20g steps=4 variant=2
+   6.42 [OK] Workflow loaded from Flash BIN
+   6.42 [CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+   6.44 [CapRegistry] ACTION reuse version=5 count=13
+   6.44 [CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+   6.45 [CapRegistry] TRIGGER reuse version=3 count=2
+   6.45 [CapRegistry] sync buf 2328 B in PSRAM (hwm=9676)
+   6.46 [CapRegistry] WORKFLOW reuse version=3 count=4
+   6.46 capability_registry_init: OK
+   6.54 [CFG][I] boot validated
+   6.56 [  6593][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+   7.00 WiFi connected
+   7.00 OLED wifi event
+   7.00 [Cloud] WiFi connected event
+   7.01 [Cloud] MQTT connecting...
+   7.01 ===== MQTT DEBUG =====
+   7.02 host=n302933b.ala.cn-hangzhou.emqxsl.cn
+   7.02 port=8883
+   7.02 client_id=dev_288485896ce4
+   7.02 username=(hidden)
+   7.02 password=(hidden)
+   7.02 buffer=8192
+   7.02 cert=NO
+   7.02 ======================
+   7.05 [Cloud] CA length=1316
+   7.05 [Cloud] CA certificate loaded
+   7.05 [Cloud] MQTT client started
+   7.06 [Time] SNTP started (waiting first sync)
+   8.03 [Cloud] MQTT connected
+   8.03 [Cloud] MQTT subscribe QoS=1 msg_id=24028
+   8.04 [Cloud] MQTT subscribe(log-ack) filter=guo_feeder/288485896ce4/log/ack qos=1 msg_id=63141
+   8.04 [Cloud] MQTT connected outbox=73
+   8.04 [Cloud SET JSON]
+   8.05 {"cmd":"system","id":"online","src":"device"}
+   8.05 [Cloud] enqueue OK id=7938 qos=1 store=1 len=45
+   8.06 [Cloud] ENQ id=32880 qos=1 store=1 outbox=150->475 len=291 t=8096
+   8.06 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=8097
+   8.10 [Cloud] MQTT subscribed msg_id=24028
+   8.26 [Cloud] MQTT subscribed msg_id=63141
+   8.34 [Cloud] MQTT published/ack msg_id=7938 outbox=325 t=8381
+   8.44 [Cloud] MQTT published/ack msg_id=32880 outbox=0 t=8482
+  10.15 =================
+  10.15 [Cloud] MQTT RX
+  10.16 {"c":"log_ack","i":"ack:83:23297","p":{"b":83,"f":23297,"t":23297}}
+  10.16 [Cloud LOG] ack rx boot=83 from=23297 to=23297
+  10.17 [Log Cloud] ack ok boot=83 to=23297 covered=1/1 acked=23297 gc=21302 floor=21303 r=2
+  10.17 [Cloud] ENQ id=20562 qos=1 store=1 outbox=0->325 len=291 t=10205
+  10.18 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=10216
+  11.22 [Cloud] MQTT published/ack msg_id=20562 outbox=0 t=11258
+  12.22 [Time] SNTP sync OK (2026-10-23 22:59:57)
+  12.22 [Time] Event: TIME_VALID
+  12.50 =================
+  12.50 [Cloud] MQTT RX
+  12.51 {"c":"log_ack","i":"ack:83:23298","p":{"b":83,"f":23298,"t":23298}}
+  12.51 [Cloud LOG] ack rx boot=83 from=23298 to=23298
+  12.52 [Log Cloud] ack ok boot=83 to=23298 covered=1/1 acked=23298 gc=21302 floor=21303 r=2
+  12.52 [Cloud] ENQ id=61003 qos=1 store=1 outbox=0->325 len=291 t=12554
+  12.53 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=12565
+  13.55 [Cloud] MQTT published/ack msg_id=61003 outbox=0 t=13596
+  14.86 =================
+  14.86 [Cloud] MQTT RX
+  14.87 {"c":"log_ack","i":"ack:83:23299","p":{"b":83,"f":23299,"t":23299}}
+  14.87 [Cloud LOG] ack rx boot=83 from=23299 to=23299
+  14.88 [Log Cloud] ack ok boot=83 to=23299 covered=1/1 acked=23299 gc=21302 floor=21303 r=2
+  14.88 [Cloud] ENQ id=44804 qos=1 store=1 outbox=0->325 len=291 t=14913
+  14.89 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=14923
+  15.91 [Cloud] MQTT published/ack msg_id=44804 outbox=0 t=15950
+  17.03 =================
+  17.03 [Cloud] MQTT RX
+  17.03 {"c":"log_ack","i":"ack:83:23300","p":{"b":83,"f":23300,"t":23300}}
+  17.04 [Cloud LOG] ack rx boot=83 from=23300 to=23300
+  17.05 [Log Cloud] ack ok boot=83 to=23300 covered=1/1 acked=23300 gc=21302 floor=21303 r=2
+  17.06 [Cloud] ENQ id=45081 qos=1 store=1 outbox=0->325 len=291 t=17088
+  17.06 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=17098
+  18.09 [Cloud] MQTT published/ack msg_id=45081 outbox=0 t=18131
+  19.26 =================
+  19.26 [Cloud] MQTT RX
+  19.26 {"c":"log_ack","i":"ack:83:23301","p":{"b":83,"f":23301,"t":23301}}
+  19.27 [Cloud LOG] ack rx boot=83 from=23301 to=23301
+  19.27 [Log Cloud] ack ok boot=83 to=23301 covered=1/1 acked=23301 gc=21302 floor=21303 r=2
+  19.28 [Cloud] ENQ id=31915 qos=1 store=1 outbox=0->325 len=291 t=19311
+  19.28 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=19322
+  20.31 [Cloud] MQTT published/ack msg_id=31915 outbox=0 t=20349
+  21.31 =================
+  21.31 [Cloud] MQTT RX
+  21.31 {"c":"log_ack","i":"ack:83:23302","p":{"b":83,"f":23302,"t":23302}}
+  21.32 [Cloud LOG] ack rx boot=83 from=23302 to=23302
+  21.32 [Log Cloud] ack ok boot=83 to=23302 covered=1/1 acked=23302 gc=21302 floor=21303 r=2
+  21.33 [Cloud] ENQ id=54400 qos=1 store=1 outbox=0->325 len=291 t=21360
+  21.33 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=291 t=21370
+  22.36 [Cloud] MQTT published/ack msg_id=54400 outbox=0 t=22401
+  22.97 =================
+  22.97 [Cloud] MQTT RX
+  22.98 {"c": "system", "p": {"o": "config_query", "module": "weight"}, "i": "vt-cfg-1792767608673"}
+  22.98 [Cloud] UP-ACK id=vt-cfg-1792767608673 obj=config_query t=23010
+  22.98 [Cloud UP JSON]
+  22.99 {"c":"ack","i":"vt-cfg-1792767608673","o":"config_query","p":{"result":"received"},"t":1792767608}
+  22.99 [Cloud] enqueue OK id=38203 qos=1 store=1 len=98
+  23.00 [Cloud UP] OK
+  23.00 [CMD][INFO] Received command
+  23.00 [CFG][I] enqueue accepted, pending=1
+  23.01 [Cloud] UP-RESULT len=174 t=23043
+  23.01 [Cloud UP JSON]
+  23.02 {"s":1,"c":"result","i":"vt-cfg-1792767608673","t":1792767608,"m":"config query queued","command":"system"}
+  23.02 [Cloud] enqueue OK id=54766 qos=1 store=1 len=107
+  23.02 [Cloud UP] OK
+  23.02 [CMD][INFO] Command executed
+  23.03 [Cloud] UP-RESULT len=357 t=23066
+  23.03 [Cloud UP JSON]
+  23.05 {"s":0,"c":"result","i":"vt-cfg-1792767608673","o":"config_query","t":1792767608,"m":"query module ok","e":0,"v":3,"type":"config_result","command":"system","data":{"enable":false,"dt":6,"sck":7,"sample_interval":50,"scale":741,"zero_offset":-800750,"filter_samples":10}}
+  23.06 [Cloud] enqueue OK id=32705 qos=1 store=1 len=271
+  23.06 [Cloud UP] OK
+  23.35 =================
+  23.35 [Cloud] MQTT RX
+  23.36 {"c":"log_ack","i":"ack:83:23303","p":{"b":83,"f":23303,"t":23303}}
+  23.36 [Cloud LOG] ack rx boot=83 from=23303 to=23303
+  23.38 [Log Cloud] ack ok boot=83 to=23303 covered=1/1 acked=23303 gc=21302 floor=21303 r=2
+  23.38 [Cloud] ENQ id=42064 qos=1 store=1 outbox=575->909 len=300 t=23415
+  23.39 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=23425
+  23.49 [Cloud] MQTT published/ack msg_id=38203 outbox=778 t=23530
+  23.58 [Cloud] MQTT published/ack msg_id=54766 outbox=638 t=23625
+  23.63 [Cloud] MQTT published/ack msg_id=32705 outbox=334 t=23674
+  23.68 [Cloud] MQTT published/ack msg_id=42064 outbox=0 t=23725
+  23.97 =================
+  23.97 [Cloud] MQTT RX
+  23.98 {"c": "system", "p": {"o": "config_query", "module": "valve"}, "i": "vt-cfg-1792767609725"}
+  23.98 [Cloud] UP-ACK id=vt-cfg-1792767609725 obj=config_query t=24011
+  23.98 [Cloud UP JSON]
+  23.99 {"c":"ack","i":"vt-cfg-1792767609725","o":"config_query","p":{"result":"received"},"t":1792767609}
+  23.99 [Cloud] enqueue OK id=61460 qos=1 store=1 len=98
+  24.00 [Cloud UP] OK
+  24.00 [CMD][INFO] Received command
+  24.00 [CFG][I] enqueue accepted, pending=1
+  24.01 [Cloud] UP-RESULT len=174 t=24044
+  24.01 [Cloud UP JSON]
+  24.02 {"s":1,"c":"result","i":"vt-cfg-1792767609725","t":1792767609,"m":"config query queued","command":"system"}
+  24.02 [Cloud] enqueue OK id=53432 qos=1 store=1 len=107
+  24.02 [Cloud UP] OK
+  24.02 [CMD][INFO] Command executed
+  24.03 [Cloud] UP-RESULT len=342 t=24066
+  24.03 [Cloud UP JSON]
+  24.05 {"s":0,"c":"result","i":"vt-cfg-1792767609725","o":"config_query","t":1792767609,"m":"query module ok","e":0,"v":2,"type":"config_result","command":"system","data":{"gpio_pin":12,"active_level":1,"open_duration_ms":0,"safety_timeout_sec":60,"enable":true}}
+  24.05 [Cloud] enqueue OK id=14077 qos=1 store=1 len=256
+  24.05 [Cloud UP] OK
+  25.01 [Cloud] MQTT published/ack msg_id=61460 outbox=429 t=25055
+  25.05 [Cloud] MQTT published/ack msg_id=53432 outbox=289 t=25095
+  25.10 [Cloud] MQTT published/ack msg_id=14077 outbox=0 t=25138
+  25.27 =================
+  25.27 [Cloud] MQTT RX
+  25.27 {"c": "safety", "p": {"o": "clear"}, "i": "vt-clear"}
+  25.28 [Cloud] UP-ACK id=vt-clear obj=clear t=25313
+  25.28 [Cloud UP JSON]
+  25.29 {"c":"ack","i":"vt-clear","o":"clear","p":{"result":"received"},"t":1792767610}
+  25.29 [Cloud] enqueue OK id=47087 qos=1 store=1 len=79
+  25.29 [Cloud UP] OK
+  25.30 [CMD][INFO] Received command
+  25.30 [Cloud] UP-RESULT len=146 t=25335
+  25.30 [Cloud UP JSON]
+  25.31 {"s":0,"c":"result","i":"vt-clear","o":"clear","t":1792767610,"was_latched":false,"latched":false,"command":"safety"}
+  25.31 [Cloud] enqueue OK id=28870 qos=1 store=1 len=117
+  25.31 [Cloud UP] OK
+  25.31 [CMD][INFO] Command executed
+  26.43 [Cloud] MQTT published/ack msg_id=47087 outbox=150 t=26470
+  26.47 [Cloud] MQTT published/ack msg_id=28870 outbox=0 t=26509
+  26.67 =================
+  26.68 [Cloud] MQTT RX
+  26.68 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767612581"}
+  26.69 [Cloud] UP-ACK id=vt-q-1792767612581 obj=valve_status t=26718
+  26.69 [Cloud UP JSON]
+  26.70 {"c":"ack","i":"vt-q-1792767612581","o":"valve_status","p":{"result":"received"},"t":1792767612}
+  26.70 [Cloud] enqueue OK id=64167 qos=1 store=1 len=96
+  26.70 [Cloud UP] OK
+  26.71 [CMD][INFO] Received command
+  26.71 [Command] query state: valve_status
+  26.71 [Cloud] UP-RESULT len=145 t=26750
+  26.71 [Cloud UP JSON]
+  26.72 {"s":0,"c":"result","i":"vt-q-1792767612581","o":"valve_status","t":1792767612,"value":"false","command":"query_state"}
+  26.73 [Cloud] enqueue OK id=32605 qos=1 store=1 len=119
+  26.73 [Cloud UP] OK
+  26.73 [CMD][INFO] Command executed
+  26.82 =================
+  26.82 [Cloud] MQTT RX
+  26.83 {"c":"log_ack","i":"ack:83:23304","p":{"b":83,"f":23304,"t":23304}}
+  26.83 [Cloud LOG] ack rx boot=83 from=23304 to=23304
+  26.85 [Log Cloud] ack ok boot=83 to=23304 covered=1/1 acked=23304 gc=21302 floor=21303 r=2
+  26.85 [Cloud] ENQ id=42983 qos=1 store=1 outbox=280->614 len=300 t=26883
+  26.85 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=26893
+  26.93 [Cloud] MQTT published/ack msg_id=64167 outbox=486 t=26975
+  27.02 [Cloud] MQTT published/ack msg_id=32605 outbox=334 t=27058
+  27.08 [Cloud] MQTT published/ack msg_id=42983 outbox=0 t=27119
+  27.45 =================
+  27.45 [Cloud] MQTT RX
+  27.46 {"c": "query", "p": {"q": "query_workflows"}, "i": "vt-wfs"}
+  27.46 [Cloud] UP-ACK id=vt-wfs obj= t=27496
+  27.46 [Cloud UP JSON]
+  27.47 {"c":"ack","i":"vt-wfs","p":{"result":"received"},"t":1792767612}
+  27.47 [Cloud] enqueue OK id=62310 qos=1 store=1 len=65
+  27.47 [Cloud UP] OK
+  27.48 [CMD][INFO] Received command
+  27.48 [Cloud] UP-RESULT len=631 t=27519
+  27.48 [Cloud UP JSON]
+  27.54 {"s":0,"c":"result","i":"vt-wfs","t":1792767612,"workflows":[{"id":"daily_valve_test","name":"每日开阀测试","enable":true,"stable_id":0,"state":"IDLE","step_count":4,"current_step":0},{"id":"daily_valve_test1","name":"每日开阀测试1","enable":true,"stable_id":1,"state":"IDLE","step_count":4,"current_step":0},{"id":"queue_test","name":"开阀测试","enable":true,"stable_id":2,"state":"IDLE","step_count":4,"current_step":0},{"id":"wf_valve_20g","name":"开阀-减重21g-关阀","enable":true,"stable_id":3,"state":"IDLE","step_count":4,"current_step":0}],"count":4,"command":"query_workflows"}
+  27.54 [Cloud] enqueue OK id=49851 qos=1 store=1 len=607
+  27.54 [Cloud UP] OK
+  27.54 [CMD][INFO] Command executed
+  28.54 [Cloud] MQTT published/ack msg_id=62310 outbox=640 t=28579
+  28.61 [Cloud] MQTT published/ack msg_id=49851 outbox=0 t=28656
+  29.19 =================
+  29.19 [Cloud] MQTT RX
+  29.20 {"c": "registry", "k": 0, "i": "vt-reg"}
+  29.20 [Cloud] UP-ACK id=vt-reg obj= t=29234
+  29.20 [Cloud UP JSON]
+  29.21 {"c":"ack","i":"vt-reg","p":{"result":"received"},"t":1792767614}
+  29.21 [Cloud] enqueue OK id=48991 qos=1 store=1 len=65
+  29.21 [Cloud UP] OK
+  29.21 [CMD][INFO] Received command
+  29.22 [Cloud] UP-RESULT len=813 t=29257
+  29.22 [Cloud UP JSON]
+  29.25 {"c":"result","i":"vt-reg","s":0,"r":0,"v":5,"n":13,"cs":730965826,"d":[[0,"COMPUTER_RESET"],[1,"MI_THERMO_START_SCAN"],[2,"MI_THERMO_STOP_SCAN"],[3,"MQTT_TEST"],[4,"STEPPER_DISPENSE_ROTATE"],[5,"STEPPER_EMERGENCY_STOP"],[6,"STEPPER_ROTATE_STEPS"],[7,"TEST_STEPPER_START"],[8,"TEST_STEPPER_STOP"],[9,"VALVE_CLOSE"],[10,"VALVE_OPEN"],[11,"VIBRATION_START"],[12,"VIBRATION_STOP"]]}
+  29.26 [Cloud] enqueue OK id=50339 qos=1 store=1 len=379
+  29.26 [Cloud UP] OK
+  29.26 [CMD][INFO] Command executed
+  30.27 [Cloud] MQTT published/ack msg_id=48991 outbox=412 t=30308
+  30.31 [Cloud] MQTT published/ack msg_id=50339 outbox=0 t=30354
+  30.73 =================
+  30.73 [Cloud] MQTT RX
+  30.74 {"c": "action", "v": 5, "k": 10, "i": "vt-open"}
+  30.75 [Cloud] UP-ACK id=vt-open obj=VALVE_OPEN t=30778
+  30.75 [Cloud UP JSON]
+  30.75 {"c":"ack","i":"vt-open","o":"VALVE_OPEN","p":{"result":"received"},"t":1792767616}
+  30.76 [Cloud] enqueue OK id=47722 qos=1 store=1 len=83
+  30.76 [Cloud UP] OK
+  30.76 [CMD][INFO] Received command
+  30.77 [Workflow] critical op acquired (temp action id=1, act=VALVE_OPEN, count=1)
+  30.77 [Cloud] UP-RESULT len=165 t=30811
+  30.77 [Cloud UP JSON]
+  30.78 {"s":1,"c":"result","i":"vt-open","o":"VALVE_OPEN","t":1792767616,"m":"Action queued","instance_id":1,"command":"execute_action"}
+  30.79 [Cloud] enqueue OK id=16227 qos=1 store=1 len=129
+  30.79 [Cloud UP] OK
+  30.79 [CMD][INFO] Command executed
+  30.80 [Valve] OPEN (pin=12, level=1)
+  30.80 [Workflow] critical op released (temp action id=1, count=0)
+  30.80 [Cloud] UP-RESULT len=157 t=30834
+  30.80 [Cloud UP JSON]
+  30.81 {"s":0,"c":"result","i":"vt-open","o":"VALVE_OPEN","t":1792767616,"type":"action_result","instance_id":1}
+  30.82 [Cloud] enqueue OK id=24745 qos=1 store=1 len=105
+  30.82 [Cloud UP] OK
+  31.79 [Cloud] MQTT published/ack msg_id=47722 outbox=300 t=31829
+  31.89 [Cloud] MQTT published/ack msg_id=16227 outbox=138 t=31936
+  31.99 [Cloud] MQTT published/ack msg_id=24745 outbox=0 t=32029
+  33.29 =================
+  33.29 [Cloud] MQTT RX
+  33.29 {"c":"log_ack","i":"ack:83:23305","p":{"b":83,"f":23305,"t":23305}}
+  33.30 [Cloud LOG] ack rx boot=83 from=23305 to=23305
+  33.30 [Log Cloud] ack ok boot=83 to=23305 covered=1/1 acked=23305 gc=21302 floor=21303 r=2
+  33.31 [Cloud] ENQ id=125 qos=1 store=1 outbox=0->334 len=300 t=33341
+  33.31 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=33351
+  34.37 [Cloud] MQTT published/ack msg_id=125 outbox=0 t=34416
+  37.18 =================
+  37.18 [Cloud] MQTT RX
+  37.18 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767622991"}
+  37.19 [Cloud] UP-ACK id=vt-q-1792767622991 obj=valve_status t=37222
+  37.20 [Cloud UP JSON]
+  37.20 {"c":"ack","i":"vt-q-1792767622991","o":"valve_status","p":{"result":"received"},"t":1792767622}
+  37.21 [Cloud] enqueue OK id=46771 qos=1 store=1 len=96
+  37.21 [Cloud UP] OK
+  37.21 [CMD][INFO] Received command
+  37.21 [Command] query state: valve_status
+  37.22 [Cloud] UP-RESULT len=144 t=37254
+  37.22 [Cloud UP JSON]
+  37.23 {"s":0,"c":"result","i":"vt-q-1792767622991","o":"valve_status","t":1792767622,"value":"true","command":"query_state"}
+  37.23 [Cloud] enqueue OK id=5673 qos=1 store=1 len=118
+  37.23 [Cloud UP] OK
+  37.23 [CMD][INFO] Command executed
+  38.25 [Cloud] MQTT published/ack msg_id=46771 outbox=151 t=38289
+  38.43 [Cloud] MQTT published/ack msg_id=5673 outbox=0 t=38470
+  40.26 =================
+  40.26 [Cloud] MQTT RX
+  40.26 {"c":"log_ack","i":"ack:83:23306","p":{"b":83,"f":23306,"t":23306}}
+  40.27 [Cloud LOG] ack rx boot=83 from=23306 to=23306
+  40.27 [Log Cloud] ack ok boot=83 to=23306 covered=1/1 acked=23306 gc=21302 floor=21303 r=2
+  40.28 [Cloud] ENQ id=45314 qos=1 store=1 outbox=0->334 len=300 t=40311
+  40.28 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=40321
+  41.31 [Cloud] MQTT published/ack msg_id=45314 outbox=0 t=41350
+  43.42 =================
+  43.42 [Cloud] MQTT RX
+  43.43 {"c":"log_ack","i":"ack:83:23307","p":{"b":83,"f":23307,"t":23307}}
+  43.43 [Cloud LOG] ack rx boot=83 from=23307 to=23307
+  43.45 [Log Cloud] ack ok boot=83 to=23307 covered=1/1 acked=23307 gc=21302 floor=21303 r=2
+  43.45 [Cloud] ENQ id=19788 qos=1 store=1 outbox=0->334 len=300 t=43486
+  43.46 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=43496
+  43.57 =================
+  43.57 [Cloud] MQTT RX
+  43.57 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767629492"}
+  43.58 [Cloud] UP-ACK id=vt-q-1792767629492 obj=valve_status t=43612
+  43.59 [Cloud UP JSON]
+  43.59 {"c":"ack","i":"vt-q-1792767629492","o":"valve_status","p":{"result":"received"},"t":1792767629}
+  43.60 [Cloud] enqueue OK id=25859 qos=1 store=1 len=96
+  43.60 [Cloud UP] OK
+  43.60 [CMD][INFO] Received command
+  43.60 [Command] query state: valve_status
+  43.61 [Cloud] UP-RESULT len=144 t=43644
+  43.61 [Cloud UP JSON]
+  43.62 {"s":0,"c":"result","i":"vt-q-1792767629492","o":"valve_status","t":1792767629,"value":"true","command":"query_state"}
+  43.62 [Cloud] enqueue OK id=48747 qos=1 store=1 len=118
+  43.62 [Cloud UP] OK
+  43.62 [CMD][INFO] Command executed
+  43.71 [Cloud] MQTT published/ack msg_id=19788 outbox=279 t=43755
+  43.76 [Cloud] MQTT published/ack msg_id=25859 outbox=151 t=43803
+  43.82 [Cloud] MQTT published/ack msg_id=48747 outbox=0 t=43866
+  44.77 =================
+  44.77 [Cloud] MQTT RX
+  44.78 {"c":"log_ack","i":"ack:83:23308","p":{"b":83,"f":23308,"t":23308}}
+  44.78 [Cloud LOG] ack rx boot=83 from=23308 to=23308
+  44.79 [Log Cloud] ack ok boot=83 to=23308 covered=1/1 acked=23308 gc=21302 floor=21303 r=2
+  44.80 [Cloud] ENQ id=5671 qos=1 store=1 outbox=0->334 len=300 t=44832
+  44.80 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=44842
+  45.82 [Cloud] MQTT published/ack msg_id=5671 outbox=0 t=45859
+  47.31 =================
+  47.31 [Cloud] MQTT RX
+  47.32 {"c":"log_ack","i":"ack:83:23309","p":{"b":83,"f":23309,"t":23309}}
+  47.33 [Cloud LOG] ack rx boot=83 from=23309 to=23309
+  47.33 [Log Cloud] ack ok boot=83 to=23309 covered=1/1 acked=23309 gc=21302 floor=21303 r=2
+  47.34 [Cloud] ENQ id=14122 qos=1 store=1 outbox=0->334 len=300 t=47369
+  47.34 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=47379
+  48.38 [Cloud] MQTT published/ack msg_id=14122 outbox=0 t=48425
+  49.06 =================
+  49.06 [Cloud] MQTT RX
+  49.06 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767634943"}
+  49.07 [Cloud] UP-ACK id=vt-q-1792767634943 obj=valve_status t=49102
+  49.07 [Cloud UP JSON]
+  49.08 {"c":"ack","i":"vt-q-1792767634943","o":"valve_status","p":{"result":"received"},"t":1792767634}
+  49.09 [Cloud] enqueue OK id=7344 qos=1 store=1 len=96
+  49.09 [Cloud UP] OK
+  49.09 [CMD][INFO] Received command
+  49.09 [Command] query state: valve_status
+  49.10 [Cloud] UP-RESULT len=144 t=49134
+  49.10 [Cloud UP JSON]
+  49.11 {"s":0,"c":"result","i":"vt-q-1792767634943","o":"valve_status","t":1792767634,"value":"true","command":"query_state"}
+  49.11 [Cloud] enqueue OK id=21374 qos=1 store=1 len=118
+  49.11 [Cloud UP] OK
+  49.11 [CMD][INFO] Command executed
+  49.47 =================
+  49.47 [Cloud] MQTT RX
+  49.48 {"c":"log_ack","i":"ack:83:23310","p":{"b":83,"f":23310,"t":23310}}
+  49.48 [Cloud LOG] ack rx boot=83 from=23310 to=23310
+  49.49 [Log Cloud] ack ok boot=83 to=23310 covered=1/1 acked=23310 gc=21302 floor=21303 r=2
+  49.50 [Cloud] ENQ id=985 qos=1 store=1 outbox=279->613 len=300 t=49527
+  49.50 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=49538
+  49.54 [Cloud] MQTT published/ack msg_id=7344 outbox=485 t=49586
+  49.60 [Cloud] MQTT published/ack msg_id=21374 outbox=334 t=49641
+  49.66 [Cloud] MQTT published/ack msg_id=985 outbox=0 t=49708
+  52.14 =================
+  52.14 [Cloud] MQTT RX
+  52.14 {"c":"log_ack","i":"ack:83:23311","p":{"b":83,"f":23311,"t":23311}}
+  52.15 [Cloud LOG] ack rx boot=83 from=23311 to=23311
+  52.15 [Log Cloud] ack ok boot=83 to=23311 covered=1/1 acked=23311 gc=21302 floor=21303 r=2
+  52.16 [Cloud] ENQ id=45788 qos=1 store=1 outbox=0->334 len=300 t=52191
+  52.16 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=52202
+  53.19 [Cloud] MQTT published/ack msg_id=45788 outbox=0 t=53229
+  54.18 =================
+  54.18 [Cloud] MQTT RX
+  54.18 {"c":"log_ack","i":"ack:83:23312","p":{"b":83,"f":23312,"t":23312}}
+  54.19 [Cloud LOG] ack rx boot=83 from=23312 to=23312
+  54.20 [Log Cloud] ack ok boot=83 to=23312 covered=1/1 acked=23312 gc=21302 floor=21303 r=2
+  54.20 [Cloud] ENQ id=12984 qos=1 store=1 outbox=0->334 len=300 t=54234
+  54.21 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=54245
+  54.90 =================
+  54.90 [Cloud] MQTT RX
+  54.91 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767640696"}
+  54.91 [Cloud] UP-ACK id=vt-q-1792767640696 obj=valve_status t=54944
+  54.92 [Cloud UP JSON]
+  54.92 {"c":"ack","i":"vt-q-1792767640696","o":"valve_status","p":{"result":"received"},"t":1792767640}
+  54.93 [Cloud] enqueue OK id=54064 qos=1 store=1 len=96
+  54.93 [Cloud UP] OK
+  54.93 [CMD][INFO] Received command
+  54.93 [Command] query state: valve_status
+  54.94 [Cloud] UP-RESULT len=144 t=54977
+  54.94 [Cloud UP JSON]
+  54.95 {"s":0,"c":"result","i":"vt-q-1792767640696","o":"valve_status","t":1792767640,"value":"true","command":"query_state"}
+  54.95 [Cloud] enqueue OK id=8528 qos=1 store=1 len=118
+  54.96 [Cloud UP] OK
+  54.96 [CMD][INFO] Command executed
+  55.04 [Cloud] MQTT published/ack msg_id=12984 outbox=279 t=55084
+  55.14 [Cloud] MQTT published/ack msg_id=54064 outbox=151 t=55181
+  55.21 [Cloud] MQTT published/ack msg_id=8528 outbox=0 t=55250
+  56.16 =================
+  56.16 [Cloud] MQTT RX
+  56.17 {"c":"log_ack","i":"ack:83:23313","p":{"b":83,"f":23313,"t":23313}}
+  56.18 [Cloud LOG] ack rx boot=83 from=23313 to=23313
+  56.18 [Log Cloud] ack ok boot=83 to=23313 covered=1/1 acked=23313 gc=21302 floor=21303 r=2
+  56.19 [Cloud] ENQ id=26841 qos=1 store=1 outbox=0->334 len=300 t=56219
+  56.19 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=56229
+  57.24 [Cloud] MQTT published/ack msg_id=26841 outbox=0 t=57287
+  58.68 =================
+  58.68 [Cloud] MQTT RX
+  58.69 {"c":"log_ack","i":"ack:83:23314","p":{"b":83,"f":23314,"t":23314}}
+  58.69 [Cloud LOG] ack rx boot=83 from=23314 to=23314
+  58.70 [Log Cloud] ack ok boot=83 to=23314 covered=1/1 acked=23314 gc=21302 floor=21303 r=2
+  58.71 [Cloud] ENQ id=60475 qos=1 store=1 outbox=0->334 len=300 t=58739
+  58.71 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=58749
+  59.75 [Cloud] MQTT published/ack msg_id=60475 outbox=0 t=59789
+  60.53 =================
+  60.53 [Cloud] MQTT RX
+  60.53 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767646297"}
+  60.54 [Cloud] UP-ACK id=vt-q-1792767646297 obj=valve_status t=60573
+  60.55 [Cloud UP JSON]
+  60.55 {"c":"ack","i":"vt-q-1792767646297","o":"valve_status","p":{"result":"received"},"t":1792767646}
+  60.56 [Cloud] enqueue OK id=61997 qos=1 store=1 len=96
+  60.56 [Cloud UP] OK
+  60.56 [CMD][INFO] Received command
+  60.56 [Command] query state: valve_status
+  60.57 [Cloud] UP-RESULT len=144 t=60605
+  60.57 [Cloud UP JSON]
+  60.58 {"s":0,"c":"result","i":"vt-q-1792767646297","o":"valve_status","t":1792767646,"value":"true","command":"query_state"}
+  60.58 [Cloud] enqueue OK id=26425 qos=1 store=1 len=118
+  60.58 [Cloud UP] OK
+  60.58 [CMD][INFO] Command executed
+  60.75 =================
+  60.75 [Cloud] MQTT RX
+  60.75 {"c":"log_ack","i":"ack:83:23315","p":{"b":83,"f":23315,"t":23315}}
+  60.76 [Cloud LOG] ack rx boot=83 from=23315 to=23315
+  60.76 [Log Cloud] ack ok boot=83 to=23315 covered=1/1 acked=23315 gc=21302 floor=21303 r=2
+  60.77 [Cloud] ENQ id=7532 qos=1 store=1 outbox=279->613 len=300 t=60800
+  60.77 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=60810
+  60.87 [Cloud] MQTT published/ack msg_id=61997 outbox=485 t=60911
+  60.97 [Cloud] MQTT published/ack msg_id=26425 outbox=334 t=61012
+  61.03 [Cloud] MQTT published/ack msg_id=7532 outbox=0 t=61075
+  63.50 =================
+  63.50 [Cloud] MQTT RX
+  63.51 {"c":"log_ack","i":"ack:83:23316","p":{"b":83,"f":23316,"t":23316}}
+  63.51 [Cloud LOG] ack rx boot=83 from=23316 to=23316
+  63.51 [Log Cloud] ack ok boot=83 to=23316 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  63.54 [Cloud] ENQ id=22436 qos=1 store=1 outbox=0->334 len=300 t=63579
+  63.54 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=63579
+  64.54 [Cloud] MQTT published/ack msg_id=22436 outbox=0 t=64585
+  65.75 =================
+  65.75 [Cloud] MQTT RX
+  65.75 {"c":"log_ack","i":"ack:76:21303","p":{"b":76,"f":21303,"t":21303}}
+  65.76 [Cloud LOG] ack rx boot=76 from=21303 to=21303
+  65.76 [Log Cloud] ack ok boot=76 to=21303 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  65.77 [Cloud] ENQ id=45896 qos=1 store=1 outbox=0->334 len=300 t=65801
+  65.77 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=65812
+  66.26 =================
+  66.26 [Cloud] MQTT RX
+  66.27 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767652048"}
+  66.27 [Cloud] UP-ACK id=vt-q-1792767652048 obj=valve_status t=66306
+  66.28 [Cloud UP JSON]
+  66.28 {"c":"ack","i":"vt-q-1792767652048","o":"valve_status","p":{"result":"received"},"t":1792767651}
+  66.29 [Cloud] enqueue OK id=37422 qos=1 store=1 len=96
+  66.29 [Cloud UP] OK
+  66.29 [CMD][INFO] Received command
+  66.29 [Command] query state: valve_status
+  66.30 [Cloud] UP-RESULT len=144 t=66338
+  66.30 [Cloud UP JSON]
+  66.31 {"s":0,"c":"result","i":"vt-q-1792767652048","o":"valve_status","t":1792767651,"value":"true","command":"query_state"}
+  66.31 [Cloud] enqueue OK id=48842 qos=1 store=1 len=118
+  66.32 [Cloud UP] OK
+  66.32 [CMD][INFO] Command executed
+  66.39 [Cloud] MQTT published/ack msg_id=45896 outbox=279 t=66434
+  66.50 [Cloud] MQTT published/ack msg_id=37422 outbox=151 t=66539
+  66.60 [Cloud] MQTT published/ack msg_id=48842 outbox=0 t=66646
+  67.69 =================
+  67.69 [Cloud] MQTT RX
+  67.70 {"c":"log_ack","i":"ack:76:21304","p":{"b":76,"f":21304,"t":21304}}
+  67.70 [Cloud LOG] ack rx boot=76 from=21304 to=21304
+  67.71 [Log Cloud] ack ok boot=76 to=21304 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  67.71 [Cloud] ENQ id=12922 qos=1 store=1 outbox=0->334 len=300 t=67748
+  67.72 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=67758
+  68.76 [Cloud] MQTT published/ack msg_id=12922 outbox=0 t=68801
+  70.66 =================
+  70.66 [Cloud] MQTT RX
+  70.67 {"c":"log_ack","i":"ack:76:21305","p":{"b":76,"f":21305,"t":21305}}
+  70.67 [Cloud LOG] ack rx boot=76 from=21305 to=21305
+  70.68 [Log Cloud] ack ok boot=76 to=21305 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  70.69 [Cloud] ENQ id=63902 qos=1 store=1 outbox=0->334 len=300 t=70723
+  70.69 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=70733
+  71.72 [Cloud] MQTT published/ack msg_id=63902 outbox=0 t=71762
+  71.76 =================
+  71.76 [Cloud] MQTT RX
+  71.77 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767657650"}
+  71.77 [Cloud] UP-ACK id=vt-q-1792767657650 obj=valve_status t=71808
+  71.78 [Cloud UP JSON]
+  71.79 {"c":"ack","i":"vt-q-1792767657650","o":"valve_status","p":{"result":"received"},"t":1792767657}
+  71.79 [Cloud] enqueue OK id=20128 qos=1 store=1 len=96
+  71.79 [Cloud UP] OK
+  71.80 [CMD][INFO] Received command
+  71.80 [Command] query state: valve_status
+  71.80 [Cloud] UP-RESULT len=144 t=71841
+  71.80 [Cloud UP JSON]
+  71.81 {"s":0,"c":"result","i":"vt-q-1792767657650","o":"valve_status","t":1792767657,"value":"true","command":"query_state"}
+  71.82 [Cloud] enqueue OK id=46226 qos=1 store=1 len=118
+  71.82 [Cloud UP] OK
+  71.82 [CMD][INFO] Command executed
+  72.85 [Cloud] MQTT published/ack msg_id=20128 outbox=151 t=72889
+  72.91 [Cloud] MQTT published/ack msg_id=46226 outbox=0 t=72956
+  73.18 =================
+  73.18 [Cloud] MQTT RX
+  73.19 {"c":"log_ack","i":"ack:76:21306","p":{"b":76,"f":21306,"t":21306}}
+  73.20 [Cloud LOG] ack rx boot=76 from=21306 to=21306
+  73.20 [Log Cloud] ack ok boot=76 to=21306 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  73.21 [Cloud] ENQ id=27120 qos=1 store=1 outbox=0->334 len=300 t=73240
+  73.21 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=73250
+  74.23 [Cloud] MQTT published/ack msg_id=27120 outbox=0 t=74274
+  76.19 =================
+  76.19 [Cloud] MQTT RX
+  76.20 {"c":"log_ack","i":"ack:76:21308","p":{"b":76,"f":21308,"t":21308}}
+  76.20 [Cloud LOG] ack rx boot=76 from=21308 to=21308
+  76.21 [Log Cloud] ack ok boot=76 to=21308 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  76.21 [Cloud] ENQ id=6937 qos=1 store=1 outbox=0->334 len=300 t=76246
+  76.22 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=76256
+  77.24 [Cloud] MQTT published/ack msg_id=6937 outbox=0 t=77280
+  78.14 =================
+  78.14 [Cloud] MQTT RX
+  78.14 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767664002"}
+  78.15 [Cloud] UP-ACK id=vt-q-1792767664002 obj=valve_status t=78184
+  78.16 [Cloud UP JSON]
+  78.16 {"c":"ack","i":"vt-q-1792767664002","o":"valve_status","p":{"result":"received"},"t":1792767663}
+  78.17 [Cloud] enqueue OK id=15078 qos=1 store=1 len=96
+  78.17 [Cloud UP] OK
+  78.17 [CMD][INFO] Received command
+  78.17 [Command] query state: valve_status
+  78.18 [Cloud] UP-RESULT len=144 t=78216
+  78.18 [Cloud UP JSON]
+  78.19 {"s":0,"c":"result","i":"vt-q-1792767664002","o":"valve_status","t":1792767663,"value":"true","command":"query_state"}
+  78.19 [Cloud] enqueue OK id=60723 qos=1 store=1 len=118
+  78.19 [Cloud UP] OK
+  78.19 [CMD][INFO] Command executed
+  79.20 [Cloud] MQTT published/ack msg_id=15078 outbox=151 t=79244
+  79.26 =================
+  79.26 [Cloud] MQTT RX
+  79.26 {"c":"log_ack","i":"ack:76:21310","p":{"b":76,"f":21310,"t":21310}}
+  79.27 [Cloud LOG] ack rx boot=76 from=21310 to=21310
+  79.27 [Log Cloud] ack ok boot=76 to=21310 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  79.28 [Cloud] ENQ id=53776 qos=1 store=1 outbox=151->485 len=300 t=79311
+  79.28 [Cloud] MQTT published/ack msg_id=60723 outbox=334 t=79323
+  79.29 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=79323
+  79.37 [Cloud] MQTT published/ack msg_id=53776 outbox=0 t=79414
+  83.16 =================
+  83.16 [Cloud] MQTT RX
+  83.16 {"c":"log_ack","i":"ack:76:21311","p":{"b":76,"f":21311,"t":21311}}
+  83.17 [Cloud LOG] ack rx boot=76 from=21311 to=21311
+  83.17 [Log Cloud] ack ok boot=76 to=21311 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  83.18 [Cloud] ENQ id=16462 qos=1 store=1 outbox=0->334 len=300 t=83212
+  83.18 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=83223
+  84.21 [Cloud] MQTT published/ack msg_id=16462 outbox=0 t=84253
+  84.43 =================
+  84.43 [Cloud] MQTT RX
+  84.43 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767670356"}
+  84.44 [Cloud] UP-ACK id=vt-q-1792767670356 obj=valve_status t=84474
+  84.45 [Cloud UP JSON]
+  84.45 {"c":"ack","i":"vt-q-1792767670356","o":"valve_status","p":{"result":"received"},"t":1792767669}
+  84.46 [Cloud] enqueue OK id=63323 qos=1 store=1 len=96
+  84.46 [Cloud UP] OK
+  84.46 [CMD][INFO] Received command
+  84.46 [Command] query state: valve_status
+  84.47 [Cloud] UP-RESULT len=144 t=84507
+  84.47 [Cloud UP JSON]
+  84.48 {"s":0,"c":"result","i":"vt-q-1792767670356","o":"valve_status","t":1792767669,"value":"true","command":"query_state"}
+  84.48 [Cloud] enqueue OK id=49872 qos=1 store=1 len=118
+  84.48 [Cloud UP] OK
+  84.48 [CMD][INFO] Command executed
+  85.45 =================
+  85.45 [Cloud] MQTT RX
+  85.45 {"c":"log_ack","i":"ack:76:21312","p":{"b":76,"f":21312,"t":21312}}
+  85.46 [Cloud LOG] ack rx boot=76 from=21312 to=21312
+  85.46 [Log Cloud] ack ok boot=76 to=21312 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  85.47 [Cloud] ENQ id=39072 qos=1 store=1 outbox=279->613 len=300 t=85502
+  85.47 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=85513
+  85.48 [Cloud] MQTT published/ack msg_id=63323 outbox=485 t=85527
+  85.52 [Cloud] MQTT published/ack msg_id=49872 outbox=334 t=85562
+  85.57 [Cloud] MQTT published/ack msg_id=39072 outbox=0 t=85611
+  88.58 =================
+  88.58 [Cloud] MQTT RX
+  88.59 {"c":"log_ack","i":"ack:76:21313","p":{"b":76,"f":21313,"t":21313}}
+  88.59 [Cloud LOG] ack rx boot=76 from=21313 to=21313
+  88.60 [Log Cloud] ack ok boot=76 to=21313 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  88.61 [Cloud] ENQ id=53639 qos=1 store=1 outbox=0->334 len=300 t=88643
+  88.61 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=88654
+  89.65 [Cloud] MQTT published/ack msg_id=53639 outbox=0 t=89691
+  90.73 =================
+  90.73 [Cloud] MQTT RX
+  90.74 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767676559"}
+  90.74 [Cloud] UP-ACK id=vt-q-1792767676559 obj=valve_status t=90778
+  90.75 [Cloud UP JSON]
+  90.75 {"c":"ack","i":"vt-q-1792767676559","o":"valve_status","p":{"result":"received"},"t":1792767676}
+  90.76 [Cloud] enqueue OK id=46032 qos=1 store=1 len=96
+  90.76 [Cloud UP] OK
+  90.77 [CMD][INFO] Received command
+  90.77 [Command] query state: valve_status
+  90.77 [Cloud] UP-RESULT len=144 t=90810
+  90.77 [Cloud UP JSON]
+  90.78 {"s":0,"c":"result","i":"vt-q-1792767676559","o":"valve_status","t":1792767676,"value":"true","command":"query_state"}
+  90.79 [Cloud] enqueue OK id=23500 qos=1 store=1 len=118
+  90.79 [Cloud UP] OK
+  90.79 [CMD][INFO] Command executed
+  90.80 [Valve] Safety timeout! Forced close (open > 60000 ms)
+  90.80 [Valve] CLOSE (pin=12, level=0)
+  91.14 =================
+  91.14 [Cloud] MQTT RX
+  91.15 {"c":"log_ack","i":"ack:76:21314","p":{"b":76,"f":21314,"t":21314}}
+  91.16 [Cloud LOG] ack rx boot=76 from=21314 to=21314
+  91.16 [Log Cloud] ack ok boot=76 to=21314 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  91.17 [Cloud] ENQ id=37805 qos=1 store=1 outbox=279->613 len=300 t=91201
+  91.17 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=91211
+  91.24 [Cloud] MQTT published/ack msg_id=46032 outbox=485 t=91288
+  91.31 [Cloud] MQTT published/ack msg_id=23500 outbox=334 t=91354
+  91.38 [Cloud] MQTT published/ack msg_id=37805 outbox=0 t=91419
+  94.01 =================
+  94.01 [Cloud] MQTT RX
+  94.01 {"c":"log_ack","i":"ack:76:21316","p":{"b":76,"f":21316,"t":21316}}
+  94.02 [Cloud LOG] ack rx boot=76 from=21316 to=21316
+  94.03 [Log Cloud] ack ok boot=76 to=21316 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  94.03 [Cloud] ENQ id=51191 qos=1 store=1 outbox=0->334 len=300 t=94066
+  94.04 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=94076
+  95.06 [Cloud] MQTT published/ack msg_id=51191 outbox=0 t=95102
+  96.47 =================
+  96.47 [Cloud] MQTT RX
+  96.47 {"c":"log_ack","i":"ack:76:21317","p":{"b":76,"f":21317,"t":21317}}
+  96.48 [Cloud LOG] ack rx boot=76 from=21317 to=21317
+  96.48 [Log Cloud] ack ok boot=76 to=21317 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  96.49 [Cloud] ENQ id=65018 qos=1 store=1 outbox=0->334 len=300 t=96525
+  96.49 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=96535
+  96.50 =================
+  96.50 [Cloud] MQTT RX
+  96.51 {"c": "query", "p": {"q": "query_state", "o": "valve_status"}, "i": "vt-q-1792767682311"}
+  96.51 [Cloud] UP-ACK id=vt-q-1792767682311 obj=valve_status t=96547
+  96.51 [Cloud UP JSON]
+  96.52 {"c":"ack","i":"vt-q-1792767682311","o":"valve_status","p":{"result":"received"},"t":1792767681}
+  96.53 [Cloud] enqueue OK id=51231 qos=1 store=1 len=96
+  96.53 [Cloud UP] OK
+  96.53 [CMD][INFO] Received command
+  96.53 [Command] query state: valve_status
+  96.54 [Cloud] UP-RESULT len=145 t=96569
+  96.54 [Cloud UP JSON]
+  96.55 {"s":0,"c":"result","i":"vt-q-1792767682311","o":"valve_status","t":1792767682,"value":"false","command":"query_state"}
+  96.55 [Cloud] enqueue OK id=5712 qos=1 store=1 len=119
+  96.55 [Cloud UP] OK
+  96.55 [CMD][INFO] Command executed
+  97.52 [Cloud] MQTT published/ack msg_id=65018 outbox=280 t=97566
+  97.58 [Cloud] MQTT published/ack msg_id=51231 outbox=152 t=97628
+  97.63 [Cloud] MQTT published/ack msg_id=5712 outbox=0 t=97676
+  99.13 =================
+  99.13 [Cloud] MQTT RX
+  99.14 {"c":"log_ack","i":"ack:76:21318","p":{"b":76,"f":21318,"t":21318}}
+  99.14 [Cloud LOG] ack rx boot=76 from=21318 to=21318
+  99.15 [Log Cloud] ack ok boot=76 to=21318 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+  99.15 [Cloud] ENQ id=42740 qos=1 store=1 outbox=0->334 len=300 t=99188
+  99.16 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=99198
+ 100.19 [Cloud] MQTT published/ack msg_id=42740 outbox=0 t=100233
+ 102.11 =================
+ 102.11 [Cloud] MQTT RX
+ 102.11 {"c":"log_ack","i":"ack:76:21319","p":{"b":76,"f":21319,"t":21319}}
+ 102.11 [Cloud LOG] ack rx boot=76 from=21319 to=21319
+ 102.13 [Log Cloud] ack ok boot=76 to=21319 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+ 102.14 [Cloud] ENQ id=57072 qos=1 store=1 outbox=0->334 len=300 t=102169
+ 102.14 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=102179
+ 103.15 [Cloud] MQTT published/ack msg_id=57072 outbox=0 t=103198
+ 104.46 =================
+ 104.46 [Cloud] MQTT RX
+ 104.46 {"c":"log_ack","i":"ack:76:21320","p":{"b":76,"f":21320,"t":21320}}
+ 104.46 [Cloud LOG] ack rx boot=76 from=21320 to=21320
+ 104.48 [Log Cloud] ack ok boot=76 to=21320 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+ 104.49 [Cloud] ENQ id=45421 qos=1 store=1 outbox=0->334 len=300 t=104519
+ 104.49 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=104530
+ 105.52 [Cloud] MQTT published/ack msg_id=45421 outbox=0 t=105561
+ 106.81 =================
+ 106.81 [Cloud] MQTT RX
+ 106.82 {"c":"log_ack","i":"ack:76:21321","p":{"b":76,"f":21321,"t":21321}}
+ 106.82 [Cloud LOG] ack rx boot=76 from=21321 to=21321
+ 106.84 [Log Cloud] ack ok boot=76 to=21321 covered=1/1 acked=23316 gc=21302 floor=21303 r=2
+ 106.84 [Cloud] ENQ id=10443 qos=1 store=1 outbox=0->334 len=300 t=106878
+ 106.85 [Cloud LOG] OK topic=guo_feeder/288485896ce4/log len=300 t=106888
+ 107.86 [Cloud] MQTT published/ack msg_id=10443 outbox=0 t=107908

@@ -1,0 +1,98 @@
+[
+  {
+    "case": "P1-1",
+    "desc": "无 Bearer ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "P1-2",
+    "desc": "错 Bearer ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "P1-3",
+    "desc": "正确 Bearer ⇒ 200 且含能力目录",
+    "status": "PASS",
+    "detail": "http=200 queries=22 actions=14"
+  },
+  {
+    "case": "P2-1",
+    "desc": "issue ⇒ 503 session_store_unavailable（fail-closed，不降级放行）",
+    "status": "PASS",
+    "detail": "http=503 error='session_store_unavailable' hint='D1 不可用 ⇒ 无法签发可撤销会话；已拒绝（fail-closed）'"
+  },
+  {
+    "case": "P3-1",
+    "desc": "提交命令 ⇒ 503 audit_unavailable（审计写不进去就不下发）",
+    "status": "PASS",
+    "detail": "http=503 error='audit_unavailable'"
+  },
+  {
+    "case": "P3-2",
+    "desc": "确认**没有**下发到设备（8 s 内无该 cmd_id 回帧）",
+    "status": "PASS",
+    "detail": "回帧数=0"
+  },
+  {
+    "case": "P4-1",
+    "desc": "ingest 接受真实压缩帧（200）",
+    "status": "PASS",
+    "detail": "http=200 body={'_raw': 'OK'}"
+  },
+  {
+    "case": "P4-2",
+    "desc": "错 webhook key ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "P5-1",
+    "desc": "/api/history/telemetry 可用",
+    "status": "PASS",
+    "detail": "http=200 rows=0"
+  },
+  {
+    "case": "P5-2",
+    "desc": "device snapshot 可用",
+    "status": "PASS",
+    "detail": "http=200 keys=['counts', 'device', 'event_recent', 'log_recent', 'recent_limit']"
+  },
+  {
+    "case": "P5-3",
+    "desc": "/api/admin/metrics 可用",
+    "status": "PASS",
+    "detail": "http=200"
+  },
+  {
+    "case": "P5-4",
+    "desc": "无 Bearer 的只读端点 ⇒ 401",
+    "status": "PASS",
+    "detail": "http=401"
+  },
+  {
+    "case": "P6-1",
+    "desc": "无会话访问 /app.html ⇒ 302（中间件保护生效）",
+    "status": "PASS",
+    "detail": "http=302 loc=None"
+  },
+  {
+    "case": "P6-2",
+    "desc": "静态资源可访问（未被中间件误拦）",
+    "status": "PASS",
+    "detail": "http=200"
+  },
+  {
+    "case": "P6-3",
+    "desc": "/api/auth/session 无会话 ⇒ authenticated=false",
+    "status": "PASS",
+    "detail": "http=200 body={'authenticated': False, 'turnstile_site_key': '0x4AAAAAAFeQkpkQaYDIM8v5', 'ttl_s': 43200, 'csrf': None, 'session_mode':"
+  },
+  {
+    "case": "P6-4",
+    "desc": "无会话提交命令 ⇒ 401（Pages 闸门）",
+    "status": "PASS",
+    "detail": "http=401"
+  }
+]

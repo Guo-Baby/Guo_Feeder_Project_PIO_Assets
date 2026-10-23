@@ -1,0 +1,44 @@
+[
+  {
+    "case": "C-01",
+    "desc": "读取当前 weight.enable",
+    "status": "PASS",
+    "detail": "现值=True"
+  },
+  {
+    "case": "C-02",
+    "desc": "config_set 受理",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"cfg-set\", \"t\": 1792767385, \"m\": \"config set queued, restart required\", \"command\": \"system\"}"
+  },
+  {
+    "case": "C-03",
+    "desc": "config_save 受理",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"cfg-save\", \"t\": 1792767387, \"m\": \"config save queued\", \"command\": \"system\"}"
+  },
+  {
+    "case": "C-04",
+    "desc": "重启后回读 weight.enable == False",
+    "status": "PASS",
+    "detail": "回读=False（改前 True）"
+  },
+  {
+    "case": "C-05",
+    "desc": "串口出现 config saved + 重启",
+    "status": "PASS",
+    "detail": "saved=True rst=True"
+  },
+  {
+    "case": "C-06",
+    "desc": "重启后串口出现预期初始化行",
+    "status": "PASS",
+    "detail": "pattern='Disabled by config'"
+  },
+  {
+    "case": "C-07",
+    "desc": "重启后串口**不**出现被禁止的行",
+    "status": "FAIL",
+    "detail": "pattern='[Weight] Init OK'"
+  }
+]

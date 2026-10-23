@@ -1,0 +1,82 @@
+{
+  "results": [
+    {
+      "case": "E0-1",
+      "desc": "dev Worker /api/ui/catalog 可达",
+      "status": "PASS",
+      "detail": "http=200 queries=22"
+    },
+    {
+      "case": "E0-2",
+      "desc": "无 Bearer ⇒ 401",
+      "status": "PASS",
+      "detail": "http=401"
+    },
+    {
+      "case": "E2-0",
+      "desc": "MQTT 已订阅 /up（先订阅再下发）",
+      "status": "PASS",
+      "detail": "guo_feeder/288485896ce4/up"
+    },
+    {
+      "case": "E1-1",
+      "desc": "提交只读查询 → 202 已发布",
+      "status": "PASS",
+      "detail": "http=202 state='published' executed=False"
+    },
+    {
+      "case": "E1-2",
+      "desc": "响应明确 executed=false / verified=false",
+      "status": "PASS",
+      "detail": "executed=False verified=False"
+    },
+    {
+      "case": "E1-3",
+      "desc": "发布后状态非终态",
+      "status": "PASS",
+      "detail": "state='published' terminal=False"
+    },
+    {
+      "case": "E2-1",
+      "desc": "抓到设备真实回帧",
+      "status": "PASS",
+      "detail": "{\"s\": 0, \"c\": \"result\", \"i\": \"e2e92768205\", \"t\": 1792768204, \"registry_version\": 3, \"registry_checksum\": 489914087, \"count\": 4, \"dirty\": false, \"command\": \"workflow.sync_info\"}"
+    },
+    {
+      "case": "E2-2",
+      "desc": "回帧是压缩形态（有整数 s、无 status）",
+      "status": "PASS",
+      "detail": "keys=['c', 'command', 'count', 'dirty', 'i', 'registry_checksum', 'registry_version', 's', 't']"
+    },
+    {
+      "case": "E3-1",
+      "desc": "ingest 接受真实帧",
+      "status": "PASS",
+      "detail": "http=200 body={\"_raw\": \"OK\"}"
+    },
+    {
+      "case": "E3-2",
+      "desc": "审计状态被真实帧推进到终态 done",
+      "status": "PASS",
+      "detail": "state='done' effective='done' terminal=True"
+    },
+    {
+      "case": "E3-3",
+      "desc": "first_frame_at 已落（设备已确认）",
+      "status": "PASS",
+      "detail": "first_frame_at=1792768207"
+    }
+  ],
+  "cmd_id": "e2e92768205",
+  "frame": {
+    "s": 0,
+    "c": "result",
+    "i": "e2e92768205",
+    "t": 1792768204,
+    "registry_version": 3,
+    "registry_checksum": 489914087,
+    "count": 4,
+    "dirty": false,
+    "command": "workflow.sync_info"
+  }
+}
