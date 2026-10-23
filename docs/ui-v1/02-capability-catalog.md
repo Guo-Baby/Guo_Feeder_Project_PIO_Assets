@@ -193,3 +193,58 @@ stepper_enable · stepper_busy · stepper_last_result · stepper_last_pulses
 | G-5 | **无"停 workflow"的 MQTT 命令** | 卡住的流程只能等超时（最长 600 s）或串口 | 记为高风险；UI 只能显示"无法中断" |
 | G-6 | **无 `workflow.get` 的"草稿"概念** | 改动即 `dirty`，误操作会污染设备态 | UI 侧做本地草稿（不落设备） |
 | G-7 | `stepper`/`vibration` **无结构化日志码** | 云端看不到这两个模块的事件 | 专项立项（不在 UI 范围） |
+
+---
+
+# 附录 F · v1.1 修订（2026-10-23）
+
+## F.1 本轮新增的能力条目（全部为**拟议**，未实现）
+
+| 命令 | 形态 | F | C | H | 说明 |
+|---|---|---|---|---|---|
+| 安全停止 | `c="safety"` `p.o="stop_all"` | ✘ 拟议 | ✘ | ✘ | 见 `11` §2、`15` F-3 |
+| 解除停机锁 | `c="safety"` `p.o="clear"` | ✘ 拟议 | ✘ | ✘ | 解除 `latched` |
+| 强制重启 | `system.force_restart` | ✘ 拟议 | ✘ | ✘ | 见 `11` §4、`15` F-4 |
+| 重启预检 | `system.restart` + `p.precheck=true` | ✘ 拟议 | ✘ | ✘ | 见 `15` F-9 |
+| 启动安全电平 | `safety_outputs_init()`（非命令） | ✘ 拟议 | — | ✘ | 见 `15` F-2 |
+| `boot_seq` 状态键 | `query_state o=boot_seq` | ✘ 拟议 | ✘ | ✘ | 见 `15` F-6/F-7 |
+
+★ **不做成 Action** 的理由：注册 Action 会重排 stable_id 并递增 `v`（`v:4 → v:5`），
+导致所有云端缓存的 `k` 失效。见 `15` §0。
+
+## F.2 §3.10 振动功能的三态（需求明确要求分开标）
+
+| 维度 | 状态 | 依据 |
+|---|---|---|
+| **代码支持** | ✔ 完整 | `vibration.cpp` 有 `start/stop/task`，`duration_ms=0` 持续、`>0` 定时，30 s 硬上限 |
+| **协议/UI 支持** | ✔ 可下发 | `VIBRATION_START`(`k=11`) / `VIBRATION_STOP`(`k=12`)；UI 拟安排在控制页 + 详情页 |
+| **硬件验证** | **✘ 仅验证了"开/关"** | 定时自动停止**未验证**（MEMORY：`振动电机目前只验证了开关，定时停止行为尚未验证） |
+
+⇒ UI 必须标 **「未验证」** 徽标。**不得**因为用户"暂时采信代码"就标成已通过。
+
+## F.3 硬件验证状态（本轮更新，替代 §1.2 的旧口径）
+
+| 能力 | 硬件验证 | 证据 |
+|---|---|---|
+| HX711 / 电子秤读数 | ✅ | `weight_valid=true`，实测 ≈3.3 g / 1080.63 g（接线错误时的值） |
+| 电磁阀 开 / 关 | ✅ | 21 g 闭环 `VALVE_OPEN_MS=45364`，全程无 `FORCE_CLOSE` |
+| Workflow（开阀→减重21g→关阀） | ✅ 多次 | `DELTA_G=21.04`、`WF_FINISHED STEPS_DONE=4` |
+| 步进电机真实转动 | ❌ | **DRV8825 已损坏**，替换件未到；`TEST_STEPPER` 只验证了 LEDC 建波 |
+| 振动 开 / 关 | ✅ | 已实测 |
+| 振动 **定时自动停止** | ❌ | 未测 |
+| 称重清零 `WEIGHT_ZERO` | ❌ | 未在真机执行 |
+| RTC | ❌（且**不可用**） | 板上未接芯片 ⇒ 每 boot WARN 是预期行为 |
+| OLED | △ | 能显示，但 `sendBuffer()` 每 50 ms 阻塞 6.4 ms |
+
+★ 报告中**必须**区分：编译通过 / 协议可达 / 设备回帧 / 物理行为。
+前两者**不能**替代后两者（项目记述纪律）。
+
+## F.4 查询能力补充（本轮实测确认的字段）
+
+| 查询 | 额外可用字段 | 用途 |
+|---|---|---|
+| `query_workflows` | `state`（IDLE/RUNNING/WAITING/FINISHED/TIMEOUT/ERROR）、`current_step`、`stable_id` | **识别在跑的 Workflow**（强停必需） |
+| `workflow.sync_info` | `registry_version` / `registry_checksum` / `count` / `dirty` | 轻量同步入口 |
+| `config_query` | **回两条帧**，取第二条（`type=config_result`，`data` 在顶层） | 参数目录真实值 |
+| `system.restart_status` | `state` / `critical_operations` / `restart_pending` / `remain_ms` / `safe_delay_ms` | 重启前预检 |
+| `registry` | `version` / `checksum` / `count` / `entries[]` | **无 boot_seq**（`13` §3.5） |

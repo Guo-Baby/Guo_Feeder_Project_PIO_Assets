@@ -1,0 +1,48 @@
+%% Guo Feeder · 安全停机与强制重启状态机（v1.1 · 2026-10-23）
+%% 配套文档：11-emergency-stop-and-restart.md
+%% 说明：左侧 = 强制停止（三层），右侧 = 强制重启（含恢复核查）
+
+graph TD
+  subgraph ESTOP["强制停止 stop_all（设备侧 + UI 侧）"]
+    E0["用户点「强制停止」"] --> E1["UI: T_REQUESTING"]
+    E1 --> E2["Pages 鉴权 + 审计(requesting)<br/>生成 cmd_id"]
+    E2 --> E3["发布 c=safety p.o=stop_all"]
+    E3 --> E4["UI: T_PUBLISHED / T_ACKED"]
+    E3 --> D1["设备: latched = true"]
+    D1 --> D2["workflow_stop_all()<br/>（释放 Critical + 置 IDLE）"]
+    D2 --> D3["valve_force_close()"]
+    D3 --> D4["stepper_emergency_stop()"]
+    D4 --> D5["vibration_stop()"]
+    D5 --> D6["读回三项实际状态"]
+    D6 --> E5{"全部安全？"}
+    E5 -->|是| E6["UI: T_DONE 已停止（已核实）"]
+    E5 -->|否/超时| E7["UI: T_PARTIAL 部分未确认"]
+    E6 --> E8["latched 保持<br/>需 safety.clear 或再跑流程"]
+    E7 --> E9["人工：重试 / 单发关阀 / 转强重启"]
+    E6 --> E8
+  end
+
+  subgraph FRS["强制重启（UI 9 态）"]
+    R0["保护区点「强制重启…」"] --> R1["FR_ARMED<br/>输入别名末4位"]
+    R1 --> R2["FR_CONFIRMED"]
+    R2 --> R3["先发 safety.stop_all"]
+    R3 -->|success/partial| R4["FR_REBOOTING<br/>发 system.force_restart"]
+    R3 -->|failed| RX["FR_ABORT 中止"]
+    R4 -->|Flash 写入中| RY["被拒绝<br/>FR_ABORT + 原因"]
+    R4 --> R5["FR_WAITING_OFFLINE"]
+    R5 --> R6["FR_WAITING_ONLINE<br/>上限 60s"]
+    R6 -->|新 boot 上线| R7["FR_RECOVERING<br/>逐项 query_state"]
+    R6 -->|60s 未上线| RM["FR_MANUAL 人工介入"]
+    R7 --> R8{"四项全绿？"}
+    R8 -->|是| R9["FR_DONE"]
+    R8 -->|否| RA["FR_PARTIAL<br/>30s 内再核 6 次"]
+    RA -->|仍不全| RM
+  end
+
+  note1["★ boot_seq 尚不存在<br/>⇒ 「这是重启后的新实例」<br/>只能标注为推断/partial"]
+  R6 -.-> note1
+
+  classDef danger fill:#fbeaea,stroke:#a32d2d,color:#7d2020
+  classDef ok fill:#eaf3de,stroke:#3b6d11,color:#2f5c0d
+  class E7,RX,RY,RA,RM note1 danger
+  class E6,R9 ok

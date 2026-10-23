@@ -272,3 +272,63 @@ GET /api/admin/device/:id/command-log?cmd_id=<id>
 | 用 toast 展示最终结果 | 会消失，用户回来看不到 |
 | 关阀也弹二次确认 | 违背"安全方向要最快" |
 | 只在前端做连点防护 | 刷新即绕过 |
+
+---
+
+# 附录 C · v1.1 修订（2026-10-23）
+
+> 九态定义不变。本附录补三块：**新增命令集合**、**用户四态映射与保留策略**、
+> **强停/强重启的专用态**。详细同步策略见 `13-sync-and-command-state.md`。
+
+## C.1 命令全集（含本轮新增）
+
+| 族 | 命令 | 现状 | 风险级 | 幂等 |
+|---|---|---|---|---|
+| 执行 | `c="action"` + `v`/`k` | ✅ 现有 | 按 Action | 否（开阀/出粮） |
+| 执行 | `c="workflow"` + `v`/`k` | ✅ 现有 | 高 | 否 |
+| 管理 | `workflow.{sync_info,list,get,create,set,delete,save}` | ✅ 现有 | 中 | 是 |
+| 配置 | `config.{query,set,save,restart,reset,backup,module,delete}` | ✅ 现有 | 中~高 | 是 |
+| 系统 | `system.{restart,reboot,restart_status,memory,flash,stats,loop,memwatch,time,weight_zero,wifi_config}` | ✅ 现有 | 中 | 是 |
+| **安全** | **`c="safety"` `p.o="stop_all"`** | ❌ **拟议（F-3）** | 高（安全方向） | **是** |
+| **安全** | **`c="safety"` `p.o="clear"`** | ❌ **拟议（F-3）** | 中 | 是 |
+| **系统** | **`system.force_restart`** | ❌ **拟议（F-4）** | **极高** | 否 |
+| 系统 | `system.restart` + `p.precheck=true` | ❌ **拟议（F-9）** | 中 | 是 |
+
+★ 新增命令**都不注册为 Action**，避免 registry `v` 递增导致云端缓存全失效。
+
+## C.2 用户四态 ↔ 九态映射
+
+| 用户态 | 九态 | 文案 |
+|---|---|---|
+| 进行中 | `REQUESTING` / `PUBLISHED` / `ACKED` / `ACCEPTED` / `RUNNING` | 逐态不同文案，见 `13` §2.1 |
+| 成功 | `DONE` | 「已完成 · 用时 N s」 |
+| 失败 | `FAILED` / `REJECTED` | 翻译 `e=`/`s=` 为中文原因 |
+| Unknown | `TIMEOUT` / `SUPERSEDED` / `UNPARSEABLE` | 「结果未知 · 请核实设备状态」 |
+
+## C.3 危险命令的额外规则
+
+| 命令 | Unknown 后 | 是否允许自动重发 | 附加要求 |
+|---|---|---|---|
+| 开阀 / 出粮 / 振动启动 | 显示「结果未知」 | ❌ | 必须先 `query_state` 核实 |
+| 关阀 / 振动停止 / 步进急停 | 同上 | ✅（安全方向，允许重试） | — |
+| `safety.stop_all` | 同上 | ✅ | 可用 3 条 `query_state` 独立证实 |
+| **`system.force_restart`** | — | ❌ **绝不** | 必须走 `11` §4.4 的恢复核查状态机 |
+| `config_save` | 同上 | ❌ | 设备会重启，用 boot 变化判断 |
+
+## C.4 保留与折叠（与 `13` §2.3 一致，此处只列结论）
+
+| 位置 | 上限 | 折叠规则 |
+|---|---|---|
+| 首页 | 1 | 仅进行中 |
+| 控制页 | 5 | 终态且 > 5 min 折叠 |
+| 审计页 | 全部 | 90 天 |
+
+## C.5 新增反模式（本轮补充）
+
+| 反模式 | 为什么错 |
+|---|---|
+| 用 `workflow_stop()` 声称"已停止" | 只停账本不停硬件（`10` §4.2） |
+| 强停后不等核实就显示绿色 | 违反需求 §3.1 第 6 条 |
+| 强重启后靠 `online` 事件宣告"已恢复" | `online` 只证明重连（`10` §5.4） |
+| 把 `partial` 归并成 `success` | 掩盖未确认的执行器 |
+| 同步失败后继续用旧 registry 发命令 | 需求 §3.9 红线 |
