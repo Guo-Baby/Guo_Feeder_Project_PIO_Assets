@@ -1,0 +1,38 @@
+[
+  {
+    "case": "S-01",
+    "desc": "串口已连通（收到日志行）",
+    "status": "PASS",
+    "detail": "lines=36"
+  },
+  {
+    "case": "S-02",
+    "desc": "串口 cm 通路置锁存成功（回帧 latched=true）",
+    "status": "PASS",
+    "detail": "['[CMD][RESULT] {\"status\":\"success\",\"object\":\"stop_all\",\"all_ok\":true,\"workflows_seen\":4,\"workflows_stopped\":0,\"temp_cancelled\":0,\"any_was_running\":false,\"actuators\":{\"valve\":{\"attempted\":true,\"ok\":true,\"verified\":false,\"was_active\":false,\"note\":\"already_closed\"},\"stepper\":{\"attempted\":true,\"ok\":false,\"verified\":false,\"was_active\":false,\"note\":\"no_action_running\"},\"vibration\":{\"attempted\":true,\"ok"
+  },
+  {
+    "case": "S-03",
+    "desc": "锁存期间串口 execute_action(VIBRATION_START) 被拒",
+    "status": "PASS",
+    "detail": "['[Safety] action blocked by latch: VIBRATION_START']"
+  },
+  {
+    "case": "S-04",
+    "desc": "锁存期间串口 execute_action(TEST_STEPPER_START) 被拒（tstep_start 同闸门）",
+    "status": "PASS",
+    "detail": "['[Safety] action blocked by latch: TEST_STEPPER_START']"
+  },
+  {
+    "case": "S-05",
+    "desc": "锁存期间停止类 VALVE_CLOSE 仍可用",
+    "status": "PASS",
+    "detail": "['[CMD][RESULT] {\"status\":\"accepted\",\"message\":\"Action queued\",\"action\":\"VALVE_CLOSE\",\"instance_id\":4,\"cmd\":\"result\",\"id\":\"cm2425720\",\"command\":\"execute_action\",\"timestamp\":1792771095}']"
+  },
+  {
+    "case": "S-06",
+    "desc": "clear 后锁存解除",
+    "status": "PASS",
+    "detail": "['[CMD][RESULT] {\"status\":\"success\",\"object\":\"clear\",\"was_latched\":true,\"latched\":false,\"cmd\":\"result\",\"id\":\"cm2428281\",\"command\":\"safety\",\"timestamp\":1792771097}']"
+  }
+]
