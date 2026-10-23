@@ -287,7 +287,14 @@
 
 ## 8. 提交记录
 
-见报告末尾（提交 ID 与未提交清单）。
+| 项 | 值 |
+|---|---|
+| 提交 | **`e110b96`** |
+| 分支 | `wb` → 已推送 `origin/main`（`4771330..e110b96`） |
+| 变更 | 10 个文件（4 新增 / 6 修改） |
+| 新增 | `src/app/safety.h`、`src/app/safety.cpp`、`test/ui_v11_contract/firmware_contract_check.py`、`docs/review/UI-v11-Firmware-Adaptation-2026-10-23.md` |
+| 修改 | `src/main.cpp`、`src/services/command_manager.cpp`、`src/services/system_command.h`、`src/services/system_command.cpp`、`src/services/config_manager.cpp`、`src/app/valve.cpp` |
+| **未提交** | 3 个前几轮遗留的未跟踪文档（`docs/architecture/Stepper-Vibration-Plan-Revision-Report.md`、`docs/evidence/LogAckSplit-2026-10-23/legacy-topic-rows-backup.json`、`docs/evidence/Stepper-NoRotation-Diagnosis-2026-10-22.md`）—— 不属于本轮，未触碰 |
 
 ---
 
