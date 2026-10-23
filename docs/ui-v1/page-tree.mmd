@@ -1,36 +1,66 @@
-%% Guo Feeder UI v1 —— 页面树 / 导航
-%% 说明：一级页 = 底部 tab（手机）/ 左侧导航（桌面）；二级页从右侧推入并带返回箭头
+%% Guo Feeder UI v1.1 —— 页面树 / 导航（2026-10-23 修订）
+%% 变更：新增 ⑤b 模块详情（10 个）、①a 布局管理扩展为"模块+快捷操作"、
+%%       ③c 执行中与强停、⑤d 保护区（普通/强制重启 + 恢复核查）、同步态
+%% 一级页 = 底部 tab（手机 5 项）；二级页从右推入带返回箭头
 graph TD
-  L["登录 · /login.html<br/>口令 + 可选 Turnstile"] --> H
+  L["登录 · /login.html"] --> H
 
-  subgraph TABS["一级页面（底部 tab 5 项）"]
-    H["① 首页 · 设备总览<br/>/app"]
-    C["② 设备控制<br/>/app#control"]
-    W["③ Workflow<br/>/app#workflows"]
-    R["④ 记录<br/>/app#records"]
-    D["⑤ 设备<br/>/app#device"]
+  subgraph TABS["一级页面（底部 tab 5 项 · 手机竖屏优先）"]
+    H["① 首页 · 设备总览<br/>别名 / 在线时长 / 重量 / 阀态 / 快捷操作"]
+    C["② 设备控制<br/>供水 / 出粮 / 脉冲 / 振动 / 测试"]
+    W["③ Workflow<br/>列表"]
+    R["④ 记录<br/>日志 / 审计"]
+    D["⑤ 设备<br/>列表 → 详情"]
   end
 
-  H --> Q["①a 快捷操作管理<br/>排序 / 启用"]
-  C --> CR["②a 参数输入弹层<br/>（有参数的 Action）"]
-  W --> WD["③a Workflow 详情<br/>只读 + 运行"]
-  WD --> WE["③b Workflow 编辑器<br/>草稿态 + 两阶段保存"]
-  R --> RL["④a 设备日志<br/>已解码事件 + 参数"]
-  R --> RA["④b 操作审计<br/>谁发的 / 结果如何"]
-  D --> DI["⑤a 设备信息<br/>在线 / 固件 / 凭据四态"]
-  D --> DC["⑤b 模块配置<br/>enable（会重启）"]
-  D --> DG["⑤c 诊断<br/>memory / flash / stats"]
+  H --> Q1["①a 布局管理<br/>模块显隐+排序 / 快捷操作 0~12"]
+  H --> H1["①b 命令进行中详情<br/>九态时间轴 + cmd_id"]
+
+  C --> CR["②a 参数输入弹层<br/>脉冲数 / 振动时长"]
+  C --> CC["②b 危险确认弹层<br/>开阀 / 出粮 / 强停"]
+
+  W --> WD["③a Workflow 详情<br/>只读 + 运行 + 停止"]
+  WD --> WE["③b 编辑器<br/>步骤增删改排序 / 两阶段保存"]
+  WD --> WX["③c 执行中面板<br/>当前步 / 强停 / latched"]
+
+  R --> RL["④a 设备日志<br/>CBOR 解码"]
+  R --> RA["④b 操作审计<br/>按 cmd_id / 时间 / 风险级筛选"]
+
+  D --> DL["⑤a 设备列表<br/>别名 + ID 后4位"]
+  DL --> DV["⑤0 设备详情 · 概述<br/>固件 / 最后在线 / critical / 重启态"]
+  DV --> DM["⑤b 模块列表（10）"]
+  DM --> M1["电子秤 HX711"]
+  DM --> M2["电磁阀<br/>含 safety_timeout_sec"]
+  DM --> M3["步进电机<br/>含测试启停 · 未验证"]
+  DM --> M4["振动马达<br/>未验证"]
+  DM --> M5["OLED"]
+  DM --> M6["RTC"]
+  DM --> M7["米家温湿度"]
+  DM --> M8["系统时间"]
+  DM --> M9["WiFi"]
+  DM --> M10["MQTT"]
+  DV --> DA["⑤c 别名编辑"]
+  DV --> DZ["⑤d 保护区 ⚠<br/>普通重启 / 强制重启 / 恢复核查"]
 
   subgraph STATES["状态页（全屏，非 toast）"]
     X1["会话过期"]
-    X2["权限 / 凭据失效"]
-    X3["设备离线"]
+    X2["权限拒绝 / 凭据失效"]
+    X3["设备离线<br/>最后在线 X 前"]
     X4["首次使用 · 无数据"]
     X5["接口错误"]
+    X6["能力同步中（阻断操作）"]
+    X7["能力同步失败（只读模式）"]
+    X8["版本冲突（两次 mismatch）"]
   end
 
   H -.401.-> X1
-  C -.离线.-> X3
   C -.403.-> X2
+  C -.离线.-> X3
   R -.空表.-> X4
   R -.5xx.-> X5
+  C -.同步中.-> X6
+  C -.同步失败.-> X7
+  C -.version mismatch x2.-> X8
+
+  classDef danger fill:#fbeaea,stroke:#a32d2d,color:#7d2020
+  class DZ danger

@@ -240,25 +240,59 @@ body{
 .emptybox{border:1px dashed var(--line);border-radius:12px;padding:16px;text-align:center;color:var(--text-3);font-size:12.5px}
 .footer-note{margin-top:44px;color:var(--text-3);font-size:12.3px;max-width:820px;line-height:1.7}
 code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
+
+/* ---------------- v1.1 新增组件 ---------------- */
+.bv{font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:600;letter-spacing:.02em;white-space:nowrap}
+.bv.ok{background:#eaf3de;color:#3b6d11}
+.bv.un{background:#fdf3e0;color:#8a5308}
+.bv.na{background:#eeede7;color:#8a8a82}
+.kv{display:flex;justify-content:space-between;align-items:center;gap:10px;
+    padding:7px 0;border-bottom:1px solid var(--line-2);font-size:12.5px}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--text-2)}
+.kv .v{font-variant-numeric:tabular-nums;font-weight:500;text-align:right}
+.dz{border:1px solid #f1c9c9;background:#fdf7f7;border-radius:12px;padding:12px}
+.dz h5{margin:0 0 5px;font-size:12.5px;color:#7d2020;display:flex;gap:6px;align-items:center}
+.dz .hint{font-size:11.5px;color:#8a5b5b;line-height:1.6;margin:6px 0 10px}
+.slider{height:4px;background:#e6e5df;border-radius:2px;position:relative;margin:14px 4px 8px}
+.slider .fill{position:absolute;left:0;top:0;height:4px;background:var(--accent);border-radius:2px}
+.slider .knob{position:absolute;top:-6px;width:16px;height:16px;border-radius:50%;
+              background:#fff;border:2px solid var(--accent);margin-left:-8px;box-shadow:0 1px 2px rgba(0,0,0,.15)}
+.chk{width:18px;height:18px;border-radius:5px;border:1.5px solid var(--line);flex:0 0 18px;position:relative}
+.chk.on{background:var(--accent);border-color:var(--accent)}
+.chk.on::after{content:"✓";color:#fff;font-size:11px;position:absolute;left:3.5px;top:-2px}
+.chk.lock{border-color:#e0dfd8;background:#f2f1ec}
+.chk.lock::after{content:"·";color:#a9a9a1;font-size:15px;position:absolute;left:6px;top:-6px}
+.prog{height:3px;background:#e6e5df;border-radius:2px;overflow:hidden;margin-top:9px}
+.prog i{display:block;height:3px;background:var(--info);border-radius:2px}
+.note-line{font-size:11.5px;color:var(--text-3);line-height:1.6;margin-top:7px}
+
 </style>
 </head>
 <body>
 <div class="page">
 
   <div class="page-head">
-    <h1>Guo Feeder · UI v1 静态原型</h1>
-    <div class="sub">用于评审 <b>页面布局 / 层级 / 状态反馈</b>。8 个关键界面，手机竖屏 376×748。</div>
+    <h1>Guo Feeder · UI v1.1 静态原型</h1>
+    <div class="sub">
+      用于评审 <b>页面布局 / 层级 / 状态反馈 / 安全语义</b>。
+      <b>24 个界面</b>，手机竖屏 376×748（桌面/平板此轮不作验收）。
+      <br>v1.0 的 9 屏全部保留并微调；新增 15 屏覆盖强制停止、重启、设备详情、Config、同步与 Unknown。
+    </div>
     <div class="notice">
       <span>⚠</span>
       <span><b>纯静态设计稿。</b>不连接任何真实接口、不含密钥、点击不触发任何设备命令；
-      所有数值均为示例。真实行为以 <code>docs/ui-v1/</code> 下的设计文档为准。</span>
+      所有数值均为示例。按钮上的<b>「已验证 / 未验证 / 拟议」</b>标记反映真实硬件与实现状态，
+      真实行为以 <code>docs/ui-v1/10</code>~<code>15</code> 的设计文档为准。</span>
     </div>
     <div class="legend">
-      <span>绿色 = 安全方向 / 成功</span>
-      <span>橙色 = 需注意 / 未验证</span>
-      <span>红色 = 危险 / 失败</span>
-      <span>蓝条 = 进行中</span>
+      <span>绿色 = 安全方向 / 成功 / 已验证</span>
+      <span>橙色 = 需注意 / 未验证 / 结果未知</span>
+      <span>红色 = 危险 / 失败 / 高风险区</span>
+      <span>蓝色 = 进行中 / 同步中</span>
       <span>虚线卡 = 运行时不执行</span>
+      <span>🔒 = 安全模块，不可隐藏</span>
+      <span>灰字 = 预留参数 / 当前无效果</span>
     </div>
   </div>
 
@@ -271,8 +305,8 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
       <div class="phone"><div class="screen">
         <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
         <div class="appbar">
-          <div class="title">Guo Feeder</div>
-          <span class="chip ok">● 在线 12 s</span>
+          <div class="title">水碗 <span class="tiny" style="font-weight:400">…6ce4</span></div>
+          <span class="chip ok">● 在线</span>
         </div>
         <div class="body">
 
@@ -288,18 +322,35 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
                 <span class="chip ok">秤 有效</span>
               </div>
             </div>
-            <div class="row tiny" style="margin-top:12px;gap:12px">
+            <div class="tiny" style="margin-top:12px;font-variant-numeric:tabular-nums">
+              在线 <b style="color:var(--text)">3 天 4 小时 12 分钟 8 秒</b>
+            </div>
+            <div class="row tiny" style="margin-top:6px;gap:12px">
               <span>WiFi −51 dBm</span><span>MQTT ✓</span><span>RTC 未接</span>
             </div>
           </div>
 
-          <div class="sec-t">快捷操作</div>
+          <!-- 进行中命令条：永不折叠 -->
+          <div class="card" style="border-color:#cadde9;background:var(--info-soft);margin-top:10px;padding:11px 13px">
+            <div class="row between">
+              <div style="min-width:0">
+                <div style="font-size:13px;font-weight:600;color:#1d4763">跑 21 g 流程 · 执行中</div>
+                <div class="tiny" style="color:#3a6480;margin-top:2px">第 2/4 步 · 已 0:38 · 已减 12.4 g</div>
+              </div>
+              <button class="btn" style="padding:5px 9px;font-size:12px">查看</button>
+            </div>
+          </div>
+
+          <div class="sec-t">快捷操作 <span style="float:right;color:var(--text-3)">6 / 12 · 管理</span></div>
           <div class="quick">
             <div class="qbtn dangerish"><div class="k">开阀</div><div class="s">需二次确认</div></div>
             <div class="qbtn"><div class="k">关阀</div><div class="s">立即执行</div></div>
             <div class="qbtn water"><div class="k">跑 21 g 流程</div><div class="s">上次 45 秒</div></div>
-            <div class="qbtn"><div class="k">秤清零</div><div class="s">需空载</div></div>
+            <div class="qbtn"><div class="k">出粮 120°</div><div class="s">未验证</div></div>
+            <div class="qbtn"><div class="k">振动 10 s</div><div class="s">未验证</div></div>
+            <div class="qbtn"><div class="k">设备状态</div><div class="s">只读</div></div>
           </div>
+          <div class="tiny" style="margin-top:8px;text-align:center">超过 6 个时，其余折叠进「更多」——安全状态永不被挤走</div>
 
           <div class="sec-t">今日</div>
           <div class="card">
@@ -329,17 +380,21 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
         <div class="body">
 
           <div class="grp">
-            <h4>供水</h4>
+            <h4>供水 <span class="chip ok">已验证</span></h4>
             <div class="btns">
               <button class="btn danger">开阀</button>
               <button class="btn">关阀</button>
             </div>
+            <div class="tiny" style="margin-top:8px">
+              开阀后 <b>60 秒</b>自动关闭（设备端兜底，与手机是否在线无关）。
+            </div>
           </div>
 
-          <div class="grp">
-            <h4>称重</h4>
-            <div class="btns one">
-              <button class="btn">秤清零（请确认空载）</button>
+          <div class="grp" style="opacity:.95">
+            <h4>称重 <span class="chip">只读</span></h4>
+            <div class="row between">
+              <span class="tiny">当前 1759.9 g · 有效</span>
+              <span class="tiny">清零见「设备 → 电子秤」</span>
             </div>
           </div>
 
@@ -402,7 +457,7 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
               <div class="n">关阀</div><div class="n">结束</div>
             </div>
             <div class="row" style="margin-top:11px;gap:8px">
-              <button class="btn" disabled style="flex:1">运行中…</button>
+              <button class="btn danger" style="flex:1">强制停止</button>
               <button class="btn" style="flex:1">详情</button>
             </div>
           </div>
@@ -436,8 +491,9 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
             </div>
           </div>
 
-          <div class="banner warn" style="margin-top:12px">
-            无法从 App 中断正在运行的流程；只能等超时，或现场重启设备。
+          <div class="banner info" style="margin-top:12px">
+            「强制停止」会关闭电磁阀、停止步进与振动，并<b>读回核实</b>。
+            需固件新增 <code>safety.stop_all</code>（见 15-firmware-change-list.md F-3）。
           </div>
 
         </div>
@@ -709,7 +765,7 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
       <div class="phone"><div class="screen">
         <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
         <div class="appbar"><span class="back">‹</span><div class="title">快捷操作</div>
-          <span class="chip">最多 4 个</span></div>
+          <span class="chip">0 ~ 12 个</span></div>
         <div class="body">
 
           <div class="tiny" style="margin-bottom:10px">拖动调整顺序，或用右侧的 ↑↓。首页方格按此顺序显示。</div>
@@ -818,16 +874,818 @@ code{background:#ecebe5;padding:1px 5px;border-radius:4px;font-size:12px}
       </div></div>
     </div>
 
+    <!-- ⑩ Workflow 详情（运行中） -->
+    <div class="frame">
+      <div class="cap"><span class="n">10</span><span class="t">Workflow 详情 · 运行中</span>
+        <span class="d">第 0 步虚线标注「不执行」；强停是主操作；运行中禁止编辑</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">开阀-减重21g-关阀</div>
+          <span class="chip info">● 运行中</span></div>
+        <div class="body">
+
+          <div class="card" style="padding:14px">
+            <div class="row between">
+              <div><div style="font-size:19px;font-weight:600;font-variant-numeric:tabular-nums">0:38</div>
+                <div class="tiny">已运行 · 超时上限 6:00</div></div>
+              <div style="text-align:right">
+                <div class="tiny">第 <b style="color:var(--text);font-size:14px">2</b> / 4 步</div>
+                <div class="tiny" style="margin-top:3px">slot 3 · v3</div>
+              </div>
+            </div>
+            <div class="prog"><i style="width:48%"></i></div>
+          </div>
+
+          <div class="sec-t">步骤</div>
+
+          <div class="step skipped">
+            <div class="idx">0</div>
+            <div class="main"><div class="nm">关阀（初始化）</div>
+              <div class="pf">◌ 不执行 —— 云端执行会跳过第 0 步</div></div>
+          </div>
+
+          <div class="step">
+            <div class="idx">1</div>
+            <div class="main"><div class="nm">开阀</div>
+              <div class="pf">✔ 已完成 · 05:46:52</div></div>
+          </div>
+
+          <div class="step" style="border-color:#cadde9;background:var(--info-soft)">
+            <div class="idx" style="background:#fff;border-color:#cadde9;color:var(--info)">2</div>
+            <div class="main"><div class="nm" style="color:#1d4763">等待减重 21 g</div>
+              <div class="pf" style="color:#3a6480">已减 <b>12.4</b> / 21 g · 起点 1781.2 g</div>
+              <div class="prog" style="background:#cadde9"><i style="width:59%"></i></div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="idx">3</div>
+            <div class="main"><div class="nm">关阀</div><div class="pf">待执行</div></div>
+          </div>
+
+          <div class="banner warn" style="margin-top:4px">
+            强制停止会<b>立即关闭电磁阀</b>并停止其他执行器；流程剩余步骤不再执行。
+          </div>
+
+          <button class="btn danger block">强制停止</button>
+          <button class="btn block ghost" style="margin-top:8px" disabled>编辑（运行中不可编辑）</button>
+
+        </div>
+        <div class="tabbar">
+          <div><span class="g">◉</span>首页</div><div><span class="g">◈</span>控制</div>
+          <div class="on"><span class="g">≡</span>流程</div><div><span class="g">☰</span>记录</div>
+          <div><span class="g">⚙</span>设备</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑪ 强制停止确认 -->
+    <div class="frame">
+      <div class="cap"><span class="n">11</span><span class="t">强制停止 · 确认弹层</span>
+        <span class="d">列出"会做什么 / 不保证什么"；不需要输入验证码（往安全方向）</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">开阀-减重21g-关阀</div></div>
+        <div class="body" style="filter:blur(1.5px);opacity:.55">
+          <div class="card"><div class="readout">1781.2<small>g</small></div>
+            <div class="sub-readout">水箱重量</div></div>
+          <div class="card" style="margin-top:10px;height:90px"></div>
+          <div class="card" style="margin-top:10px;height:90px"></div>
+        </div>
+        <div class="overlay">
+          <div class="sheet">
+            <h3>⚠ 强制停止</h3>
+            <div class="tiny">将立即终止「开阀-减重21g-关阀」</div>
+            <div class="target">设备：水碗（…6ce4） · 第 2/4 步 · 已 0:38</div>
+            <div class="facts">
+              <b>会做：</b>关闭电磁阀 · 停止步进 · 停止振动<br>
+              <b>会做：</b>读回三个执行器的实际状态<br>
+              <b>不保证：</b>已出水量、历史步骤结果
+            </div>
+            <div class="banner info" style="margin:11px 0 0">
+              如果 15 秒内没有回应，会显示「结果未知」——那时可以用「读取设备状态」独立核实。
+            </div>
+            <div class="acts">
+              <button class="btn">取消</button>
+              <button class="btn danger">确认停止</button>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑫ 设备详情 · 概述 -->
+    <div class="frame">
+      <div class="cap"><span class="n">12</span><span class="t">设备详情 · 概述</span>
+        <span class="d">固件/在线/critical/重启态；10 个模块入口；保护区在页面底部</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">水碗</div>
+          <button class="btn" style="padding:5px 9px;font-size:12px">改别名</button></div>
+        <div class="body">
+
+          <div class="card">
+            <div class="kv"><span class="k">设备 ID</span><span class="v">288485896ce4</span></div>
+            <div class="kv"><span class="k">别名</span><span class="v">水碗</span></div>
+            <div class="kv"><span class="k">状态</span><span class="v" style="color:var(--accent)">● 在线</span></div>
+            <div class="kv"><span class="k">在线时长</span><span class="v">3 天 4 小时 12 分钟 8 秒</span></div>
+            <div class="kv"><span class="k">固件</span><span class="v">0.7.0 · a7d456c</span></div>
+            <div class="kv"><span class="k">Critical Operation</span><span class="v">0</span></div>
+            <div class="kv"><span class="k">重启状态</span><span class="v">idle</span></div>
+          </div>
+
+          <div class="sec-t">模块（10）</div>
+          <div class="navlist">
+            <div class="navitem"><div class="ic">⚖</div>
+              <div class="tx"><b>电子秤 HX711</b><span>已启用 · 1759.9 g · 有效</span></div>
+              <span class="bv ok">已验证</span></div>
+            <div class="navitem"><div class="ic">🚰</div>
+              <div class="tx"><b>电磁阀</b><span>已启用 · 关闭 · 60 s 自动关</span></div>
+              <span class="bv ok">已验证</span></div>
+            <div class="navitem"><div class="ic">⚙</div>
+              <div class="tx"><b>步进电机</b><span>未启用 · DRV8825 待更换</span></div>
+              <span class="bv un">未验证</span></div>
+            <div class="navitem"><div class="ic">📳</div>
+              <div class="tx"><b>振动马达</b><span>未启用 · 定时停止未验证</span></div>
+              <span class="bv un">未验证</span></div>
+            <div class="navitem"><div class="ic">🖥</div>
+              <div class="tx"><b>OLED</b><span>已启用 · 仅配置</span></div>
+              <span class="bv na">不可观测</span></div>
+            <div class="navitem"><div class="ic">🕒</div>
+              <div class="tx"><b>RTC</b><span>已启用但芯片未接（每 boot WARN 属预期）</span></div>
+              <span class="bv un">未接</span></div>
+            <div class="navitem"><div class="ic">🌡</div>
+              <div class="tx"><b>米家温湿度</b><span>24.1 ℃ / 58 %</span></div>
+              <span class="bv ok">已验证</span></div>
+            <div class="navitem"><div class="ic">📶</div>
+              <div class="tx"><b>WiFi</b><span>−51 dBm · 良好</span></div></div>
+            <div class="navitem"><div class="ic">☁</div>
+              <div class="tx"><b>MQTT</b><span>已连接 · 重试 0</span></div></div>
+            <div class="navitem"><div class="ic">⏱</div>
+              <div class="tx"><b>系统时间</b><span>NTP 已同步</span></div></div>
+          </div>
+
+          <div class="sec-t">更多</div>
+          <div class="navlist">
+            <div class="navitem"><div class="ic">☰</div>
+              <div class="tx"><b>Config 分类</b><span>10 个模块 · 逐项编辑</span></div></div>
+            <div class="navitem"><div class="ic">◱</div>
+              <div class="tx"><b>操作审计</b><span>最近 90 天</span></div></div>
+          </div>
+
+          <div class="dz" style="margin-top:12px">
+            <h5>⚠ 保护区</h5>
+            <div class="hint">含<b>强制重启</b>。会中断正在运行的流程与未完成的写入。</div>
+            <button class="btn block ghost" style="border-color:#f1c9c9;color:#7d2020">进入保护区 ›</button>
+          </div>
+
+        </div>
+        <div class="tabbar">
+          <div><span class="g">◉</span>首页</div><div><span class="g">◈</span>控制</div>
+          <div><span class="g">≡</span>流程</div><div><span class="g">☰</span>记录</div>
+          <div class="on"><span class="g">⚙</span>设备</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑬ 保护区：普通重启 / 强制重启 -->
+    <div class="frame">
+      <div class="cap"><span class="n">13</span><span class="t">保护区 · 两种重启</span>
+        <span class="d">普通重启遇 Critical 会拒绝并说明；强制重启是独立高风险入口</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">保护区</div><span class="chip bad">高风险</span></div>
+        <div class="body">
+
+          <div class="banner bad">
+            这两个操作都会让设备中断当前工作。非必要不要使用。
+          </div>
+
+          <div class="card">
+            <div class="row between"><div style="font-size:14px;font-weight:600">普通重启</div>
+              <span class="chip ok">安全</span></div>
+            <div class="tiny" style="margin-top:6px;line-height:1.65">
+              等待 Critical Operation 归零后，再等 10 秒安全窗口才真正重启。<br>
+              当前：<b style="color:var(--text)">critical = 2</b>（正在保存配置）⇒ <b>会被拒绝</b>。
+            </div>
+            <button class="btn block" style="margin-top:10px" disabled>重启（当前不可用）</button>
+            <div class="note-line">失败原因会明确显示，而不是"点了没反应"。</div>
+          </div>
+
+          <div class="dz" style="margin-top:12px">
+            <h5>强制重启 <span class="chip bad">极高风险</span></h5>
+            <div class="hint">
+              不等待未完成的操作，<b>300 毫秒</b>后直接复位。<br>
+              会先尝试关闭电磁阀/步进/振动，但<b>不保证</b>动作完成。<br>
+              <b>正在写 Flash 时会被拒绝</b>（防止配置/文件损坏）。
+            </div>
+            <div class="kv" style="border-color:#f1c9c9"><span class="k">将跳过</span><span class="v">2 个未完成操作</span></div>
+            <div class="kv" style="border-color:#f1c9c9"><span class="k">最近一次强重启</span><span class="v">从未</span></div>
+            <button class="btn danger block" style="margin-top:10px">强制重启…</button>
+            <div class="note-line">需要输入别名末 4 位确认：<code>6ce4</code></div>
+          </div>
+
+          <div class="sec-t">近期安全事件</div>
+          <div class="card">
+            <div class="logrow"><div class="h"><span class="tm">10-23</span>
+              <span class="ev">强制停止</span><span class="chip ok" style="margin-left:auto">成功</span></div>
+              <div class="ps">wf_valve_20g · 第2步 · 三项执行器均已核实</div></div>
+            <div class="logrow"><div class="h"><span class="tm">10-22</span>
+              <span class="ev">普通重启</span><span class="chip ok" style="margin-left:auto">成功</span></div>
+              <div class="ps">config_save 后自动重启</div></div>
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑭ 强制重启后的恢复核查 -->
+    <div class="frame">
+      <div class="cap"><span class="n">14</span><span class="t">强制重启 · 恢复核查</span>
+        <span class="d">逐项核实；任一项读不到 ⇒ partial，绝不自动宣布成功</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:48</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">重启恢复</div>
+          <span class="chip warn">进行中</span></div>
+        <div class="body">
+
+          <div class="tl">
+            <div class="n done">停止</div><div class="n done">下发</div>
+            <div class="n done">离线</div><div class="n done">上线</div>
+            <div class="n cur">核查</div><div class="n">完成</div>
+          </div>
+
+          <div class="card" style="margin-top:14px">
+            <div class="tiny">启动时间 05:47:52 · 已重新上线 <b style="color:var(--text)">18 秒</b></div>
+            <div class="kv" style="margin-top:8px"><span class="k">设备实例</span>
+              <span class="v" style="color:var(--warn)">无法确认（缺 boot_seq）</span></div>
+          </div>
+
+          <div class="sec-t">执行器核查</div>
+          <div class="card">
+            <div class="kv"><span class="k">电磁阀</span>
+              <span class="v" style="color:var(--accent)">✔ 关闭（已核实）</span></div>
+            <div class="kv"><span class="k">步进</span>
+              <span class="v" style="color:var(--accent)">✔ busy=false</span></div>
+            <div class="kv"><span class="k">振动</span>
+              <span class="v" style="color:var(--warn)">… 读取中（第 2 次重试）</span></div>
+            <div class="kv"><span class="k">重启状态</span>
+              <span class="v" style="color:var(--accent)">✔ idle</span></div>
+          </div>
+
+          <div class="banner warn" style="margin-top:12px">
+            振动状态还没确认。<b>在确认前不会显示"已恢复"</b>——
+            超过 30 秒会转为「部分完成」，并提示你人工检查。
+          </div>
+
+          <button class="btn block" disabled>等待全部核实…</button>
+          <button class="btn block ghost" style="margin-top:8px">立即停止等待（转部分完成）</button>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑮ 设备列表 + 别名 -->
+    <div class="frame">
+      <div class="cap"><span class="n">15</span><span class="t">设备列表 / 别名编辑</span>
+        <span class="d">别名优先显示，真实 ID 永远可见但不喧宾夺主</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><div class="title">设备</div><button class="btn" style="padding:6px 10px">+ 添加</button></div>
+        <div class="body">
+
+          <div class="navlist">
+            <div class="navitem" style="background:var(--surface-2)">
+              <div class="ic">🐾</div>
+              <div class="tx"><b>水碗</b><span>…6ce4 · 在线 · 已启用 6 个模块</span></div>
+              <span class="chip ok">在线</span>
+            </div>
+            <div class="navitem">
+              <div class="ic">🍽</div>
+              <div class="tx"><b>喂食器</b><span>…a1b2 · 离线 · 最后在线 2 小时前</span></div>
+              <span class="chip">离线</span>
+            </div>
+          </div>
+
+          <div class="sec-t">别名编辑</div>
+          <div class="card">
+            <div class="tiny">别名（1~24 字符）</div>
+            <div class="inline-input" style="display:flex;margin-top:7px">
+              <b>水碗</b><span style="color:var(--text-3)">|</span>
+            </div>
+            <div class="tiny" style="margin-top:9px;line-height:1.65">
+              别名只影响显示，<b>不改变设备 ID、MQTT Topic 或命令路由</b>。<br>
+              留空则显示「设备 6ce4」。
+            </div>
+            <div class="row" style="margin-top:11px;gap:8px">
+              <button class="btn" style="flex:1">取消</button>
+              <button class="btn primary" style="flex:1">保存</button>
+            </div>
+          </div>
+
+          <div class="banner info" style="margin-top:12px">
+            完整 ID：<code>288485896ce4</code>（12 位）
+          </div>
+
+        </div>
+        <div class="tabbar">
+          <div><span class="g">◉</span>首页</div><div><span class="g">◈</span>控制</div>
+          <div><span class="g">≡</span>流程</div><div><span class="g">☰</span>记录</div>
+          <div class="on"><span class="g">⚙</span>设备</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑯ 电磁阀详情 -->
+    <div class="frame">
+      <div class="cap"><span class="n">16</span><span class="t">电磁阀详情</span>
+        <span class="d">自动关阀时间可改；显示与 Workflow 超时的关系；死参数明确标注</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">电磁阀</div>
+          <span class="bv ok">已验证</span></div>
+        <div class="body">
+
+          <div class="card">
+            <div class="row between">
+              <span class="tiny">当前状态</span><span class="chip ok">关闭</span>
+            </div>
+            <div class="kv" style="margin-top:8px"><span class="k">最近一次开启时长</span><span class="v">45.4 s</span></div>
+            <div class="kv"><span class="k">距离自动关闭</span><span class="v">—（未开启）</span></div>
+          </div>
+
+          <div class="sec-t">操作</div>
+          <div class="grp">
+            <div class="btns"><button class="btn danger">开阀</button>
+              <button class="btn">关阀</button></div>
+            <div class="btns one" style="margin-top:8px">
+              <button class="btn danger">立即强制关闭（GPIO 直接拉低）</button>
+            </div>
+          </div>
+
+          <div class="sec-t">配置</div>
+          <div class="card">
+            <div class="row between"><span style="font-size:13px">启用模块</span><span class="sw on"></span></div>
+            <div class="tiny" style="margin-top:6px">关闭后 <code>VALVE_OPEN</code>/<code>VALVE_CLOSE</code> 将不再注册，能力版本会变。</div>
+
+            <div style="margin-top:16px">
+              <div class="row between"><span style="font-size:13px">自动关闭时间</span>
+                <span style="font-weight:600;font-variant-numeric:tabular-nums">60 s</span></div>
+              <div class="slider"><div class="fill" style="width:17%"></div><div class="knob" style="left:17%"></div></div>
+              <div class="row between tiny"><span>10 s</span><span>300 s</span></div>
+              <div class="note-line">
+                默认 <b>60 s</b>（合法 10~300）。由设备端 <code>valve_task()</code> 执行，
+                <b>与手机是否在线无关</b>。
+              </div>
+              <div class="banner warn" style="margin-top:9px">
+                当前 21 g 流程实测用时 <b>45.4 s</b>。若把本值调到 60 s 以下，流程会被提前截断。
+              </div>
+            </div>
+
+            <div class="kv" style="margin-top:14px"><span class="k">GPIO</span><span class="v">12</span></div>
+            <div class="kv"><span class="k">有效电平</span><span class="v">高电平开阀</span></div>
+            <div class="kv"><span class="k">open_duration_ms</span>
+              <span class="v" style="color:var(--text-3)">0 · 预留，当前无效果</span></div>
+          </div>
+
+          <div class="banner warn">改配置需要保存并重启设备（保存后有 5 分钟窗口，可择机重启）。</div>
+          <div class="row" style="gap:8px"><button class="btn" style="flex:1">恢复默认</button>
+            <button class="btn primary" style="flex:1">保存</button></div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑰ 电子秤详情 -->
+    <div class="frame">
+      <div class="cap"><span class="n">17</span><span class="t">电子秤详情</span>
+        <span class="d">清零从常用控制移到此处；标定参数只读展示；失败会说明原因</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">电子秤 HX711</div>
+          <span class="bv ok">已验证</span></div>
+        <div class="body">
+
+          <div class="card">
+            <div class="readout" style="font-size:40px">1759.9<small>g</small></div>
+            <div class="sub-readout">12 秒前更新 · 滤波 10 样本</div>
+            <div class="row" style="margin-top:10px;gap:7px">
+              <span class="chip ok">读数有效</span><span class="chip">误差 0</span>
+            </div>
+          </div>
+
+          <div class="sec-t">维护操作</div>
+          <div class="grp">
+            <div class="btns one"><button class="btn">秤清零（零点校准）</button></div>
+            <div class="tiny" style="margin-top:8px">
+              执行前请确认秤上<b>没有重量</b>。这是 <code>WEIGHT_ZERO</code>，真机尚未验证过。
+            </div>
+          </div>
+
+          <div class="sec-t">配置</div>
+          <div class="card">
+            <div class="row between"><span style="font-size:13px">启用模块</span><span class="sw on"></span></div>
+            <div class="tiny" style="margin-top:6px;color:var(--warn)">
+              ⚠ 未接 HX711 而保持启用，会导致每 5 秒一次称重错误，
+              并触发保护性关阀。停用前请确认已断开传感器。
+            </div>
+            <div class="kv" style="margin-top:12px"><span class="k">DT / SCK</span><span class="v">6 / 7</span></div>
+            <div class="kv"><span class="k">采样间隔</span><span class="v">50 ms</span></div>
+            <div class="kv"><span class="k">比例因子</span><span class="v">741</span></div>
+            <div class="kv"><span class="k">零点偏移</span><span class="v">−800750</span></div>
+            <div class="kv"><span class="k">滤波样本</span><span class="v">10</span></div>
+            <div class="note-line">标定类参数只读；零点由「秤清零」自动更新。</div>
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑱ 步进 + 振动详情 -->
+    <div class="frame">
+      <div class="cap"><span class="n">18</span><span class="t">步进电机 / 振动马达</span>
+        <span class="d">两模块合成一屏看差异；硬上限明确标注"只能收紧不能放大"</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">步进 / 振动</div>
+          <span class="bv un">未验证</span></div>
+        <div class="body">
+
+          <div class="banner warn">
+            <b>硬件验证状态：</b>步进电机因驱动板损坏<b>从未转动过</b>；
+            振动只验证了开/关，<b>定时停止未验证</b>。请勿依赖这两个功能。
+          </div>
+
+          <div class="card">
+            <div class="row between"><div style="font-size:14px;font-weight:600">步进电机</div>
+              <span class="sw"></span></div>
+            <div class="kv" style="margin-top:8px"><span class="k">busy</span><span class="v">false</span></div>
+            <div class="kv"><span class="k">上次结果</span><span class="v">—</span></div>
+            <div class="kv"><span class="k">上次脉冲</span><span class="v">—</span></div>
+
+            <div class="btns" style="margin-top:10px">
+              <button class="btn">出粮 120°</button>
+              <button class="btn">指定脉冲</button>
+            </div>
+            <div class="btns" style="margin-top:8px">
+              <button class="btn ghost">测试启停 · 排障</button>
+              <button class="btn danger">急停</button>
+            </div>
+
+            <div class="sec-t" style="margin-top:14px">关键参数（只读示例）</div>
+            <div class="kv"><span class="k">每圈脉冲</span><span class="v">1600</span></div>
+            <div class="kv"><span class="k">脉冲周期</span><span class="v">10 000 µs ≈ 100 Hz</span></div>
+            <div class="kv"><span class="k">单次脉冲上限</span><span class="v">6400 · 硬上限</span></div>
+            <div class="kv"><span class="k">动作超时</span><span class="v">30 000 ms · 硬上限</span></div>
+            <div class="note-line">代码硬上限只能收紧，配置改大会被设备端钳回。</div>
+          </div>
+
+          <div class="card">
+            <div class="row between"><div style="font-size:14px;font-weight:600">振动马达</div>
+              <span class="sw"></span></div>
+            <div class="kv" style="margin-top:8px"><span class="k">active</span><span class="v">false</span></div>
+            <div class="kv"><span class="k">上次时长</span><span class="v">—</span></div>
+            <div class="btns" style="margin-top:10px">
+              <button class="btn">启动 10 s</button>
+              <button class="btn">停止</button>
+            </div>
+            <div class="note-line">
+              单 GPIO 控制两个马达（同时启停）。<code>duration=0</code> 表示持续振动，需手动停止。
+            </div>
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑲ OLED / RTC -->
+    <div class="frame">
+      <div class="cap"><span class="n">19</span><div class="t" style="display:inline">OLED / RTC 配置</div>
+        <span class="d">只有配置能力的模块不放操作按钮；RTC「未接芯片」是预期状态</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">OLED / RTC</div></div>
+        <div class="body">
+
+          <div class="card">
+            <div class="row between"><div style="font-size:14px;font-weight:600">OLED 屏幕</div>
+              <span class="bv na">不可观测</span></div>
+            <div class="kv" style="margin-top:8px"><span class="k">SDA / SCL</span><span class="v">4 / 5</span></div>
+            <div class="kv"><span class="k">I2C 频率</span><span class="v">100 kHz</span></div>
+            <div class="kv"><span class="k">帧延迟</span><span class="v">50 ms</span></div>
+            <div class="kv"><span class="k">旋转</span><span class="v">180°</span></div>
+            <div class="note-line">
+              无启用开关、无状态可读。此模块<b>只能改配置</b>，因此本页没有操作按钮。
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row between"><div style="font-size:14px;font-weight:600">RTC 时钟芯片</div>
+              <span class="sw on"></span></div>
+            <div class="banner warn" style="margin:10px 0 0">
+              板上<b>未焊接 RTC 芯片</b>，但配置为启用 ⇒ 每次开机都会有一条 WARN。
+              <b>这是预期行为</b>，不是故障。
+            </div>
+            <div class="kv" style="margin-top:10px"><span class="k">SDA / SCL</span><span class="v">4 / 5（与 OLED 共用）</span></div>
+            <div class="kv"><span class="k">I2C 地址</span><span class="v">0x51 (PCF8563T)</span></div>
+            <div class="kv"><span class="k">校准阈值</span><span class="v">2 s</span></div>
+            <div class="note-line">系统时间仍由 NTP 提供，RTC 只做掉电保持。</div>
+          </div>
+
+          <div class="banner info">
+            若确定不使用 RTC，可将开关置为关闭，开机日志会少一条 WARN。
+          </div>
+
+          <div class="row" style="gap:8px"><button class="btn" style="flex:1">恢复默认</button>
+            <button class="btn primary" style="flex:1">保存</button></div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ⑳ Config 分类 -->
+    <div class="frame">
+      <div class="cap"><span class="n">20</span><div class="t" style="display:inline">Config 分类列表</div>
+        <span class="d">10 个模块；敏感值脱敏；改动有"待重启"标记</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">Config</div>
+          <span class="chip warn">1 项待重启</span></div>
+        <div class="body">
+
+          <div class="banner warn">
+            有改动尚未生效。设备将在 <b>4 分 12 秒</b>后自动重启，或点「立即重启」。
+          </div>
+
+          <div class="navlist">
+            <div class="navitem"><div class="ic">🚰</div>
+              <div class="tx"><b>电磁阀</b><span>gpio 12 · 60 s 自动关</span></div>
+              <span class="chip warn">已改</span></div>
+            <div class="navitem"><div class="ic">⚖</div>
+              <div class="tx"><b>电子秤</b><span>DT 6 · SCK 7 · 比例 741</span></div></div>
+            <div class="navitem"><div class="ic">⚙</div>
+              <div class="tx"><b>步进电机</b><span>未启用</span></div></div>
+            <div class="navitem"><div class="ic">📳</div>
+              <div class="tx"><b>振动马达</b><span>未启用</span></div></div>
+            <div class="navitem"><div class="ic">🖥</div>
+              <div class="tx"><b>OLED</b><span>旋转 180°</span></div></div>
+            <div class="navitem"><div class="ic">🕒</div>
+              <div class="tx"><b>RTC</b><span>已启用 · 芯片未接</span></div></div>
+            <div class="navitem"><div class="ic">🌡</div>
+              <div class="tx"><b>米家温湿度</b><span>BLE_key •••• · 采集开</span></div></div>
+            <div class="navitem"><div class="ic">⏱</div>
+              <div class="tx"><b>系统时间</b><span>UTC+8 · 24 h 校时</span></div></div>
+            <div class="navitem"><div class="ic">📶</div>
+              <div class="tx"><b>WiFi</b><span>•••• · 密码已隐藏</span></div></div>
+            <div class="navitem"><div class="ic">☁</div>
+              <div class="tx"><b>MQTT</b><span>telemetry 开 · 凭据 ••••</span></div></div>
+          </div>
+
+          <div class="row" style="margin-top:12px;gap:8px">
+            <button class="btn" style="flex:1">立即重启</button>
+            <button class="btn" style="flex:1">取消待重启</button>
+          </div>
+          <div class="note-line" style="text-align:center">
+            取消待重启只是延后生效，改动仍在 Flash 里。
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ㉑ 布局管理 -->
+    <div class="frame">
+      <div class="cap"><span class="n">21</span><div class="t" style="display:inline">布局管理</div>
+        <span class="d">模块显隐 + 排序；安全四要素锁定；恢复默认要二次确认</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">首页布局</div>
+          <button class="btn" style="padding:5px 9px;font-size:12px">恢复默认</button></div>
+        <div class="body">
+
+          <div class="tiny" style="margin-bottom:9px">
+            拖动或用 ↑↓ 调整顺序。带 🔒 的是安全状态，不能隐藏。
+          </div>
+
+          <div class="navlist">
+            <div class="navitem">
+              <div class="chk lock"></div>
+              <div class="tx"><b>设备状态头</b><span>在线 / 在线时长 · 锁定</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk lock"></div>
+              <div class="tx"><b>重量读数</b><span>锁定</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk lock"></div>
+              <div class="tx"><b>阀门状态</b><span>锁定</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk lock"></div>
+              <div class="tx"><b>进行中命令</b><span>锁定 · 有命令时才显示</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk on"></div>
+              <div class="tx"><b>快捷操作</b><span>6 个</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk on"></div>
+              <div class="tx"><b>今日统计</b><span>运行次数 / 累计供水</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk"></div>
+              <div class="tx"><b>环境温湿度</b><span>已隐藏</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+            <div class="navitem">
+              <div class="chk on"></div>
+              <div class="tx"><b>近期命令</b><span>最近 3 条</span></div>
+              <span class="drag">⋮⋮</span>
+            </div>
+          </div>
+
+          <div class="banner info" style="margin-top:12px">
+            布局保存在<b>本机浏览器</b>（按设备区分）。换手机不会同步，清缓存会恢复默认。
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ㉒ 快捷操作 0 个 / 8 个 -->
+    <div class="frame">
+      <div class="cap"><span class="n">22</span><div class="t" style="display:inline">快捷操作：0 个 与 8 个</div>
+        <span class="d">数量不固定为 4；多的时候折叠，不挤压安全状态</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><div class="title">水碗</div><span class="chip ok">● 在线</span></div>
+        <div class="body">
+
+          <div class="card" style="padding:14px">
+            <div class="readout" style="font-size:38px">1759.9<small>g</small></div>
+            <div class="sub-readout">水箱重量 · 12 秒前</div>
+            <div class="tiny" style="margin-top:9px">在线 <b style="color:var(--text)">3 天 4 小时 12 分钟 8 秒</b></div>
+          </div>
+
+          <div class="sec-t">快捷操作 · 0 个</div>
+          <div class="emptybox">
+            还没有快捷操作<br>
+            <span style="font-size:11.5px">点「管理」从能力目录里添加</span>
+            <div style="margin-top:9px"><button class="btn primary" style="padding:6px 14px">去添加</button></div>
+          </div>
+
+          <div class="sec-t">快捷操作 · 8 个（折叠后）</div>
+          <div class="quick">
+            <div class="qbtn dangerish"><div class="k">开阀</div><div class="s">需确认</div></div>
+            <div class="qbtn"><div class="k">关阀</div><div class="s">立即</div></div>
+            <div class="qbtn water"><div class="k">跑 21 g</div><div class="s">45 秒</div></div>
+            <div class="qbtn"><div class="k">出粮 120°</div><div class="s">未验证</div></div>
+            <div class="qbtn"><div class="k">振动 10 s</div><div class="s">未验证</div></div>
+            <div class="qbtn"><div class="k">脉冲 1600</div><div class="s">未验证</div></div>
+          </div>
+          <div class="card" style="margin-top:9px;padding:10px;text-align:center">
+            <span class="tiny">还有 <b style="color:var(--text)">2</b> 个快捷操作 · 展开全部 ›</span>
+          </div>
+
+          <div class="note-line" style="text-align:center">
+            超过 6 个后折叠；设备状态卡始终在首屏，不被挤走。
+          </div>
+
+        </div>
+        <div class="tabbar">
+          <div class="on"><span class="g">◉</span>首页</div><div><span class="g">◈</span>控制</div>
+          <div><span class="g">≡</span>流程</div><div><span class="g">☰</span>记录</div>
+          <div><span class="g">⚙</span>设备</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ㉓ 同步态三种 -->
+    <div class="frame">
+      <div class="cap"><span class="n">23</span><div class="t" style="display:inline">能力同步：中 / 失败 / 版本冲突</div>
+        <span class="d">同步中阻断操作；失败转只读；冲突给人工重同步</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><div class="title">设备控制</div><span class="chip">v ?</span></div>
+        <div class="body">
+
+          <div class="banner info">⟳ 正在同步设备能力… 按钮暂时不可用</div>
+          <div class="grp" style="opacity:.45">
+            <h4>供水</h4>
+            <div class="btns"><button class="btn" disabled>开阀</button><button class="btn" disabled>关阀</button></div>
+          </div>
+
+          <div class="banner bad" style="margin-top:14px">
+            ✕ 无法同步设备能力（超时 8 s）<br>
+            <span style="font-size:11.5px">已切换为<b>只读模式</b>：可以看数据，不能发命令。</span>
+            <div class="row" style="margin-top:9px;gap:7px">
+              <button class="btn" style="padding:6px 11px">重试</button>
+              <button class="btn ghost" style="padding:6px 11px">查看诊断</button>
+            </div>
+          </div>
+
+          <div class="banner warn" style="margin-top:14px">
+            ⚠ 能力版本冲突（已自动重试 1 次）<br>
+            <span style="font-size:11.5px">
+              本地记录的 v = <b>3</b>，设备实际 v = <b>4</b>。<br>
+              继续用旧数据发命令会被设备拒绝。
+            </span>
+            <div class="row" style="margin-top:9px;gap:7px">
+              <button class="btn primary" style="padding:6px 11px">重新同步</button>
+              <button class="btn ghost" style="padding:6px 11px">忽略并只读</button>
+            </div>
+          </div>
+
+          <div class="note-line">
+            这三种状态都<b>不允许</b>发命令 —— 宁可不做，也不能用过期能力瞎点。
+          </div>
+
+        </div>
+        <div class="tabbar">
+          <div><span class="g">◉</span>首页</div><div class="on"><span class="g">◈</span>控制</div>
+          <div><span class="g">≡</span>流程</div><div><span class="g">☰</span>记录</div>
+          <div><span class="g">⚙</span>设备</div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ㉔ 命令 Unknown / 迟到回帧 -->
+    <div class="frame">
+      <div class="cap"><span class="n">24</span><div class="t" style="display:inline">命令 Unknown 与迟到回帧</div>
+        <span class="d">"未知"要给出独立核实出口；迟到回帧必须能纠正已显示的结论</span></div>
+      <div class="phone"><div class="screen">
+        <div class="sbar"><span>05:47</span><span>Guo Feeder</span><span>▮▮▮</span></div>
+        <div class="appbar"><span class="back">‹</span><div class="title">开阀</div><span class="chip warn">结果未知</span></div>
+        <div class="body">
+
+          <div class="tl">
+            <div class="n done">请求</div><div class="n done">下发</div>
+            <div class="n done">已送达</div><div class="n fail">结果</div>
+            <div class="n">终态</div>
+          </div>
+
+          <div class="card" style="margin-top:14px">
+            <div class="kv"><span class="k">状态</span><span class="v" style="color:var(--warn)">… 结果未知（15 s 无回应）</span></div>
+            <div class="kv"><span class="k">发起时间</span><span class="v">14:32:05</span></div>
+            <div class="kv"><span class="k">cmd_id</span><span class="v" style="font-size:11.5px">a7f3c1e8-…-9b2</span></div>
+            <div class="kv"><span class="k">设备</span><span class="v">水碗（…6ce4）</span></div>
+          </div>
+
+          <div class="banner warn" style="margin-top:12px">
+            <b>不会自动重发。</b>开阀是非幂等操作，重复发送可能出两次水。
+            请先用下面的按钮核实设备的真实状态。
+          </div>
+
+          <div class="grp">
+            <div class="btns one"><button class="btn primary">读取阀门状态核实</button></div>
+            <div class="btns one" style="margin-top:8px"><button class="btn">确认未执行，重新发送（新 cmd_id）</button></div>
+          </div>
+
+          <div class="sec-t">迟到回帧</div>
+          <div class="card" style="border-color:#cadde9;background:var(--info-soft)">
+            <div class="tiny" style="color:#1d4763">
+              14:32:27 收到设备回帧（晚 22 s）：
+              <b>status=failed · e=10</b>「未能打开阀门」
+            </div>
+            <div class="tiny" style="color:#3a6480;margin-top:5px">
+              ⇒ 已把上面的结论从「未知」改判为「失败」。<br>
+              <b>迟到回帧永远优先于超时判定。</b>
+            </div>
+          </div>
+
+          <div class="note-line">
+            历史记录不会因为页面刷新或轮询失败而"消失"——真相在服务端。
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
   </div>
 
   <div class="footer-note">
-    <b>评审要点</b>：① 首页是否"不滚动就能判断状态"；② 控制页分组是否合理、
-    "未验证"标记是否够醒目；③ 编辑器"第 0 步不执行"的提示是否够清楚；
-    ④ 命令四态里"未知"的表达是否让你敢用；⑤ 记录页解码后的事件是否可直接读懂；
-    ⑥ 快捷管理是否需要"上移/下移"而不是只有拖拽。
+    <b>评审要点（v1.1）</b>
+    <br>① 首页"不滚动就能判断状态"是否成立 —— 注意快捷操作 6/8 个时的折叠表现（1、22 屏）。
+    <br>② 强制停止的三层语义是否表达清楚：停账本 / 停硬件 / <b>读回核实</b>（10、11 屏）。
+    <br>③ "结果未知"是否给足了独立核实的出口，而不是逼你重发（24 屏）。
+    <br>④ 保护区的<b>普通重启 vs 强制重启</b>是否够区分、够吓人但不过度打扰（13 屏）。
+    <br>⑤ 重启后的"逐项核查"是否让人相信没被糊弄（14 屏）。
+    <br>⑥ 电磁阀详情里"60 s 自动关阀 + 与 45 s 流程的关系"是否说清楚了（16 屏）。
+    <br>⑦ Config 的"待重启窗口"和"死参数标注"是否会引起误解（20、16 屏）。
+    <br>⑧ 同步失败/版本冲突时"宁可只读也不瞎点"是否被接受（23 屏）。
     <br><br>
-    详细规格见 <code>docs/ui-v1/01-investigation.md</code> 至 <code>09-milestones.md</code>；
-    桌面/平板布局见 <code>layout.html</code>。
+    <b>本轮边界</b>：本原型未接任何后端；「强制停止」「强制重启」「boot_seq」在固件里<b>尚不存在</b>，
+    属拟议能力（见 <code>15-firmware-change-list.md</code> F-3 / F-4 / F-6）。
+    <br>
+    详细规格：<code>10</code> 技术契约 · <code>11</code> 强停与重启 · <code>12</code> 设备详情与 Config ·
+    <code>13</code> 同步与命令状态 · <code>14</code> 阶段与验收 · <code>15</code> 固件清单。
+    <br>桌面/平板布局示意见 <code>layout.html</code>（此轮不作验收）。
   </div>
 
 </div>

@@ -111,7 +111,12 @@ hr{border:0;border-top:1px solid var(--line);margin:34px 0}
 
   <h1>Guo Feeder · 响应式布局示意</h1>
   <div class="sub">同一个「首页」，在三种宽度下如何<b>重排</b> —— 不是把手机页面拉宽。</div>
-  <div class="notice">纯静态示意，数据为示例值，不连接任何接口。</div>
+  <div class="notice">
+    纯静态示意，数据为示例值，不连接任何接口。
+    <br><b>本轮验收范围只有手机竖屏</b>：平板/桌面不作为 v1.1 的验收要求，
+    此处仅用于确认「业务逻辑与屏幕尺寸解耦」这一结构目标成立
+    （模块顺序 + 可见性由注册表驱动，重排不改业务代码）。见 <code>03</code> 附录 A.6。
+  </div>
 
   <!-- 手机 -->
   <div class="section">

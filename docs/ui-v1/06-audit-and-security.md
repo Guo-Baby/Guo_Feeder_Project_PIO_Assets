@@ -267,3 +267,119 @@ accepted → published → acked → queued → succeeded
 | Q3 | 限流阈值 | 采用 §5 建议值 / 你另定 |
 | Q4 | `command_audit` 保留期 | **90 天（推荐）** / 永久 / 其它 |
 | Q5 | 是否允许"多用户"（现在只有一个口令） | 单用户（现状）/ 多用户（要改登录体系，不在 M1） |
+
+---
+
+# 附录 D · v1.1 修订：迁移 `0008` 草案 + 新增审计对象（2026-10-23）
+
+> `0008` **本轮不创建、不应用**。此处只给草案供评审。
+> 原则：**只做加法**（`CREATE TABLE` / `ALTER TABLE ADD COLUMN`），不 `DROP`、不改列、
+> 不动任何已应用迁移（`0001`~`0007` 一律不碰）。
+
+## D.1 `0008` 草案（3 张表 + 1 列）
+
+```sql
+-- ① 命令审计（P0-D / P0-F）
+CREATE TABLE IF NOT EXISTS command_audit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  cmd_id        TEXT    NOT NULL,
+  device_id     TEXT    NOT NULL,
+  actor         TEXT    NOT NULL,      -- 会话标识 / 'system' / 'scheduler'
+  label         TEXT    NOT NULL,      -- 用户可读动作名（"开阀"）
+  family        TEXT    NOT NULL,      -- action|workflow|config|system|safety
+  risk          TEXT    NOT NULL,      -- read|write|danger|critical
+  payload_hash  TEXT,                  -- sha256(原文)，用于比对而不泄露
+  payload_note  TEXT,                  -- 脱敏后的摘录（敏感键写 ••••）
+  state         TEXT    NOT NULL,      -- 十态见 §D.2
+  result_code   INTEGER,
+  result_msg    TEXT,
+  request_at    INTEGER NOT NULL,      -- 秒
+  published_at  INTEGER,
+  finished_at   INTEGER,
+  duration_ms   INTEGER,
+  trace_id      TEXT,
+  UNIQUE(cmd_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS ix_ca_dev_time ON command_audit(device_id, request_at DESC);
+CREATE INDEX IF NOT EXISTS ix_ca_state    ON command_audit(state, request_at DESC);
+
+-- ② 会话吊销（UI-COOKIE-REVOCATION）
+CREATE TABLE IF NOT EXISTS ui_session (
+  sid        TEXT PRIMARY KEY,
+  device_scope TEXT,                   -- 预留：按设备授权
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_us_exp ON ui_session(expires_at);
+
+-- ③ 执行器安全事件（强停/强重启/恢复核查的证据链）
+CREATE TABLE IF NOT EXISTS safety_event (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id  TEXT NOT NULL,
+  cmd_id     TEXT,
+  kind       TEXT NOT NULL,            -- estop|force_restart|recover_check|boot_safety_init
+  outcome    TEXT NOT NULL,            -- success|partial|failed|unknown
+  detail     TEXT,                     -- JSON：逐执行器结果
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_se_dev_time ON safety_event(device_id, created_at DESC);
+
+-- ④ 设备别名（§3.7，用 ADD COLUMN 而非新表）
+ALTER TABLE device ADD COLUMN alias TEXT;
+```
+
+### 为什么别名用 `ADD COLUMN` 而不是新表
+
+| 方案 | 优点 | 缺点 |
+|---|---|---|
+| **`device.alias`（选它）** | 一次 `ALTER`；与 `device_id` 天然 1:1；`snapshot` 自动带上 | `device` 是既有表（但 D1 支持 `ADD COLUMN`，且纯加法） |
+| 新表 `device_alias` | 完全隔离 | 每次要 JOIN；多一层 |
+
+### `UNIQUE(cmd_id, device_id)` 的作用
+
+- 服务端**结构性去重**（P0-F）：同一 `cmd_id` 第二次插入直接冲突 ⇒ 返回既有行，不再下发
+- **注意**：设备侧 30 s TTL 之后重发同一 id 是**合法**的（会真的执行），
+  ⇒ 服务端去重窗口必须 **≤ 设备 TTL**（取 30 s），否则会拦掉合法的晚到重试
+
+## D.2 `state` 的十态（与 UI 四态区分）
+
+```
+requesting → published → acked → accepted → running → done
+                    ↘ rejected        ↘ failed        ↘ timeout
+                                     ↘ unknown
+```
+
+★ `command_audit.state` 存**十态**；UI 展示时映射成四态（`13` §2.1）。
+**不要**在写库时就把状态压扁成四态 —— 否则事后无法查"到底卡在哪一层"。
+
+## D.3 三个新写入口的鉴权与审计要求
+
+| 入口 | 鉴权 | 审计 | 失败语义 |
+|---|---|---|---|
+| `POST /api/command` | session + CSRF + 生成 cmd_id | 先写 `command_audit(requesting)` **再**发布 | 审计写失败 ⇒ **fail-closed 拒绝**（不得"发了但没记"） |
+| `POST /api/safety/stop` | 同上 + 危险级限流 6/min | 同上 + `safety_event(estop)` | 同上 |
+| `POST /api/system/force-restart` | 同上 + **需二次确认令牌** | 同上 + `safety_event(force_restart)` | 同上 |
+
+★ **"审计写失败就拒绝"是本轮的硬决定**。理由：命令审计是事后追责的唯一凭据；
+允许 fail-open 等于"设备动了但没有记录"，比命令发不出去更危险。
+
+## D.4 强制停止/强制重启的额外安全要求
+
+| 要求 | 实现 |
+|---|---|
+| 强停必须记录**是谁**发的 | `actor` = 会话 id；无会话一律拒绝 |
+| 强停必须记录**当时在跑什么** | `payload_note` 存 `{workflow, current_step, elapsed_ms}` |
+| 强重启必须记录**跳过了多少 Critical Operation** | `safety_event.detail.skipped_critical` |
+| 强重启后必须有**恢复核查记录** | `safety_event(kind=recover_check, outcome=...)` |
+| 同一设备 5 分钟内强重启 > 2 次 | 拒绝（防"拍打式"操作把 Flash 写坏） |
+
+## D.5 限流分桶（沿用 `06` 既有建议，新增两桶）
+
+| 桶 | 阈值 | 备注 |
+|---|---|---|
+| 读 | 120/min | |
+| 命令（普通） | 20/min | |
+| 危险 | 6/min | 开阀/出粮 |
+| **安全（强停）** | **30/min** | 放宽：卡住时用户会连点，拦截无益 |
+| **强重启** | **3 / 5 min** | 见 D.4 |
