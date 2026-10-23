@@ -104,3 +104,30 @@ hashchange）；T-12 五项真实点击断言（无接线必失败）+ S-12-12 �
 **口径更新**：全量 **696 PASS / 0 FAIL**（273+104+22+29+33+55+130+51）。
 教训进铁律：交互入口（点击/提交）必须有一条「从真实事件出发」的测试路径，
 不能只测事件处理函数本身。
+
+---
+
+## 6. 追记（同日深夜）：真机反馈修复 + 可视化编辑器落地
+
+**用户真机实测反馈与处置**：
+1. ✅ 运行按钮：设备收到并执行（测试流程因 HX711 缺席被保护终止——预期行为）。
+2. ❌→✅ **编辑取不到详情**：真机 `workflow.get` 回帧的 workflow 对象在压缩帧
+   **`o` 字段**（D1 实证），编辑器改按 `frame.o || frame.workflow || frame.data` 取值。
+3. ✅→✅ **落盘（save）**：`workflow.save` 进目录（第 4 条），云端 normalized 恒为
+   `{restart:false}` —— 固件默认 restart=true 会重启设备，云端强制覆盖；
+   真机验证：客户端传 restart:true 被压掉，设备回 `saved:true` 且不重启。
+4. ✅→✅ **可视化编辑器**（对齐原型 04-workflow-editor.md）：本地草稿模型
+   （编辑全程零设备写入）+ 步骤卡片（类型/ID datalist/参数键值对/上移/下移/删除/
+   添加，§8.2 非拖拽路径）+ JSON 高级通道（导出/应用，不合法明示）+
+   列表页 dirty 指示与「保存到设备（落盘）」按钮。
+5. 附带对齐：校验器透传 name/enable/timeout_ms（固件 canon 字段，此前会被剥掉）、
+   variant 剥离（设备管理不回写）。
+
+**真机全链路**（`verify_wfadmin_prod.py`，设备在线）：**11 PASS / 0 FAIL** —
+create(202→done, slot=4) → workflow.get 读回一致 → delete(done, 列表干净) →
+workflow.save（下行 restart=false、设备 saved=true）。测试流程已清理并落盘。
+
+**口径更新**：全量 **719 PASS / 0 FAIL**（273+104+22+29+33+65+133+60）；
+部署 Worker `e90d09b7` · Pages `dfc0657c`；云仓 `b12ce32`+`c69def8`。
+测试桩升级：innerHTML 栈式嵌套解析（递归查询/style/value）——可视化卡片级
+交互只有真嵌套 DOM 桩才能覆盖。
