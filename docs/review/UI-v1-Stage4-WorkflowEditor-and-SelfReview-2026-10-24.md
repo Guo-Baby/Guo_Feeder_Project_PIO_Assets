@@ -131,3 +131,29 @@ workflow.save（下行 restart=false、设备 saved=true）。测试流程已清
 部署 Worker `e90d09b7` · Pages `dfc0657c`；云仓 `b12ce32`+`c69def8`。
 测试桩升级：innerHTML 栈式嵌套解析（递归查询/style/value）——可视化卡片级
 交互只有真嵌套 DOM 桩才能覆盖。
+
+---
+
+## 7. 追记（同日深夜 III）：中文名自发现 + 具名参数字段
+
+**用户反馈**：动作/触发器列表是英文；参数不能让用户手填 param1/param2。
+
+**核实（固件实码）**：模块注册的 `WorkflowActionDescriptor/WorkflowTriggerDescriptor`
+本就带中文 `name`（电磁阀开/震动启动）、`description` 和机器可读
+`WorkflowParam{name,type,unit,description}` —— 但 `query_actions/query_triggers`
+此前只输出 id/name/module/description，params 没上云。
+
+**修复（双轨）**：
+1. **固件**：query_actions/query_triggers 补输出 `params:[{name,type,unit,description}]`
+   （WorkflowParamType→int/float/bool/string；只读扩展、向后兼容）。
+   pio build SUCCESS（esp32-s3-devkitc-1，75s），**待下次烧录生效**。
+2. **UI（当前固件即可用）**：编辑器加载自发现描述符，缺省回落云端目录
+   （label 本就译自同源描述符）——中文名行「电磁阀开 · 打开电磁阀」、
+   datalist 中文标签；参数区改为**具名字段**（label=目录中文，hint=设备
+   description+unit，bool=勾选框/数值=number），选中已知 id 自动播种默认值；
+   清单外参数仍可「＋自定义参数」。核心纯函数 `mergeParamSpecs/describeStep`。
+
+**口径更新**：全量 **726 PASS / 0 FAIL**（+runtime 4/+ui_app 3）；
+Pages `ea4fb6a4`（Worker 无改动）；云仓 `f0f0d8a`。
+固件改动待烧录：烧录前编辑器用目录回落（效果一致）；烧录后参数范围提示
+（如 gram:1-300）改由设备自发现直出。
