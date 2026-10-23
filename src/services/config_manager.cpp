@@ -3598,7 +3598,16 @@ bool config_get_valve_enable()
 
 int config_get_valve_safety_timeout_sec()
 {
-    return module_ro(CONFIG_MODULE_VALVE)["safety_timeout_sec"] | 300;
+    /*
+     * [UI-V1.1 · F-5] 默认值 300 → 60。
+     *
+     * 语义边界（必须清楚，否则会误以为"改代码就把设备改了"）：
+     *   `| 60` 只在**键缺失**时生效。设备一旦把 `safety_timeout_sec`
+     *   写进 `data/config/valve.json`（当前实值是 300），改这里**不会**
+     *   改变设备行为 —— 必须由真机阶段显式 `config_set` + `config_save`。
+     *   这也是 `data/` 被 gitignore 的直接后果：仓库值 ≠ 设备实值。
+     */
+    return module_ro(CONFIG_MODULE_VALVE)["safety_timeout_sec"] | 60;
 }
 
 // ---------------- 步进电机（stepper） ----------------

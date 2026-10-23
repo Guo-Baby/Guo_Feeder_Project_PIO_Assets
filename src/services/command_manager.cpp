@@ -9,6 +9,7 @@
 #include "automation/capability_registry.h"
 #include "services/config_manager.h"
 #include "app/weight.h"
+#include "app/safety.h"     // [UI-V1.1 · F-1] 紧急安全停堆编排（c="safety"）
 #include "services/system_command.h"
 #include "log/log_manager.h"   // P2-J：观测埋点（EventId / ParamId + log_emit）
 #include "services/credential_manager.h"   // Phase D-2：凭据生命周期（Q8/Q9/Q13）
@@ -221,6 +222,63 @@ static bool command_system_loop(const CommandMessage &cmd, JsonDocument &respons
 static bool command_system_memwatch(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart(const CommandMessage &cmd, JsonDocument &response);
 static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
+
+/**
+ * [UI-V1.1 · F-2] 强制重启。
+ *
+ * 顺序即语义，不得调整：
+ *   ① 先停硬件（`safety_stop_all`）—— 尽力而为，**失败也继续**。
+ *      理由：强制重启的定位是"最后一道故障恢复手段"，
+ *      若因为"某执行器停不下来"就不重启，等于把设备卡死在故障态。
+ *   ② 落 boot flag（`config_boot_validate`）—— 这一步很关键：
+ *      强制重启会跳过正常的启动确认流程，若 flag 没落，
+ *      下次启动 `last_boot_ok=false` ⇒ ConfigManager 会用 Backup
+ *      覆盖 Active（CFG-ROLLBACK，10-22 已实际踩过）。
+ *      写失败不阻塞重启，但必须如实上报 `boot_flag_written=false`。
+ *   ③ 请求强制重启（300 ms 后复位，不看 critical 计数）。
+ *
+ * ⚠️ 不保证配置完整：Flash 写入可能被 300 ms 后的复位打断，
+ *    Active/Backup 的校验和与 boot_ok 机制是唯一兜底。
+ */
+static bool command_system_force_restart(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    /* ① 停硬件（尽力；结果如实上报，不阻塞） */
+    SafetyReport rep;
+    safety_stop_all(rep);
+
+    /* ② 落 boot flag（防 CFG-ROLLBACK） */
+    const bool boot_flag = config_boot_validate();
+
+    /* ③ 请求强制重启 */
+    const bool accepted = system_command_force_restart();
+
+    response["status"]            = accepted ? "rebooting" : "error";
+    response["object"]            = "force_restart";
+    response["accepted"]          = accepted;
+    response["boot_flag_written"] = boot_flag;
+    response["safety_all_ok"]     = rep.all_ok;
+    response["stop_elapsed_ms"]   = rep.elapsed_ms;
+    response["delay_ms"]          = SYSTEM_FORCE_RESTART_DELAY_MS;
+    response["physical_verified"] = false;
+    response["warning"] =
+        "强制重启不等待 Critical Operation：配置写入可能被中断，"
+        "不保证配置完整（Active/Backup 校验和是唯一兜底）";
+
+    if (!accepted)
+    {
+        /* 已在 RESTARTING：不能再接受，但也不是"命令格式错误" */
+        last_result = CMD_RESULT_FAILED;
+        return true;
+    }
+
+    last_result = CMD_RESULT_ACCEPTED;
+    return true;
+}
+
+static bool command_system_restart_status(const CommandMessage &cmd, JsonDocument &response);
 // system.time：查询 ESP 系统时间 + RTC 芯片时间（非阻塞，TimeManager V2 新增）
 static bool command_system_get_time(const CommandMessage &cmd, JsonDocument &response);
 
@@ -234,6 +292,8 @@ static bool command_workflow_set(const CommandMessage &cmd, JsonDocument &respon
 static bool command_workflow_delete(const CommandMessage &cmd, JsonDocument &response);
 static bool command_workflow_save(const CommandMessage &cmd, JsonDocument &response);
 static bool workflow_router(const CommandMessage &cmd, JsonDocument &response);
+// [UI-V1.1 · F-1] 安全命令族（c="safety"）：stop_all / clear
+static bool safety_router(const CommandMessage &cmd, JsonDocument &response);
 
 // Phase D-2：凭据类命令（独立分支；**payload 由本层解析为 C++ 结构**）
 static bool command_credential_set(const CommandMessage &cmd, JsonDocument &response);
@@ -641,6 +701,24 @@ static bool command_is_system(const String &command)
     return command == "system";
 }
 
+/*
+ * [UI-V1.1 · F-1] 安全命令族：c="safety"
+ *
+ * 为什么是**独立一级命令**而不是一个新 Action：
+ *   注册 Action 会让 Capability Registry 重排全部 stable_id 并递增版本号
+ *   ⇒ 云端所有缓存的 `k` 全部失效（下一步执行就会 e=3 s=4）。
+ *   安全停堆是"随时可能要用"的东西，不能和 registry 版本绑在一起。
+ *
+ * 报文形态（cloud_manager 的透传分支）：
+ *   {"c":"safety","i":"<cmd_id>","p":{"o":"stop_all"|"clear"}}
+ *   ⇓
+ *   command="safety", object="stop_all"
+ */
+static bool command_is_safety(const String &command)
+{
+    return command == "safety";
+}
+
 // Workflow 管理命令：workflow.list / get / create / set / delete / save
 static bool command_is_workflow_manage(const String &command)
 {
@@ -691,6 +769,8 @@ bool command_manager_execute(const CommandMessage &cmd)
         success = query_router(cmd, response);
     } else if (command_is_system(command)) {
         success = system_router(cmd, response);
+    } else if (command_is_safety(command)) {
+        success = safety_router(cmd, response);
     } else if (command_is_workflow_manage(command)) {
         success = workflow_router(cmd, response);
     } else {
@@ -878,6 +958,25 @@ static bool command_execute_workflow(const CommandMessage &cmd, JsonDocument &re
             cmd,
             CMD_ERROR_MISSING_OBJECT,
             "Missing 'object' (workflow id)"
+        );
+        return false;
+    }
+
+    /*
+     * [UI-V1.1 · F-1] 急停锁：停堆之后不允许 Workflow 自行重新启动。
+     *
+     * 为什么只拦 Workflow、不拦单发 Action：
+     *   · Workflow 是"无人值守会自动推进"的执行体，急停后让它继续跑
+     *     等于急停没生效；
+     *   · 单发 Action 是人工点一次，拦掉会让人卡在"什么都干不了"的死局。
+     * 解除方式：显式 `{"c":"safety","p":{"o":"clear"}}`。
+     */
+    if (safety_is_latched())
+    {
+        command_send_error(
+            cmd,
+            CMD_ERROR_SYSTEM,
+            "system is latched by emergency stop; send safety.clear first"
         );
         return false;
     }
@@ -2198,6 +2297,117 @@ static bool workflow_router(
 }
 
 // =====================================================
+// [UI-V1.1 · F-1] 安全命令族
+//
+// 语义分层（与云端十态对齐，**不得混用**）：
+//   本函数返回 true  ⇒ CommandManager 会正常发 result 帧
+//                     ⇒ 云端的 `accepted`（已受理）
+//   status="success" ⇒ 本次停堆**编排完成**（每个执行器都处置到位）
+//   physical_verified=false ⇒ **固件没有电气回读**，不能声称"已物理停止"
+//
+// 因此"success" 的含义严格限定为：
+//   "我已经把该做的停止动作都做了，并且没有任何一项报告失败"，
+//   而不是"我确认阀门真的关上了、电机真的停了"。
+// =====================================================
+static void safety_put_actuator(
+    JsonObject &parent,
+    const char *key,
+    const SafetyActuatorResult &r
+)
+{
+    JsonObject a = parent[key].to<JsonObject>();
+    a["attempted"]  = r.attempted;
+    a["ok"]         = r.ok;
+    /* 恒 false —— 见 safety.h 文件头：固件没有执行器电气回读通道 */
+    a["verified"]   = false;
+    a["was_active"] = r.was_active;
+    a["note"]       = (r.note != nullptr) ? r.note : "";
+}
+
+static bool command_safety_stop_all(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    (void)cmd;
+
+    SafetyReport rep;
+    safety_stop_all(rep);
+
+    /*
+     * status 用 success/error 两值，与云端 M2 的映射表完全对齐
+     * （云端只认 success/failed/error/rejected/timeout/rebooting；
+     *  自造 "partial" 会被落成 unknown，反而更不诚实）。
+     * 逐项细节在 actuators 与 all_ok 里，UI 据此显示"部分未确认"。
+     */
+    response["status"] = rep.all_ok ? "success" : "error";
+    response["object"] = "stop_all";
+    response["all_ok"] = rep.all_ok;
+
+    response["workflows_seen"]    = rep.workflows_seen;
+    response["workflows_stopped"] = rep.workflows_stopped;
+    response["any_was_running"]   = rep.any_was_running;
+
+    JsonObject act = response["actuators"].to<JsonObject>();
+    safety_put_actuator(act, "valve",        rep.valve);
+    safety_put_actuator(act, "stepper",      rep.stepper);
+    safety_put_actuator(act, "vibration",    rep.vibration);
+    safety_put_actuator(act, "test_stepper", rep.test_stepper);
+
+    response["latched"]          = rep.latched;
+    response["elapsed_ms"]       = rep.elapsed_ms;
+    response["physical_verified"] = false;
+    response["hint"] =
+        "固件无执行器电气回读：本结果只证明停止动作已执行且未报错，"
+        "不证明阀门/电机物理上已停止。";
+
+    last_result = rep.all_ok ? CMD_RESULT_OK : CMD_RESULT_FAILED;
+    return true;
+}
+
+static bool command_safety_clear(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    (void)cmd;
+
+    const bool was = safety_clear_latch();
+
+    response["status"]      = "success";
+    response["object"]      = "clear";
+    response["was_latched"] = was;
+    response["latched"]     = safety_is_latched();
+
+    last_result = CMD_RESULT_OK;
+    return true;
+}
+
+static bool safety_router(
+    const CommandMessage &cmd,
+    JsonDocument &response
+)
+{
+    const String &object = cmd.object;
+
+    if (object == "stop_all") {
+        return command_safety_stop_all(cmd, response);
+    }
+    if (object == "clear") {
+        return command_safety_clear(cmd, response);
+    }
+
+    String msg = "Unknown safety object: ";
+    msg += object;
+    command_send_error(
+        cmd,
+        CMD_ERROR_UNKNOWN_COMMAND,
+        msg
+    );
+    return false;
+}
+
+// =====================================================
 // 一级路由: execute
 //
 // 保留:
@@ -2522,6 +2732,16 @@ static bool system_router(
     }
     if (object == "restart") {
         return command_system_restart(cmd, response);
+    }
+    /*
+     * [UI-V1.1 · F-2] 强制重启。
+     *
+     * 与 "restart" 分两个 object，**不共用**一个带 force 参数的入口：
+     * 两者的前置条件与风险完全不同，混在一起会让人以为
+     * "restart 只是有时会等"。
+     */
+    if (object == "force_restart") {
+        return command_system_force_restart(cmd, response);
     }
     if (object == "restart_status") {
         return command_system_restart_status(cmd, response);

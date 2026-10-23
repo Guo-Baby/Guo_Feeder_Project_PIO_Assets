@@ -55,7 +55,18 @@ enum RestartState
     RESTART_IDLE = 0,      // 正常运行，无 Restart 请求
     RESTART_REQUESTED,     // 已收到 Restart 请求，正在等待 Critical Operation 归零
     RESTART_PENDING,       // Critical 已归零，进入最终安全倒计时窗口
-    RESTARTING             // 倒计时结束，已调用 ESP.restart()（理论上不可达）
+    RESTARTING,            // 倒计时结束，已调用 ESP.restart()（理论上不可达）
+    /*
+     * [UI-V1.1 · F-2] 强制重启专用态。
+     *
+     * 与 RESTART_PENDING 的**唯一区别**：进入时**不检查** Critical Operation
+     * 计数，倒计时也只有 300 ms（只为把 result 帧发出去）。
+     * 用户已明确接受"可能打断 Flash 写入、配置可能损坏"的风险。
+     *
+     * 为什么加在枚举末尾而不是插在中间：现有代码按枚举值做日志与上报，
+     * 插入中间会静默改变已有状态的数值语义。
+     */
+    RESTART_FORCE_PENDING
 };
 
 // Restart 安全窗口（需求文档 §14）
@@ -68,6 +79,17 @@ enum RestartState
 // ConfigManager 收回，方向必须是 ConfigManager -> SystemCommand，
 // 不能反向依赖。因此这里使用本模块自己的常量。
 #define SYSTEM_RESTART_SAFE_DELAY_MS 10000UL
+
+/*
+ * [UI-V1.1 · F-2] 强制重启的倒计时（毫秒）。
+ *
+ * 300 ms 的唯一目的：给本次 result 帧（status="rebooting"）留出
+ * 序列化 + MQTT 上行的时间。它不是安全窗口，**不等待任何 Critical Operation**。
+ *
+ * 为什么不设为 0：立刻 restart() 会让 result 帧大概率丢失，
+ * 云端的 cmd_id 就会停在 published ⇒ 只能显示"结果未知"。
+ */
+#define SYSTEM_FORCE_RESTART_DELAY_MS 300UL
 
 // =====================================================
 // 生命周期
@@ -98,6 +120,33 @@ void system_command_task();
 // 幂等: 重复调用不会重置已经开始的 10s 安全窗口，也不会取消既有请求。
 // 本函数绝不直接重启，真正的重启只发生在 system_command_task() 中。
 bool system_command_request_restart();
+
+/**
+ * [UI-V1.1 · F-2] 请求**强制**重启。
+ *
+ * 与 `system_command_request_restart()` 的差异（全部是刻意的）：
+ *
+ *   | 项 | 普通重启 | 强制重启 |
+ *   |---|---|---|
+ *   | Critical Operation | 等它归零（无限等） | **不等**，直接进强制倒计时 |
+ *   | 倒计时 | 10 000 ms | 300 ms |
+ *   | 调用前的硬件停堆 | 无 | 由调用方（CommandManager）先做 |
+ *   | 幂等 | 是 | 是（已在重启流程中则返回 true，不重排倒计时） |
+ *
+ * ★ 调用方**必须**先做两件事，本函数不做（职责分离）：
+ *   ① 停硬件（`safety_stop_all`）—— 但**不得**因停不下来而阻塞重启；
+ *   ② `config_boot_validate()` —— 把 boot flag 落下，避免下次启动
+ *      因 `last_boot_ok=false` 触发 CFG-ROLLBACK，用 Backup 覆盖 Active。
+ *
+ * ⚠️ 本函数**不保证**配置完整：Flash 写入可能被中断，
+ *    ConfigManager 的 Active/Backup 校验和机制是唯一兜底。
+ *
+ * @return true = 已接受（首次或幂等）；false = 系统已在 RESTARTING，无法接受
+ */
+bool system_command_force_restart();
+
+/** 是否处于强制重启倒计时（remain_ms 为剩余毫秒） */
+bool system_command_force_restart_pending(unsigned long &remain_ms);
 
 // 查询当前 Restart 状态
 RestartState system_command_restart_state();
