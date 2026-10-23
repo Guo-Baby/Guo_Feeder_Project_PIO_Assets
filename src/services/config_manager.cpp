@@ -1452,6 +1452,24 @@ bool config_boot_validate()
     return true;
 }
 
+// =====================================================
+// [UI-V1.1 · F-2 校验] 启动标记回读
+//
+// 只回答"文件现在在不在"，不做内容校验：
+//   · 内容固定是 "1"，没有比"存在"更强的信息；
+//   · 本函数会被强制重启路径在**写入之后立即**调用，
+//     因此绝不能引入任何写操作或长时间 IO。
+// =====================================================
+bool config_boot_flag_present()
+{
+    if (!s_ready)
+    {
+        return false;
+    }
+
+    return json_storage_exists(CONFIG_BOOT_FLAG_FILE);
+}
+
 bool config_reload()
 {
     if (!s_ready)

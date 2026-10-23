@@ -290,6 +290,79 @@ check(
     has(SAFETY, r"active_level\s*\?\s*0\s*:\s*1"),
 )
 
+# ------------------------------------------------ F-1 补强（锁存覆盖启动入口）
+SAFETY_H = read("app/safety.h")
+WF_CPP = read("automation/workflow.cpp")
+WF_H = read("automation/workflow.h")
+
+check(
+    "F1b-01 safety_action_blocked_by_latch 已声明+实现",
+    "safety_action_blocked_by_latch" in SAFETY_H and "safety_action_blocked_by_latch" in SAFETY,
+)
+_ALLOW = ("VALVE_CLOSE", "STEPPER_EMERGENCY_STOP", "TEST_STEPPER_STOP",
+          "VIBRATION_STOP", "MI_THERMO_STOP_SCAN", "MI_THERMO_START_SCAN",
+          "WEIGHT_ZERO")
+_BLOCK = ("VALVE_OPEN", "STEPPER_DISPENSE_ROTATE", "STEPPER_ROTATE_STEPS",
+          "TEST_STEPPER_START", "VIBRATION_START", "COMPUTER_RESET")
+_wl = SAFETY[SAFETY.find("kLatchAllowedActions"):] if "kLatchAllowedActions" in SAFETY else ""
+_wl = _wl[:_wl.find("};") + 2] if "};" in _wl else _wl
+check(
+    "F1b-02 白名单含全部停止类/传感器类（%d 项）" % len(_ALLOW),
+    all(('"%s"' % a) in _wl for a in _ALLOW),
+    "缺: " + ",".join(a for a in _ALLOW if ('"%s"' % a) not in _wl),
+)
+check(
+    "F1b-03 白名单**不含**任何启动类 Action（失败即拒绝）",
+    not any(('"%s"' % a) in _wl for a in _BLOCK),
+    "误放行: " + ",".join(a for a in _BLOCK if ('"%s"' % a) in _wl),
+)
+check(
+    "F1b-04 workflow_start 受锁存拦截（Trigger 自动启动也被覆盖）",
+    has(WF_CPP, r"if\(safety_is_latched\(\)\)"),
+)
+check(
+    "F1b-05 enqueue_temp_action 受锁存拦截（Command 下发唯一入口）",
+    has(WF_CPP, r"if\s*\(safety_action_blocked_by_latch\(id\)\)"),
+)
+check(
+    "F1b-06 workflow_action_start 兜底拦截",
+    has(WF_CPP, r"safety_action_blocked_by_latch\(action->descriptor->id\)"),
+)
+check(
+    "F1b-07 workflow_cancel_pending_temp_actions 声明+实现",
+    "workflow_cancel_pending_temp_actions" in WF_H
+    and "workflow_cancel_pending_temp_actions" in WF_CPP,
+)
+check(
+    "F1b-08 stop_all 顺序：先立牌子 → 停 workflow → 取消排队 → 停硬件",
+    SAFETY.find("s_latched = true;") < SAFETY.find("workflow_stop(w->id)")
+    < SAFETY.find("workflow_cancel_pending_temp_actions()")
+    < SAFETY.find("valve_force_close()"),
+)
+check(
+    "F1b-09 command_execute_action 有可读拒绝原因（不只在 Workflow 层拦）",
+    has(CM, r"safety_action_blocked_by_latch\(cmd\.object\)"),
+)
+
+# ------------------------------------------------ F-2 校验（boot flag 回读）
+CFG_H = read("services/config_manager.h")
+check(
+    "F2b-01 config_boot_flag_present 声明+实现（独立回读）",
+    "config_boot_flag_present" in CFG_H and "config_boot_flag_present" in CFG,
+)
+check(
+    "F2b-02 boot_flag_written = 写入结果 && 回读存在",
+    has(CM, r"boot_flag_written\s*=\s*flag_write_ok\s*&&\s*flag_present"),
+)
+check(
+    "F2b-03 强制重启显式声明不保证配置完整",
+    has(CM, r'config_integrity_guaranteed"\]\s*=\s*false'),
+)
+check(
+    "F2b-04 强制重启上报 critical_at_request（突破保护的客观证据）",
+    has(CM, r'"critical_at_request"\]\s*=\s*critical_at_request'),
+)
+
 # ---------------------------------------------------------------- 输出
 print("=" * 72)
 print("UI v1.1 固件契约核对（源码级）")

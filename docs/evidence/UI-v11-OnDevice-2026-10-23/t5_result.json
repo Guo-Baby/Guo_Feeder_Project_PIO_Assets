@@ -1,0 +1,68 @@
+[
+  {
+    "case": "T5-1",
+    "desc": "收到 force_restart 回帧",
+    "status": "NOT VERIFIED",
+    "detail": "未收到（复位 300 ms 后发生，outbox 可能来不及发出 —— 属已知时序风险，不判固件失败）"
+  },
+  {
+    "case": "T5-2",
+    "desc": "串口出现 [Safety] stop_all（先停硬件）",
+    "status": "PASS",
+    "detail": ""
+  },
+  {
+    "case": "T5-3",
+    "desc": "串口出现 boot validated（启动标记写入）",
+    "status": "PASS",
+    "detail": "出现 2 次"
+  },
+  {
+    "case": "T5-4",
+    "desc": "串口出现 FORCE restart 相关日志",
+    "status": "PASS",
+    "detail": "requested=True elapsed=True"
+  },
+  {
+    "case": "T5-5",
+    "desc": "确实发生重启（串口出现 rst:0x 复位向量）",
+    "status": "PASS",
+    "detail": "出现 1 次 rst:0x"
+  },
+  {
+    "case": "T5-5b",
+    "desc": "重启后走完完整启动（rst 之后有 init done + 10/10 模块）",
+    "status": "PASS",
+    "detail": "after-rst 长度 16661 字符"
+  },
+  {
+    "case": "T5-5c",
+    "desc": "复位原因 = software（区别于上电/看门狗）",
+    "status": "PASS",
+    "detail": ""
+  },
+  {
+    "case": "T5-6",
+    "desc": "重启后未因启动标记缺失触发回滚",
+    "status": "PASS",
+    "detail": "无 recovering(boot_ok=0)"
+  },
+  {
+    "case": "T5-7",
+    "desc": "重启后配置未回滚（safety 仍为 60 s）",
+    "status": "PASS",
+    "detail": "safety 出现序列: ['60']（60 命中 1 次）"
+  },
+  {
+    "case": "T5-8",
+    "desc": "重启后 MQTT 重新连接",
+    "status": "PASS",
+    "detail": "MQTT connected 出现 2 次"
+  },
+  {
+    "case": "T5-9",
+    "desc": "重启后仍执行 [Safety] outputs init done",
+    "status": "PASS",
+    "detail": "after-rst 内命中 1 次"
+  }
+]

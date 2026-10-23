@@ -752,6 +752,23 @@ bool workflow_temp_action_is_complete(
 // 获取等待中的临时 Action 数量
 uint8_t workflow_temp_action_pending_count();
 
+/**
+ * [UI-V1.1 · F-1 补强] 取消队列中所有尚未完成的临时 Action。
+ *
+ * 用途：紧急停堆时清空"已经入队但还没跑（或正在跑）"的 Command 下发任务，
+ *       防止急停之后队列继续把阀门/步进/振动重新拉起来。
+ *
+ * 行为：
+ *   · 对每个未完成的 Item 走**统一的完成路径** `temp_action_complete(item, ACTION_FAILED)`：
+ *     释放其持有的 Critical Operation + 回调 CommandManager 上报失败
+ *     ⇒ 云端能收到明确的失败终态，而不是静默消失。
+ *   · 物理输出不在这里停 —— 由 `safety_stop_all()` 紧随其后统一停。
+ *   · 幂等：队列为空返回 0。
+ *
+ * @return 实际被取消的 Item 数量
+ */
+uint8_t workflow_cancel_pending_temp_actions();
+
 WorkflowJsonState workflow_get_json_state();
 // =====================================================
 // Workflow JSON处理，包含加载，保存，重载等动作

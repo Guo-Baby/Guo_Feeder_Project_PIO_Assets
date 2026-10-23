@@ -330,6 +330,15 @@ void config_task();
 // 下次启动即判定上一次启动失败并触发 Backup 恢复。
 bool config_boot_validate();
 
+// [UI-V1.1 · F-2 校验] 启动标记**回读**：文件当前是否真实存在于文件系统。
+//
+// 用途：`config_boot_validate()` 的返回值来自写入链路（写 tmp → 校验长度 →
+//   rename），而这里再独立读一次命名空间，用来回答"标记是否真的落下了"。
+//   两者都为 true 才允许对外声称 `boot_flag_written=true`。
+//
+// ★ 本函数**只读**，不写文件、不改任何状态；未初始化时返回 false。
+bool config_boot_flag_present();
+
 // 重新加载所有模块（丢弃未保存的 RAM 修改）
 bool config_reload();
 
