@@ -28,6 +28,7 @@
 #include "app/test_stepper.h"  // ★ 步进纯测试模块（无 30s 限制、频率可调、LEDC 脉冲）
 #include "automation/workflow.h"
 #include "app/dispense_guard.h"
+#include "app/safety.h"        // ★ UI v1.1：启动安全电平 + 紧急安全停堆（F-1 / F-6）
 #include "test/test_mqtt.h"
 #include "automation/capability_registry.h"
 #include "app/MiThermometer.h"
@@ -533,6 +534,25 @@ void setup()
     }
     system_state_init();
     config_init();
+
+    /*
+     * =====================================================
+     * [UI-V1.1 · F-6] 启动安全电平 —— **必须早于任何网络初始化**
+     *
+     * 位置是硬约束（config_init 之后、ble_init/wifi_init 之前）：
+     * 复位后 GPIO 默认是输入/高阻，继电器模块的输入若浮空，
+     * 可能被拉向导通侧。把这一步放到 WiFi/BLE 之后会留下
+     * 200~1500 ms 的未定义窗口（实测 WiFi+BLE 初始化耗时）。
+     *
+     * 本函数只做「配置引脚为输出 + 写安全电平」，不初始化模块、
+     * 不注册 Action、不改任何模块状态 ⇒ 与后续 valve_init() 幂等共存。
+     *
+     * ⚠️ 只降低风险，不消除风险：从复位到本行执行仍有极短的高阻窗口，
+     *    且继电器输入级是否有下拉取决于实际电路 ⇒ 需万用表实测。
+     * =====================================================
+     */
+    safety_outputs_init();
+
     // P0-1：设备身份 —— **已上移到 log_init() 之前**（`HD-3`·`A-1` 修复）。
     // 仍满足原约束：早于 wifi_init() / cloud_init()。
 #if GF_TOPIC_RENDER_SELFTEST

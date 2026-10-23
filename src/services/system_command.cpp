@@ -91,6 +91,8 @@ const char *system_command_restart_state_name(RestartState st)
             return "pending";
         case RESTARTING:
             return "restarting";
+        case RESTART_FORCE_PENDING:
+            return "force_pending";
         default:
             return "unknown";
     }
@@ -346,11 +348,145 @@ void system_command_task()
             return;
         }
 
+        /*
+         * [UI-V1.1 · F-2] 强制重启倒计时。
+         *
+         * 与 RESTART_PENDING 的差别只有两点：
+         *   ① 进入本态时**没有**"等 critical 归零"的前置判断（见 force_restart()）
+         *   ② 倒计时是 300 ms 而不是 10 000 ms
+         * restart() 的调用点仍然是本文件唯一那一处（上面的 PENDING 分支
+         * 与本分支各一次，均在此函数内，符合"重启实现唯一归属"约束）。
+         */
+        case RESTART_FORCE_PENDING:
+        {
+            unsigned long elapsed = now - since;
+
+            if (elapsed < SYSTEM_FORCE_RESTART_DELAY_MS)
+            {
+                return;
+            }
+
+            portENTER_CRITICAL(&s_lock);
+            s_restart_state = RESTARTING;
+            portEXIT_CRITICAL(&s_lock);
+
+            syscmd_log(
+                "W",
+                "FORCE restart window elapsed (critical NOT drained), restarting now"
+            );
+            Serial.flush();
+
+            /* WARN 而不是 INFO：这次重启可能打断 Flash 写入，事后必须能在日志里看见 */
+            log_emit0(LOG_SYS_RESTART_EXECUTED, LOG_LVL_WARN);
+
+            ESP.restart();
+            return;
+        }
+
         case RESTART_IDLE:
         case RESTARTING:
         default:
             return;
     }
+}
+
+// =====================================================
+// [UI-V1.1 · F-2] 强制重启
+//
+// 与安全重启的差异只在于**是否等待 Critical Operation**：
+//   安全重启：REQUSTED → 等 cnt==0 → PENDING → 10 s → restart
+//   强制重启：直接进 FORCE_PENDING → 300 ms → restart（**不看 cnt**）
+//
+// 为什么允许不看 cnt：
+//   用户已明确接受"可能打断 Flash 写入 / 配置可能损坏"的风险，
+//   其定位是"最后一道故障恢复手段"。
+//   ⚠️ 但"不等 cnt"不等于"不等一切"：调用方应先做 safety_stop_all()
+//      与 config_boot_validate()（见头文件说明）。
+// =====================================================
+bool system_command_force_restart()
+{
+    bool accepted = false;
+    bool first_request = false;
+    uint32_t cnt = 0;
+    RestartState prev = RESTART_IDLE;
+
+    portENTER_CRITICAL(&s_lock);
+
+    cnt = s_critical_count;
+    prev = s_restart_state;
+
+    if (s_restart_state == RESTARTING)
+    {
+        /* 已经在重启，无从接受 */
+        accepted = false;
+    }
+    else if (s_restart_state == RESTART_FORCE_PENDING)
+    {
+        /* 幂等：不重排倒计时 */
+        accepted = true;
+    }
+    else
+    {
+        /*
+         * 从 IDLE / REQUESTED / PENDING 升级为强制。
+         * 从 REQUESTED/PENDING 升级是**有意的**：用户明确要求突破等待。
+         */
+        s_restart_state = RESTART_FORCE_PENDING;
+        s_pending_since_ms = millis();
+        accepted = true;
+        first_request = true;
+    }
+
+    portEXIT_CRITICAL(&s_lock);
+
+    if (first_request)
+    {
+        LogParamIn p[1];
+        p[0] = log_arg_u32(LOG_P_COUNT, cnt);
+        log_emit(LOG_SYS_RESTART_REQUESTED, LOG_LVL_WARN, p, 1);
+
+        syscmd_log(
+            "W",
+            "FORCE restart requested (critical=%lu ignored, prev=%s, delay=%lu ms)",
+            (unsigned long)cnt,
+            system_command_restart_state_name(prev),
+            (unsigned long)SYSTEM_FORCE_RESTART_DELAY_MS
+        );
+    }
+    else if (accepted)
+    {
+        syscmd_log("I", "force restart already pending, ignored");
+    }
+    else
+    {
+        syscmd_log("W", "force restart rejected, system is restarting");
+    }
+
+    return accepted;
+}
+
+bool system_command_force_restart_pending(unsigned long &remain_ms)
+{
+    remain_ms = 0;
+
+    portENTER_CRITICAL(&s_lock);
+    RestartState st = s_restart_state;
+    unsigned long since = s_pending_since_ms;
+    portEXIT_CRITICAL(&s_lock);
+
+    if (st != RESTART_FORCE_PENDING)
+    {
+        return false;
+    }
+
+    unsigned long elapsed = millis() - since;
+    if (elapsed >= SYSTEM_FORCE_RESTART_DELAY_MS)
+    {
+        remain_ms = 0;
+        return true;
+    }
+    remain_ms = SYSTEM_FORCE_RESTART_DELAY_MS - elapsed;
+    return true;
 }
 
 // =====================================================

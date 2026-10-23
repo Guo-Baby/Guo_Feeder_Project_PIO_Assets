@@ -247,9 +247,17 @@ void valve_init()
     active_level = config_get_valve_active_level();
     bool enable = config_get_valve_enable();
 
-    // 2. 安全超时钳位（1~300 秒）
+    // 2. 安全超时钳位（10~300 秒）
+    //
+    // ★ [UI-V1.1 · F-5] 下限从 1 提到 10：
+    //   ① 与 config_manager.h 的注释（"合法值 10~300"）对齐 —— 此前代码是 1~300，
+    //      文档与实现不一致；
+    //   ② 1~2 秒的"安全超时"没有实际保护意义（21 g 闭环实测 45.4 s），
+    //      却会让人以为设了保护。
+    //   ⚠️ 这是一次**行为收紧**：若设备实值曾落到 1~9，本次启动会被钳到 10。
+    //      当前设备实值是 300（远在范围内），不受影响；真机阶段需回读确认。
     int timeout_sec = config_get_valve_safety_timeout_sec();
-    if (timeout_sec < 1) timeout_sec = 1;
+    if (timeout_sec < 10) timeout_sec = 10;
     if (timeout_sec > 300) timeout_sec = 300;
     safety_timeout_ms = (unsigned long)timeout_sec * 1000UL;
 
