@@ -1,0 +1,56 @@
+[
+  {
+    "case": "T6-01",
+    "desc": "读取 valve.safety_timeout_sec",
+    "status": "PASS",
+    "detail": "现值=300"
+  },
+  {
+    "case": "T6-02",
+    "desc": "config_set safety_timeout_sec=60",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"wbt6-02\", \"t\": 1792765668, \"m\": \"config set queued, restart required\", \"command\": \"system\"}"
+  },
+  {
+    "case": "T6-03",
+    "desc": "config_save 受理",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"wbt6-03\", \"t\": 1792765669, \"m\": \"config save queued\", \"command\": \"system\"}"
+  },
+  {
+    "case": "T6-04",
+    "desc": "串口出现 config saved + 重启流程",
+    "status": "PASS",
+    "detail": "saved=True restart=True"
+  },
+  {
+    "case": "T6-05",
+    "desc": "重启后 [Valve] Init OK 打印 safety=60 s",
+    "status": "PASS",
+    "detail": "命中 1 条（重启前 300 的 0 条）"
+  },
+  {
+    "case": "T6-06",
+    "desc": "重启后回读 safety_timeout_sec == 60",
+    "status": "PASS",
+    "detail": "回读=60"
+  },
+  {
+    "case": "T6-07",
+    "desc": "开阀受理（短时）",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"wbt6-07\", \"o\": \"VALVE_OPEN\", \"t\": 1792765722, \"m\": \"Action queued\", \"instance_id\": 1, \"command\": \"execute_action\"}"
+  },
+  {
+    "case": "T6-08",
+    "desc": "关阀受理",
+    "status": "PASS",
+    "detail": "{\"s\": 1, \"c\": \"result\", \"i\": \"wbt6-08\", \"o\": \"VALVE_CLOSE\", \"t\": 1792765726, \"m\": \"Action queued\", \"instance_id\": 2, \"command\": \"execute_action\"}"
+  },
+  {
+    "case": "T6-09",
+    "desc": "关阀后 valve_status=false",
+    "status": "PASS",
+    "detail": "value='false'"
+  }
+]

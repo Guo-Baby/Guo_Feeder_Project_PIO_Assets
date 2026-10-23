@@ -245,12 +245,29 @@ static bool command_system_force_restart(
     JsonDocument &response
 )
 {
+    /*
+     * 记录请求时刻的 Critical Operation 计数 —— 这是"是否真的突破了保护"
+     * 的唯一客观证据，事后排查必须能看见。必须在 stop_all 之前取，
+     * 因为 stop_all 自己会释放 workflow/action 持有的计数。
+     */
+    const uint32_t critical_at_request = system_command_critical_operation_count();
+
     /* ① 停硬件（尽力；结果如实上报，不阻塞） */
     SafetyReport rep;
     safety_stop_all(rep);
 
     /* ② 落 boot flag（防 CFG-ROLLBACK） */
-    const bool boot_flag = config_boot_validate();
+    const bool flag_write_ok = config_boot_validate();
+
+    /*
+     * ②b 回读：写入链路说成功，不等于文件真的在命名空间里立住了。
+     *     两个条件都为真才敢对外声称 boot_flag_written=true。
+     *
+     * ⚠️ 即使为 true，也只证明"启动标记写成功了"，
+     *    **不**证明 Active 配置内容完整 —— 见 response.warning。
+     */
+    const bool flag_present = config_boot_flag_present();
+    const bool boot_flag_written = flag_write_ok && flag_present;
 
     /* ③ 请求强制重启 */
     const bool accepted = system_command_force_restart();
@@ -258,14 +275,24 @@ static bool command_system_force_restart(
     response["status"]            = accepted ? "rebooting" : "error";
     response["object"]            = "force_restart";
     response["accepted"]          = accepted;
-    response["boot_flag_written"] = boot_flag;
+    response["boot_flag_written"] = boot_flag_written;
+    response["boot_flag_write_ok"] = flag_write_ok;
+    response["boot_flag_present"]  = flag_present;
+    /* 诚实地把"不等 critical"这件事写进响应，而不是只写在文档里 */
+    response["critical_at_request"] = critical_at_request;
+    response["critical_bypassed"]   = (critical_at_request > 0);
     response["safety_all_ok"]     = rep.all_ok;
+    response["temp_cancelled"]    = rep.temp_cancelled;
     response["stop_elapsed_ms"]   = rep.elapsed_ms;
+    response["latched"]           = safety_is_latched();
     response["delay_ms"]          = SYSTEM_FORCE_RESTART_DELAY_MS;
-    response["physical_verified"] = false;
+    /* 两个"不"必须显式：没做电气验证、没保证配置完整 */
+    response["physical_verified"]          = false;
+    response["config_integrity_guaranteed"] = false;
     response["warning"] =
         "强制重启不等待 Critical Operation：配置写入可能被中断，"
-        "不保证配置完整（Active/Backup 校验和是唯一兜底）";
+        "不保证配置完整（Active/Backup 校验和是唯一兜底）；"
+        "boot_flag_written 只表示启动标记写入成功，不代表配置内容完整";
 
     if (!accepted)
     {
@@ -896,6 +923,26 @@ static bool command_execute_action(const CommandMessage &cmd, JsonDocument &resp
             CMD_ERROR_MISSING_OBJECT,
             "Missing 'object' (action id)"
         );
+        return false;
+    }
+
+    /*
+     * [UI-V1.1 · F-1 补强] 急停锁 —— 单发 Action 的入口闸门。
+     *
+     * 这一层与 WorkflowManager 里的 `enqueue_temp_action()` / 
+     * `workflow_action_start()` 是**两层独立**的检查：
+     *   这里负责给出**可读的拒绝原因**（云端/UI 能直接显示，
+     *   而不是笼统的 "Failed to queue action"）；
+     *   WorkflowManager 里那层负责**兜住所有其它启动路径**。
+     *
+     * 白名单（放行停止类与无执行器副作用的动作）见 safety.h。
+     */
+    if (safety_action_blocked_by_latch(cmd.object))
+    {
+        String msg = "Emergency stop latch is active; action rejected: ";
+        msg += cmd.object;
+        msg += " (send safety.clear to unlock)";
+        command_send_error(cmd, CMD_ERROR_SYSTEM, msg);
         return false;
     }
 
@@ -2346,6 +2393,7 @@ static bool command_safety_stop_all(
 
     response["workflows_seen"]    = rep.workflows_seen;
     response["workflows_stopped"] = rep.workflows_stopped;
+    response["temp_cancelled"]    = rep.temp_cancelled;
     response["any_was_running"]   = rep.any_was_running;
 
     JsonObject act = response["actuators"].to<JsonObject>();

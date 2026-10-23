@@ -129,6 +129,18 @@ bool safety_stop_all(SafetyReport &out)
         }
     }
 
+    /*
+     * ②b [F-1 补强] 取消排队中的临时 Action。
+     *
+     * 为什么必须在停硬件**之前**做：
+     *   队列里排着的下一个"开阀"会在本函数返回后的下一次
+     *   workflow_task() 里执行。先停硬件再清队列，中间会出现
+     *   "刚关掉又被打开"的窗口。
+     *
+     * 这里只做账本取消（并回调云端失败），物理停止交给 ③~⑥。
+     */
+    out.temp_cancelled = workflow_cancel_pending_temp_actions();
+
     /* ③ 物理层：阀 —— 最优先，漏水是唯一"持续造成损失"的失效模式 */
     out.valve.attempted  = true;
     out.valve.was_active = valve_is_open();
@@ -187,10 +199,11 @@ bool safety_stop_all(SafetyReport &out)
     out.elapsed_ms = millis() - t0;
 
     Serial.printf(
-        "[Safety] stop_all: wf_seen=%u wf_stopped=%u running=%d "
+        "[Safety] stop_all: wf_seen=%u wf_stopped=%u temp_cancelled=%u running=%d "
         "valve=%d(%s) stepper=%d(%s) vib=%d(%s) tstep=%d(%s) all_ok=%d %lu ms\n",
         (unsigned)out.workflows_seen,
         (unsigned)out.workflows_stopped,
+        (unsigned)out.temp_cancelled,
         out.any_was_running ? 1 : 0,
         out.valve.ok ? 1 : 0, out.valve.note ? out.valve.note : "?",
         out.stepper.ok ? 1 : 0, out.stepper.note ? out.stepper.note : "?",
@@ -217,4 +230,42 @@ bool safety_clear_latch()
 bool safety_is_latched()
 {
     return s_latched;
+}
+
+// =====================================================
+// [F-1 补强] 锁存期间的 Action 白名单
+//
+// 指针数组 + 长度，无堆分配、无 String 比较副作用。
+// 新增 Action 时**必须**回到这里决定放行还是拒绝 —— 默认是拒绝。
+// =====================================================
+static const char *const kLatchAllowedActions[] = {
+    "VALVE_CLOSE",             // 只关阀
+    "STEPPER_EMERGENCY_STOP",  // 只停步进
+    "TEST_STEPPER_STOP",       // 只停测试步进
+    "VIBRATION_STOP",          // 只停振动
+    "MI_THERMO_STOP_SCAN",     // 只停扫描
+    "MI_THERMO_START_SCAN",    // 只驱动 I2C/BLE 扫描
+    "WEIGHT_ZERO",             // 只置皮重基准
+};
+
+bool safety_action_blocked_by_latch(const String &action_id)
+{
+    if (!s_latched)
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < sizeof(kLatchAllowedActions) / sizeof(kLatchAllowedActions[0]); i++)
+    {
+        if (action_id == kLatchAllowedActions[i])
+        {
+            return false;
+        }
+    }
+
+    Serial.printf(
+        "[Safety] action blocked by latch: %s\n",
+        action_id.c_str()
+    );
+    return true;
 }

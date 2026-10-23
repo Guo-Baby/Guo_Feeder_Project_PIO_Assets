@@ -47,6 +47,7 @@ struct SafetyReport
 {
     uint8_t  workflows_seen;      // 扫描到的有效 workflow 槽位数
     uint8_t  workflows_stopped;   // 实际执行了 stop 的数量
+    uint8_t  temp_cancelled;      // 被取消的排队临时 Action 数量（F-1 补强）
     bool     any_was_running;     // 是否原本有 RUNNING/WAITING 的流程
 
     SafetyActuatorResult valve;
@@ -77,6 +78,7 @@ void safety_outputs_init();
  * 顺序（不得调整）：
  *   ① 置 latched（先立牌子，防止同一 loop 内已排队的下一步又开阀）
  *   ② 逐个 workflow_stop（账本层）
+ *   ②b 取消排队中的临时 Action（账本层，回调云端失败）
  *   ③ 阀 → 步进 → 振动 → 步进测试（物理层）
  *   ④ 逐项收集结果（不做电气验证，见文件头）
  *
@@ -92,5 +94,34 @@ bool safety_clear_latch();
 
 /** 当前是否处于停机锁态 */
 bool safety_is_latched();
+
+/**
+ * [F-1 补强] 锁存期间某个 **Action** 是否必须被拒绝。
+ *
+ * 语义：**白名单 + 失败即拒绝**
+ *   · 只有"停止类 / 传感器类 / 无执行器副作用"的 Action 被放行；
+ *   · 其它一切（含将来新增但未登记进白名单的 Action）在锁存期间一律拒绝。
+ *
+ * 为什么用白名单而不是黑名单：
+ *   黑名单在新增 Action 时默认放行 ⇒ 新 Action 会**静默绕过**急停，
+ *   而且没有任何编译期或运行期提示。白名单的失效方向是"多拦一个"，
+ *   最坏结果是用户必须显式 clear 一次，而不是电机动起来。
+ *
+ * 放行的 Action 及其理由（逐条可核）：
+ *   VALVE_CLOSE              只关阀，安全方向
+ *   STEPPER_EMERGENCY_STOP   只停步进，安全方向
+ *   TEST_STEPPER_STOP        只停测试步进，安全方向
+ *   VIBRATION_STOP           只停振动，安全方向
+ *   MI_THERMO_STOP_SCAN      只停扫描，无执行器
+ *   MI_THERMO_START_SCAN     只驱动 I2C/BLE 扫描，不驱动执行器
+ *   WEIGHT_ZERO              只置皮重基准，不驱动执行器
+ *
+ * 注意：本判定**只**决定"是否拒绝"，不改变任何模块状态；
+ *       真正的物理停止仍然只由 `safety_stop_all()` 编排。
+ *
+ * @param action_id Action 的 runtime id（如 "VALVE_OPEN"）
+ * @return true = 锁存中且不属于白名单 ⇒ 调用方必须拒绝
+ */
+bool safety_action_blocked_by_latch(const String &action_id);
 
 #endif // SAFETY_H

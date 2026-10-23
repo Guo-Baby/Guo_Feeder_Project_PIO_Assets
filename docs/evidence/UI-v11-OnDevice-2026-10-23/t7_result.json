@@ -1,0 +1,50 @@
+[
+  {
+    "case": "T7-01",
+    "desc": "定时振动（3000 ms）受理",
+    "status": "PASS",
+    "detail": "s=1"
+  },
+  {
+    "case": "T7-02",
+    "desc": "1 s 后振动仍在运行（vibration_active=true）",
+    "status": "PASS",
+    "detail": "value='true'"
+  },
+  {
+    "case": "T7-03",
+    "desc": "5 s 后振动已自动停止（vibration_active=false）",
+    "status": "PASS",
+    "detail": "value='false'"
+  },
+  {
+    "case": "T7-04",
+    "desc": "持续振动受理",
+    "status": "PASS",
+    "detail": "s=1"
+  },
+  {
+    "case": "T7-05",
+    "desc": "VIBRATION_STOP 受理",
+    "status": "PASS",
+    "detail": "s=1"
+  },
+  {
+    "case": "T7-06",
+    "desc": "停止后 vibration_active=false",
+    "status": "PASS",
+    "detail": "value='false'"
+  },
+  {
+    "case": "T7-07",
+    "desc": "步进电机带载/转动验证",
+    "status": "BLOCKED",
+    "detail": "DRV8825 已损坏、替换件与接线未确认 ⇒ 按任务规则不执行"
+  },
+  {
+    "case": "T7-08",
+    "desc": "TEST_STEPPER 启停验证",
+    "status": "BLOCKED",
+    "detail": "与步进共用 STEP/EN 引脚，驱动未确认前不执行"
+  }
+]

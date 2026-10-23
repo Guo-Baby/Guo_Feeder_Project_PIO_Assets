@@ -1,0 +1,326 @@
+[
+  {
+    "case": "T3-01a",
+    "desc": "query_state valve_status | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-00'"
+  },
+  {
+    "case": "T3-01",
+    "desc": "query_state valve_status | result",
+    "status": "PASS",
+    "detail": "{\"s\": 0, \"c\": \"result\", \"i\": \"wbt3-00\", \"o\": \"valve_status\", \"t\": 1792765455, \"value\": \"false\", \"command\": \"query_state\"}"
+  },
+  {
+    "case": "T3-02a",
+    "desc": "query_state weight_valid | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-01'"
+  },
+  {
+    "case": "T3-02",
+    "desc": "query_state weight_valid | result",
+    "status": "PASS",
+    "detail": "{\"s\": 0, \"c\": \"result\", \"i\": \"wbt3-01\", \"o\": \"weight_valid\", \"t\": 1792765457, \"value\": \"true\", \"command\": \"query_state\"}"
+  },
+  {
+    "case": "T3-03a",
+    "desc": "query_actions | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-02'"
+  },
+  {
+    "case": "T3-03",
+    "desc": "query_actions | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-04a",
+    "desc": "query_triggers | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-03'"
+  },
+  {
+    "case": "T3-04",
+    "desc": "query_triggers | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-05a",
+    "desc": "query_workflows | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-04'"
+  },
+  {
+    "case": "T3-05",
+    "desc": "query_workflows | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-06a",
+    "desc": "query_capabilities | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-05'"
+  },
+  {
+    "case": "T3-06",
+    "desc": "query_capabilities | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-07a",
+    "desc": "query_action_registry | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-06'"
+  },
+  {
+    "case": "T3-07",
+    "desc": "query_action_registry | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-08a",
+    "desc": "query_trigger_registry | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-07'"
+  },
+  {
+    "case": "T3-08",
+    "desc": "query_trigger_registry | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-09a",
+    "desc": "query_workflow_registry | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-08'"
+  },
+  {
+    "case": "T3-09",
+    "desc": "query_workflow_registry | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-10a",
+    "desc": "registry k=0 action | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-09'"
+  },
+  {
+    "case": "T3-10",
+    "desc": "registry k=0 action | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-11a",
+    "desc": "registry k=1 trigger | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-10'"
+  },
+  {
+    "case": "T3-11",
+    "desc": "registry k=1 trigger | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-12a",
+    "desc": "registry k=2 workflow | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-11'"
+  },
+  {
+    "case": "T3-12",
+    "desc": "registry k=2 workflow | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-13a",
+    "desc": "system.memory | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-12'"
+  },
+  {
+    "case": "T3-13",
+    "desc": "system.memory | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-14a",
+    "desc": "system.flash | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-13'"
+  },
+  {
+    "case": "T3-14",
+    "desc": "system.flash | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-15a",
+    "desc": "system.stats | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-14'"
+  },
+  {
+    "case": "T3-15",
+    "desc": "system.stats | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-16a",
+    "desc": "system.loop | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-15'"
+  },
+  {
+    "case": "T3-16",
+    "desc": "system.loop | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-17a",
+    "desc": "system.memwatch | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-16'"
+  },
+  {
+    "case": "T3-17",
+    "desc": "system.memwatch | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-18a",
+    "desc": "system.restart_status | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-17'"
+  },
+  {
+    "case": "T3-18",
+    "desc": "system.restart_status | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-19a",
+    "desc": "system.time | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-18'"
+  },
+  {
+    "case": "T3-19",
+    "desc": "system.time | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m='get_time ok'"
+  },
+  {
+    "case": "T3-21a",
+    "desc": "workflow.sync_info | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-19'"
+  },
+  {
+    "case": "T3-21",
+    "desc": "workflow.sync_info | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-22a",
+    "desc": "workflow.list | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-20'"
+  },
+  {
+    "case": "T3-22",
+    "desc": "workflow.list | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-23a",
+    "desc": "workflow.get id=3 | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-21'"
+  },
+  {
+    "case": "T3-23",
+    "desc": "workflow.get id=3 | s",
+    "status": "PASS",
+    "detail": "s=0 期望 0  m=None"
+  },
+  {
+    "case": "T3-24a",
+    "desc": "负向 query_state 缺 o | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-22'"
+  },
+  {
+    "case": "T3-24",
+    "desc": "负向 query_state 缺 o | s",
+    "status": "PASS",
+    "detail": "s=4 期望 4  m=\"Missing 'object' (state key)\""
+  },
+  {
+    "case": "T3-25a",
+    "desc": "负向 registry 缺 k | ack",
+    "status": "PASS",
+    "detail": "无 ack（协议层拒绝时属预期）"
+  },
+  {
+    "case": "T3-25",
+    "desc": "负向 registry 缺 k | s",
+    "status": "PASS",
+    "detail": "s=4 期望 4  m='invalid registry type'"
+  },
+  {
+    "case": "T3-26a",
+    "desc": "负向 未知 system 对象 | ack c/i",
+    "status": "PASS",
+    "detail": "c='ack' i='wbt3-24'"
+  },
+  {
+    "case": "T3-26",
+    "desc": "负向 未知 system 对象 | s",
+    "status": "PASS",
+    "detail": "s=4 期望 4  m='Unknown system object: no_such_object'"
+  },
+  {
+    "case": "T3-27a",
+    "desc": "负向 action 版本不符(v=99) | ack",
+    "status": "PASS",
+    "detail": "无 ack（协议层拒绝时属预期）"
+  },
+  {
+    "case": "T3-27",
+    "desc": "负向 action 版本不符(v=99) | s",
+    "status": "PASS",
+    "detail": "s=4 期望 4  m='action registry version mismatch'"
+  },
+  {
+    "case": "T3-20",
+    "desc": "config_query 第一帧为 accepted(1)",
+    "status": "PASS",
+    "detail": "s=1 m='config query queued'"
+  },
+  {
+    "case": "T3-20b",
+    "desc": "config_query 第二帧携带 valve 配置",
+    "status": "PASS",
+    "detail": "含 safety_timeout_sec"
+  }
+]

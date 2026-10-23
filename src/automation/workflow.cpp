@@ -11,6 +11,15 @@
 #include "automation/workflow_storage.h"
 #include "log/log_manager.h"   // P2-F：观测埋点（EventId / ParamId + log_emit）
 #include "services/mem_watch.h"   // G4-R4：显式分配点失败计数（H-4）
+/*
+ * [UI-V1.1 · F-1 补强] 紧急停堆锁。
+ *
+ * 这是 automation → app 的**唯一**反向依赖，刻意保留：
+ * 急停判定必须发生在 Action 真正启动的那一层（WorkflowManager 是 Action
+ * 唯一执行器），否则中间任何一条新路径都会绕过它。
+ * 头文件只声明、不反向 include workflow.h，因此不构成循环依赖。
+ */
+#include "app/safety.h"
 // =====================================================
 // 注册表
 // =====================================================
@@ -1015,6 +1024,23 @@ void workflow_action_start(
 
     if(action->descriptor == nullptr ||
        action->descriptor->start == nullptr)
+    {
+        action->result = ACTION_FAILED;
+        return;
+    }
+
+    /*
+     * [UI-V1.1 · F-1 补强] 兜底闸门。
+     *
+     * 正常情况下走到这里时 latched 必为 false（workflow_start 与
+     * enqueue_temp_action 都已拦截）。保留这一层是因为：
+     *   ① 锁存可能发生在 Workflow 已经 RUNNING 之后（step 之间有间隔），
+     *      此时本函数会被状态机再次调用；
+     *   ② 将来若新增别的 Action 启动路径，这一层仍能兜住。
+     * 置 ACTION_FAILED（而不是静默 return）是为了让 Workflow 走既有的
+     * 失败终止路径 —— 停在"半启动"状态比明确失败更危险。
+     */
+    if(safety_action_blocked_by_latch(action->descriptor->id))
     {
         action->result = ACTION_FAILED;
         return;
@@ -3727,6 +3753,25 @@ bool workflow_start(
         return false;
 
     // ============================================
+    // [UI-V1.1 · F-1 补强] 紧急停堆锁
+    //
+    // 放在这里（而不是只在 CommandManager 里）的理由：
+    //   本函数是 **Workflow 的唯一启动入口**，命令下发与 Trigger 自动启动
+    //   （workflow.cpp 末尾的自动触发路径）都经过它。
+    //   只拦 CommandManager 会漏掉"定时/条件触发把流程自己拉起来"这条路径。
+    //
+    // 解除方式：显式 `{"c":"safety","p":{"o":"clear"}}`。
+    // ============================================
+    if(safety_is_latched())
+    {
+        Serial.printf(
+            "[Safety] workflow start blocked by latch: %s\n",
+            workflow->id.c_str()
+        );
+        return false;
+    }
+
+    // ============================================
     // Critical Operation 保护（接入规范 §3）
     //
     // Workflow 执行期间（含 Step0 Trigger 的等待阶段）会驱动外部设备
@@ -3988,6 +4033,25 @@ static bool enqueue_temp_action(
         return false;
     }
 
+    /*
+     * [UI-V1.1 · F-1 补强] 紧急停堆锁 —— **临时 Action 的唯一入口**。
+     *
+     * 这是"后续新命令必须遵守锁存"的落点：
+     *   CommandManager → workflow_enqueue_action() → enqueue_temp_action()
+     * 无论命令来自 MQTT 还是串口 `cm {}`，都要经过这里。
+     *
+     * 白名单见 safety_action_blocked_by_latch()：
+     *   停止类（VALVE_CLOSE / *_STOP / STEpper_EMERGENCY_STOP）与
+     *   无执行器副作用的传感器类放行，其余一律拒绝（失败即拒绝）。
+     *
+     * 放在 acquire Critical Operation **之前**：拒绝路径不产生任何
+     * 需要配对的中间状态。
+     */
+    if (safety_action_blocked_by_latch(id))
+    {
+        return false;
+    }
+
     WorkflowActionInstance *inst = temp_action_alloc_instance();
     if(inst == nullptr)
     {
@@ -4196,6 +4260,57 @@ uint8_t workflow_temp_action_pending_count()
     {
         return MAX_TEMP_ACTIONS - queue_rd_ptr + queue_wr_ptr;
     }
+}
+
+// =====================================================
+// [UI-V1.1 · F-1 补强] 取消队列中所有未完成的临时 Action
+//
+// 典型场景：用户连点两个"开阀" ⇒ 队列里排了两个；
+//          此时执行急停 ⇒ 只停硬件是不够的，队列里第二个
+//          仍会在下一次 workflow_task() 里把阀重新打开。
+//
+// 实现要点：
+//   · 只用**既有**的 temp_action_complete() 收口 —— 它会释放
+//     Critical Operation 并回调 CommandManager，云端因此能拿到
+//     明确的 ACTION_FAILED 终态（不是静默消失）。
+//   · 不在这里停硬件：安全停堆由 safety_stop_all() 紧随其后统一做，
+//     避免"停两次"和"谁负责"的歧义。
+//   · 不改 queue_wr_ptr：Item 仍然留在队列里，由既有的
+//     workflow_temp_action_cleanup() 按"已完成"回收，
+//     保持环形队列的单写单读不变式。
+//   · 幂等：已完成的 Item 直接跳过。
+// =====================================================
+uint8_t workflow_cancel_pending_temp_actions()
+{
+    uint8_t cancelled = 0;
+
+    uint8_t i = queue_rd_ptr;
+    while (i != queue_wr_ptr)
+    {
+        TempActionItem &item = temp_action_queue[i];
+
+        if (!item.completed)
+        {
+            if (item.instance != nullptr)
+            {
+                item.instance->result  = ACTION_FAILED;
+                item.instance->running = false;
+            }
+
+            Serial.printf(
+                "[Safety] cancel pending temp action: id=%s cmd=%s\n",
+                (item.desc != nullptr && item.desc->id != nullptr) ? item.desc->id : "nullptr",
+                item.cmd_id.length() > 0 ? item.cmd_id.c_str() : "-"
+            );
+
+            temp_action_complete(item, ACTION_FAILED);
+            cancelled++;
+        }
+
+        i = (i + 1) % MAX_TEMP_ACTIONS;
+    }
+
+    return cancelled;
 }
 
 

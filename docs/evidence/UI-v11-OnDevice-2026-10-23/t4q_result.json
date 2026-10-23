@@ -1,0 +1,38 @@
+[
+  {
+    "case": "T4Q-01",
+    "desc": "占位长动作（振动 8 s）受理",
+    "status": "PASS",
+    "detail": "s=1"
+  },
+  {
+    "case": "T4Q-02",
+    "desc": "第二条命令入队（等待队头）",
+    "status": "PASS",
+    "detail": "s=1"
+  },
+  {
+    "case": "T4Q-03",
+    "desc": "急停 stop_all 返回 success",
+    "status": "PASS",
+    "detail": "s=0"
+  },
+  {
+    "case": "T4Q-04",
+    "desc": "temp_cancelled >= 1（排队任务被取消）",
+    "status": "PASS",
+    "detail": "temp_cancelled=2"
+  },
+  {
+    "case": "T4Q-05",
+    "desc": "振动同时被停（note=stopped）",
+    "status": "PASS",
+    "detail": "{\"attempted\": true, \"ok\": true, \"verified\": false, \"was_active\": true, \"note\": \"stopped\"}"
+  },
+  {
+    "case": "T4Q-06",
+    "desc": "被取消的排队命令收到失败终态（s=3）",
+    "status": "PASS",
+    "detail": "帧数=2 最后一帧={\"s\": 3, \"c\": \"result\", \"i\": \"wbt4q-02\", \"o\": \"VALVE_CLOSE\", \"t\": 1792766189, \"type\": \"action_result\", \"instance_id\": 5}"
+  }
+]
