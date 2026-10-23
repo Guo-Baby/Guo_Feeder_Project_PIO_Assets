@@ -113,8 +113,11 @@ bool safety_is_latched();
  *   TEST_STEPPER_STOP        只停测试步进，安全方向
  *   VIBRATION_STOP           只停振动，安全方向
  *   MI_THERMO_STOP_SCAN      只停扫描，无执行器
- *   MI_THERMO_START_SCAN     只驱动 I2C/BLE 扫描，不驱动执行器
- *   WEIGHT_ZERO              只置皮重基准，不驱动执行器
+ *
+ * ★ 2026-10-23 裁决后**移出**白名单（锁存期间一律拒绝）：
+ *   WEIGHT_ZERO              置皮重会让"秤是否被改动"不可判定
+ *   MI_THERMO_START_SCAN     启动持续扫描不是"停止"动作
+ * 判据：**这个 Action 会不会让系统离开"更停"的状态**。会 ⇒ 拒绝。
  *
  * 注意：本判定**只**决定"是否拒绝"，不改变任何模块状态；
  *       真正的物理停止仍然只由 `safety_stop_all()` 编排。
