@@ -211,7 +211,9 @@ cmd_id=prd371835097 family=query  action_id=workflow.get         state=done
 
 | 提交 | 内容 |
 |---|---|
-| （本轮） | `t_serial_latch.py`（串口锁存复核）+ `prod_e2e.py`（生产端到端）+ 证据归档 |
+| `7c856f9` | `t_serial_latch.py`（串口锁存复核）+ `prod_e2e.py`（生产端到端）+ 证据归档 |
+| `5a42281` | `prod_e2e.py` 会话断言按真实接口形状修正（`/api/ui/session` 无 `state` 字段，verify 成功=`ok:true`，撤销后失效=401） |
+| 归档 | `docs/evidence/Stepper-NoRotation-Diagnosis-2026-10-22.md`（DRV8825 锁死不转诊断）+ `docs/architecture/Stepper-Vibration-Plan-Revision-Report.md`（实施计划修订） |
 
 固件**源码本轮未改**（第三轮 `6888e7d` 的镜像仍在设备上运行）。
 
