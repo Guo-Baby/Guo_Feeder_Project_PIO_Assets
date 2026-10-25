@@ -8,7 +8,37 @@
 
 ## 0. 一句话结论
 
-**编码 + 测试全部完成并全绿（1125 + 33 + 23 断言，零 FAIL）；4 个只有真实连接/真实浏览器才抓得到的真 bug 已修并各附回归。生产部署未执行**（迁移 0010、`MQTT_POOL_KEY` Secret、Worker/Pages 上线、EMQX 控制台核对）——按任务书铁律「不自动部署生产」，留给项目负责人按 §5/§6 清单一次性授权执行。回退路径见 §7。
+**编码 + 测试 + 生产部署 + 生产验证全部完成**（1125 + 33 + 23 + 17 断言，零 FAIL；4 个只有真实连接/真实浏览器才抓得到的真 bug 已修并各附回归）。2026-10-25 已按项目负责人授权上线：Worker `2690a54b`（双 cron）、Pages `e577a410`、D1 迁移 0010、`MQTT_POOL_KEY` Secret、5 个池账号已建；生产全链路验证 17/17（见 §11）。回退路径见 §7。
+
+---
+
+## 11. 生产部署记录（2026-10-25，负责人授权后执行）
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| `MQTT_POOL_KEY` Secret | ✅ 已设（32B base64；缺失时凭据 503 fail-closed 不回落明文） | pool status `key_configured:true` |
+| D1 迁移 0010 | ✅ 已应用（纯增量；0001–0009 未动） | `sqlite_master` 两表在；migrations apply ✅ |
+| Worker 部署 | ✅ 版本 `2690a54b-47f0-4370-a428-73ea80f2e6c6`，双 cron（`0 3 * * *` + `5 * * * *`）已注册 | deploy 输出 |
+| bootstrap 建池 | ✅ `gf_web_00..04` 全部 created/available | bootstrap 响应 |
+| Pages 部署 | ✅ `e577a410`（`Compiled Worker successfully` + Functions bundle） | deploy 输出 |
+| 生产验证 | ✅ **17/17 PASS**（`scripts/verify_mqtt_pool_prod.mjs`） | 见下 |
+
+**生产验证明细**（真实生产环境，零 mock）：
+- A：登录页可达（`/login.html` 308→`/login` 200）；**生产已配 Turnstile** ⇒ 无 token 登录被拒（401 `captcha_failed`，连续失败触发 429 限流）——完整登录由负责人在浏览器完成（Function 级 107 断言覆盖逻辑）。
+- B：凭据端点无会话 ⇒ 401 fail-closed + `no-store`；**生产 D1 密文可用生产密钥解密**（AES-GCM 链路端到端成立）。
+- C：**真实生产 WSS**（mqtt.js 5.16.1）CONNACK rc=0；SUBACK `/up` `/log` 授予；安全发布到不存在设备 PUBACK 正常；越权 subscribe 被拒；越权 publish rc=135；错密码 rc=134。
+- D：池状态 5 账号全 available（验证直连不占租约）；响应无密码/密文字段。
+- EMQX 控制台等价核对：用户总数 10（= 既有设备账号 + 5 池账号，无多余新建）；`GuoFeederDevice` 原样未动；每个池账号恰 3 条规则（publish `guo_feeder/+/down`｜subscribe `guo_feeder/+/up`｜subscribe `guo_feeder/+/log`）。
+
+**上线后唯一遗留状态**：`gf_web_01` 在生产 D1 的密码即当前生效密码（bootstrap 生成、从未轮换）；24h 后 cron `5 * * * *` 自动首次轮换。无需人工干预。
+
+**运维入口**（均需 `.secrets.local` 的 `ADMIN_API_TOKEN`，出口走本机代理）：
+```bash
+node scripts/verify_mqtt_pool_prod.mjs                      # 生产全链路验证（17 断言）
+curl -x http://127.0.0.1:7890 -H "Authorization: Bearer $T" \
+  https://guo-feeder-api.guobaby.workers.dev/api/admin/mqtt/pool/status   # 池状态
+# 手动轮换单账号：POST /api/admin/mqtt/pool/rotate {"username":"gf_web_00"}
+```
 
 ---
 
@@ -187,12 +217,13 @@ cd guo-feeder-pagesdev && wrangler pages deploy . --project-name guo-feeder-page
 
 ---
 
-## 9. 待项目负责人决策/授权项（阻塞生产上线，不阻塞代码）
+## 9. 决策项状态（2026-10-25 负责人授权后）
 
-1. 授权执行 §6.1–6.3（Secret / 迁移 / 部署）——或明确「仅合码不上线」。
-2. 确认轮换周期 24h 是否符合运营预期（可配 1..168h）。
-3. 确认账号池大小 5 是否符合并发浏览规模（可配 1..20；每 GET 凭据占租约 30min）。
-4. 生产 Turnstile（登录侧）是否同窗口启用（与本任务独立）。
+1. ~~授权执行 §6.1–6.3~~ ✅ **已执行**（见 §11）。
+2. 轮换周期 24h —— 已按默认值上线；如运营预期不同，改 `MQTT_POOL_ROTATE_HOURS`（1..168）后重新 deploy 即可（不影响已建账号，下个周期生效）。
+3. 账号池大小 5 —— 已按默认值上线；可配 1..20（改后需重新 bootstrap 补建/对账，端点幂等）。
+4. ~~生产 Turnstile~~ ✅ 生产**已配**（实测无 token 登录 401 `captcha_failed`）——登录侧人机验证已在位，与本任务无冲突。
+5. **遗留安全事项**：验证脚本调试期有一次 curl 失败把 UI 密码带进了本地工具输出（已停止该传参写法并改为临时文件传 body）。UI 密码属可轮换共享口令，建议负责人在方便时更换（同时更新 `.secrets.local` 与 Pages Secret）。
 
 ---
 
