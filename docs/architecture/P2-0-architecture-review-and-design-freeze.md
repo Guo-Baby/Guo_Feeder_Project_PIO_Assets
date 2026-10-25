@@ -1151,7 +1151,7 @@ client 之前 retained 过一个 /set
 | **D-4** | 运行期 `$description` 刷新（`init` 重入周期） | P2.5/P3 | 当前**无**运行期描述变化源（AD-9/§15.2） |
 | **D-5** | `json` datatype 属性（结构化参数集合） | P2.5+ | 现有 Action 全为 0 参（§12.1）⇒ 无需求 |
 | **D-6** | 时间戳类属性（`datetime`） | P3 | 需 ISO8601 格式化 + 与 `fw_version`（P3）同批 |
-| **D-7** | 多设备发现（一个用户多台） | P4/P5 | 需按用户绑定下发**多组** ACL（`homie/5/<id1>/#` + `<id2>`） |
+| **D-7** | 多设备发现（一个用户多台） | P4/P5 | 需按用户绑定下发**多组** ACL（`homie/5/<id1>/#` + `<id2>`）。<br>**2026-10-25 进展（部分落地，D-7 未关闭）**：UI 侧「设备清单 + 切换 + 设备级隔离」已交付并部署（`GET /api/ui/devices`，生产只读验收 33/33；模拟 e2e 19/19）。<br>**仍未做**：① 按用户绑定（`UI_USER_ID` 未配 ⇒ 返回全部 REGISTERED，响应自陈 `scope:"single_user_all_registered"` + `binding_based:false`）；② 别名仅浏览器本地（`alias_storage:"local_only"`，跨端需 D1 迁移未获批）；③ **按设备隔离 ACL 未做** —— 所有设备仍共享账号 `GuoFeederDevice`。<br>⇒ **不得**据此宣称已实现「跨设备数据与权限隔离」。交付报告：`docs/review/UI-Stage4-P5-MultiDevice-Delivery-2026-10-25.md` |
 | **D-8** | 设备友好名（`$description.name` 来源） | P3 | **P2 不引入友好名 Config**（设备级 `name` 省略 → 客户端回落 device identity）；P3 新增 Config 字段（设备名）实现 |
 | **D-9** | `sleeping` / 优雅下线（空 `$state`） | 永不（除非新增 deep-sleep 业务） | 无业务场景 |
 | **D-10** | 设备 ACL 补写到**已部署**设备 | P2-5（需显式授权） | 涉及线上设备 ACL（§16.3） |
