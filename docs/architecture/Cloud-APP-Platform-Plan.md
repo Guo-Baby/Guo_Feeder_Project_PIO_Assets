@@ -1021,3 +1021,43 @@ device_id  ──┬──► Homie device-id
 ---
 
 *（本文件为架构规划文档，未涉及任何 ESP32 源码改动。下一步行动以 §10 P0 为准。）*
+
+---
+
+## 13. P6 收口（2026-10-26）—— 与**已实现现状**的对照
+
+> 本节由 P6 文档收口轮追加。目的：**让规划文档不再停留在"【待设计】"**，
+> 让读者一眼看出"哪些已经落地、哪些是**已决策不做**、哪些仍需人工/硬件条件"。
+
+### 13.1 本文档 §"P0 开工前仍缺的设计确认"8 项的**现状**
+
+| # | 原待确认 | 现状（2026-10-26） | 证据 |
+|---|---|---|---|
+| 1 | `device_id` 格式 | ✅ **已定**：12 位小写 hex（`/^[0-9a-f]{12}$/`） | `device-registry.js::isValidDeviceId`；Topic `guo_feeder/<12hex>/…` |
+| 2 | `device_id` 存储位置 | ✅ **已定**：设备 NVS + 云端 `device` 表（`device_id` 列 + CHECK） | `migrations/0000…0010` |
+| 3 | `client_id` 是否改为 `dev_<device_id>` | ✅ **已定并已实施**：设备侧 `dev_<device_id>`；浏览器直连池另用 `gfweb_*` | 生产 EMQX 实测 `clientid=dev_288485896ce4` |
+| 4 | Topic 实现方式 | ✅ **已定**：模板渲染（`topic_renderer.cpp` + `GF_TOPIC_TPL_*`） | `src/services/topic_renderer.cpp:147` |
+| 5 | EMQX API 能否按 username 改 ACL | ✅ **已实测推翻"不能"**：用户级 `PUT/DELETE …/rules/users/{username}` **可用（204）且生效** | `docs/review/EMQX-Account-Pool-and-ACL-Lifecycle-2026-10-25.md` §3 |
+| 6 | 凭据槽位数 N 与租约模型 | ✅ **已定**：固定池 `MQTT_POOL_SIZE=5`（硬上限 20）+ 租约 + 24 h 轮换 | 同上 §5.1 |
+| 7 | 遥测落库频率 | ✅ **已定并实施**：`GF_TELEMETRY_ENABLED` 默认 0（不启用） | `platformio.ini` / `telemetry_publisher.h:45-47` |
+| 8 | legacy Topic 过渡期 | ✅ **不适用**：无双发期（未引入 legacy topic） | — |
+
+⇒ **8 项全部落地**；§"P0 开工前仍缺的设计确认"**已过期**，保留作为历史。
+
+### 13.2 已决策**不做**的事项（不是待办）
+
+| 项 | 决策 | 理由 |
+|---|---|---|
+| **动态账号池** | ❌ 不做 | 固定池能力已足、不累积、轮换实测 PASS；动态化要改迁移/部署，收益为零 |
+| **按设备自动增删 ACL** | ❌ 不做 | 当前是**共享设备账号**的既定身份模型；改 ACL 要"踢连接"，代价与收益不成比例。**多设备隔离由云端会话边界承担，不是 EMQX ACL** |
+| **固件内建故障注入入口** | ❌ 不做 | 生产固件不得有默认开启的危险注入点；P4-3 破坏性场景走人工方案 |
+| **Homie 并行协议** | ❌ 本轮不做 | Web UI 阶段用现有 `guo_feeder/<id>/{up,down,log}` 协议已满足全部需求 |
+
+### 13.3 Web UI 阶段结束后的下一步（**Android WebView 套壳**）
+
+| 项 | 内容 |
+|---|---|
+| 前提 | §12 退出条件全部满足（见 `docs/review/UI-V11-Gap-Audit-and-Implementation-Plan-2026-10-25.md` §8 唯一进度表） |
+| 壳的职责 | 登录页承载 WebView + 会话注入 + 安全区适配 + 返回键路由回退；**不做**原生 UI 重写 |
+| 必须处理的 UI 事项 | ① 会话续期（WebView 冷启动恢复 cookie）；② 断网/弱网提示；③ Turnstile 在 WebView 内的可用性；④ 移动端安全区与软键盘遮挡 |
+| 不得引入 | 原生侧另建一套设备/权限模型（会与云端会话边界打架） |
