@@ -1057,7 +1057,7 @@ device_id  ──┬──► Homie device-id
 
 | 项 | 内容 |
 |---|---|
-| 前提 | §12 退出条件全部满足（见 `docs/review/UI-V11-Gap-Audit-and-Implementation-Plan-2026-10-25.md` §8 唯一进度表） |
+| 前提 | §12 退出条件全部满足（见 `docs/review/UI-V11-Gap-Audit-and-Implementation-Plan-2026-10-25.md` §8 唯一进度表）<br>★ **2026-10-26 优化轮已把技术退出条件全部满足**（评估见 `docs/review/UI-Final-Optimization-and-Exit-Review-2026-10-26.md` §14）；<br>结项前还差：① 该轮**部署**并完成验收 ② **会话级页面人工验收**（Turnstile 限制）③ 用户确认接受「P4-3 四个破坏性场景未执行」与「生产多设备未实测」两条已知风险 |
 | 壳的职责 | 登录页承载 WebView + 会话注入 + 安全区适配 + 返回键路由回退；**不做**原生 UI 重写 |
 | 必须处理的 UI 事项 | ① 会话续期（WebView 冷启动恢复 cookie）；② 断网/弱网提示；③ Turnstile 在 WebView 内的可用性；④ 移动端安全区与软键盘遮挡 |
 | 不得引入 | 原生侧另建一套设备/权限模型（会与云端会话边界打架） |
