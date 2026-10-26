@@ -381,7 +381,7 @@ B-3 漏记未解决；门禁一个都没动**（`G-4 = BLOCKED` · `WP-5` 未解
 | **P2** | Homie Bridge（设备侧 Homie 5 投影） | ✅ **软件收口** · 硬件实物测试**延期** |
 | **P3** ◀ | **历史数据平台（History / D1）—— 当前主阶段** | 🟡 **实施中** |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） | ⏳ 未开始 |
-| **P5** | Cloudflare Pages 部署 + 安卓 WebView 壳 | ⏳ 未开始 |
+| **P5** | Cloudflare Pages 部署 ✅（已完成，见 §8.6 / §8.6b）· 安卓 WebView 壳 ⏳ **未开始（2026-10-26 用户决定不启动）** |
 | **P6** | 原生 Android（【可选】） | ⏳ 未开始 |
 
 **P3 工作包**（Plan 轨 ↔ Design 轨双轨，**全文禁裸 `WP-n`**）：
@@ -653,7 +653,7 @@ B-3 漏记未解决；门禁一个都没动**（`G-4 = BLOCKED` · `WP-5` 未解
 | **P2** | **Homie Bridge**（与 CloudManager **并列**的投影适配层，写入单入口经 CommandManager） |
 | **P3** ◀ **下一阶段** | 历史/D1（多设备数据模型 + 遥测降频策略）—— 计划见 `docs/architecture/P3-History-D1-Plan.md`（**PLAN ONLY**） |
 | **P4** | Web UI（MQTT-Tiles + Homie Discovery Adapter） |
-| **P5** | Cloudflare Pages 部署 + 安卓 WebView 壳 |
+| **P5** | Cloudflare Pages 部署 ✅（已完成）· 安卓 WebView 壳 ⏳ 未开始（2026-10-26 用户决定不启动） |
 | **P6** | 原生 Android（**【后续可选】**，现在不装 Android Studio） |
 
 ### ★ P0 开工前的设计确认 —— **已定案（2026-10-02）**
