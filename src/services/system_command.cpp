@@ -559,6 +559,22 @@ RestartState system_command_restart_state()
     return st;
 }
 
+/*
+ * [T11 · 2026-11-01] 重启窗口门禁的唯一判据。
+ *
+ * 背景（真机故障）：强制重启前出现过"插座又被通电"。
+ * 原因是**没有任何地方**在重启窗口内拦住普通命令与执行器推进 ——
+ * RESTART_FORCE_PENDING 有 300 ms、RESTART_PENDING 有 10 000 ms，
+ * 足够主循环把队列里的旧命令消费掉并推进下一步。
+ *
+ * 这里刻意把 RESTART_REQUESTED 也算作"正在重启"：重启已不可撤销，
+ * 此时再接受普通命令只会产生被打断的半成品动作。
+ */
+bool system_command_is_restarting()
+{
+    return system_command_restart_state() != RESTART_IDLE;
+}
+
 bool system_command_restart_pending(unsigned long &remain_ms)
 {
     remain_ms = 0;

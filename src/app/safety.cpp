@@ -10,6 +10,7 @@
 #include "app/test_stepper.h"
 #include "automation/workflow.h"
 #include "services/config_manager.h"
+#include "app/xiaomi_lan.h"   // [T11] 停堆时必须作废米家在途请求（外部设备命令发出去就收不回）
 
 // =====================================================
 // 内部状态
@@ -141,6 +142,23 @@ bool safety_stop_all(SafetyReport &out)
      */
     out.temp_cancelled = workflow_cancel_pending_temp_actions();
 
+    /*
+     * ②c [T11 · 2026-11-01] 作废米家**在途请求**。
+     *
+     * 为什么必须在这里做（真机故障）：
+     *   米家插座/喂食器是**外部设备**，UDP 命令一旦发出去就收不回；
+     *   一次请求分两阶段（握手 800 ms → 发命令 → 等回包 3000 ms）。
+     *   强制重启只等 300 ms ⇒ 若此时有一条「插座通电」排在握手阶段，
+     *   它会在倒计时窗口内真的发出去；插座不随主机重启断电，
+     *   于是"重启后插座一直通电"。
+     *   旧实现只停本地执行器（阀/步进/振动/测试步进），**完全没碰米家**。
+     *
+     * 语义：只作废非安全类（出粮 / 通电 / 只读）；`XIAOMI_PLUG_OFF` 保留，
+     *   因为断电是安全方向，重启窗口内仍应尽量送出去。
+     *   顺序同理放在物理停止**之前**：避免"刚关掉又被发一条通电"。
+     */
+    out.xlan_cancelled = xiaomi_lan_abort_noncritical("safety_stop_all");
+
     /* ③ 物理层：阀 —— 最优先，漏水是唯一"持续造成损失"的失效模式 */
     out.valve.attempted  = true;
     out.valve.was_active = valve_is_open();
@@ -199,11 +217,12 @@ bool safety_stop_all(SafetyReport &out)
     out.elapsed_ms = millis() - t0;
 
     Serial.printf(
-        "[Safety] stop_all: wf_seen=%u wf_stopped=%u temp_cancelled=%u running=%d "
+        "[Safety] stop_all: wf_seen=%u wf_stopped=%u temp_cancelled=%u xlan_cancelled=%u running=%d "
         "valve=%d(%s) stepper=%d(%s) vib=%d(%s) tstep=%d(%s) all_ok=%d %lu ms\n",
         (unsigned)out.workflows_seen,
         (unsigned)out.workflows_stopped,
         (unsigned)out.temp_cancelled,
+        (unsigned)out.xlan_cancelled,
         out.any_was_running ? 1 : 0,
         out.valve.ok ? 1 : 0, out.valve.note ? out.valve.note : "?",
         out.stepper.ok ? 1 : 0, out.stepper.note ? out.stepper.note : "?",
@@ -249,7 +268,28 @@ static const char *const kLatchAllowedActions[] = {
     "TEST_STEPPER_STOP",       // 只停测试步进
     "VIBRATION_STOP",          // 只停振动
     "MI_THERMO_STOP_SCAN",     // 只停扫描
+    /*
+     * ★ [T11 · 2026-11-01] 插座断电 = 停止类。
+     *
+     * 缺陷（真机）：锁存由急停 / 强制重启置位，且一直保持到显式 clear。
+     * 旧名单全是"本地执行器"，没有任何"断电"类动作 ⇒ 锁存期间点「插座断电」
+     * 被固件一律拒绝 ⇒ **安全动作被安全机制自己堵死**。
+     * 判据未变：断电只**移除**能量，不会让系统离开"更停"状态。
+     */
+    "XIAOMI_PLUG_OFF",
 };
+
+bool safety_action_is_stop_class(const String &action_id)
+{
+    for (size_t i = 0; i < sizeof(kLatchAllowedActions) / sizeof(kLatchAllowedActions[0]); i++)
+    {
+        if (action_id == kLatchAllowedActions[i])
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool safety_action_blocked_by_latch(const String &action_id)
 {

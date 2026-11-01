@@ -52,6 +52,24 @@ static bool s_mqtt_precheck_failed = false;
 #define CLOUD_MQTT_STORE true
 
 // =====================================================
+// [T11 · 2026-11-01] Outbox 高水位（背压阈值）
+//
+// 真机实测 outbox 涨到 5997 B 仍无任何 publish FAIL ⇒ 这个版本没有
+// "满了就拒绝"的行为，只有"越堆越多"。所以必须由我们自己定一个水位：
+// 超过它就**暂停日志上传**（日志可延后，有 Flash ring + ACK 重传兜底），
+// 把 outbox 的排空机会让给**命令结果帧**（不可延后）。
+//
+// 取 4096 B ≈ 13 条日志批 / 11 条结果帧的余量：
+//   · 低于它：正常并发发送；
+//   · 高于它：日志让路，outbox 只出不进，很快回落。
+// =====================================================
+#define CLOUD_OUTBOX_HIGH_WATER_BYTES  4096
+
+/* [T11] 日志因 outbox 高压而让路的累计次数（可观测，5 s 节流打印） */
+static uint32_t      s_log_deferred_count   = 0;
+static unsigned long s_log_deferred_last_ms = 0;
+
+// =====================================================
 // MQTT 常量
 // =====================================================
 #define MQTT_RETRY_MAX             10
@@ -268,11 +286,33 @@ static size_t cloud_msg_limit = CLOUD_DEFAULT_MSG_LIMIT;
 // =====================================================
 // 下行接收环形缓冲（MQTT 回调只入队，cloud_task 主循环处理）
 // =====================================================
-#define MQTT_RX_SLOT_COUNT 4
-#define MQTT_RX_SLOT_SIZE  8192
+/*
+ * [T11 · 2026-11-01] 下行接收环：**每轮处理量**才是瓶颈，不是槽数。
+ *
+ * 缺陷（真机）：`cloud_process_rx_queue()` **每轮只处理 1 条**。
+ *   ⇒ 云端连发几条（或 broker 在断线重连后成批重投 QoS1）时，
+ *     环很快被占满，第 5 条开始**静默丢弃**（只有一行串口日志，
+ *     云端完全不知道）⇒ 命令"确认了、设备没执行、一分钟超时"。
+ *
+ * 修法取舍（刻意**不**扩容环）：
+ *   每槽 8 KB × 4 = 32 KB 静态 RAM。翻倍到 8 槽要多 32 KB 常驻内存，
+ *   而真实瓶颈是**出队速率**（1 条/轮），不是容量 ——
+ *   扩容属于"用内存掩盖处理能力不足"，任务书明确不允许。
+ *   ⇒ 环保持 4 槽，把每轮处理量提到 4：一次 4 连发在**一轮内**清空，
+ *     积压窗口从"4 个 loop 周期"缩到"1 个 loop 周期"。
+ *   剩余丢弃风险靠**可观测**兜底（见 s_rx_drop_count + 5 s 节流上报）。
+ */
+#define MQTT_RX_SLOT_COUNT      4
+#define MQTT_RX_SLOT_SIZE       8192
+#define MQTT_RX_DRAIN_PER_LOOP  4
 
 static uint8_t  rx_buffer[MQTT_RX_SLOT_COUNT][MQTT_RX_SLOT_SIZE];
 static uint16_t rx_len[MQTT_RX_SLOT_COUNT];
+
+/* [T11 · 2026-11-01] 丢弃可观测性：累计条数 + 节流上报时刻 */
+static uint32_t      s_rx_drop_count   = 0;
+static uint32_t      s_rx_bad_len      = 0;
+static unsigned long s_rx_drop_last_ms = 0;
 static uint8_t  rx_head = 0;   // 下一个待读取
 static uint8_t  rx_tail = 0;   // 下一个写入
 static uint8_t  rx_count = 0;
@@ -371,11 +411,31 @@ static void cloud_rx_enqueue(const uint8_t* data, size_t len)
     if(data == nullptr || len == 0 || len > MQTT_RX_SLOT_SIZE)
     {
         Serial.printf("[Cloud] RX drop: len=%u\n", (unsigned)len);
+        s_rx_bad_len++;
         return;
     }
     if(rx_count >= MQTT_RX_SLOT_COUNT)
     {
-        Serial.println("[Cloud] RX queue full, message dropped");
+        /*
+         * [T11 · 2026-11-01] 环满丢弃必须**可观测**。
+         *
+         * 旧实现只打一行 Serial ⇒ 现场根本看不见，云端也无从得知
+         * （QoS1 的 PUBACK 在 esp-mqtt 事件里已经回过，broker 不会重投）
+         * ⇒ 命令"发了、设备没执行、无任何错误"。这就是真机那条断电命令。
+         *
+         * 现在：累加计数 + 5 s 节流打印，让"丢弃"成为一个能被看到的事实，
+         * 而不是静默消失。§六.5「不得静默丢弃」。
+         */
+        s_rx_drop_count++;
+
+        const unsigned long now_ms = millis();
+        if((unsigned long)(now_ms - s_rx_drop_last_ms) >= 5000UL)
+        {
+            s_rx_drop_last_ms = now_ms;
+            Serial.printf(
+                "[Cloud] RX queue full, message dropped (total=%lu)\n",
+                (unsigned long)s_rx_drop_count);
+        }
         return;
     }
     memcpy(rx_buffer[rx_tail], data, len);
@@ -1664,13 +1724,25 @@ static uint8_t mqtt_rx_process_buffer[MQTT_RX_SLOT_SIZE];
 
 static void cloud_process_rx_queue()
 {
-    size_t len = 0;
-
-    if(cloud_rx_dequeue(
-        mqtt_rx_process_buffer,
-        len,
-        sizeof(mqtt_rx_process_buffer)))
+    /*
+     * [T11 · 2026-11-01] 每轮最多处理 MQTT_RX_DRAIN_PER_LOOP 条。
+     *
+     * 旧实现每轮只出 1 条 ⇒ 一次 4~8 条的突发要花 4~8 个 loop 周期才能消化，
+     * 期间环被占满，后续消息只能丢弃。现在一轮最多清 4 条：
+     * 既能把积压快速排空，又不会长时间占住主循环（单条处理是纯 CPU + 短 publish）。
+     */
+    for(uint8_t n = 0; n < MQTT_RX_DRAIN_PER_LOOP; n++)
     {
+        size_t len = 0;
+
+        if(!cloud_rx_dequeue(
+            mqtt_rx_process_buffer,
+            len,
+            sizeof(mqtt_rx_process_buffer)))
+        {
+            break;
+        }
+
         cloud_process_rx_message(
             mqtt_rx_process_buffer,
             len);
@@ -2545,6 +2617,50 @@ bool cloud_send_log(const uint8_t* data, size_t length)
     if(data == nullptr || length == 0)
     {
         return false;
+    }
+
+    /*
+     * ★★ [T11 · 2026-11-01] Outbox 背压：**日志必须给命令结果让路**。
+     *
+     * 真机证据：outbox 实测从 0 一路涨到 **5997 B**，期间没有任何 `publish FAIL`
+     *   ⇒ 说明 outbox 没有上限、只进不出，而不是"满了会拒绝"。
+     *
+     * 为什么这会伤害命令链路（两条，且都成立）：
+     *   ① 同一个 outbox 是 **FIFO**：日志批（约 296~305 B/条，每秒一条）
+     *      排在命令结果前面 ⇒ 结果帧被日志压在后面，UI 的 75 s 窗口先到点
+     *      ⇒ 用户看到"命令超时、没有回执"，而设备其实已经执行了；
+     *   ② `esp_mqtt_client_enqueue()` 要拿客户端 api 锁，而 mqtt 任务在慢网络下
+     *      会持锁做阻塞式 socket 写（`network_timeout_ms` 默认 10 s）
+     *      ⇒ 主循环被拖长，期间下行命令与执行器推进都停摆
+     *      （与实测"设备 20 s 无任何串口输出、网络恢复后复跑全绿"一致）。
+     *
+     * 修法：日志是**可延后**的（LogManager 有 Flash ring + ACK 重传，
+     *   丢掉本轮"发送机会"不会丢数据），命令结果是**不可延后**的。
+     *   ⇒ 高水位时日志这一轮直接不发，把 outbox 排空机会让给结果帧。
+     *
+     * ★ 刻意不做的两件事：
+     *   · 不丢日志数据（只是延后，LogManager 自己会重发）；
+     *   · 不无限扩容 outbox（那是掩盖处理能力不足）。
+     */
+    {
+        const int ob = (mqtt_client != nullptr)
+                           ? esp_mqtt_client_get_outbox_size(mqtt_client)
+                           : 0;
+        if(ob >= CLOUD_OUTBOX_HIGH_WATER_BYTES)
+        {
+            s_log_deferred_count++;
+            const unsigned long now_ms = millis();
+            if((unsigned long)(now_ms - s_log_deferred_last_ms) >= 5000UL)
+            {
+                s_log_deferred_last_ms = now_ms;
+                Serial.printf(
+                    "[Cloud LOG] deferred: outbox=%d >= %d (total=%lu) — 给命令结果让路\n",
+                    ob,
+                    (int)CLOUD_OUTBOX_HIGH_WATER_BYTES,
+                    (unsigned long)s_log_deferred_count);
+            }
+            return false;
+        }
     }
 
     if(mqtt_log_topic.length() == 0)

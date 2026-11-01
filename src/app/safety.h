@@ -48,6 +48,14 @@ struct SafetyReport
     uint8_t  workflows_seen;      // 扫描到的有效 workflow 槽位数
     uint8_t  workflows_stopped;   // 实际执行了 stop 的数量
     uint8_t  temp_cancelled;      // 被取消的排队临时 Action 数量（F-1 补强）
+    /*
+     * [T11 · 2026-11-01] 被作废的"米家在途请求"数量。
+     *
+     * 为什么必须停它们：米家插座/喂食器是**外部设备**，命令一旦通过 UDP 发出去
+     * 就收不回；强制重启只有 300 ms 窗口，若不先作废在途请求，
+     * 握手阶段排着的那条「插座通电」会在重启前真的发出去 —— 真机已发生。
+     */
+    uint8_t  xlan_cancelled;
     bool     any_was_running;     // 是否原本有 RUNNING/WAITING 的流程
 
     SafetyActuatorResult valve;
@@ -113,6 +121,15 @@ bool safety_is_latched();
  *   TEST_STEPPER_STOP        只停测试步进，安全方向
  *   VIBRATION_STOP           只停振动，安全方向
  *   MI_THERMO_STOP_SCAN      只停扫描，无执行器
+ *   XIAOMI_PLUG_OFF          只断电，安全方向（★ T11 · 2026-11-01 新增）
+ *
+ * ★ T11 · 2026-11-01 为什么必须把「插座断电」加进白名单：
+ *   锁存由急停/强制重启置位，而锁存**会一直保持到显式 clear**。
+ *   旧白名单里没有任何"断电"类动作 ⇒ 锁存期间用户点「插座断电」会被固件
+ *   一律拒绝 ⇒ 安全动作反而被普通安全机制堵死，
+ *   与"断电必须保留最高优先级安全路径"直接冲突。
+ *   判据一致性：「断电」只会**移除**能量，不会让系统离开"更停"的状态。
+ *   ⚠ 与之相对，「插座通电」不在白名单内，锁存期间一律拒绝。
  *
  * ★ 2026-10-23 裁决后**移出**白名单（锁存期间一律拒绝）：
  *   WEIGHT_ZERO              置皮重会让"秤是否被改动"不可判定
@@ -126,5 +143,21 @@ bool safety_is_latched();
  * @return true = 锁存中且不属于白名单 ⇒ 调用方必须拒绝
  */
 bool safety_action_blocked_by_latch(const String &action_id);
+
+/**
+ * [T11 · 2026-11-01] 「停止类动作」判据（与上面的白名单**同一份数据**）。
+ *
+ * 为什么单独暴露：重启窗口门禁（`command_manager_execute`）需要判断
+ * "这条命令在重启中也要放行吗"，判据必须与锁存白名单**完全一致**，
+ * 否则会出现"锁存放行、重启门禁拒绝"这类自相矛盾。
+ * 抽成一个函数就不会有两份名单。
+ *
+ * 与 `safety_action_blocked_by_latch()` 的区别：
+ *   · 本函数**不看**锁存状态，只回答"这个动作是不是停止类"；
+ *   · 上者回答"当前该不该拒绝"。
+ *
+ * @return true = 属于停止类白名单
+ */
+bool safety_action_is_stop_class(const String &action_id);
 
 #endif // SAFETY_H

@@ -1063,6 +1063,31 @@ void workflow_action_start(
         return;
     }
 
+    /*
+     * ★★ [T11 · 2026-11-01] 重启窗口门禁。
+     *
+     * 缺陷（真机）：强制重启前插座又被通电了一次。
+     *
+     * 为什么锁存挡不住：`safety_stop_all()` 只在**强制**重启时被调用；
+     *   **普通重启**走 RESTART_REQUESTED → RESTART_PENDING，中间有
+     *   10 000 ms 倒计时，期间**不置锁存** ⇒ 状态机照样能启动下一步 ——
+     *   于是一条排在队列里的「插座通电」会在倒计时窗口里被执行，
+     *   而重启并不会把插座断掉（插座是外部设备），结果"重启后一直通电"。
+     *
+     * 判据与锁存白名单**同一份数据**（`safety_action_is_stop_class`）：
+     *   停止类动作（关阀 / 急停 / 断电）必须放行 ——
+     *   它们是"更停"，被重启流程挡住就违背了安全优先级。
+     */
+    if(system_command_is_restarting() &&
+       !safety_action_is_stop_class(action->descriptor->id))
+    {
+        Serial.printf(
+            "[Workflow] action %s refused: system is restarting\n",
+            action->descriptor->id != nullptr ? action->descriptor->id : "?");
+        action->result = ACTION_FAILED;
+        return;
+    }
+
     action->running = true;
 
     action->descriptor->start(action);

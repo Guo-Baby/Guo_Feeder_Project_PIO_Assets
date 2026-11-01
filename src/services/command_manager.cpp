@@ -91,6 +91,75 @@ static CommandRuntime runtime_queue[MAX_COMMAND_RUNTIME];
 
 static unsigned long last_scan_ms = 0;
 
+// =====================================================
+// [T11 · 2026-11-01] 已完成 cmd_id 的短期记忆
+//
+// 为什么原有去重不够（真机"插座通电重复执行"的直接成因之一）：
+//   `command_runtime_insert()` 的重复判定**只扫活跃槽位**；
+//   命令一旦完成/超时被 release，这个 cmd_id 就被彻底忘记了。
+//   而 MQTT QoS1 是 **at-least-once**：主循环卡住、断线重连、PUBACK 丢失时，
+//   broker 会**重投同一条消息** ⇒ 同一个 cmd_id 再来一次 ⇒ 再执行一遍。
+//   对「插座通电」「出粮」这类非幂等动作，等于重复物理动作。
+//
+// 为什么只覆盖异步命令（action / workflow）：
+//   query / system 幂等（重复执行无副作用），config 有乐观锁版本号。
+//   只有会动执行器的异步命令需要短期记忆。
+//
+// 容量考量：16 条 × (String + 4B)，静态分配、无堆增长；
+//   TTL 5 min 覆盖"未确认期间的 broker 重投窗口"。
+// =====================================================
+#define CMD_DONE_RING    16
+#define CMD_DONE_TTL_MS  (5UL * 60UL * 1000UL)
+
+struct CmdDoneEntry
+{
+    String        cmd_id;
+    unsigned long at;
+};
+
+static CmdDoneEntry s_done_ring[CMD_DONE_RING];
+static uint8_t      s_done_head = 0;
+
+static void cmd_done_remember(const String &cmd_id)
+{
+    if (cmd_id.length() == 0)
+    {
+        return;
+    }
+    s_done_ring[s_done_head].cmd_id = cmd_id;
+    s_done_ring[s_done_head].at     = millis();
+    s_done_head = (uint8_t)((s_done_head + 1) % CMD_DONE_RING);
+}
+
+static bool cmd_done_seen(const String &cmd_id)
+{
+    if (cmd_id.length() == 0)
+    {
+        return false;
+    }
+
+    const unsigned long now = millis();
+
+    for (uint8_t i = 0; i < CMD_DONE_RING; i++)
+    {
+        if (s_done_ring[i].cmd_id.length() == 0)
+        {
+            continue;
+        }
+        /* 过期项不算命中（自然失效，不额外清理） */
+        if ((unsigned long)(now - s_done_ring[i].at) > CMD_DONE_TTL_MS)
+        {
+            continue;
+        }
+        if (s_done_ring[i].cmd_id == cmd_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // 注: 原 reboot_pending / reboot_start_ms / REBOOT_WAIT_TIMEOUT_MS
 // （legacy reboot 的等待后 ESP.restart() 机制）已随 V2 迁移移除。
 // 所有重启统一由 SystemCommand 的安全重启状态机执行。
@@ -284,6 +353,8 @@ static bool command_system_force_restart(
     response["critical_bypassed"]   = (critical_at_request > 0);
     response["safety_all_ok"]     = rep.all_ok;
     response["temp_cancelled"]    = rep.temp_cancelled;
+    /* [T11 · 2026-11-01] 强制重启前作废了几条米家在途请求（防"重启前又通电"） */
+    response["xlan_cancelled"]    = rep.xlan_cancelled;
     response["stop_elapsed_ms"]   = rep.elapsed_ms;
     response["latched"]           = safety_is_latched();
     response["delay_ms"]          = SYSTEM_FORCE_RESTART_DELAY_MS;
@@ -525,6 +596,15 @@ static CommandRuntime *command_runtime_find_by_cmd_id(const String &cmd_id)
 static void command_runtime_release(CommandRuntime *rt)
 {
     if (rt == nullptr) return;
+    /*
+     * ★ [T11 · 2026-11-01] 释放前先记住 cmd_id。
+     *
+     * 这是"防 QoS1 重投导致重复执行"的唯一写入点 —— 无论命令是
+     * 成功、失败还是超时收场，都算"已处理过"，重投必须被识别。
+     * 必须在清空 rt->cmd_id **之前**调用。
+     */
+    cmd_done_remember(rt->cmd_id);
+
     rt->active = false;
     rt->cmd_id = "";
     rt->message.command = "";
@@ -621,6 +701,12 @@ void command_manager_init()
     for (uint8_t i = 0; i < MAX_COMMAND_RUNTIME; i++) {
         command_runtime_release(&runtime_queue[i]);
     }
+    /* [T11 · 2026-11-01] 已完成 cmd_id 记忆随运行时表一起清零（RAM 级） */
+    for (uint8_t i = 0; i < CMD_DONE_RING; i++) {
+        s_done_ring[i].cmd_id = "";
+        s_done_ring[i].at     = 0;
+    }
+    s_done_head = 0;
     last_scan_ms = 0;
 
     // 注册 ConfigManager 完成回调。
@@ -781,6 +867,86 @@ bool command_manager_execute(const CommandMessage &cmd)
             CMD_ERROR_MISSING_COMMAND,
             "Missing 'command' field"
         );
+        return false;
+    }
+
+    // =====================================================
+    // [T11 · 2026-11-01] 重启窗口门禁
+    //
+    // 真机故障：强制重启前插座又被通电了一次。
+    // 根因之一是**没有任何地方**在重启窗口内拦住普通命令：
+    //   · RESTART_PENDING 有 10 000 ms 倒计时；
+    //   · RESTART_FORCE_PENDING 有 300 ms；
+    //   · 期间主循环照常消费下行命令（cloud_process_rx_queue）+ 推进执行器。
+    // ⇒ 排队的旧命令 / broker 重投的旧命令会在倒计时里被执行。
+    //
+    // 只拦**会动执行器**的两族（execute_* / workflow.*），不搞"整族全禁"：
+    //   · `system` 族要放行 —— 重启倒计时查询（restart_status）、诊断查询、
+    //     以及 config 写都在这一族里；config 写自带 Critical Operation 保护
+    //     （RESTART_PENDING 后禁止新 acquire），不需要这里再拦；
+    //   · `query` 只读、`safety` 是停止类，必须放行。
+    //
+    // 停止类动作（关阀 / 急停 / **插座断电**）即使在 execute_* 里也放行：
+    //   判据与锁存白名单**共用同一份数据**（safety_action_is_stop_class），
+    //   避免出现"锁存放行、重启门禁拒绝"这种自相矛盾。
+    // =====================================================
+    if (system_command_is_restarting())
+    {
+        const bool executor_family =
+            command_is_execute(command) ||
+            command_is_workflow_manage(command);
+
+        const bool stop_class = safety_action_is_stop_class(cmd.object);
+
+        if (executor_family && !stop_class)
+        {
+            command_log("WARN", "Command rejected: system is restarting");
+            command_send_error(
+                cmd,
+                CMD_ERROR_SYSTEM,
+                "system is restarting; executor commands are refused "
+                "(safety / stop-class actions still accepted)"
+            );
+            return false;
+        }
+    }
+
+    // =====================================================
+    // [T11 · 2026-11-01] 已完成命令的重复投递拦截
+    //
+    // MQTT QoS1 是 at-least-once：PUBACK 丢失 / 断线重连时 broker 会重投。
+    // 只对**会动执行器的异步命令**拦截 ⇒ 保证「插座通电」「出粮」不会被执行第二遍。
+    // 幂等命令（query / system）不拦，避免把正常的重复查询误杀。
+    // =====================================================
+    if (command_is_async(command) && cmd_done_seen(cmd.cmd_id))
+    {
+        command_log("WARN", "Duplicate delivery ignored (cmd_id already processed)");
+
+        JsonDocument dup;
+        dup["cmd"]        = "result";
+        dup["id"]         = cmd.cmd_id;
+        dup["command"]    = command;
+        dup["object"]     = cmd.object;
+        dup["status"]     = "duplicate";
+        dup["duplicate"]  = true;
+        /*
+         * 措辞要诚实：被记住的是"这个 cmd_id 已经处理过一次"，
+         * 那一次**可能成功、也可能失败/超时**。这里不再执行，
+         * 是因为无法区分"重复投递"与"用同一个 id 重试"，而非幂等动作
+         * 宁可漏执行一次也不能重复执行。⇒ 明确告诉调用方：换新 id 再发。
+         */
+        dup["message"]    = "duplicate cmd_id: already processed once (may have failed); "
+                            "NOT executed again for safety — resend with a NEW cmd_id";
+
+        time_t ts_dup = get_unix_timestamp();
+        if (ts_dup > 0)
+        {
+            dup["timestamp"] = ts_dup;
+        }
+
+        String dup_json;
+        serializeJson(dup, dup_json);
+        command_report_result(dup_json);
         return false;
     }
 
@@ -2443,6 +2609,8 @@ static bool command_safety_stop_all(
     response["workflows_seen"]    = rep.workflows_seen;
     response["workflows_stopped"] = rep.workflows_stopped;
     response["temp_cancelled"]    = rep.temp_cancelled;
+    /* [T11 · 2026-11-01] 被作废的米家在途请求数（外部设备命令收不回，必须可观测） */
+    response["xlan_cancelled"]    = rep.xlan_cancelled;
     response["any_was_running"]   = rep.any_was_running;
 
     JsonObject act = response["actuators"].to<JsonObject>();

@@ -151,6 +151,25 @@ bool system_command_force_restart_pending(unsigned long &remain_ms);
 // 查询当前 Restart 状态
 RestartState system_command_restart_state();
 
+// =====================================================
+// [T11 · 2026-11-01] "系统正在走向重启" 的唯一判据
+//
+// 为什么必须单独开一个函数，而不是让调用方各自比较枚举：
+//   ① 判据一旦分散，"哪些态算正在重启"就会各写一份，迟早写歪
+//      （RESTART_FORCE_PENDING 是后加的态，最容易漏）；
+//   ② 本判据是**安全门禁**：主循环在重启窗口内不得再消费普通下行命令、
+//      不得再推进非安全动作。写错的后果是"重启前又动了一次执行器"。
+//
+// 返回 true 的状态：RESTART_REQUESTED / RESTART_PENDING /
+//                   RESTART_FORCE_PENDING / RESTARTING
+// 返回 false：RESTART_IDLE
+//
+// ★ RESTART_REQUESTED 也计入：此时虽未定倒计时（可能在等 Critical 归零），
+//   但"重启已不可撤销"，继续接受普通命令只会制造"执行了但立刻被打断"的
+//   半成品状态。
+// =====================================================
+bool system_command_is_restarting();
+
 // 状态名（便于日志 / JSON 上报）
 const char *system_command_restart_state_name(RestartState st);
 

@@ -649,6 +649,52 @@ void finishRequest(bool feeder, bool ok)
     publishDiag();
 }
 
+// =====================================================
+// [T11 · 2026-11-01] 作废在途的非安全请求
+//
+// 真机故障：强制重启（300 ms 窗口）之前，插座又被通电了一次。
+// 根因之一：米家请求分两阶段（握手 800 ms → 发命令 → 等回包 3000 ms），
+// 而 `safety_stop_all()` 只停本地执行器（阀/步进/振动），**完全没碰米家**。
+// ⇒ 重启倒计时窗口里，一条排在握手阶段的「插座通电」照样被发出去，
+//   插座属于外部设备，重启也断不掉它，于是"重启后插座一直通电"。
+//
+// 语义约束（刻意保守）：
+//   · 只作废 `REQ_PLUG_OFF` **以外**的请求；断电是安全方向，绝不在这里丢；
+//   · 作废 = finishRequest(false)，即动作回调看到 FAILED，不会自动重试；
+//   · 不改变任何"设备在线"状态（在线与否与"我们中止了一次请求"无关）。
+// =====================================================
+uint8_t abortNoncriticalImpl(const char *reason)
+{
+    uint8_t cancelled = 0;
+
+    for (uint8_t i = 0; i < 2; i++)
+    {
+        Request &r = g_req[i];
+        if (!r.active)
+        {
+            continue;
+        }
+        /* 断电保留：它是唯一允许在重启窗口内继续推进的米家动作 */
+        if (r.kind == REQ_PLUG_OFF)
+        {
+            continue;
+        }
+
+        const bool feeder = (i == DEV_FEEDER);
+        Serial.printf(
+            "[XiaomiLAN] abort in-flight req kind=%u dev=%s (%s) stage=%u\n",
+            (unsigned)r.kind,
+            feeder ? "feeder" : "plug",
+            (reason != nullptr) ? reason : "abort",
+            (unsigned)r.stage);
+
+        finishRequest(feeder, false);
+        cancelled++;
+    }
+
+    return cancelled;
+}
+
 bool devEnabled(bool feeder)
 {
     /*
@@ -702,6 +748,31 @@ bool startRequest(uint8_t kind, uint8_t portions, DevInfo &dev, bool feeder,
      *   宿主侧有配套测试 ⇒ 这里执行的就是被测的那份逻辑，不是复制品。
      */
     Request &r = reqOf(feeder);
+
+    /*
+     * ★★ [T11 · 2026-11-01] 先清掉**上一轮**残留在槽里的完成标记。
+     *
+     * 缺陷（真机）：`actionPoll()` 只按 `descriptor` 指针认领结果
+     *   （loop2：`r.owner == descriptor && r.fin`）。
+     *   而 `fin/ok` 是**槽级**状态，finishRequest() 之后不会自动清。
+     *   ⇒ 本次 startRequest **发不出去**（BUSY / 未启用 / 未配置）时，
+     *     fin 仍是上一轮的 true ⇒ poll 会用**上一次的结果**覆盖本次的
+     *     ACTION_FAILED ⇒ "这次断电根本没发出去"，UI 却显示成功。
+     *
+     *   这在插座上是真危险：断电失败被显示成"已断电"。
+     *
+     * 修法：只要本槽当前没有在途请求，就先把完成标记清掉并认领给本次
+     *   descriptor。这样任何"没发出去"的路径都会走到 poll 的兜底
+     *   `if (result == ACTION_IDLE) result = ACTION_FAILED`，如实报失败。
+     *   ★ 槽正忙时不碰（那是别人的在途请求，不能替它清标记）。
+     */
+    if (!r.active)
+    {
+        r.fin = false;
+        r.ok = false;
+        r.owner = owner;
+    }
+
     if (r.active)
     {
         const xlan::SlotDecision dec = xlan::decideSlot(
@@ -1365,6 +1436,18 @@ bool loadDev(DevInfo &dev, const char *ipKey, const char *tokKey)
 // =====================================================
 // 对外接口
 // =====================================================
+
+/*
+ * [T11 · 2026-11-01] 公开包装。
+ *
+ * 本文件把内部实现整体放在匿名命名空间里（内部链接），
+ * 对外只暴露 xiaomi_lan_* 这一层 ⇒ 实现必须定义在 namespace 之外，
+ * 否则链接期找不到符号（本次编译第一次就是撞的这个）。
+ */
+uint8_t xiaomi_lan_abort_noncritical(const char *reason)
+{
+    return abortNoncriticalImpl(reason);
+}
 bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, const char **reason)
 {
     if (reason) *reason = "";
