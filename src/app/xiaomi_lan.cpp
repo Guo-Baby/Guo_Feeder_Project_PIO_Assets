@@ -40,6 +40,14 @@ constexpr uint32_t kReplyTimeoutMs = 3000;
 constexpr uint32_t kProbeIntervalMs = 60000;
 
 /*
+ * ★ [T12 · 2026-11-02] 探活为"未领取的动作结果"让步的最大轮数。
+ *   正常路径 workflow_task 的 actionPoll 在下一轮主循环就会经
+ *   `xiaomi_lan_release_result()` 领走结果 ⇒ 计数几乎不可能到 1；
+ *   上限只是兜底（例如 workflow 已终止、结果永远没人领的场景）。
+ */
+constexpr uint8_t XLAN_PROBE_DEFER_MAX = 5;
+
+/*
  * ★ [P0-3 · 2026-10-31] 只读请求首败后的**单次**重试间隔。
  *
  * 取 3 s 的理由（不是随手写的）：
@@ -110,6 +118,12 @@ struct Request
      */
     uint32_t badsum0;
     bool gotPacket;
+    /*
+     * ★ [T12 · 2026-11-02] 探活为本槽"未领取的动作结果"让步的连续轮数。
+     *   见 startRequest() 的 T12 注释；达到 XLAN_PROBE_DEFER_MAX 后允许覆盖
+     *   （结果视为陈旧）。正常路径下 workflow_task 下一轮就会领走 ⇒ 计数到不了 1。
+     */
+    uint8_t defer_count;
 };
 
 /*
@@ -768,9 +782,39 @@ bool startRequest(uint8_t kind, uint8_t portions, DevInfo &dev, bool feeder,
      */
     if (!r.active)
     {
+        /*
+         * ★★ [T12 · 2026-11-02] 探活（owner==nullptr）**不得覆盖未领取的动作结果**。
+         *
+         * 真机复现（boot 253，用户授权的真实插座）：plug_test 的 step1
+         *   XIAOMI_PLUG_ON **物理执行成功**（power=true），但完成结果被
+         *   随后的探活抹掉 ⇒ actionPoll 匹配不上 ⇒ workflow 永挂 RUNNING
+         *   ⇒ 10 分钟后才被 timeout 兜底（state=TIMEOUT，current_step=1）。
+         *
+         * 时序：动作完成（finishRequest：fin=true, owner=desc）→ forceProbe →
+         *   **同一轮** xiaomi_lan_loop 尾部 periodicProbe() 立即 startRequest，
+         *   走到下面这个分支把 owner 覆盖成 nullptr、fin 清零 —— 而
+         *   workflow_task 的 actionPoll 在主循环里排在 xiaomi_lan_loop
+         *   **之前** ⇒ 下一轮 poll 时 owner 已经不是自己了 ⇒ 结果永久丢失。
+         *
+         * 修法：探活类请求（owner==nullptr）看到槽里残留"fin 未领取"的
+         *   动作结果时**本轮让路** —— workflow_task 下一轮 poll 会经
+         *   `xiaomi_lan_release_result()` 领走并清槽，探活下轮自然放行。
+         *   让步有上限（XLAN_PROBE_DEFER_MAX 轮），防止"动作永远没人领"
+         *   时探活被饿死（例如 workflow 已超时终止后残留的结果）。
+         */
+        if (owner == nullptr && r.owner != nullptr && r.fin)
+        {
+            if (r.defer_count < XLAN_PROBE_DEFER_MAX)
+            {
+                r.defer_count++;
+                return false;
+            }
+            /* 让步上限已到 ⇒ 结果视为陈旧，允许覆盖（计数复位在清槽/启动处） */
+        }
         r.fin = false;
         r.ok = false;
         r.owner = owner;
+        r.defer_count = 0;
     }
 
     if (r.active)
@@ -1206,14 +1250,46 @@ void actionPoll(WorkflowActionInstance *action)
     }
     for (uint8_t i = 0; i < 2; i++)
     {
-        const Request &r = g_req[i];
+        Request &r = g_req[i];
         if (r.owner == action->descriptor && r.fin)
         {
             action->result = r.ok ? ACTION_SUCCESS : ACTION_FAILED;
+            /*
+             * ★★ [T12 · 2026-11-02] 领走即清槽。
+             *   结果被 workflow 领走后立刻清掉 owner/fin —— 否则探活的
+             *   startRequest 要靠"让步"来保护一个已经没有意义的结果，
+             *   而且下次 startRequest 的提前认领也依赖槽是干净的。
+             *   （非阻塞：清的是本动作自己的槽，不动另一台。）
+             */
+            if (!r.active)
+            {
+                r.fin = false;
+                r.ok = false;
+                r.owner = nullptr;
+                r.defer_count = 0;
+            }
             return;
         }
     }
-    if (action->result == ACTION_IDLE) action->result = ACTION_FAILED;
+    /*
+     * ★★ [T12 · 2026-11-02] 兜底必须覆盖 RUNNING，不能只救 IDLE。
+     *
+     * 真机复现（boot 253）：动作物理执行成功，结果被探活覆盖 ⇒ 两个
+     *   匹配 loop 都找不到 ⇒ 旧兜底 `result == ACTION_IDLE` 不生效
+     *   （result 已是 start 时置的 RUNNING）⇒ 永挂 RUNNING ⇒ 只能等
+     *   workflow 级 10 分钟超时（用户看到的就是"卡在 Delay 不推进"）。
+     *
+     * 能走到这里 = 槽里**既没有**本动作的在途请求（loop1 未命中），
+     *   **也没有**本动作的完成结果（loop2 未命中）⇒ 请求已经消失且
+     *   永远不会再回来 ⇒ 唯一诚实的终态就是 ACTION_FAILED。
+     *   （若未来出现"请求短暂消失但会回来"的新路径，必须在这里补白名单，
+     *     而不是回退本兜底 —— 永挂比误报失败危险得多：误报失败用户会
+     *     重试，永挂则插座保持通电且 UI 永远"执行中"。）
+     */
+    if (action->result == ACTION_IDLE || action->result == ACTION_RUNNING)
+    {
+        action->result = ACTION_FAILED;
+    }
 }
 
 int readPortions(WorkflowActionInstance *action)

@@ -1,0 +1,11 @@
+# T12-B v9：单会话 探活→启动→query_state 轮询插座键
+cm {"cmd":"execute_action","id":"a1","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"execute_workflow","id":"r1","ob":"plug_test"} ||| "accepted"
+cm {"cmd":"query_state","id":"q1","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q2","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q3","ob":"xiaomi_plug_last_err"} ||| "value"
+cm {"cmd":"query_state","id":"q4","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q5","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q6","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q7","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"q8","ob":"xiaomi_plug_power"} ||| "value"

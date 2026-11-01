@@ -1,0 +1,27 @@
+# T12-D 端到端插座测试（刷入 T12 固件后运行）
+# 授权边界：仅 plug_test / XIAOMI_PLUG_ON / XIAOMI_PLUG_OFF / XIAOMI_PLUG_STATUS，
+#           不含出粮、电磁阀、其它米家设备。以 XIAOMI_PLUG_STATUS（真实 LAN 查询）为准。
+# 用法：python test/serial_batch.py COM8 .pio/t12_e2e.log test/t12_e2e_plug_tests.txt 3
+#       然后核对 EXPECT 统计与 .pio/t12_e2e.log 内 power 值序列。
+cm {"cmd":"execute_action","id":"e0","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"query_state","id":"p0","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"execute_action","id":"e1","ob":"XIAOMI_PLUG_ON"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e2","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"query_state","id":"p1","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"execute_action","id":"e3","ob":"XIAOMI_PLUG_OFF"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e4","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"query_state","id":"p2","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"execute_action","id":"e5","ob":"XIAOMI_PLUG_ON"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e6","ob":"XIAOMI_PLUG_ON"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e7","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"query_state","id":"p3","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"execute_action","id":"e8","ob":"XIAOMI_PLUG_OFF"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e9","ob":"XIAOMI_PLUG_OFF"} ||| "accepted"
+cm {"cmd":"execute_action","id":"e10","ob":"XIAOMI_PLUG_STATUS"} ||| "accepted"
+cm {"cmd":"query_state","id":"p4","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"execute_workflow","id":"ew","ob":"plug_test"} ||| "accepted"
+cm {"cmd":"query_state","id":"p5","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"p6","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"p7","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"p8","ob":"xiaomi_plug_power"} ||| "value"
+cm {"cmd":"query_state","id":"p9","ob":"xiaomi_plug_power"} ||| "value"

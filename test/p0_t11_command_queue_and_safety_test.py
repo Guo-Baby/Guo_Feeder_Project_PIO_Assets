@@ -130,8 +130,9 @@ def check_b2():
     ok("B-2a execute 入口查已完成记忆", "cmd_done_seen(" in body)
     ok("B-2b 只对 async 命令拦截（幂等查询不误杀）",
        re.search(r"command_is_async\(command\)\s*&&\s*cmd_done_seen", body) is not None)
-    ok("B-2c 命中后回 status=duplicate（不得静默）",
-       '"duplicate"' in body and '"duplicate delivery ignored' in body)
+    ok("B-2c 命中后回 status=duplicate 且说明「可能此前已失败」（不得静默）",
+       '"duplicate"' in body
+       and '"duplicate cmd_id: already processed once' in body)
     ok("B-2d 命中后不再执行（return false）",
        re.search(r'command_report_result\(dup_json\);\s*return false;', body) is not None)
 
@@ -252,8 +253,9 @@ def check_c4():
     """actionPoll 的残留 fin 必须被清掉（否则"没发出去"会被旧成功冒充）。"""
     x = TEXT["xlan"]
     sr = func_body(x, "startRequest") or ""
-    ok("C-4a startRequest 在槽空闲时清 fin/ok", re.search(r"if\s*\(!r\.active\)[\s\S]{0,220}r\.fin\s*=\s*false",
-                                                        sr) is not None)
+    ok("C-4a startRequest 在槽空闲时清 fin/ok（T12 后窗口内含探活让路守卫）",
+       re.search(r"if\s*\(!r\.active\)[\s\S]{0,900}r\.fin\s*=\s*false",
+                 sr) is not None)
     ok("C-4b 清白必须在 BUSY/DISABLED 早退之前",
        sr.find("r.fin = false") < sr.find("XIAOMI_ERR_BUSY"),
        "clear@%d busy@%d" % (sr.find("r.fin = false"), sr.find("XIAOMI_ERR_BUSY")))
