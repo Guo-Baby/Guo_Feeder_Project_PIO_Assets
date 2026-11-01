@@ -1,0 +1,9 @@
+烧录前设备配置快照（脱敏，2026-10-29 16:32:45）
+--- mqtt ---
+QUERY mqtt.* ->
+  {mqtt_server=YOUR_MQTT_HOST, mqtt_port=8883, client_id=dev_<device_id>, username=YOUR_MQTT_USERNAME, password=<set len=7>, subscribe_topic=guo_feeder/<device_id>/down, publish_topic=guo_feeder/<device_id>/up, log_topic=guo_feeder/<device_id>/log, ca_path=/emqxsl-ca.crt, retry_interval=10000, retry_max=30, sleep_retry_interval=1800000, mqtt_keep_alive=60}
+
+--- mi_thermo ---
+QUERY mi_thermo.* ->
+  {BLE_key=<set len=32>, MAC=***4:17, mi_thermo_allow_collect=True}
+

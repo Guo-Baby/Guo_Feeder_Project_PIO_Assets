@@ -1,0 +1,69 @@
+集成轮固件构建与烧录记录（2026-10-30）
+=====================================================
+
+[构建参数]
+  env           = esp32-s3-telemetry（platformio.ini 显式声明，extends 默认 env）
+  build_flags   = ${env:esp32-s3-devkitc-1.build_flags} + -DGF_TELEMETRY_ENABLED=1
+  其余参数      = 完全继承默认 env（PSRAM OPI / 16MB / partitions.csv / 库版本不变）
+  构建脚本      = tools/build_telemetry.sh（构建前自动归档旧产物）
+  构建时刻      = 2026-10-30 16:15:44 ~ 16:16:33（43.85 s，增量）
+  平台          = PlatformIO + espressif32 / arduino
+
+[产物]
+  源路径        = .pio/build/esp32-s3-telemetry/firmware.bin
+  归档副本      = docs/evidence/Integration-2026-10-30/firmware-integration-33d2812b.bin  （v1，先烧录）
+                  docs/evidence/Integration-2026-10-30/firmware-integration-5266d3d9.bin  （v2，最终生产）
+  size          = 1469520 B（两版相同）
+  sha256 v1     = 33d2812bc6461c611cdaedf7bd79bc441ad2277bb22a9f65dfa7961babab4a3f
+  sha256 v2     = 5266d3d947a99f55928eb2b63905a5289a270528ff81e10f9599802f09acdc55
+  mtime v1      = 2026-10-30 16:16:33
+  mtime v2      = 2026-10-30 16:20:58
+  遥测断言      = climate.temperature=1 weight.value=2
+  新功能断言    = 11/11 通过：
+                  xiaomi_feeder_last_err / xiaomi_plug_last_err /
+                  xiaomi_feeder_last_ok_ts / xiaomi_plug_last_ok_ts /
+                  xiaomi_lan_recv / xiaomi_lan_badsum / xiaomi_lan_timeout /
+                  xiaomi_plug_autooff_sec /
+                  XIAOMI_PLUG_ON_60S / XIAOMI_FEEDER_STATUS / XIAOMI_PLUG_STATUS
+
+[v2 相对 v1 的唯一改动]
+  src/app/xiaomi_lan.cpp :: markOk()
+  授时前（time(nullptr) 返回 7）不再把 7 写进 *_last_ok_ts，改写 0。
+  真机证据：v1 烧录后读到 xiaomi_feeder_last_ok_ts="7"（UI 会显示 1970）；
+            v2 烧录后同一时刻读到 "0"，授时后读到 1793349604。
+
+[烧录]
+  port          = COM8 (CH343)
+  offset        = 0x10000 (app0)
+  命令          = esptool.py --chip esp32s3 -p COM8 -b 460800 write_flash
+                  --flash_mode qio --flash_freq 80m --flash_size 16MB 0x10000 <bin>
+  v1 写入       = 2026-10-30 16:17:37，Wrote 1469520 bytes，Hash of data verified
+  v2 写入       = 2026-10-30 16:21–16:23，Wrote 1469520 bytes，Hash of data verified
+  校验          = verify_flash 0x10000 → "verify OK (digest matched)"（v1/v2 各一次）
+  未擦写        = bootloader / partitions / NVS / LittleFS（配置与 mqtt.telemetry_enable 保留）
+
+[与前次构建的一致性]
+  chk2 构建（2026-10-29 22:16，归档于 build-archive/20261030-161545-chk2）sha256 同为
+  33d2812bc646…，1469520 B ⇒ 源码自 2026-10-29 22:16 起未再变化，本次构建可复现。
+
+[源码基线]
+  branch/HEAD   = wb / cb7a1c7
+  dirty_count   = 27（构建时）
+  相对运行固件新增的源文件改动（按 mtime）：
+    src/app/xiaomi_lan.cpp      10-29 22:15（源码；运行固件构建于 10-29 16:31）
+    src/app/xiaomi_lan.h        10-29 21:55
+    src/services/system_state.cpp 10-29 21:54
+    src/services/system_state.h   10-29 21:54
+
+[被替换的旧固件]
+  sha256        = 71556b9c315c9f06cb63813c5ab88231b899a9a5a7af3f64c00ff0a73c281073
+  size          = 1467008 B
+  归档          = docs/evidence/Telemetry-Flash-2026-10-29/firmware-telemetry-71556b9c.bin
+                  docs/evidence/build-archive/20261029-203150-esp32-s3-telemetry/
+
+[目标设备]
+  port          = COM8 (CH343, USB-Enhanced-SERIAL)
+  chip/MAC      = ESP32-S3 / 28:84:85:89:6c:e4  ⇒ device_id 001122334455
+  flash         = 16MB
+  PSRAM         = Embedded 8MB
+  app 分区偏移  = 0x10000（partitions.csv: app0 app ota_0 0x10000 0x200000）

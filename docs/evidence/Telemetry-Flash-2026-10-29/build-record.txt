@@ -1,0 +1,25 @@
+遥测构型构建与烧录记录（2026-10-29）
+=====================================================
+
+[构建参数]
+  env           = esp32-s3-telemetry（platformio.ini 显式声明，extends 默认 env）
+  build_flags   = ${env:esp32-s3-devkitc-1.build_flags} + -DGF_TELEMETRY_ENABLED=1
+  其余参数      = 完全继承默认 env（PSRAM OPI / 16MB / partitions.csv / 库版本不变）
+
+[产物]
+  源路径        = .pio/build/esp32-s3-telemetry/firmware.bin
+  归档副本      = docs/evidence/Telemetry-Flash-2026-10-29/firmware-telemetry-71556b9c.bin
+  size          = 1467008 B
+  sha256        = 71556b9c315c9f06cb63813c5ab88231b899a9a5a7af3f64c00ff0a73c281073
+  mtime         = 2026-10-29 16:31:15
+  遥测断言      = climate.temperature=1 climate.humidity=1 weight.value=2
+
+[源码基线]
+  branch/HEAD   = wb / cb7a1c7
+  dirty_count   = 23
+
+[目标设备]
+  port          = COM8 (CH343)
+  chip/MAC      = ESP32-S3 / 28:84:85:89:6c:e4  ⇒ device_id 001122334455
+  flash         = 16MB
+  PSRAM         = Embedded 8MB

@@ -1,0 +1,229 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (279) esp_core_dump_flash: No core dump partition found!
+E (279) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[LogContract] v=2 rec=128 seg=3984 x16 cap=496 fmt=2 check=PASS
+[Identity] device_id=001122334455 (nvs ok)
+[Log] RAM ring ready: 64 slots x 128 B = 8192 B in PSRAM (boot_seq=1)
+[  1355][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+[  1367][E][vfs_api.cpp:105] open(): /littlefs/log/s0000000.log does not exist, no permits for creation
+[  1379][E][vfs_api.cpp:105] open(): /littlefs/log/s0000001.log does not exist, no permits for creation
+[  1391][E][vfs_api.cpp:105] open(): /littlefs/log/s0000002.log does not exist, no permits for creation
+[  1403][E][vfs_api.cpp:105] open(): /littlefs/log/s0000003.log does not exist, no permits for creation
+[  1415][E][vfs_api.cpp:105] open(): /littlefs/log/s0000004.log does not exist, no permits for creation
+[  1427][E][vfs_api.cpp:105] open(): /littlefs/log/s0000005.log does not exist, no permits for creation
+[  1439][E][vfs_api.cpp:105] open(): /littlefs/log/s0000006.log does not exist, no permits for creation
+[  1451][E][vfs_api.cpp:105] open(): /littlefs/log/s0000007.log does not exist, no permits for creation
+[  1463][E][vfs_api.cpp:105] open(): /littlefs/log/s0000008.log does not exist, no permits for creation
+[  1475][E][vfs_api.cpp:105] open(): /littlefs/log/s0000009.log does not exist, no permits for creation
+[  1487][E][vfs_api.cpp:105] open(): /littlefs/log/s0000010.log does not exist, no permits for creation
+[  1499][E][vfs_api.cpp:105] open(): /littlefs/log/s0000011.log does not exist, no permits for creation
+[  1549][E][vfs_api.cpp:105] open(): /littlefs/log/s0000013.log does not exist, no permits for creation
+[  1561][E][vfs_api.cpp:105] open(): /littlefs/log/s0000014.log does not exist, no permits for creation
+[  1573][E][vfs_api.cpp:105] open(): /littlefs/log/s0000015.log does not exist, no permits for creation
+[Log] Flash ring ready: seg=16 x 31 rec, seg_size=3984 B, valid=1, oldest=12, newest=12, append=12@13, total_rec=13, batch=1024 B in PSRAM
+[  1597][E][vfs_api.cpp:105] open(): /littlefs/log/quarantine.bin does not exist, no permits for creation
+[Log] recovery=NVS boot_hw=219 -> boot_seq=220 reserved=83712 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+[Log] seq: boot_seq=220 base=83713 limit=83968 reserved=83968 reliable=1 corrupt=1 src=0 failclosed=0
+[Log] Cloud queue ready: 128 slots x 128 B = 16384 B (q=PSRAM), batch=2048 B, cbor=4096 B in PSRAM
+[JStg][I] ready
+[FStg][I] ready
+[Bin][I] ready
+[CFG][I] init done, loaded 11/11 modules
+[Safety] valve: pin=12 safe_level=0
+[Safety] stepper_en: pin=15 safe_level=1
+[Safety] vibration: pin=16 safe_level=0
+[Safety] outputs init done (network not started yet)
+Event manager init OK
+[BLE] init OK
+WiFi init...
+Connecting to:YOUR_WIFI_SSID
+[Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B) | PSRAM total=8385927 B
+[Weight] Init...
+[Weight] Disabled by config (HX711 not installed) -> weight_decrease / WEIGHT_ZERO NOT registered, no weight events emitted
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[ComputerReset] Init OK (pin=8, hold=800 ms)
+[Stepper] Init: enable=0 pins_ready=0 rmt=0 (step=13 dir=14 en=15, steps/rev=1600 angle=120 period=10000us delay=50ms max=6400 timeout=30000ms)
+[Vibration] Init: enable=1 pins_ready=1 (pin=16 active_level=1, max_duration=30000ms safety_timeout=30000ms)
+[TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+Time manager init...
+[Time] timezone offset = GMT+8
+[Time] RTC probe failed (addr=0x51 err=2), chip not present?
+[Time] RTC init failed (wait SNTP)
+[Time] SNTP servers=ntp.aliyun.com/cn.pool.ntp.org interval=86400s
+Time manager init done
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+[XiaomiLAN] creds feeder=1 plug=1
+[XiaomiLAN] init: feeder_cfg=1 plug_cfg=1 enable=1/1 actions=111111 autooff=0
+[CredStore] NVS 'gfcred' ready
+[Cred] init: store=ok active_slot=-1
+[SYSCMD][I] init done, reset reason=power_on, safe delay=10000 ms
+Cloud manager init...
+MQTT server=YOUR_MQTT_HOST
+MQTT port=8883
+MQTT client_id=dev_001122334455
+[Cloud] credential source: config (fallback)
+MQTT subscribe=guo_feeder/001122334455/down
+MQTT publish=guo_feeder/001122334455/up
+MQTT log=guo_feeder/001122334455/log
+MQTT log-ack=guo_feeder/001122334455/log/ack
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[WF][DBG] load wf=0 id=0400 steps=2 variant=2
+[WF][DBG] load wf=1 id=daily_valve_test1 steps=4 variant=1
+[WF][DBG] load wf=2 id=queue_test steps=4 variant=2
+[WF][DBG] load wf=3 id=wf_valve_19g steps=4 variant=4
+[WF][DBG] load wf=4 id=timer_e2e_20261027_0716 steps=4 variant=3
+[WF][DBG] load wf=5 id=daily_timer_test steps=3 variant=1
+[WF][DBG] load wf=6 id=weekly_timer_test steps=3 variant=1
+[WF][DBG] load wf=7 id=Temp-computer_sleep steps=4 variant=1
+[WF][DBG] load wf=8 id=plug_test steps=4 variant=1
+[OK] Workflow loaded from Flash BIN
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] ACTION reuse version=9 count=19
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] TRIGGER reuse version=5 count=2
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] WORKFLOW reuse version=36 count=9
+capability_registry_init: OK
+[CFG][I] boot validated
+[  8031][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Time] SNTP started (waiting first sync)
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=YOUR_MQTT_HOST
+port=8883
+client_id=dev_001122334455
+username=(hidden)
+password=(hidden)
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=51293
+[Cloud] MQTT subscribe(log-ack) filter=guo_feeder/001122334455/log/ack qos=1 msg_id=63942
+[Cloud] MQTT connected outbox=73
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=28048 qos=1 store=1 len=45
+[Cloud] ENQ id=63238 qos=1 store=1 outbox=150->480 len=296 t=9091
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=9092
+[Cloud] MQTT subscribed msg_id=51293
+[Cloud] MQTT subscribed msg_id=63942
+[Cloud] MQTT published/ack msg_id=28048 outbox=330 t=9318
+[Time] SNTP sync OK (2026-10-31 21:39:43)
+[Time] Event: TIME_VALID
+[Cloud] MQTT published/ack msg_id=63238 outbox=0 t=9366
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83713","p":{"b":220,"f":83713,"t":83713}}
+[Cloud LOG] ack rx boot=220 from=83713 to=83713
+[Log Cloud] ack ok boot=220 to=83713 covered=1/1 acked=83713 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=7971 qos=1 store=1 outbox=0->330 len=296 t=10182
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=10192
+[Cloud] MQTT published/ack msg_id=7971 outbox=0 t=11251
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83714","p":{"b":220,"f":83714,"t":83714}}
+[Cloud LOG] ack rx boot=220 from=83714 to=83714
+[Log Cloud] ack ok boot=220 to=83714 covered=1/1 acked=83714 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=48312 qos=1 store=1 outbox=0->330 len=296 t=11720
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=11731
+[Cloud] MQTT published/ack msg_id=48312 outbox=0 t=12753
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83715","p":{"b":220,"f":83715,"t":83715}}
+[Cloud LOG] ack rx boot=220 from=83715 to=83715
+[Log Cloud] ack ok boot=220 to=83715 covered=1/1 acked=83715 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=43823 qos=1 store=1 outbox=0->330 len=296 t=13263
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=13273
+[Cloud] MQTT published/ack msg_id=43823 outbox=0 t=14302
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83716","p":{"b":220,"f":83716,"t":83716}}
+[Cloud LOG] ack rx boot=220 from=83716 to=83716
+[Log Cloud] ack ok boot=220 to=83716 covered=1/1 acked=83716 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=58026 qos=1 store=1 outbox=0->330 len=296 t=14801
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=14811
+[Cloud] MQTT published/ack msg_id=58026 outbox=0 t=15857
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83717","p":{"b":220,"f":83717,"t":83717}}
+[Cloud LOG] ack rx boot=220 from=83717 to=83717
+[Log Cloud] ack ok boot=220 to=83717 covered=1/1 acked=83717 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=53115 qos=1 store=1 outbox=0->330 len=296 t=17253
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=17263
+[Cloud] MQTT published/ack msg_id=53115 outbox=0 t=18295
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83718","p":{"b":220,"f":83718,"t":83718}}
+[Cloud LOG] ack rx boot=220 from=83718 to=83718
+[Log Cloud] ack ok boot=220 to=83718 covered=1/1 acked=83718 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=31070 qos=1 store=1 outbox=0->330 len=296 t=18790
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=18801
+[Cloud] MQTT published/ack msg_id=31070 outbox=0 t=19839
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83719","p":{"b":220,"f":83719,"t":83719}}
+[Cloud LOG] ack rx boot=220 from=83719 to=83719
+[Log Cloud] ack ok boot=220 to=83719 covered=1/1 acked=83719 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=29464 qos=1 store=1 outbox=0->339 len=305 t=20435
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=305 t=20445
+[Cloud] MQTT published/ack msg_id=29464 outbox=0 t=21478
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:220:83720","p":{"b":220,"f":83720,"t":83720}}
+[Cloud LOG] ack rx boot=220 from=83720 to=83720
+[Log Cloud] ack ok boot=220 to=83720 covered=1/1 acked=83720 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=60 qos=1 store=1 outbox=0->339 len=305 t=22001
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=305 t=22001
+[Cloud] MQTT published/ack msg_id=60 outbox=0 t=23002
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:207:79792","p":{"b":207,"f":79792,"t":79792}}
+[Cloud LOG] ack rx boot=207 from=79792 to=79792
+[Log Cloud] ack ok boot=207 to=79792 covered=1/1 acked=83720 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=17671 qos=1 store=1 outbox=0->330 len=296 t=23403
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=23413
+[Cloud] MQTT published/ack msg_id=17671 outbox=0 t=24439
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:208:80131","p":{"b":208,"f":80131,"t":80131}}
+[Cloud LOG] ack rx boot=208 from=80131 to=80131
+[Log Cloud] ack ok boot=208 to=80131 covered=1/1 acked=83720 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=49235 qos=1 store=1 outbox=0->330 len=296 t=24935
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=24945
+[Cloud] MQTT published/ack msg_id=49235 outbox=0 t=25971
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:209:80387","p":{"b":209,"f":80387,"t":80387}}
+[Cloud LOG] ack rx boot=209 from=80387 to=80387
+[Log Cloud] ack ok boot=209 to=80387 covered=1/1 acked=83720 gc=79791 floor=79792 r=2
+[Cloud] ENQ id=29266 qos=1 store=1 outbox=0->330 len=296 t=26468
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=26478
+[Cloud] MQTT published/ack msg_id=29266 outbox=0 t=27500
+=================
