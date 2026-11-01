@@ -55,6 +55,27 @@ static const struct {
     {"vibration_enable", STATE_VIBRATION_ENABLE, STATE_TYPE_BOOL, true},
     {"vibration_active", STATE_VIBRATION_ACTIVE, STATE_TYPE_BOOL, true},
     {"vibration_last_result", STATE_VIBRATION_LAST_RESULT, STATE_TYPE_INT, true},
+
+    // 米家 LAN 设备（喂食器 / 智能插座）
+    {"xiaomi_feeder_enable", STATE_XIAOMI_FEEDER_ENABLE, STATE_TYPE_BOOL, true},
+    {"xiaomi_feeder_online", STATE_XIAOMI_FEEDER_ONLINE, STATE_TYPE_BOOL, true},
+    {"xiaomi_feeder_out_status", STATE_XIAOMI_FEEDER_OUT_STATUS, STATE_TYPE_INT, true},
+    {"xiaomi_plug_enable", STATE_XIAOMI_PLUG_ENABLE, STATE_TYPE_BOOL, true},
+    {"xiaomi_plug_online", STATE_XIAOMI_PLUG_ONLINE, STATE_TYPE_BOOL, true},
+    {"xiaomi_plug_power", STATE_XIAOMI_PLUG_POWER, STATE_TYPE_BOOL, true},
+    {"xiaomi_lan_last_result", STATE_XIAOMI_LAN_LAST_RESULT, STATE_TYPE_INT, true},
+    /* ★ [2026-10-29] 失败原因 / 上次成功时间 / 只读诊断计数 / 自动断电剩余秒 */
+    {"xiaomi_feeder_last_err", STATE_XIAOMI_FEEDER_LAST_ERR, STATE_TYPE_INT, true},
+    {"xiaomi_plug_last_err", STATE_XIAOMI_PLUG_LAST_ERR, STATE_TYPE_INT, true},
+    {"xiaomi_feeder_last_ok_ts", STATE_XIAOMI_FEEDER_LAST_OK_TS, STATE_TYPE_LONG, true},
+    {"xiaomi_plug_last_ok_ts", STATE_XIAOMI_PLUG_LAST_OK_TS, STATE_TYPE_LONG, true},
+    {"xiaomi_lan_recv", STATE_XIAOMI_LAN_RECV, STATE_TYPE_INT, true},
+    {"xiaomi_lan_badsum", STATE_XIAOMI_LAN_BADSUM, STATE_TYPE_INT, true},
+    {"xiaomi_lan_timeout", STATE_XIAOMI_LAN_TIMEOUT_CNT, STATE_TYPE_INT, true},
+    {"xiaomi_plug_autooff_sec", STATE_XIAOMI_PLUG_AUTOOFF_SEC, STATE_TYPE_INT, true},
+    /* ★ [2026-10-30 · A2] 凭据已配置（只读布尔；NVS 有 IP+Token ⇒ true） */
+    {"xiaomi_feeder_configured", STATE_XIAOMI_FEEDER_CONFIGURED, STATE_TYPE_BOOL, true},
+    {"xiaomi_plug_configured", STATE_XIAOMI_PLUG_CONFIGURED, STATE_TYPE_BOOL, true},
     {"vibration_last_duration_ms", STATE_VIBRATION_LAST_DURATION_MS, STATE_TYPE_INT, true},
 };
 

@@ -75,6 +75,65 @@ enum SystemStateKey
     STATE_VIBRATION_LAST_RESULT,
     STATE_VIBRATION_LAST_DURATION_MS,
 
+    // 米家 LAN 设备（喂食器 / 智能插座）—— 直连局域网，不经云端
+    //
+    // ★ 三个概念分开（与 stepper 同构）：
+    //   *_enable = config 是否允许使用该设备
+    //   *_online = 最近一次局域网通信是否成功（超时/校验失败 ⇒ false，**不重试**）
+    STATE_XIAOMI_FEEDER_ENABLE,
+    STATE_XIAOMI_FEEDER_ONLINE,
+    // 2/26 out_status：0 空闲 / 1 出粮中 / 其他按设备枚举
+    STATE_XIAOMI_FEEDER_OUT_STATUS,
+    STATE_XIAOMI_PLUG_ENABLE,
+    STATE_XIAOMI_PLUG_ONLINE,
+    // 2/1 power
+    STATE_XIAOMI_PLUG_POWER,
+    // 最近一次 LAN 动作结果：0 未执行 / 1 成功 / 2 失败（**不代表已重试**）
+    STATE_XIAOMI_LAN_LAST_RESULT,
+
+    /*
+     * ★ [2026-10-29 · 阶段 O 后续] 把"失败原因"从 `*_online=false` 里拆出来。
+     *
+     * 背景（真机实测 + 代码核对）：`*_online` 只在 LAN 探活成功/失败时被写，
+     * 失败时一律 false ⇒ UI 只能显示"离线"，无法区分：
+     *   · 从未查询过（刚启动，还没探活）
+     *   · 模块被停用（根本不探活）
+     *   · 未配置 IP/Token
+     *   · 局域网无响应（超时）
+     *   · 收到回包但校验和/解密失败（= Token 不对，设备其实在线）
+     *   · 上一次请求还在进行（忙，本次未发出）
+     * 这些原因的处理方式完全不同，混成"离线"会直接误导用户
+     * （典型误判：Token 错 ⇒ 显示离线 ⇒ 用户以为设备断电）。
+     *
+     * 编码见 `xiaomi_lan.h` 的 `XIAOMI_ERR_*`；0 = 尚未查询。
+     */
+    STATE_XIAOMI_FEEDER_LAST_ERR,
+    STATE_XIAOMI_PLUG_LAST_ERR,
+    // 最近一次**成功**通信的 Unix 秒（0 = 从未成功）。用于"上次成功查询时间"
+    STATE_XIAOMI_FEEDER_LAST_OK_TS,
+    STATE_XIAOMI_PLUG_LAST_OK_TS,
+    // 只读诊断计数（脱敏、不含任何凭据）：收包数 / 校验失败数 / 超时数
+    STATE_XIAOMI_LAN_RECV,
+    STATE_XIAOMI_LAN_BADSUM,
+    STATE_XIAOMI_LAN_TIMEOUT_CNT,
+    // 普通通电的自动断电剩余秒数（0 = 无待执行自动断电）
+    STATE_XIAOMI_PLUG_AUTOOFF_SEC,
+
+    /*
+     * ★ [2026-10-30 · 任务 A2] 凭据是否已配置（**只读布尔，绝不暴露任何凭据值**）。
+     *
+     * 为什么需要它：IP/Token 只写 NVS（`gflan`），`config.get` 永远读不到
+     * ⇒ 配置页没法回答"这台设备的 Token 到底存进去了没有、重启后还在不在"。
+     * 之前只能靠 `*_last_err==4`（NO_CFG）间接推断，但模块被停用（err=5）时
+     * 就完全不可知，用户会误以为"保存失败"。
+     *
+     * 语义：`true` = NVS 里同时有合法 IP 与 32-hex Token（`loadDev()` 成功）；
+     *       在 `xiaomi_lan_init()` 与每次 `lan_prov` 写入后重新计算 ⇒
+     *       重启后仍为 true 即证明**已落 NVS**。
+     */
+    STATE_XIAOMI_FEEDER_CONFIGURED,
+    STATE_XIAOMI_PLUG_CONFIGURED,
+
     //新增state需要写在上方，同时维护cpp内的state_map映射表，state_get_field_count()和state_get_field_name()函数会自动更新，无需维护
     // 状态数量
     STATE_MAX,

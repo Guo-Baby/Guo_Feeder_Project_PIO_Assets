@@ -59,6 +59,35 @@
 // 对应 /config/stepper.json 与 /config/vibration.json
 #define CONFIG_MODULE_STEPPER   "stepper"
 #define CONFIG_MODULE_VIBRATION "vibration"
+// 米家 LAN 设备（喂食器 / 智能插座）
+// ★ 只放 enable 开关；设备 IP 与 Token 在 NVS `gflan`（不进 config，避免 config.get 回显凭据）
+#define CONFIG_MODULE_XIAOMI_LAN "xiaomi_lan"
+
+// ---------------------------------------------------------------------
+// ★ [P0-1 · 2026-10-31] 米家 LAN 的两个 enable 键 —— **在此显式登记**
+//
+// 缺陷史（真机复现）：
+//   模块名进了 `kModuleNames[]`，但**没有**为它声明任何键、类型与默认值。
+//   于是：
+//     · 首次开机 / factory reset 后模块 JSON 是 `{}` ⇒
+//       `config_get_bool()` 找不到键返回 false ⇒ 两路米家设备默认"停用"；
+//     · `config_set` 走"值不存在就当新增"分支，键能不能写进去完全取决于
+//       调用方传的类型，没有任何"这个键应该是什么类型"的约束；
+//     · 云端规格表（`config-spec.js`）里这两个键有 fallback，而固件没有对应
+//       声明 ⇒ 两侧"默认值"各说各话，控制页与配置页显示不一致。
+//
+// 现在：`config_manager.cpp` 的 `kDeclaredKeys[]` 里逐条声明
+//   （模块 / 键 / 类型 / 布尔默认值），`config_init()` 加载完成后
+//   **统一补默认值**（只补缺失的键，绝不覆盖 Flash 里已有值）。
+//   ⇒ 键永远存在、类型可校验、默认值有唯一定义处。
+//
+// ★ 默认值取 `true`（启用）：IP/Token 未配置时动作本来就会因
+//   `XIAOMI_ERR_NO_CFG` 被拒，所以"默认启用"不会造成误动作，
+//   但能避免"配置页显示启用、控制页显示停用"这种自相矛盾。
+// ---------------------------------------------------------------------
+#define CONFIG_XIAOMI_KEY_FEEDER_ENABLE "feeder_enable"
+#define CONFIG_XIAOMI_KEY_PLUG_ENABLE   "plug_enable"
+#define CONFIG_XIAOMI_ENABLE_DEFAULT    true
 
 // 配置目录与后缀
 #define CONFIG_DIR              "/config"

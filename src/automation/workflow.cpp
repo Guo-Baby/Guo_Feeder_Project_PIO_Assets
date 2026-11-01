@@ -2,11 +2,14 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
+#include <Preferences.h>   // 2026-10-27：定时触发账本（NVS，不触碰 Workflow BIN 格式）
 #include <time.h>
 #include <new>
 #include "services/system_state.h"
+#include "services/config_manager.h"   // ★ [P1 · 2026-10-31] pre-flight 需要模块 enable 读取
 #include "services/time_manager.h"
 #include "services/system_command.h"
+#include "automation/wf_sched_policy.h"   // 2026-10-27：定时触发纯策略（无 libc，可宿主机测试）
 #include "automation/workflow.h"
 #include "automation/workflow_storage.h"
 #include "log/log_manager.h"   // P2-F：观测埋点（EventId / ParamId + log_emit）
@@ -20,6 +23,20 @@
  * 头文件只声明、不反向 include workflow.h，因此不构成循环依赖。
  */
 #include "app/safety.h"
+/*
+ * ★ [P0-2 · 2026-10-31] Workflow 整份 pre-flight 需要"单台米家设备的门禁事实"
+ *   （是否启用 / 是否已配置 / 在线结论是否新鲜）。
+ *
+ * 为什么直接读这个模块而不是 System State：
+ *   System State 里的 `xiaomi_*_enable` 是**派生值**，只在 loop 里变化时才刷新；
+ *   开机早期它可能仍是旧值 ⇒ 用状态做门禁会出现
+ *   "配置页显示已启用、Workflow 却判模块停用"的假拒绝（生产已复现）。
+ *   本模块导出的是**权威来源**（ConfigManager 内存 + 本模块自己的成功时刻）。
+ *
+ * 依赖方向：automation → app 的反向依赖，与上面 `app/safety.h` 同一性质
+ *   （门禁必须落在"Action 唯一执行器"这一层，否则任何新路径都会绕过）。
+ */
+#include "app/xiaomi_lan.h"
 // =====================================================
 // 注册表
 // =====================================================
@@ -1386,6 +1403,326 @@ static uint32_t wf_save_partial_retries = 0;
 #define WF_CAUSE_NO_ACTION_INST   4u   // Action 实例为空
 #define WF_CAUSE_ACTION_FAILED    5u   // Action 返回 FAILED
 #define WF_CAUSE_PARSE_INVALID    6u   // 定义非法（Step0 不是 Trigger）
+// ★ [P1 · 2026-10-31] 执行前整份校验被拦（步骤依赖停用模块 / 动作未注册）
+#define WF_CAUSE_PREFLIGHT_BLOCKED 7u
+
+/* ============================================================
+ * ★ [P1 · 2026-10-31] 执行前**整份**校验（pre-flight）
+ * ----------------------------------------------------------
+ * 背景（真实缺陷，不是理论风险）：
+ *   旧实现是**逐步**判定 Action 是否可用（`workflow_action_start()` 检查
+ *   `descriptor == nullptr`）。后果：
+ *     一个 Workflow = [开阀, 某个已被停用模块的动作]
+ *     ⇒ 第 1 步**真的开阀了**，第 2 步才失败。
+ *   ⇒ 「有不可执行 Action 时整份不执行」这条要求**没有被满足**。
+ *
+ *   而且定时 Workflow 是**自动**触发的（Timer Trigger 直接调 `workflow_start()`，
+ *   完全绕过 UI）⇒ 保护**必须**在固件里，不能只在 UI 做。
+ *
+ * 本函数在 `workflow_start()` 里、**任何一步执行之前**调用：
+ *   ① 遍历**整份** Workflow 的每一步；
+ *   ② 动作步骤：描述符必须已注册（`find_action_descriptor` 非空）；
+ *   ③ 动作步骤：其依赖模块必须**已启用**（可信 Config / System State）；
+ *   ④ 任一步不满足 ⇒ **整份不执行**，并打日志（步骤 / Action / 模块 / 原因）。
+ *
+ * ★ 模块 enable 的读取口径（与 config-spec 的 `hasEnable` 一致）：
+ *   valve / stepper / vibration / weight → `config_get_*_enable()`
+ *   xiaomi_lan → **每台设备一个**开关 ⇒ 读 System State 已发布的
+ *                `STATE_XIAOMI_FEEDER_ENABLE` / `STATE_XIAOMI_PLUG_ENABLE`
+ *                （与 `xiaomi_lan.cpp` 里 `devEnabled()` 的来源同源）。
+ * ★ 未登记映射的动作（诊断/系统类）⇒ **不阻断**（它们没有 enable 依赖）。
+ * ============================================================ */
+
+/** 模块 tag（供日志 LOG_P_MODULE 使用） */
+enum
+{
+    WF_MODULE_NONE = 0,
+    WF_MODULE_VALVE = 1,
+    WF_MODULE_STEPPER = 2,
+    WF_MODULE_VIBRATION = 3,
+    WF_MODULE_WEIGHT = 4,
+    WF_MODULE_XIAOMI_FEEDER = 5,
+    WF_MODULE_XIAOMI_PLUG = 6
+};
+
+/**
+ * 动作 id → 依赖模块的启用态。
+ * @param id 动作 runtime id（如 "VALVE_OPEN"）
+ * @param moduleOut 输出模块 tag（WF_MODULE_NONE = 无依赖）
+ * @return true = 该动作可执行（模块已启用）；false = 不可执行
+ */
+static bool workflow_action_module_enabled(const String &id, uint8_t &moduleOut)
+{
+    moduleOut = WF_MODULE_NONE;
+
+    if(id == "VALVE_OPEN" || id == "VALVE_CLOSE")
+    {
+        moduleOut = WF_MODULE_VALVE;
+        return config_get_valve_enable();
+    }
+    if(id == "STEPPER_DISPENSE_ROTATE" || id == "STEPPER_EMERGENCY_STOP"
+        || id == "STEPPER_ROTATE_STEPS" || id == "TEST_STEPPER_START"
+        || id == "TEST_STEPPER_STOP")
+    {
+        moduleOut = WF_MODULE_STEPPER;
+        return config_get_stepper_enable();
+    }
+    if(id == "VIBRATION_START" || id == "VIBRATION_STOP")
+    {
+        moduleOut = WF_MODULE_VIBRATION;
+        return config_get_vibration_enable();
+    }
+    if(id == "WEIGHT_ZERO")
+    {
+        moduleOut = WF_MODULE_WEIGHT;
+        return config_get_weight_enable();
+    }
+    if(id == "XIAOMI_FEED" || id == "XIAOMI_FEEDER_STATUS")
+    {
+        moduleOut = WF_MODULE_XIAOMI_FEEDER;
+        /*
+         * ★ [P0-2 · 2026-10-31] 改成读**权威来源**（ConfigManager 内存）。
+         *   旧实现读 `state_get_bool(STATE_XIAOMI_FEEDER_ENABLE)`，
+         *   那是 loop 里刷新的派生值 ⇒ 开机早期为 false，
+         *   于是"配置页显示已启用、Workflow 被判模块停用"（生产已复现）。
+         */
+        return xiaomi_lan_dev_enabled(true);
+    }
+    if(id == "XIAOMI_PLUG_ON" || id == "XIAOMI_PLUG_ON_60S"
+        || id == "XIAOMI_PLUG_OFF" || id == "XIAOMI_PLUG_STATUS")
+    {
+        moduleOut = WF_MODULE_XIAOMI_PLUG;
+        return xiaomi_lan_dev_enabled(false);
+    }
+    /* 无 enable 依赖的动作（诊断/系统/温湿度）⇒ 恒可执行 */
+    return true;
+}
+
+/**
+ * 单台米家设备的 pre-flight 结论。
+ *
+ * @param feeder        true=喂食器 false=插座
+ * @param needOnline    该设备在本份 Workflow 里是否承担**必须在线**的动作
+ * @param reasonOut     失败时指向静态说明串（仅用于串口日志，不含凭据）
+ * @return 0 = 通过；1..4 = 拒绝原因
+ */
+static uint8_t workflow_preflight_device(bool feeder, bool needOnline,
+                                         const char *&reasonOut)
+{
+    reasonOut = "";
+
+    if(!xiaomi_lan_dev_enabled(feeder))
+    {
+        reasonOut = "module disabled";
+        return 1;
+    }
+
+    if(!xiaomi_lan_dev_configured(feeder))
+    {
+        reasonOut = "not configured (ip/token missing)";
+        return 2;
+    }
+
+    if(!needOnline)
+    {
+        /* 只读状态查询 / 安全断电：不要求"已确认在线"，但要求已启用且已配置 */
+        return 0;
+    }
+
+    if(!xiaomi_lan_dev_state_fresh(feeder, XIAOMI_STATE_FRESH_MS))
+    {
+        /*
+         * ★ 状态过期/从未成功 ⇒ **先踢一次只读探活，再拒绝本次执行**。
+         *   绝不在 pre-flight 里阻塞等回包（主循环必须非阻塞）：
+         *   用户/定时器稍后重试时，新的结论已经在路上。
+         */
+        xiaomi_lan_request_probe(feeder);
+        reasonOut = "state unknown/stale (probe requested)";
+        return 3;
+    }
+
+    if(!xiaomi_lan_dev_online(feeder))
+    {
+        reasonOut = "device offline";
+        return 4;
+    }
+
+    return 0;
+}
+
+/**
+ * 执行前整份校验。任一步不可执行 ⇒ 整份不执行。
+ * @param workflow 目标 Workflow
+ * @param wf_index slot 序号（用于日志）
+ * @return true = 整份可执行
+ */
+static bool workflow_preflight_check(Workflow *workflow, int wf_index)
+{
+    if(workflow == nullptr)
+        return false;
+
+    for(uint8_t i = 0; i < workflow->step_count; i++)
+    {
+        const WorkflowStep &st = workflow->steps[i];
+        if(st.type != WORKFLOW_STEP_ACTION)
+        {
+            /* Trigger 步骤不依赖执行器 */
+            continue;
+        }
+
+        /* ① 动作必须已注册（描述符非空） */
+        const WorkflowActionDescriptor *desc = find_action_descriptor(st.id);
+        if(desc == nullptr)
+        {
+            Serial.printf(
+                "[Workflow] preflight blocked: action not registered "
+                "(step=%u id=%s)\n",
+                (unsigned)i, st.id.c_str()
+            );
+            LogParamIn p[4];
+            p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)(wf_index < 0 ? 0 : wf_index));
+            p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)i);
+            p[2] = log_arg_u32(LOG_P_MODULE, (uint32_t)WF_MODULE_NONE);
+            p[3] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_PREFLIGHT_BLOCKED);
+            log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 4);
+            return false;
+        }
+
+        /* ② 依赖模块必须已启用 */
+        uint8_t module = WF_MODULE_NONE;
+        if(!workflow_action_module_enabled(st.id, module))
+        {
+            Serial.printf(
+                "[Workflow] preflight blocked: module disabled "
+                "(step=%u id=%s module=%u)\n",
+                (unsigned)i, st.id.c_str(), (unsigned)module
+            );
+            LogParamIn p[4];
+            p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)(wf_index < 0 ? 0 : wf_index));
+            p[1] = log_arg_u32(LOG_P_FAIL_STEP, (uint32_t)i);
+            p[2] = log_arg_u32(LOG_P_MODULE, (uint32_t)module);
+            p[3] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_PREFLIGHT_BLOCKED);
+            log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 4);
+            return false;
+        }
+    }
+
+    /* ================================================================
+     * ★ [P0-2 · 2026-10-31] 米家设备的**整份**门禁（此前完全缺失）
+     *
+     * 缺陷（生产已复现）：
+     *   旧 pre-flight 只检查"动作已注册 + 模块已启用"。
+     *   一份 [开阀, 米家出粮, 关阀] 的流程会**真的先开阀**，
+     *   到第 2 步才发现喂食器离线 ⇒ 用户看到"阀门开了但没出粮"，
+     *   而流程已经产生了物理副作用。定时 Workflow 更是完全无人值守。
+     *
+     * 现在的要求：
+     *   ① 先扫**整份**步骤，收集涉及的米家设备；
+     *   ② 每台设备都按"本份流程对它做了什么"分级判断：
+     *        只读查询（*_STATUS）        ⇒ 只需已启用 + 已配置
+     *        安全动作（XIAOMI_PLUG_OFF） ⇒ 只需已启用 + 已配置（允许状态未知）
+     *        物理动作（出粮 / 通电）      ⇒ 已启用 + 已配置 + 状态新鲜 + 在线
+     *   ③ 任一不满足 ⇒ **第一步执行前**整份拒绝，并打日志。
+     *
+     * ★ 为什么"断电"允许状态未知：
+     *   断电是**降风险**方向的动作。若因为它"状态未知"就拒绝，
+     *   等于在真正需要断电时把用户锁在外面（宁可多断一次，不可断不了）。
+     *   这与前端 `actionGate(dev, safety=true)` 的安全例外**同一口径**。
+     * ★ 为什么"状态查询"不要求在线：
+     *   查询本身就是"把状态查出来"的动作；要求"先在线才能查"是自锁。
+     * ================================================================ */
+    {
+        bool needFeeder = false;      /* 本份流程是否用到喂食器 */
+        bool feederNeedsOnline = false;
+        bool needPlug = false;
+        bool plugNeedsOnline = false;
+        int  firstMentionFeeder = -1;
+        int  firstMentionPlug = -1;
+
+        for(uint8_t i = 0; i < workflow->step_count; i++)
+        {
+            const WorkflowStep &st = workflow->steps[i];
+            if(st.type != WORKFLOW_STEP_ACTION)
+            {
+                continue;
+            }
+
+            if(st.id == "XIAOMI_FEED")
+            {
+                if(!needFeeder) { needFeeder = true; firstMentionFeeder = (int)i; }
+                feederNeedsOnline = true;         /* 出粮 = 物理动作 */
+            }
+            else if(st.id == "XIAOMI_FEEDER_STATUS")
+            {
+                if(!needFeeder) { needFeeder = true; firstMentionFeeder = (int)i; }
+                /* 只读：不提升为 needOnline */
+            }
+            else if(st.id == "XIAOMI_PLUG_ON" || st.id == "XIAOMI_PLUG_ON_60S")
+            {
+                if(!needPlug) { needPlug = true; firstMentionPlug = (int)i; }
+                plugNeedsOnline = true;           /* 通电 = 物理动作 */
+            }
+            else if(st.id == "XIAOMI_PLUG_OFF")
+            {
+                if(!needPlug) { needPlug = true; firstMentionPlug = (int)i; }
+                /* 安全动作：不提升为 needOnline */
+            }
+            else if(st.id == "XIAOMI_PLUG_STATUS")
+            {
+                if(!needPlug) { needPlug = true; firstMentionPlug = (int)i; }
+            }
+        }
+
+        struct
+        {
+            bool needed;
+            bool needOnline;
+            int  firstStep;
+            uint8_t moduleTag;
+            const char *name;
+        } devs[2] =
+        {
+            { needFeeder, feederNeedsOnline, firstMentionFeeder,
+              (uint8_t)WF_MODULE_XIAOMI_FEEDER, "feeder" },
+            { needPlug,   plugNeedsOnline,   firstMentionPlug,
+              (uint8_t)WF_MODULE_XIAOMI_PLUG,   "plug" }
+        };
+
+        for(uint8_t k = 0; k < 2; k++)
+        {
+            if(!devs[k].needed)
+            {
+                continue;
+            }
+
+            const char *why = "";
+            const uint8_t rc = workflow_preflight_device(k == 0, devs[k].needOnline, why);
+
+            if(rc == 0)
+            {
+                continue;
+            }
+
+            Serial.printf(
+                "[Workflow] preflight blocked: mi-home %s %s "
+                "(reason=%u first_step=%d need_online=%d)\n",
+                devs[k].name, why, (unsigned)rc, devs[k].firstStep,
+                devs[k].needOnline ? 1 : 0
+            );
+
+            LogParamIn p[4];
+            p[0] = log_arg_u32(LOG_P_SLOT, (uint32_t)(wf_index < 0 ? 0 : wf_index));
+            p[1] = log_arg_u32(LOG_P_FAIL_STEP,
+                               (uint32_t)(devs[k].firstStep < 0 ? 0 : devs[k].firstStep));
+            p[2] = log_arg_u32(LOG_P_MODULE, (uint32_t)devs[k].moduleTag);
+            p[3] = log_arg_u32(LOG_P_CAUSE, WF_CAUSE_PREFLIGHT_BLOCKED);
+            log_emit(LOG_WF_FAILED, LOG_LVL_WARN, p, 4);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 static inline void dirty_mark(uint8_t wf, uint8_t step)
 {
@@ -2043,6 +2380,10 @@ void workflow_request_save()
     workflow_save_since_ms = millis();
 }
 
+// 前向声明：定时触发账本（实现见本文件末尾的调度器区块）。
+// 只在删除路径需要（清账本），其余调用点都在定义之后。
+static void wf_sched_ledger_clear(uint8_t slot);
+
 bool workflow_delete(
     uint8_t workflow_index
 )
@@ -2111,6 +2452,13 @@ bool workflow_delete(
     // 这样云端 list 能发现"该 Workflow 变了"并重新拉取（拿到已删状态）。
     workflows[workflow_index].valid = false;
     workflows[workflow_index].variant++;
+
+    /*
+     * 定时触发账本一并清掉：该 Slot 已不可用，恢复后应能按新计划正常触发，
+     * 不被"删除前已触发过"的旧记录压制（只在删除时清，重定义时不清 ——
+     * 重定义若改成同一时刻，本周期保持抑制更安全，宁可少触发不可重复触发）。
+     */
+    wf_sched_ledger_clear(workflow_index);
 
     Serial.printf(
         "[WF][DBG] delete wf=%u id=%s variant=%u\n",
@@ -3752,6 +4100,31 @@ bool workflow_start(
     if(workflow->state == WORKFLOW_RUNNING)
         return false;
 
+    /* ============================================
+     * ★ [P1 · 2026-10-31] 执行前**整份**校验（pre-flight）
+     *
+     * 放在这里（而不是 CommandManager 里）的理由与"急停锁存"那段完全相同：
+     *   `workflow_start()` 是 Workflow 的**唯一启动入口** —— 命令下发与
+     *   Timer Trigger 自动启动**都**经过它。
+     *   ⇒ 定时 Workflow **不会**绕过 UI 校验（UI 校验只是第一层）。
+     *
+     * 语义：**任一步**依赖停用模块 / 动作未注册 ⇒ **整份不执行**，
+     *   并打日志（slot / 失败步骤 / 模块 / 原因）。
+     *   ★ 必须早于 `workflow_reset_step()` 与状态初始化 ——
+     *     否则会出现"已经重置了步骤、状态已是 RUNNING、却什么都不执行"的假象。
+     * ============================================ */
+    {
+        const int pre_index = workflow_index_of(workflow);
+        if(!workflow_preflight_check(workflow, pre_index))
+        {
+            Serial.printf(
+                "[Workflow] start aborted by preflight check: %s\n",
+                workflow->id.c_str()
+            );
+            return false;
+        }
+    }
+
     // ============================================
     // [UI-V1.1 · F-1 补强] 紧急停堆锁
     //
@@ -4315,6 +4688,240 @@ uint8_t workflow_cancel_pending_temp_actions()
 
 
 // =====================================================
+// 定时触发调度器（2026-10-27 补齐）
+//
+// ---- 为什么需要 ----
+// 原实现里 workflow_task() 只推进已经 RUNNING 的 Workflow，而 Timer Trigger
+// 只有在「Workflow 已启动且 current_step 指向它」时才会被 poll。全仓库没有
+// 任何代码把 IDLE 的 Timer Workflow 拉起来 ⇒ 定时任务永不触发。
+//
+// ---- 为什么不"启动后停在 Step0 等" ----
+// workflow_start() 会 acquire 一个 Critical Operation 并持有到 workflow_terminate()
+// （其注释明确写着"含 Step0 Trigger 的等待阶段"）。若让定时 Workflow 停在 Step0
+// 等几小时，会：① 长时间占用 Critical Operation ⇒ 设备无法重启；
+// ② 撞上 wf.timeout_ms（默认 600s）被判定超时终止。
+// ⇒ 采用「准点直接启动并跳过 Step0」：与云端 execute_workflow 的
+//   skip_first_step=true 完全同源，不新增执行通道、不直改内部状态。
+//
+// ---- 时间可信（硬门禁）----
+// 唯一真相来源 = System State 的 time_valid（STATE_TIME_VALID）。
+// 只要它不是 true，就**不匹配、不启动、不补执行**；即便 time_get() 返回一个
+// 看起来合理的值也不使用。绝不自行推断时间可信。
+//
+// ---- 不补执行 ----
+// 只在 [target, target + WF_SCHED_WINDOW_SEC) 内触发。时间失效期间错过的窗口
+// 永远错过（恢复后不会集中补跑）。
+//
+// ---- 同周期只触发一次 ----
+// 记账键 = 本周期目标时刻（每个周期唯一）：
+//   · RAM 账本 s_sched_fired[]：防同一上电周期内重复；
+//   · NVS 持久账本：防"刚触发就重启"又落在同一窗口内触发第二次。
+// 时间被往回校正也不会重复（同一 target 已记账）。
+//
+// ---- once 的重启语义 ----
+// once 的目标是绝对日期时刻；本调度器同样只在窗口内触发，且 NVS 账本跨重启
+// 有效 ⇒ 已完成的一次性任务不会因每次重启而重复执行。
+//
+// ---- 可测试性 ----
+// 纯决策部分全部在 automation/wf_sched_policy.h（无 libc、无堆、纯整数），
+// 由 test/workflow_sched_host 在宿主机**真实执行**；本文件只做参数读取、
+// 本地时间拆分、账本读写与启动调用。
+// =====================================================
+
+// 检查节拍 WF_SCHED_TICK_MS / 匹配窗口 WF_SCHED_WINDOW_SEC 定义在 wf_sched_policy.h
+// NVS 命名空间（与 cred_store / device_identity 同机制，不触碰 Workflow BIN 格式）
+#define WF_SCHED_NVS_NS       "wfsched"
+
+// slot → 本周期已触发的目标时刻（0 = 未触发）。纯 RAM，重启后从 NVS 恢复。
+static int64_t s_sched_fired[WORKFLOW_MAX_COUNT];
+static bool s_sched_ledger_loaded = false;
+static unsigned long s_sched_last_tick_ms = 0;
+
+static void wf_sched_ledger_key(uint8_t slot, char *buf, size_t n)
+{
+    snprintf(buf, n, "s%02u", (unsigned)slot);
+}
+
+// 启动期一次性把持久账本读进 RAM（只读打开：首次运行不创建命名空间）
+static void wf_sched_ledger_load()
+{
+    if(s_sched_ledger_loaded)
+        return;
+    s_sched_ledger_loaded = true;
+
+    for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+        s_sched_fired[i] = 0;
+
+    Preferences prefs;
+    if(!prefs.begin(WF_SCHED_NVS_NS, true))
+        return;   // 键表不存在（首次上电）⇒ 全部视为未触发
+
+    char key[8];
+    for(uint8_t i = 0; i < WORKFLOW_MAX_COUNT; i++)
+    {
+        wf_sched_ledger_key(i, key, sizeof(key));
+        s_sched_fired[i] = (int64_t)prefs.getLong64(key, 0);
+    }
+    prefs.end();
+}
+
+// 记录一次触发（RAM 已先写；此处只负责跨重启持久化）
+static void wf_sched_ledger_store(uint8_t slot, int64_t target)
+{
+    Preferences prefs;
+    if(!prefs.begin(WF_SCHED_NVS_NS, false))
+        return;
+
+    char key[8];
+    wf_sched_ledger_key(slot, key, sizeof(key));
+    prefs.putLong64(key, target);
+    prefs.end();
+}
+
+// Slot 被删除时清账本，避免旧记录压制"恢复后"的同周期触发
+static void wf_sched_ledger_clear(uint8_t slot)
+{
+    if(slot >= WORKFLOW_MAX_COUNT)
+        return;
+    if(s_sched_fired[slot] == 0)
+        return;
+    s_sched_fired[slot] = 0;
+
+    Preferences prefs;
+    if(!prefs.begin(WF_SCHED_NVS_NS, false))
+        return;
+    char key[8];
+    wf_sched_ledger_key(slot, key, sizeof(key));
+    prefs.remove(key);
+    prefs.end();
+}
+
+/**
+ * 从 Runtime 参数算出「当前周期」的计划触发时刻（本地墙钟伪纪元）。
+ *
+ * 只做三件事：读参数 → 拆 now 的本地日历字段 → 交给纯策略函数。
+ * 判定语义全部在 wf_sched_policy.h（可宿主机测试）。
+ *
+ * @return >0 = 本周期目标；0 = 本周期无计划（一律不触发，不猜）
+ */
+static int64_t wf_sched_target_for(WorkflowTriggerInstance *trigger, time_t now)
+{
+    if(trigger == nullptr)
+        return 0;
+
+    WfSchedTimerType type = wf_sched_parse_type(
+        timer_get_string_param(
+            trigger->params, trigger->param_count, "type"
+        ).c_str()
+    );
+    if(type == WF_SCHED_TYPE_UNKNOWN)
+        return 0;   // 未识别的 type 不调度
+
+    int hour = timer_get_int_param(
+        trigger->params, trigger->param_count, "hour", 8
+    );
+    int minute = timer_get_int_param(
+        trigger->params, trigger->param_count, "minute", 0
+    );
+    int dow = timer_get_int_param(
+        trigger->params, trigger->param_count, "day_of_week", 1
+    );
+    int year = timer_get_int_param(
+        trigger->params, trigger->param_count, "year", 2026
+    );
+    int month = timer_get_int_param(
+        trigger->params, trigger->param_count, "month", 1
+    );
+    int day = timer_get_int_param(
+        trigger->params, trigger->param_count, "day", 1
+    );
+
+    struct tm tm_now;
+    if(localtime_r(&now, &tm_now) == nullptr)
+        return 0;
+
+    return wf_sched_period_target(
+        type,
+        tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_wday,
+        hour, minute,
+        dow,
+        year, month, day
+    );
+}
+
+/**
+ * 调度主循环（非阻塞，每个 tick 遍历 ≤16 个 Slot，无堆分配、无阻塞等待）。
+ *
+ * 安全约束全部复用既有入口：只调 workflow_start()，
+ * 因此急停锁 / CriticalOperation / 已在运行 / enable 门禁一个都不会被绕过。
+ */
+static void wf_sched_tick(unsigned long now_ms)
+{
+    if((uint32_t)(now_ms - s_sched_last_tick_ms) < WF_SCHED_TICK_MS)
+        return;
+    s_sched_last_tick_ms = now_ms;
+
+    if(workflow_count == 0)
+        return;
+
+    // ---- ① 时间可信硬门禁（只认 System State 的 time_valid）----
+    const bool time_valid = state_get_bool(STATE_TIME_VALID);
+    const time_t now = time_get();
+    if(!wf_sched_time_trusted(time_valid, (int64_t)now))
+        return;   // 不可信 ⇒ 不匹配、不启动、不补执行
+
+    struct tm tm_now;
+    if(localtime_r(&now, &tm_now) == nullptr)
+        return;
+    const int64_t now_pseudo = wf_sched_pseudo_epoch(
+        tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+        tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec
+    );
+
+    wf_sched_ledger_load();
+
+    for(uint8_t i = 0; i < workflow_count; i++)
+    {
+        Workflow &wf = workflows[i];
+
+        // 首步是否 Timer 触发器（必须逐层判空：实例指针可能为 nullptr）
+        bool s0_is_trigger = false;
+        bool s0_is_timer = false;
+        WorkflowTriggerInstance *tr = nullptr;
+        if(wf.step_count > 0 && wf.steps[0].instance_type == INSTANCE_TRIGGER)
+        {
+            tr = wf.steps[0].instance.trigger;
+            s0_is_trigger = (tr != nullptr);
+            s0_is_timer = s0_is_trigger && (tr->id == "timer");
+        }
+
+        if(!wf_sched_candidate_ready(
+               wf.enable, workflow_is_valid(i),
+               wf.state == WORKFLOW_RUNNING,
+               (int)wf.step_count, s0_is_trigger, s0_is_timer))
+            continue;
+
+        int64_t target = wf_sched_target_for(tr, now);
+        if(!wf_sched_should_fire(now_pseudo, target, s_sched_fired[i],
+                                 (unsigned)WF_SCHED_WINDOW_SEC))
+            continue;
+
+        // 启动（skip_first_step=true ⇒ 跳过 Step0 的定时等待，直接执行后续动作）
+        if(workflow_start(&wf, true, String(""), nullptr))
+        {
+            s_sched_fired[i] = target;
+            wf_sched_ledger_store(i, target);
+
+            Serial.printf(
+                "[WF][SCHED] timer fired: slot=%u id=%s target=%lld now=%lld\n",
+                (unsigned)i, wf.id.c_str(), (long long)target, (long long)now_pseudo
+            );
+        }
+        // 启动被拒（急停锁 / CriticalOperation 拒绝 / 已运行）⇒ 不记账，
+        // 窗口内下一个 tick 仍可重试；窗口过了就自然放弃（不补执行）
+    }
+}
+// =====================================================
 // Workflow执行核心（非阻塞，loop调用）
 // =====================================================
 void workflow_task()
@@ -4323,6 +4930,24 @@ void workflow_task()
 
     // 延迟保存窗口到期 → 执行一次完整保存事务
     workflow_delayed_save_poll();
+
+    /*
+     * ★★ [2026-10-27 真机修复] 定时触发调度必须放在**执行循环之后**，且用
+     *   本函数自己的 `now`。原因（真机实测踩到，宿主探针抓不到）：
+     *
+     *   调度器内部会调用 `workflow_start()`，它把 `wf.start_time = millis()`
+     *   ——这是**比本函数开头取的 `now` 更晚**的一个值。
+     *   若调度器在循环之前跑，同一轮循环立刻对"刚启动的 Workflow"做超时判定：
+     *       (uint32_t)(now - wf.start_time)  ⇒ now < start_time ⇒ **无符号下溢**
+     *   下溢结果是个巨大的数 ⇒ 必然 > timeout_ms ⇒ 立即被判 TIMEOUT 并 terminate。
+     *   真机现象：`[WF][SCHED] timer fired` 的下一行就是
+     *   `[Workflow] critical op released`，Workflow 一步都没走（state=TIMEOUT）。
+     *
+     *   放到循环之后 ⇒ 本轮不会误判新启动的 Workflow；下一轮 `millis()` 一定
+     *   不小于 start_time，超时判定恢复正常。传递新鲜 `millis()` 而非复用的 `now`。
+     *
+     *   ↓ 真正的调用点在函数末尾（见 "定时触发调度（必须在执行循环之后）"）。
+     */
 
     // =====================================================
     // 执行 Workflow
@@ -4633,6 +5258,13 @@ void workflow_task()
     // 最终清理
     // =====================================================
     workflow_temp_action_cleanup();
+
+    /*
+     * 定时触发调度（**必须在执行循环之后**，理由见本函数开头的大段注释：
+     * 循环之前跑会让"本轮刚启动的 Workflow"被无符号下溢误判为超时）。
+     * 传新鲜 millis()，不复用函数开头的 now。
+     */
+    wf_sched_tick(millis());
 }
 
 // =====================================================

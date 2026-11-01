@@ -22,6 +22,7 @@
 #include "cloud/cloud_manager.h"
 #include "app/weight.h"
 #include "app/valve.h"
+#include "app/xiaomi_lan.h"    // 米家 LAN 设备（喂食器出粮 / 插座通断电，直连 UDP）
 #include "app/computer_reset.h"
 #include "app/stepper.h"       // DRV8825 步进电机（STEP/DIR/EN + RMT）
 #include "app/vibration.h"     // 振动马达（单 GPIO，双马达共路）
@@ -587,6 +588,9 @@ void setup()
     time_init();
     test_mqtt_init();
     bool ok = MiThermometerInit();
+    // 米家 LAN 设备（喂食器 / 插座）：只注册 Action + 维护 state；
+    // 依赖 config（enable）与 NVS（ip/token，由 `system/lan_prov` 写入）
+    xiaomi_lan_init();
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）
     // =====================================================
@@ -759,6 +763,7 @@ void loop()
     vibration_task();          // 振动：定时到期关闭 / 30s 超时兜底
     test_stepper_task();       // 步进测试：硬上限守护 + 心跳日志
     MiThermometer_task();
+    xiaomi_lan_loop();         // 米家 LAN：周期探活 + 非阻塞动作状态机
     // ---- P3 · WP4-FW-TELEMETRY：遥测上行（非阻塞；每轮最多 1 条）----
     // 放在 MiThermometer_task() / weight_task() **之后** ⇒ 本轮状态最新；
     // GF_TELEMETRY_ENABLED=0（默认）时为空实现 ⇒ 主循环行为不变。

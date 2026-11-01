@@ -9,6 +9,7 @@
 #include "automation/capability_registry.h"
 #include "services/config_manager.h"
 #include "app/weight.h"
+#include "app/xiaomi_lan.h"   // 米家 LAN 设备：本地配凭证（NVS，不回显）
 #include "app/safety.h"     // [UI-V1.1 · F-1] 紧急安全停堆编排（c="safety"）
 #include "services/system_command.h"
 #include "log/log_manager.h"   // P2-J：观测埋点（EventId / ParamId + log_emit）
@@ -2739,12 +2740,45 @@ static bool command_credential_set(
 //   "pl":{}
 // }
 // =====================================================
+// config_parse_payload 定义在本文件后段（config 命令区），此处前向声明供 system_router 使用
+static bool config_parse_payload(const CommandMessage &cmd, JsonDocument &pl);
+
 static bool system_router(
     const CommandMessage &cmd,
     JsonDocument &response
 )
 {
     const String &object = cmd.object;
+    if (object == "lan_prov")
+    {
+        /*
+         * 米家 LAN 设备本地配凭证（IP / 32-hex Token）→ NVS `gflan`。
+         * 参数：{"dev":"feeder|plug", "ip":"x.x.x.x", "token":"<32hex>"}（两者可只给一个）
+         * ★ 回包**只含 ok/错误码**，绝不回显 ip 以外的任何值；Token 一律不出现。
+         * ★ 该命令只写 NVS，不写 config JSON ⇒ `config.get` 永远读不到 Token。
+         */
+        JsonDocument pl;
+        if (!config_parse_payload(cmd, pl))
+        {
+            return false;
+        }
+        const char *dev = pl["dev"] | "";
+        const char *ip = pl["ip"] | "";
+        const char *token = pl["token"] | "";
+        const char *why = "";
+        bool ok = xiaomi_lan_provision(dev, ip, token, &why);
+        if (!ok)
+        {
+            command_send_error(cmd, CMD_ERROR_PARAM, why && why[0] ? why : "lan_prov failed");
+            return false;
+        }
+        response["status"] = "ok";
+        response["dev"] = dev;
+        response["ip"] = ip;                    // IP 不是凭据，可回显
+        response["token_set"] = (token && token[0]) ? true : false;
+        last_result = CMD_RESULT_OK;
+        return true;
+    }
 
     // =====================================================
     // Phase D-2：凭据类命令 —— **allow-list 独立分支**

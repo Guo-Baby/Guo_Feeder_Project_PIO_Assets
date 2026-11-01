@@ -35,7 +35,7 @@
 // =====================================================
 
 // 模块数量（与 kModuleNames 一致）
-#define CONFIG_MODULE_COUNT     10
+#define CONFIG_MODULE_COUNT     11
 
 // 路径缓冲区大小
 // 最长路径形如 /config/mi_thermo.json.bak
@@ -77,7 +77,9 @@ static const char *const kModuleNames[CONFIG_MODULE_COUNT] = {
     CONFIG_MODULE_MITHERMO,
     CONFIG_MODULE_RTC,
     CONFIG_MODULE_STEPPER,
-    CONFIG_MODULE_VIBRATION
+    CONFIG_MODULE_VIBRATION,
+    // ★ 追加在末尾：既有模块的索引保持不变（历史配置文件按名字解析，不受影响）
+    CONFIG_MODULE_XIAOMI_LAN
 };
 
 // =====================================================
@@ -95,6 +97,113 @@ static bool s_ready = false;
 
 // 模块表是否已初始化
 static bool s_table_ready = false;
+
+// =====================================================
+// ★ [P0-1 · 2026-10-31] 已声明的配置键（**唯一事实来源**）
+//
+// 为什么需要这张表（而不是直接让调用方随用随读）：
+//   1. **默认值只能有一处定义**。此前"模块文件里没有这个键"和"键值是 false"
+//      在 `config_get_bool()` 眼里完全一样 ⇒ 米家两个 enable 开关在
+//      首次开机 / factory reset 后恒为"停用"，而云端规格表另有 fallback，
+//      两侧各自表述、页面互相矛盾。
+//   2. **类型可校验**。`exec_set_field()` 用"已存在值的类型"做校验；
+//      键不存在时走"新增"分支，传错类型也照收。补上声明后，键一定存在
+//      且类型固定，写错类型会被拒绝（`CONFIG_ERR_VALUE_REJECTED`）。
+//   3. **不覆盖用户已有值**：本表只在键**缺失**时补默认值。
+//
+// ★ 约束：只放"固件会读、且需要稳定默认值"的键。不要把所有键都搬进来 ——
+//   其他模块的键由各自业务模块用 `| 默认值` 兜底，语义已经一致。
+// =====================================================
+enum ConfigKeyType : uint8_t
+{
+    CFG_KEY_BOOL = 1
+};
+
+struct ConfigKeyDecl
+{
+    const char *module;
+    const char *key;
+    ConfigKeyType type;
+    bool bool_default;
+};
+
+static const ConfigKeyDecl kDeclaredKeys[] =
+{
+    // 米家喂食器 / 智能插座：是否允许发起米家局域网请求
+    {
+        CONFIG_MODULE_XIAOMI_LAN,
+        CONFIG_XIAOMI_KEY_FEEDER_ENABLE,
+        CFG_KEY_BOOL,
+        CONFIG_XIAOMI_ENABLE_DEFAULT
+    },
+    {
+        CONFIG_MODULE_XIAOMI_LAN,
+        CONFIG_XIAOMI_KEY_PLUG_ENABLE,
+        CFG_KEY_BOOL,
+        CONFIG_XIAOMI_ENABLE_DEFAULT
+    }
+};
+
+static const size_t kDeclaredKeyCount =
+    sizeof(kDeclaredKeys) / sizeof(kDeclaredKeys[0]);
+
+/* 前向声明：`cfg_log` 定义在本文件更靠后的位置（日志初始化之后），
+   而下面的默认值补全需要在 init 早期就能留痕。 */
+static void cfg_log(const char *level, const char *fmt, ...);
+
+/**
+ * 给一个已加载的模块补齐**缺失的**声明键（只补缺，不覆盖）。
+ *
+ * ★ 不落盘：补的是 RAM。理由：
+ *   · 开机就写 Flash 会让每次上电都发生一次擦写，寿命与"配置未变"的语义都不对；
+ *   · 默认值本身是幂等的 —— 每次启动补出来都是同一个值，
+ *     用户真正改过一次并 `config_save` 之后，文件里就有显式值，默认不再介入。
+ *
+ * @returns 实际补上的键数量（>0 时调用方会留一条 INFO 日志）
+ */
+static int apply_declared_defaults(ConfigModule &m)
+{
+    if (!m.loaded || m.name == nullptr)
+    {
+        return 0;
+    }
+
+    int filled = 0;
+
+    for (size_t i = 0; i < kDeclaredKeyCount; i++)
+    {
+        const ConfigKeyDecl &d = kDeclaredKeys[i];
+
+        if (strcmp(m.name, d.module) != 0)
+        {
+            continue;
+        }
+
+        // const 访问避免 MemberProxy 的 get-or-create
+        const JsonDocument &data = m.data;
+        JsonVariantConst existing = data[d.key];
+
+        if (!existing.isNull())
+        {
+            continue;                    // 已有值（含显式 false）⇒ 一律尊重
+        }
+
+        if (d.type == CFG_KEY_BOOL)
+        {
+            if (m.data[d.key].set(d.bool_default))
+            {
+                filled++;
+            }
+            else
+            {
+                cfg_log("E", "default apply failed (oom?), module=%s key=%s",
+                        d.module, d.key);
+            }
+        }
+    }
+
+    return filled;
+}
 
 // 修改配置后的自动重启倒计时起点（millis 快照）。0 表示无待重启。
 //
@@ -1286,6 +1395,35 @@ bool config_init()
         );
     }
 
+    // 5.1) ★ [P0-1 · 2026-10-31] 补齐已声明键的默认值（只补缺、不覆盖、不落盘）
+    //
+    //   必须在"模块加载完成"之后、"任何业务模块读配置"之前完成：
+    //     `main.cpp` 里 `config_init()` 早于 `xiaomi_lan_init()`，
+    //     而 `xiaomi_lan_init()` 会读 `feeder_enable/plug_enable` 并写入 state。
+    //   以前这两个键不在任何声明里 ⇒ 首次开机读到 false ⇒
+    //     控制页显示"已停用"，而配置页按规格表 fallback 显示"已启用"，
+    //     用户怎么点都改不到一致。
+    {
+        int filled_total = 0;
+
+        for (int i = 0; i < CONFIG_MODULE_COUNT; i++)
+        {
+            int n = apply_declared_defaults(s_modules[i]);
+            if (n > 0)
+            {
+                cfg_log("I", "declared defaults applied: module=%s count=%d",
+                        s_modules[i].name, n);
+                filled_total += n;
+            }
+        }
+
+        if (filled_total > 0)
+        {
+            cfg_log("I", "declared defaults total=%d (RAM only, not persisted)",
+                    filled_total);
+        }
+    }
+
     cfg_log("I", "init done, loaded %d/%d modules", loaded, CONFIG_MODULE_COUNT);
 
     // 6) 版本文件自愈（必须在模块加载之后）
@@ -2292,7 +2430,8 @@ static ExecResult exec_query_module(
             }
         }
 
-        if (!out["version"].set(m->version))
+        if (!out["version"].set(m->version) ||
+            !out["dirty"].set(m->dirty))
         {
             return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
         }
@@ -2307,8 +2446,13 @@ static ExecResult exec_query_module(
     //
     // 结构与 query_field 保持一致: {data:{...}, version:N}
     // 版本号不放进 data，避免保存时被写进配置文件。
+    //
+    // ★ [T05 · 2026-11-01] 单模块查询同样带上 `dirty`（RAM 有未落盘修改），
+    //   与 `config_query` 全量查询口径一致 —— 否则"从详情页看是脏的、
+    //   从总览看是干净的"会自相矛盾。
     if (!out["data"].set(m->data.as<JsonVariantConst>()) ||
-        !out["version"].set(m->version))
+        !out["version"].set(m->version) ||
+        !out["dirty"].set(m->dirty))
     {
         return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
     }
@@ -2351,10 +2495,29 @@ static ExecResult exec_query_all(
 
     // data     : 各模块内容
     // versions : 各模块版本号
+    // dirty    : 各模块「RAM 有未落盘修改」标志（★ 2026-11-01 · T05 新增）
+    // restart_in_ms : 自动保存+重启窗口的剩余毫秒（★ T05 新增，0 = 无待重启）
     //
     // 版本号与内容分离，不写进模块数据本身。
     JsonObject root = out["data"].to<JsonObject>();
     JsonObject vers = out["versions"].to<JsonObject>();
+    /*
+     * ★★ [T05 · 2026-11-01] 为什么必须在 `config_query` 里回 `dirty`：
+     *
+     *   缺陷（用户报告）：浏览器刷新后前端**无法**知道设备 RAM 里是否还有
+     *   未落盘的配置修改 ⇒ 只能把 `S.configPending` 当唯一依据，
+     *   而它是**会话内存**，刷新即空 ⇒ 刷新后配置条消失、普通重启也不警告
+     *   ⇒ **未落盘修改被静默丢弃**。
+     *
+     *   `dirty` 是固件里**本来就存在的事实**（`s_modules[i].dirty`，
+     *   在 config_set 时置 true、save 成功后置 false），只是一直没对外暴露。
+     *   ⇒ 这里只做**只读导出**，不新增命令、不新增事件、不改任何写入语义。
+     *
+     * ★ 兼容性：新增的是**顶层新键**（`dirty` / `restart_in_ms`），
+     *   既有的 `data` / `versions` 结构与含义完全不变 ⇒ 旧前端读到多余键直接忽略。
+     * ★ 隐私/体积：每模块一个布尔 + 一个整数，报文增量 < 200 B。
+     */
+    JsonObject dirtyMap = out["dirty"].to<JsonObject>();
 
     for (int i = 0; i < CONFIG_MODULE_COUNT; i++)
     {
@@ -2367,10 +2530,28 @@ static ExecResult exec_query_all(
 
         // 深拷贝到 out，并检查结果（内存不足会失败）
         if (!root[name].set(s_modules[i].data.as<JsonVariantConst>()) ||
-            !vers[name].set(s_modules[i].version))
+            !vers[name].set(s_modules[i].version) ||
+            !dirtyMap[name].set(s_modules[i].dirty))
         {
             return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
         }
+    }
+
+    /*
+     * 自动保存+重启窗口的剩余时间：让刷新后的页面也能显示**真实**倒计时，
+     * 而不是重新从 5 分钟开始猜。
+     */
+    unsigned long remainMs = 0;
+    bool pending = config_restart_pending(remainMs);
+
+    if (!pending)
+    {
+        remainMs = 0;
+    }
+
+    if (!out["restart_in_ms"].set(remainMs))
+    {
+        return result_fail(CONFIG_ERR_IO_FAILED, "result build failed");
     }
 
     return result_ok("query all ok");
