@@ -1,0 +1,22 @@
+# P4 · T05 验收（只读段）——设备端 config_query 是否如实上报 dirty / restart_in_ms
+# 前置状态：刚烧入 68b2cdcb…（含 T05），设备已 boot validated，无未落盘修改
+# 清理：无（本段不写任何字段）
+#
+# T05-A 全量查询（不带 module）必须带顶层 dirty 映射
+cm {"cmd":"system","ob":"config_query","id":"t5a1"} ||| "dirty":{
+# T05-B 全量查询必须带顶层 restart_in_ms（无待重启时 = 0）
+cm {"cmd":"system","ob":"config_query","id":"t5a2"} ||| "restart_in_ms":0
+# T05-C 全量查询的 dirty 映射必须覆盖 11 个模块（键存在性抽样）
+cm {"cmd":"system","ob":"config_query","id":"t5a3"} ||| "valve":
+# T05-D 单模块查询必须带 dirty 布尔（干净态 = false）
+cm {"cmd":"system","ob":"config_query","id":"t5a4","p":{"module":"valve"}} ||| "dirty":false
+# T05-E 单模块查询必须保留既有契约字段（T05 是纯新增，不得破坏旧回包结构）
+#       注①：`restart_in_ms` **只在全量查询**里出现（单模块查询没有"全局重启窗口"
+#            这一语义，见 exec_query_module）——原先断言它属于用例写错。
+#       注②：出线报文里 `version` 被压缩成 `v`；且**版本号会合法递增**
+#            （每次 save +1，本轮实测 2→3）⇒ 断言不能写死数值，改用稳定的结果标识。
+cm {"cmd":"system","ob":"config_query","id":"t5a5","p":{"module":"valve"}} ||| "m":"query module ok"
+# T05-F 读 valve.safety_timeout_sec 现值（供写回段使用，零副作用）
+cm {"cmd":"system","ob":"config_query","id":"t5a6","p":{"module":"valve"}} ||| "safety_timeout_sec":
+# T05-G T05 不得改变既有 data/versions 结构（回退保护：data 键仍在）
+cm {"cmd":"system","ob":"config_query","id":"t5a7","p":{"module":"valve"}} ||| "data":

@@ -1,8 +1,10 @@
 # Guo Feeder · P4 最终交付与验收报告
 
 - 生成时间：2026-11-01 18:40 (GMT+8)
+- **修订 v2：2026-11-01 19:20 (GMT+8)** —— 串口接上后完成**固件刷写 + 真机验证 + 缺陷修复 + 二次刷写**，§2/§3/§4/§5/§6/§8/§9 已按真机结果更新（未重写全文）。
 - 唯一依据：`D:\Guo_Feeder_Project\P4-20261101-execution-ledger.md`（T01 / T03 / T05 / T06 / T07 / T08 / T09）
 - 生成纪律：**只读台账与其引用的测试/部署/刷写证据**；未重新通读三个仓库源码，未补做任何调查。
+- v2 纪律：只补"真机实测"得到的**新事实与新缺陷**，不推翻 v1 已成立的代码结论。
 
 ---
 
@@ -11,12 +13,12 @@
 | 项 | 数量 | 说明 |
 |---|---|---|
 | 本轮任务书条目 | 10（T01–T10） | 用户指定执行 **T01 / T03 / T05 / T06 / T07 / T08 / T09 / T10**；**T02、T04 由用户判定本轮不做** |
-| 状态 | **PASS 5 · PARTIAL 1 · BLOCKED 1 · 未执行 2** | 详见 §2 |
-| 代码/文档级修复的缺陷 | **13 个** | 9 个属前序轮次的既有缺陷，4 个为本轮新引入后自行发现并修复 |
-| 新发现并已修复 | **9 个** | 其中 2 个是**安全类**（CSRF 失效、凭据误报成功）、1 个是**首页不可用级**（presence 无超时） |
+| 状态 | **PASS 7 · 未执行 2**（v2：T05 / T08 已由真机验证解除阻塞） | 详见 §2 |
+| 代码/文档级修复的缺陷 | **14 个** | 9 个属前序轮次的既有缺陷，4 个为本轮新引入后自行发现并修复，**1 个为真机刷写后才暴露**（见 §4.4） |
+| 新发现并已修复 | **10 个** | 其中 2 个是**安全类**（CSRF 失效、凭据误报成功）、1 个是**首页不可用级**（presence 无超时）、1 个是**功能静默失效级**（T05 的 `dirty` 被出线封包层丢弃） |
 | 新发现但**未**修复 | **2 个** | 见 §6（一项 BLOCKED 于真实账号、一项 BLOCKED 于日志检索能力） |
 | 已部署 | Worker `7b102f86`、Pages `6c1011f4` | 见 §3 |
-| 已刷写固件 | **否（BLOCKED）** | 本机无 ESP32 USB 串口，见 §3、§6 |
+| 已刷写固件 | **是** —— `4c100537…`（1,471,696 B） | `boot_seq` **227 → 237**；旧产物 `68b2cdcb…` 已被本报告判为**不可用**（§4.4），见 §3.2 |
 
 > **一句话结论**：代码侧交付完成且生产已上线；**固件未刷写**、**真实米家账号验证未做**、**人工物理测试未做**，
 > 因此 P4 **不能**宣布"完全关闭"。
@@ -31,10 +33,10 @@
 | **T02** | HTTP 代理通道剩余问题 | **未执行**（用户判定优先级不高，本轮放弃） | — | — | **未执行** |
 | **T03** | 米家 API 日志与日志体系核对 | 结论：**继续写 Workers Logs，不写 D1**（`log_history` 幂等键 `(device_id,boot_seq,seq)` 且 `device_id NOT NULL`，塞入必须伪造 ⇒ 违反"不得伪装成设备日志"）；修 2 个真实泄露路径（`Authorization: Bearer` 未被掩码、自由文本可绕过白名单）；失败日志加洪泛上限 30/60 s（非采样） | 新增 `test/current/xiaomi_api_log_security.test.mjs` **41/0**；既有 `xiaomi_api_log` 74/0 | 已部署（Worker） | **PASS**（含 1 条待决策 D-01） |
 | **T04** | 首页初始化请求数量调查与优化 | **未执行**（用户判定优先级不高，本轮放弃） | — | — | **未执行** |
-| **T05** | Config dirty 刷新恢复 | 固件 `config_query` 增补顶层 `dirty:{module:bool}` + `restart_in_ms`（`data`/`versions` 一字未改）；前端 `S.configDeviceDirty` 与会话 `S.configPending` **分开存**；绝不从 localStorage 恢复 dirty；`saveConfigToFlash()` 支持"无 pending 但设备 dirty"；`normalRestart()` 把设备 dirty 纳入"会丢失"判定；详情页五层状态 | 新增 `tests/ui/config_dirty_restore.test.mjs` **51/0**；新增跨仓契约 `test/ui_v11_contract/config_dirty_contract.py` **20/0**；固件编译 SUCCESS | 前端已部署；**固件未刷写** | **PARTIAL**（代码完成，真机未验） |
+| **T05** | Config dirty 刷新恢复 | 固件 `config_query` 增补顶层 `dirty:{module:bool}` + `restart_in_ms`（`data`/`versions` 一字未改）；前端 `S.configDeviceDirty` 与会话 `S.configPending` **分开存**；绝不从 localStorage 恢复 dirty；`saveConfigToFlash()` 支持"无 pending 但设备 dirty"；`normalRestart()` 把设备 dirty 纳入"会丢失"判定；详情页五层状态 | 新增 `tests/ui/config_dirty_restore.test.mjs` **51/0**；新增跨仓契约 `test/ui_v11_contract/config_dirty_contract.py` **20/0**；**真机串口只读段 7/0 + 写回段 7/0**（§3.4）；**出线报文与 D1 落库实测均含 `dirty`（11 模块）与 `restart_in_ms`** | 前端已部署；**固件已刷写 `4c100537…`** | **PASS**（v2 解除阻塞：真机闭环已验证；且因此发现并修复 1 个"前后端单测全绿、功能却完全失效"的真实缺陷，见 §4.4） |
 | **T06** | 取帧语义审查 | 结论：**可统一**。两个旧函数"互补地错"（一个丢顺序、一个认不出压缩帧的 `o`）⇒ 新增唯一实现 `pickResultFrame()`（4 层判据：载荷+终态 / 任意载荷 / **结果帧无载荷**（压过 ACK）/ 最后非空帧）；两个旧名改为**委托别名** ⇒ 28 个调用点零改动 | 新增 `tests/ui/frame_pick_semantics.test.mjs` **27/0**；`ui_app_runtime` 138 断言通过 | 已部署 | **PASS** |
 | **T07** | 部署前检查与 Worker/Pages 部署 | 三仓状态核对；前序改动完整性核对；Worker 全量 + 前端 20 套件 + 语法门禁全绿；**Pages 部署脚本 exit 66 未复现**（语法门禁正常放行，未绕过任何门禁）；记录回滚点；部署 Worker 与 Pages；最小只读验证 7 项 | Worker `run_all` 全绿；`tests/ui`(20)+`api`(14)+`pages`(6) exit=0；`frontend_syntax` 27/0；部署脚本 `--dry-run` exit 0 | **已部署** | **PASS** |
-| **T08** | 固件刷写与刷后验证 | 源码↔产物对应性验证（重编译后 SHA **完全一致**，可复现）；构建环境与分区核对；SHA256 验证；刷写命令与验收清单就绪；**刷写本身无法执行**（本机仅有 3 个蓝牙虚拟串口，无任何 USB 串口） | 固件编译 SUCCESS（1,471,408 B / SHA `68b2cdcb…`） | **未刷写** | **BLOCKED** |
+| **T08** | 固件刷写与刷后验证 | 源码↔产物对应性验证（重编译后 SHA **完全一致**，可复现）；构建环境与分区核对（`app0 0x10000` / `app1 0x210000` / `otadata`，实测 `otadata seq=1 → app0`、`app1` 为空 ⇒ 只刷 app0 可生效）；**串口接入后完成刷写**；刷后核对启动日志、`boot_seq`、配置代际未回滚；**刷后测试暴露 §4.4 缺陷 → 修复 → 二次刷写** | ① 首刷 `68b2cdcb…`：`Hash of data verified.`，`boot_seq` 227→**230**，`[CFG][I] boot validated`、`loaded 11/11`、`WiFi connected`、`MQTT connected`+订阅×2；② 但 `config_query` **无 `dirty`/`restart_in_ms`** ⇒ 定位为出线封包白名单丢弃；③ 修复后二次刷写 `4c100537…`（1,471,696 B），`boot_seq`→**237**，串口用例 **7/0 + 7/0**，`valve` version 2→3 证明 save 落盘 | **已刷写** | **PASS** |
 | **T09** | 生产只读 + 浏览器自动化验证 | 5 个只读脚本 + 2 个浏览器脚本实跑；**发现并修复 4 个真实缺陷**（详见 §4） | 只读：21/0、36/0、15/0、24/0、15/0；浏览器：**62/1**（首页缺陷修复前后为 10/10 → 62/1） | 因此再部署 4 次 Pages + 2 次 Worker | **PARTIAL** |
 | **T10** | 生成本报告 | 本文件 | — | — | **PASS** |
 
@@ -57,19 +59,39 @@
 - 兼容性：新前端与旧 Worker、旧前端与新 Worker **均兼容**（本轮 Worker 无响应结构的破坏性变更；
   新增字段只有 `config_query.dirty` / `restart_in_ms`，旧前端会忽略）。
 
-### 3.2 固件
+### 3.2 固件（v2：已刷写，含二次刷写）
 
 | 项 | 值 |
 |---|---|
-| 生产在跑 | `7f71ada7…`（2026-10-31 刷写） |
-| **待刷产物** | **`68b2cdcbb06a9f308ad66b04b6cbee3be325f0b61ff55b0f6bdc5b3242f467ae`**，**1,471,408 B** |
-| 可复现性 | 重新 `pio run` 后 SHA **完全一致** |
-| 归档 | `docs/evidence/build-archive/20261101-154803-esp32-s3-devkitc-1/`（含 `.manifest.txt`：`git_HEAD=cb7a1c7`、`git_dirty=34`、`pio 6.2.0`） |
-| 刷写状态 | **未刷写（BLOCKED）** |
-| 刷前 `boot_seq` | **227**（D1 `log_history`，最近日志 2026-11-01 16:38，设备在线） |
-| 刷写方式 | **只刷 app 分区 `0x10000`**；**绝对禁止 `uploadfs`**；也不要用 `pio run -t upload`（会写 bootloader/partitions/boot_app0） |
+| 生产在跑（v1 记录） | `7f71ada7…`（2026-10-31 刷写） |
+| ~~v1 待刷产物~~ | ~~`68b2cdcb…`，1,471,408 B~~ ⇒ **实测不可用**（`config_query` 不含 `dirty`，见 §4.4）。**禁止再刷此版本** |
+| **★ 生产在跑（最终）** | **`4c10053779626bcca6897987cad8888d2dfa3e1595d0c97a4bfc9dc02e320fff`**，**1,471,696 B** |
+| 差量 | 相对 `68b2cdcb…` **+288 B**，全部来自 §4.4 的封包层转发与注释 |
+| 可复现性 | 两个独立构建目录（`.pio/build/esp32-s3-devkitc-1` 与 `.pio/build/t05fix/…`）产出 **SHA 完全一致** |
+| 归档 | `68b2cdcb…` → `docs/evidence/build-archive/20261101-154803-esp32-s3-devkitc-1/`；`4c100537…` 本轮结束后归档 |
+| **刷写状态** | **已刷写两次**（`68b2cdcb…` → 定位缺陷 → `4c100537…`），两次均 `Hash of data verified.` |
+| 刷前 `boot_seq` | **227**（D1 `log_history`） |
+| 刷后 `boot_seq` | **237**（`log_history` boot 链 230/231/…/237 连续，证明真实重启且非反复 panic） |
+| 刷后启动核对 | `[CFG][I] loaded 11/11 modules` · `[CFG][I] boot validated` · `Connecting to:YOUR_WIFI_SSID` · `WiFi connected` · `MQTT connected` · `MQTT subscribed`×2 · `client_id=dev_001122334455`、topic 全为 V3 模板 ⇒ **配置代际未回滚** |
+| 刷写方式 | **只刷 app 分区 `0x10000`**；**未使用 `uploadfs`**；**未使用 `pio run -t upload`**（会写 bootloader/partitions/otadata）。NVS（`device_id`/米家 Token）与 LittleFS（配置）全程未动 |
+| 分区前提核对 | 分区表为双 app 槽（`app0 0x10000` / `app1 0x210000` + `otadata`）。实测 `otadata[0].ota_seq=1`、`app1` 首字节 `0xFF`（空）⇒ **启动槽确为 app0**，只刷 `0x10000` 即可生效（若将来做过 OTA 到 app1，此结论失效，必须重核） |
 
-★ 任务书命令 8 里写的 `e29ce50c… / 1,471,152 B` **已作废**（T05 改了固件）。
+★ 任务书命令 8 里写的 `e29ce50c… / 1,471,152 B` **已作废**（T05 改了固件）；v1 的 `68b2cdcb…` 也已作废（§4.4）。
+
+### 3.4 真机验证记录（2026-11-01 18:44–19:20）
+
+| 项 | 结果 |
+|---|---|
+| 串口 | `COM8`（USB `VID:PID=1A86:55D3` **CH343**；另 3 个 `BTHENUM` 蓝牙虚拟口与本机无关） |
+| 工具链 | `esptool.py v4.11.0` + `PlatformIO packages/tool-esptoolpy`；`-b 921600 write_flash -z 0x10000` |
+| 启动日志 | `docs/evidence/boot-20261101-184615.log`（156 行，首刷后完整 boot） |
+| T05 只读段 | `test/p4_t05_dirty_read_tests.txt` ⇒ **7/0**（`dirty` 映射 11 模块 / `restart_in_ms:0` / 单模块 `dirty:false`） |
+| T05 写回段 | `test/p4_t05_dirty_write_tests.txt` ⇒ **7/0**（`set` → `dirty:true` → 全量 `valve:true` → `restart_in_ms:295362` → `save` → `dirty:false`） |
+| 落盘证据 | 写回段末 `config_save` 后 `versions.valve` **2→3**、`safety_timeout_sec` 仍 **300**、重启后 `dirty` 全 false ⇒ save 链路真实落盘且语义未变 |
+| MQTT 下行 | `tools/mqtt_send.py --device-id 001122334455 '{"c":"system","i":…,"p":{"o":"memory"}}'` ⇒ 设备回真实内存数据（internal/external 两段）⇒ **下行链路正常** |
+| 云端落库 | D1 `mqtt_messages`（`direction='up'`）实测存有完整帧：`keys=[s,c,i,o,t,m,e,type,command,data,versions,dirty,restart_in_ms]`，`dirty` 含 11 个模块 ⇒ **设备→MQTT→Worker→D1 全链保留新键** |
+| 设备终态 | `valve.version=3`、`safety_timeout_sec=300`（同值写回，语义零变化）、`dirty` 全 `false`、`restart_in_ms=0`；`boot validated` 正常 ⇒ **未留任何待落盘脏状态** |
+| ⚠ 实测异常（非本轮改动引入） | 验证中一段 `MQTT outbox` 涨到 **5997 B**，`esp_mqtt_client_enqueue(store=1)` 阻塞 loop ⇒ 有 3 条串口命令超时未回；网络恢复后**复跑全绿**。属既有"outbox 满即阻塞"行为，已记录为观察项（§6.E） |
 
 ### 3.3 D1 / EMQX
 
@@ -109,20 +131,32 @@
 | J | 米家密码登录对**真实错误码**的处理未经验证 | **BLOCKED** | 没有可用的米家测试账号；不猜测账号以免触发上游风控。已用"空凭据 ⇒ 400 校验拒绝、不产生上游尝试、不破坏既有会话"证明门禁与校验在位 |
 | K | 米家 API 日志的**线上内容**缺运行时证据 | **BLOCKED** | Workers Logs 无历史检索 API，`wrangler tail` 仅实时；本轮未在触发米家调用时挂 tail |
 
+### 4.4 真机刷写后才暴露、并当场修复（1 个 · v2 新增）
+
+| # | 现象 | 根因 | 修复 | 测试证据 | 已刷写 |
+|---|---|---|---|---|---|
+| **L** | **T05 的 `dirty` / `restart_in_ms` 在真机上一个字节都读不到** —— 串口 `config_query` 回包只有 `data` / `versions`，前端 `parseConfigDirty()` 永远拿 `undefined` ⇒ "刷新后不知道 RAM 里有未落盘修改"这个缺陷**实际从未被修好**，而两端单测全绿 | 固件里**两个不同层**的契约不一致：<br>① `config_manager.cpp` 的 `exec_query_all()` / `exec_query_module()` 把 `dirty` / `restart_in_ms` 写在结果文档**顶层**（正确）；<br>② `command_manager.cpp` 生成 `config_result` **出线报文**时是**白名单式**拷贝 —— 只显式搬 `data` / `version` / `versions` ⇒ 新增顶层键在**发出前被静默丢弃**（无日志、无错误码）。<br>★ 纯源码单测的盲区：测了"结果层有没有 set"和"前端能不能 parse"，**没人测"出线报文里到底有没有"** | `command_manager.cpp`：在封包函数里显式转发 `rv["dirty"]` / `rv["restart_in_ms"]`，并写死注释「ConfigManager 结果里凡新增的非 data 顶层键都必须在此登记」 | ① 新增 **契约守卫** `test/p4_wire_envelope_contract_test.py`：自动求「结果层顶层键集合 A」−「整体拷贝通道」⊆「封包层转发键集合 B」，并配**负向探针**（删掉转发后检查器必须报错）⇒ **8/0**；<br>② 真机串口 **7/0 + 7/0**；<br>③ D1 落库帧 `keys=[…,dirty,restart_in_ms]` | ✅ `4c100537…` |
+
+**教训（已写入契约守卫的 docstring）**：新增一个"结果字段"**不是只改 `config_manager.cpp` 就够了** —— 出线封包层是一道独立白名单，漏登记不会报错，只会静默少一个键。这类缺陷**只能靠真机取一次报文**发现。
+
 ---
 
 ## 5. 人工测试清单（**必须由用户本人执行**）
 
 > 以下 10 组是本轮唯一无法由自动化代替的验证。每项含：操作 / 预期 / 失败需反馈什么。
 
-### 5.1 固件刷写（前置，其余真机项都依赖它）
-1. 用 USB 数据线把 ESP32-S3 接到本机，确认出现新的 `COM<N>`。
-2. 复核：`sha256sum .pio/build/esp32-s3-devkitc-1/firmware.bin` = `68b2cdcbb06a…`，1,471,408 B。
-3. 执行：`python -m esptool --chip esp32s3 -p COM<N> -b 921600 --before default_reset --after hard_reset write_flash -z 0x10000 .pio/build/esp32-s3-devkitc-1/firmware.bin`
-   - **预期**：`Hash of data verified.` + `Hard resetting via RTS pin...`
-   - **禁止**：`uploadfs`（会覆盖 LittleFS ⇒ 丢配置、可能清米家 Token）
-4. 刷后 5 分钟内看 D1：`MAX(boot_seq)` 由 **227 → ≥228**（这是"真重启"的唯一可信判据；presence 全程 online 不作数）。
-5. **失败需反馈**：端口号、esptool 完整输出、刷前的 `boot_seq`。
+### 5.1 固件刷写（前置）—— ✅ v2 已由我方完成，**不再是人工项**
+
+| 步骤 | 结果 |
+|---|---|
+| 端口 | `COM8`（CH343） |
+| 复核 SHA | 首刷 `68b2cdcb…` → 二刷 **`4c100537…`**（1,471,696 B） |
+| 刷写 | `esptool.py --chip esp32s3 -p COM8 -b 921600 --before default_reset --after hard_reset write_flash -z 0x10000 …` ⇒ 两次均 `Hash of data verified.` |
+| `boot_seq` | 227 → **237**（真实重启，读取 D1 `log_history`） |
+| 启动核对 | `boot validated` / `11/11 modules` / `WiFi connected` / `MQTT connected`+订阅×2 / V3 topic ⇒ 无配置代际回滚 |
+| 禁止项遵守 | 未跑 `uploadfs`、未跑 `pio run -t upload`、未动 NVS 与 LittleFS |
+
+⇒ **§5.2–§5.10 现已具备真机前提**，但它们是"物理动作 / 米家真实账号 / 浏览器交互"类，仍**必须由用户本人执行**。
 
 ### 5.2 喂食器与插座**双设备并发**
 - 操作：控制页同时点「读取喂食器状态」与「读取插座状态」（或连续快速点）。
@@ -157,9 +191,10 @@
 - 失败反馈：通道标签 + 结果帧是否存在 + 是否出现 `cmd_id_duplicate`（重复提交）。
 
 ### 5.8 Config / Workflow dirty 的**刷新、保存、重启反馈**
+> 固件侧 `dirty` / `restart_in_ms` 已由 v2 真机验证（§3.4，只读 7/0 + 写回 7/0）；本项剩下的**只有浏览器侧渲染**需要人工看。
 - 操作 a：配置页改一项**不保存** → 刷新 → 看底部。
-  **预期**：刷 `68b2cdcb` 后显示「设备端未落盘 N 个模块…」+ 自动保存剩余秒数；
-  **刷写前（旧固件）应显示"未知"，绝不显示"干净"**。
+  **预期**：显示「设备端未落盘 N 个模块…」+ 自动保存剩余秒数（`restart_in_ms` 已可读到）。
+  若显示"未知"，说明 `config_query` 未成功 —— 反馈原始回帧。
 - 操作 b：点「保存到 Flash」→ 预期落盘并请求重启，页面进入重启监视；刷新后 dirty 消失。
 - 操作 c：改一项后直接点「普通重启」→ 预期**三选一**（先落盘再重启 / 仍要重启（会丢失）/ 取消），不静默。
 - 失败反馈：`config_query` 原始回帧（含 `dirty` / `restart_in_ms`）+ 截图。
@@ -185,8 +220,8 @@
 
 | # | 事项 | 类型 | 具体原因 | 解除条件 |
 |---|---|---|---|---|
-| 1 | **固件刷写 + 刷后验证（F1–F7）** | 物理操作未完成 | 本机无 ESP32 USB 串口（`pio device list` 仅 3 个蓝牙虚拟口；WMI 交叉确认无 `VID_303A`/CH340/CP210x） | 接线出现 `COM<N>` 后执行 §5.1 |
-| 2 | **Config dirty 真实值验证** | 真机验证未完成 | 依赖 #1（旧固件无 `dirty` 字段） | 刷写后按 §5.8 复验 |
+| 1 | ~~**固件刷写 + 刷后验证（F1–F7）**~~ | ✅ **v2 已解除** | 串口接入 `COM8` 后完成两次刷写（`68b2cdcb…` → `4c100537…`），`boot_seq` 227→237 | 已完成，见 §3.2 / §3.4 |
+| 2 | ~~**Config dirty 真实值验证**~~ | ✅ **v2 已解除** | 真机串口只读 7/0 + 写回 7/0；出线报文与 D1 落库均含 `dirty`/`restart_in_ms` | 已完成，见 §3.4；**但修复前它是真的坏的**（§4.4） |
 | 3 | **米家真实账号密码登录错误码** | 真实账号测试未完成（**BLOCKED**） | 无测试账号；不猜账号以免上游风控 | 提供专用测试账号（`XIAOMI_TEST_USER/PASS`），必要时提供验证码 |
 | 4 | **米家 API 日志线上内容证据** | 自动化验证未完成（**BLOCKED**） | Workers Logs 无历史检索 API | 允许在触发一次米家只读调用时挂 `wrangler tail` 采集 60 s |
 | 5 | **T02 HTTP 通道剩余项** | 代码未完成（**用户判定不做**） | publish QoS 0→1、`STALE_AFTER_MS` 与 `POLL_TOTAL_MS` 统一、Pages 代理超时重试 | 单开任务 |
@@ -194,6 +229,7 @@
 | 7 | **D-01 米家 API 日志是否落 D1** | 待用户决策 | 需新增 `0013_*` 迁移 + 约 ≤8.6k 写/天的 D1 增量 | 用户拍板（台账 §T03.5 有方案与成本） |
 | 8 | **Playwright 剩余 1 项** | 自动化验证未完成 | 失败点不稳定（`#workflows` Tab / `#d-mem` 点击），核对 `mqtt_messages` 无对应下行命令 ⇒ 脚本切页时通道未就绪 | 人工复看 §5.6 / §5.4；后续可给脚本加"等通道就绪"再切页 |
 | 9 | 物理动作类验证（出粮、通断电、双设备并发） | 用户人工测试未完成 | 纪律禁止自动化执行物理动作 | §5.2 / §5.3 |
+| 10 | **MQTT outbox 满即阻塞主循环**（v2 新观察项，**非本轮改动引入**） | 待评估 | 真机实测一次 `outbox=5997 B`，`esp_mqtt_client_enqueue(store=1)` 阻塞 loop ⇒ 3 条串口命令超时未回；网络恢复后复跑全绿。属既有"入队失败即阻塞"设计，未在本轮改动 | 单开任务：评估非阻塞入队 / 入队前限流 / 超阈值丢日志批 |
 
 ---
 
@@ -212,26 +248,29 @@
 
 ## 8. 最终验收结论
 
-### 8.1 可以宣布完成（代码 + 自动化 + 已上线）
+### 8.1 可以宣布完成（代码 + 自动化 + 已上线 + **已上真机**）
 - **T01** 统一设备预检（含多设备整份否决、冷却提示、断电例外）
 - **T03** 米家 API 日志存储方案结论 + 两处泄露路径修复
+- **T05** Config dirty：**代码 + 真机闭环**（串口 7/0 + 7/0、D1 落库帧含新键、写→dirty→save→清 全链验证）
 - **T06** 取帧语义统一（`pickResultFrame`）
 - **T07** Worker / Pages 部署（含回滚点与最小只读验证）
-- 4 个新缺陷（A/B/C/D）与 5 个既有缺陷（E/F/G/H/I）**修复并部署**，均有测试证据
+- **T08** 固件刷写与刷后验证（两次刷写、`boot_seq` 227→237、配置代际无回滚）
+- 10 个缺陷（A/B/C/D/E/F/G/H/I/**L**）**修复**，其中 9 个已部署/已刷写，均有测试证据
 
 ### 8.2 仅代码完成（未真机验证）
-- **T05** Config dirty：固件改动已编译、契约脚本 20/0，但**未刷写** ⇒ 真实 `dirty` 未验证
-- 固件侧全部改动（`dirty`/`restart_in_ms`）
+- **无**（v1 里的"固件侧改动未验证"已由 v2 全部解除）
+- 余下未验证的只有**浏览器渲染层**：§5.8 的"配置页看到 dirty 提示"、§5.4 的"停用后首页立即同步"这类交互，需人眼看
 
 ### 8.3 必须等待人工测试
-- 固件刷写与刷后 F1–F7
-- §5.2–§5.10 全部 9 组（双设备并发、紧急断电、Config 同步、多设备预检、诊断弹窗、双通道回执、dirty 刷新/保存/重启、米家两种登录、历史同步与参数显示）
+- §5.2–§5.10 全部 9 组（双设备并发、紧急断电、Config 同步、多设备预检、诊断弹窗、双通道回执、dirty 刷新/保存/重启**的界面部分**、米家两种登录、历史同步与参数显示）
+- 其中 §5.2 / §5.3 / §5.5 涉及**物理动作**，纪律禁止自动化执行
 
 ### 8.4 仍阻止 P4 完全关闭
-1. **固件未刷写**（物理条件）——这是最大阻塞项，直接决定 T05 能否关闭、以及"新前端读到真实 dirty"能否成立。
-2. **真实米家账号验证缺失**（BLOCKED）。
-3. **Playwright 剩余 1 项不稳定失败**（测试时序，非产品缺陷，但要求人工复看确认）。
-4. **T02 / T04 按用户决定未做**（不计入阻塞，但 P4 原始范围未 100% 覆盖）。
+1. ~~固件未刷写~~ → **已解除**（`4c100537…`，`boot_seq` 237）
+2. **真实米家账号验证缺失**（BLOCKED，无测试账号）
+3. **Playwright 剩余 1 项不稳定失败**（测试时序，非产品缺陷，但要求人工复看确认）
+4. **T02 / T04 按用户决定未做**（不计入阻塞，但 P4 原始范围未 100% 覆盖）
+5. **§5.2–§5.10 人工组未执行**（物理动作与真实账号两类，无法自动化）
 
 ---
 
@@ -239,11 +278,13 @@
 
 | 指标 | 值 |
 |---|---|
-| 新增测试套件 | **7** 个（`p0_3_unified_preflight`、`config_dirty_restore`、`frame_pick_semantics`、`xiaomi_api_log_security`、`xiaomi_qr_poll_timeout`、`pages_csrf_callsites`、`verify_t09_*` 2 个脚本） |
-| 新增断言 | 约 **300+** 条 |
+| 新增测试套件 | **8** 个（`p0_3_unified_preflight`、`config_dirty_restore`、`frame_pick_semantics`、`xiaomi_api_log_security`、`xiaomi_qr_poll_timeout`、`pages_csrf_callsites`、`verify_t09_*` 2 个脚本，v2 追加 **`p4_wire_envelope_contract`**） |
+| 新增断言 | 约 **300+** 条（v2 追加契约守卫 8 条 + 真机串口 14 条） |
 | `frontend_syntax` | 27/0（25 个 ES 模块） |
 | Worker `run_all` | 全部套件通过（含 legacy 的 EXPECTED_FAILURE，属预期） |
 | 前端套件 | `tests/ui` 21 + `tests/api` 15 + `tests/pages` 6，全部 exit=0 |
 | 生产只读脚本 | 21/0、36/0、15/0、24/0、15/0 |
 | 浏览器验收 | 62/1（修复首页缺陷前 10/10） |
-| 固件产物 | 1,471,408 B / SHA `68b2cdcb…` / 编译 23.8 s / Flash 70.1% |
+| 固件产物 | **`4c100537…` / 1,471,696 B**（increment +288 B）／Flash 70.2%，两个构建目录 SHA 一致 |
+| 固件真机 | 串口 **7/0 + 7/0**；`boot_seq` **227 → 237**；两次刷写均 `Hash of data verified.` |
+| 云端链路 | D1 `mqtt_messages` 上行帧实测含 `dirty`（11 模块）+ `restart_in_ms` |

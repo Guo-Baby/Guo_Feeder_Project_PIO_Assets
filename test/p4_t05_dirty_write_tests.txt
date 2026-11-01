@@ -1,0 +1,21 @@
+# P4 · T05 验收（写回段）——config_set 后 dirty 必须由固件如实置位
+# 前置状态：设备已通过 p4_t05_dirty_read_tests.txt（全干净、restart_in_ms=0）
+# ★ 安全性：写入的是 valve.safety_timeout_sec 的**当前值 300**（同值写回）
+#   ⇒ RAM 里不产生任何语义变化，只触发 dirty 置位。
+#   段末调用 config_save 收尾，避免把 dirty 留在生产设备上（否则前端会一直提示
+#   "有未落盘修改"）。save 后设备约 10 s 自动重启，属正常路径。
+#
+# T05-H 基线：确认现值就是 300（若已不是 300 必须停手，不要盲写）
+cm {"cmd":"system","ob":"config_query","id":"t5b1","p":{"module":"valve"}} ||| "safety_timeout_sec":300
+# T05-I config_set（同值）必须回 "field updated, restart required"
+cm {"cmd":"system","ob":"config_set","id":"t5b2","p":{"module":"valve","key":"safety_timeout_sec","value":300}} ||| field updated
+# T05-J 单模块回读：dirty 必须由 false 变 true（RAM 有未落盘修改）
+cm {"cmd":"system","ob":"config_query","id":"t5b3","p":{"module":"valve"}} ||| "dirty":true
+# T05-K 全量回读：dirty 映射里 valve 必须为 true，其余仍为 false
+cm {"cmd":"system","ob":"config_query","id":"t5b4"} ||| "valve":true
+# T05-L 全量回读：restart_in_ms 必须变成**非零**（正则在字面量前缀之后，防假命中）
+cm {"cmd":"system","ob":"config_query","id":"t5b5"} ||| "restart_in_ms":/[1-9][0-9]*/
+# T05-M 收尾落盘（同值写入 ⇒ 只递增 version，配置语义不变）
+cm {"cmd":"system","ob":"config_save","id":"t5b6"} ||| accepted
+# T05-N save 后回读：dirty 必须回到 false
+cm {"cmd":"system","ob":"config_query","id":"t5b7","p":{"module":"valve"}} ||| "dirty":false

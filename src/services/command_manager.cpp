@@ -3966,6 +3966,32 @@ static void command_config_completion(
                 command_log("ERROR", "config result: data copy failed");
             }
         }
+
+        // ★★ [T05-fix · 2026-11-01] `dirty` / `restart_in_ms` 必须显式透传。
+        //
+        //   ConfigManager 的 exec_query_module() / exec_query_all() 把这两个键写在
+        //   **结果文档顶层**（与 data / version / versions 同级）。而下面的拷贝是
+        //   **白名单**式 —— 只挑 data / version / versions ⇒ 新增的顶层键在这里被
+        //   **静默丢弃**（无日志、无错误码）。
+        //
+        //   后果：前端 parseConfigDirty() 读 payload.dirty 永远拿到 undefined
+        //   ⇒ "刷新页面后不知道 RAM 里还有未落盘修改" 的缺陷**实际并未修好**。
+        //   该问题只在上板实测（串口 config_query）时才暴露，纯源码单测看不出来。
+        //
+        //   ⇒ 规则：ConfigManager 结果里凡**新增的非 data 顶层键**，都必须在此登记。
+        JsonVariantConst dirty = rv["dirty"];
+
+        if (!dirty.isNull() && !doc["dirty"].set(dirty))
+        {
+            command_log("ERROR", "config result: dirty copy failed");
+        }
+
+        JsonVariantConst rim = rv["restart_in_ms"];
+
+        if (!rim.isNull() && !doc["restart_in_ms"].set(rim))
+        {
+            command_log("ERROR", "config result: restart_in_ms copy failed");
+        }
     }
 
     time_t ts = get_unix_timestamp();

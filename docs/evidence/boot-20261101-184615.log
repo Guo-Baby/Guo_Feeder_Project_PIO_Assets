@@ -1,0 +1,157 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (279) esp_core_dump_flash: No core dump partition found!
+E (279) esp_core_dump_flash: No core dump partition found!
+[System] LittleFS mounted
+PSRAM size: 8386279
+PSRAM free: 8386035
+[LogContract] v=2 rec=128 seg=3984 x16 cap=496 fmt=2 check=PASS
+[Identity] device_id=001122334455 (nvs ok)
+[Log] RAM ring ready: 64 slots x 128 B = 8192 B in PSRAM (boot_seq=1)
+[  1362][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+[  1376][E][vfs_api.cpp:105] open(): /littlefs/log/s0000000.log does not exist, no permits for creation
+[  1389][E][vfs_api.cpp:105] open(): /littlefs/log/s0000001.log does not exist, no permits for creation
+[  1402][E][vfs_api.cpp:105] open(): /littlefs/log/s0000002.log does not exist, no permits for creation
+[  1415][E][vfs_api.cpp:105] open(): /littlefs/log/s0000003.log does not exist, no permits for creation
+[  1428][E][vfs_api.cpp:105] open(): /littlefs/log/s0000004.log does not exist, no permits for creation
+[  1441][E][vfs_api.cpp:105] open(): /littlefs/log/s0000005.log does not exist, no permits for creation
+[  1454][E][vfs_api.cpp:105] open(): /littlefs/log/s0000006.log does not exist, no permits for creation
+[  1467][E][vfs_api.cpp:105] open(): /littlefs/log/s0000007.log does not exist, no permits for creation
+[  1481][E][vfs_api.cpp:105] open(): /littlefs/log/s0000008.log does not exist, no permits for creation
+[  1494][E][vfs_api.cpp:105] open(): /littlefs/log/s0000009.log does not exist, no permits for creation
+[  1507][E][vfs_api.cpp:105] open(): /littlefs/log/s0000010.log does not exist, no permits for creation
+[  1520][E][vfs_api.cpp:105] open(): /littlefs/log/s0000011.log does not exist, no permits for creation
+[  1533][E][vfs_api.cpp:105] open(): /littlefs/log/s0000012.log does not exist, no permits for creation
+[  1590][E][vfs_api.cpp:105] open(): /littlefs/log/s0000014.log does not exist, no permits for creation
+[  1603][E][vfs_api.cpp:105] open(): /littlefs/log/s0000015.log does not exist, no permits for creation
+[Log] Flash ring ready: seg=16 x 31 rec, seg_size=3984 B, valid=1, oldest=13, newest=13, append=13@3, total_rec=3, batch=1024 B in PSRAM
+[  1628][E][vfs_api.cpp:105] open(): /littlefs/log/quarantine.bin does not exist, no permits for creation
+[Log] recovery=NVS boot_hw=229 -> boot_seq=230 reserved=86528 corrupt=1 (nvs=1 slot=1 legacy=0 seg_max=0)
+[Log] seq: boot_seq=230 base=86529 limit=86784 reserved=86784 reliable=1 corrupt=1 src=0 failclosed=0
+[Log] Cloud queue ready: 128 slots x 128 B = 16384 B (q=PSRAM), batch=2048 B, cbor=4096 B in PSRAM
+[JStg][I] ready
+[FStg][I] ready
+[Bin][I] ready
+[CFG][I] init done, loaded 11/11 modules
+[Safety] valve: pin=12 safe_level=0
+[Safety] stepper_en: pin=15 safe_level=1
+[Safety] vibration: pin=16 safe_level=0
+[Safety] outputs init done (network not started yet)
+Event manager init OK
+[BLE] init OK
+WiFi init...
+Connecting to:YOUR_WIFI_SSID
+[Workflow] pools: trigger=PSRAM(114688 B) action=PSRAM(108544 B) step_def=PSRAM(105472 B) | PSRAM total=8385927 B
+[Weight] Init...
+[Weight] Disabled by config (HX711 not installed) -> weight_decrease / WEIGHT_ZERO NOT registered, no weight events emitted
+[Valve] Init OK (pin=12, active_level=1, safety=300 s)
+[Valve] System state registered: STATE_VALVE_STATUS
+[ComputerReset] Init OK (pin=8, hold=800 ms)
+[Stepper] Init: enable=0 pins_ready=0 rmt=0 (step=13 dir=14 en=15, steps/rev=1600 angle=120 period=10000us delay=50ms max=6400 timeout=30000ms)
+[Vibration] Init: enable=1 pins_ready=1 (pin=16 active_level=1, max_duration=30000ms safety_timeout=30000ms)
+[TStep] Init: step=13 dir=14 en=15 (en_active=0 dir_invert=0), hz=10..2000 default=100, max_run=600000 ms
+[DispenseGuard] Init OK
+OLED init...
+OLED init OK
+OLED event registered
+Time manager init...
+[Time] timezone offset = GMT+8
+[Time] RTC probe failed (addr=0x51 err=2), chip not present?
+[Time] RTC init failed (wait SNTP)
+[Time] SNTP servers=ntp.aliyun.com/cn.pool.ntp.org interval=86400s
+Time manager init done
+[TestMQTT] Action registered
+[MiThermo] register workflow action
+[MiThermo] init OK
+[XiaomiLAN] creds feeder=1 plug=1
+[XiaomiLAN] init: feeder_cfg=1 plug_cfg=1 enable=1/1 actions=111111 autooff=0
+[CredStore] NVS 'gfcred' ready
+[Cred] init: store=ok active_slot=-1
+[SYSCMD][I] init done, reset reason=power_on, safe delay=10000 ms
+Cloud manager init...
+MQTT server=YOUR_MQTT_HOST
+MQTT port=8883
+MQTT client_id=dev_001122334455
+[Cloud] credential source: config (fallback)
+MQTT subscribe=guo_feeder/001122334455/down
+MQTT publish=guo_feeder/001122334455/up
+MQTT log=guo_feeder/001122334455/log
+MQTT log-ack=guo_feeder/001122334455/log/ack
+MQTT CA=/emqxsl-ca.crt
+MQTT Config:
+[Cloud] QoS=1 store=1 buffer=8192 msg_limit=8000
+[WF][DBG] load wf=0 id=0400 steps=2 variant=2
+[WF][DBG] load wf=1 id=daily_valve_test1 steps=4 variant=1
+[WF][DBG] load wf=2 id=queue_test steps=4 variant=2
+[WF][DBG] load wf=3 id=wf_valve_19g steps=4 variant=4
+[WF][DBG] load wf=4 id=timer_e2e_ steps=4 variant=5
+[WF][DBG] load wf=5 id=daily_timer_test steps=3 variant=1
+[WF][DBG] load wf=6 id=weekly_timer_test steps=3 variant=1
+[WF][DBG] load wf=7 id=Temp-computer_sleep steps=4 variant=1
+[WF][DBG] load wf=8 id=plug_test steps=4 variant=1
+[OK] Workflow loaded from Flash BIN
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] ACTION reuse version=9 count=19
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] TRIGGER reuse version=5 count=2
+[CapRegistry] sync buf 2328 B in PSRAM (hwm=9684)
+[CapRegistry] WORKFLOW reuse version=40 count=9
+capability_registry_init: OK
+[CFG][I] boot validated
+[  9314][E][vfs_api.cpp:105] open(): /littlefs/log/corrupt.trace does not exist, no permits for creation
+WiFi connected
+OLED wifi event
+[Cloud] WiFi connected event
+[Time] SNTP started (waiting first sync)
+[Cloud] MQTT connecting...
+===== MQTT DEBUG =====
+host=YOUR_MQTT_HOST
+port=8883
+client_id=dev_001122334455
+username=(hidden)
+password=(hidden)
+buffer=8192
+cert=NO
+======================
+[Cloud] CA length=1316
+[Cloud] CA certificate loaded
+[Cloud] MQTT client started
+[Cloud] MQTT connected
+[Cloud] MQTT subscribe QoS=1 msg_id=18934
+[Cloud] MQTT subscribe(log-ack) filter=guo_feeder/001122334455/log/ack qos=1 msg_id=31039
+[Cloud] MQTT connected outbox=73
+[Cloud] ENQ id=42218 qos=1 store=1 outbox=73->403 len=296 t=10288
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=10289
+[Cloud SET JSON]
+{"cmd":"system","id":"online","src":"device"}
+[Cloud] enqueue OK id=7085 qos=1 store=1 len=45
+[Cloud] MQTT subscribed msg_id=18934
+[Cloud] MQTT subscribed msg_id=31039
+[Cloud] MQTT published/ack msg_id=42218 outbox=77 t=10455
+[Cloud] MQTT published/ack msg_id=7085 outbox=0 t=10491
+[Time] SNTP sync OK (2026-11-01 18:46:27)
+[Time] Event: TIME_VALID
+[XiaomiLAN] read failed (err=2), one bounded retry in 3000ms
+[Log Cloud] ack timeout retry=1/5 backoff=2000ms
+[Cloud] ENQ id=52799 qos=1 store=1 outbox=0->330 len=296 t=27299
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=27299
+[Cloud] MQTT published/ack msg_id=52799 outbox=0 t=27557
+[Log Cloud] ack timeout retry=2/5 backoff=4000ms
+[Cloud] ENQ id=48428 qos=1 store=1 outbox=0->330 len=296 t=46299
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=46299
+[Cloud] MQTT published/ack msg_id=48428 outbox=0 t=46615
+=================
+[Cloud] MQTT RX
+{"c":"log_ack","i":"ack:230:86529","p":{"b":230,"f":86529,"t":86529}}
+[Cloud LOG] ack rx boot=230 from=86529 to=86529
+[Log Cloud] ack ok boot=230 to=86529 covered=1/1 acked=86529 gc=85762 floor=85763 r=2
+[Cloud] ENQ id=32002 qos=1 store=1 outbox=0->330 len=296 t=47032
+[Cloud LOG] OK topic=guo_feeder/001122334455/log len=296 t=47042
+[Cloud] MQTT published/ack msg_id=32002 outbox=0 t=48150
