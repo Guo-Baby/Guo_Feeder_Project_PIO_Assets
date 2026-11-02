@@ -66,6 +66,14 @@ uint32_t s_temp_ms  = 0u;
 uint32_t s_humid_ms = 0u;
 uint32_t s_weight_ms = 0u;
 
+// ★★ [P4-T2 · 2026-11-02] 每个取值通道「上次发布时**看到的采样时刻戳**」。
+//   与 `s_*_ms`（上次**发布**时刻，millis）是**两个不同的东西**：
+//     · `s_*_ms`        = 何时发的（时间基线，给周期兜底用）
+//     · `s_*_sample_ts` = 发的那条数据来自哪个采样（事件基线，给"新样本"用）
+//   只有后者能回答"这次是**真的**采到新读数，还是内存里的旧值"。
+uint32_t s_temp_sample_ts  = 0u;
+uint32_t s_humid_sample_ts = 0u;
+
 // (B · 表驱动) v1 取值通道描述子 —— 3 条通道逻辑同构，收敛为一张静态表
 struct TeleChannel
 {
@@ -75,7 +83,17 @@ struct TeleChannel
     uint32_t      *last_ms;     // 上次上报时刻（抽样兜底基线）
     float          thr;         // 变化阈值
     uint32_t       period_ms;   // 抽样兜底周期；**0 = 无时间兜底**（只按变化发，climate 现为此）
+
+    // ★ [P4-T2] 「新样本」触发通道（**事件驱动**，非时间驱动）
+    //   `sample_ts_key == (SystemStateKey)0xFF` ⇒ 该通道无采样时刻概念（weight）。
+    SystemStateKey sample_ts_key;
+    uint32_t      *last_sample_ts;   // 上次发布时的采样时刻戳
+    uint32_t       sample_min_gap_ms;// 同一窗口内多帧的最小发布间隔
 };
+
+// 「该通道没有采样时刻戳」哨兵（`STATE_MAX` 之外的非法键，绝不会与真实键相等）
+constexpr SystemStateKey TELE_NO_SAMPLE_TS = (SystemStateKey)0xFFFF;
+static_assert((int)STATE_MAX < 0xFFFF, "TELE_NO_SAMPLE_TS must never collide with a real state key");
 
 // 时间有效性由 State 决定；未同步 ⇒ ts = 0（按原值上报，不伪造）
 inline uint32_t tele_ts()
@@ -156,6 +174,18 @@ void telemetry_publisher_init()
     s_humid_ms  = now;
     s_weight_ms = now;
 
+    // ★ [P4-T2] 采样时刻基线从 0 起（"尚未看过任何样本"）。
+    //   不在这里读 `mi_thermo_*_ts`：上电时它们就是 0，读与不读等价，
+    //   但**读一次**会让"重启前最后一个样本"被误当成"本 boot 已消费"⇒ 丢点。
+    s_temp_sample_ts  = 0u;
+    s_humid_sample_ts = 0u;
+
+    // ★ [P4-T2] 此处 `s_temp` / `s_humid` **就是** `NAN`（`MiThermometerInit()`
+    //   在 setup 更早的位置无条件写入，函数顺序见 main.cpp）——不修正它，
+    //   而是把它如实当作"基线未建立"传给 `tp_should_emit()`（→ 首个真实样本必发）。
+    //   历史缺陷正是把 NAN 当成一个可比较的数值：NaN 与任何数比较恒 false
+    //   ⇒ cadence 归零后该通道再无任何放行路径 ⇒ 线上 climate 永久静默。
+
     s_ready = true;
 }
 
@@ -198,11 +228,18 @@ void telemetry_task()
     static const TeleChannel kChannels[] =
     {
         { STATE_MI_THERMO_TEMP,  "climate.temperature", &s_temp,   &s_temp_ms,
-          TP_CLIMATE_DELTA_TEMP_C,    TP_CLIMATE_CADENCE_MS },
+          TP_CLIMATE_DELTA_TEMP_C,    TP_CLIMATE_CADENCE_MS,
+          STATE_MI_THERMO_TEMP_TS,  &s_temp_sample_ts,  TP_CLIMATE_SAMPLE_MIN_GAP_MS },
+
         { STATE_MI_THERMO_HUMID, "climate.humidity",    &s_humid,  &s_humid_ms,
-          TP_CLIMATE_DELTA_HUMID_PCT, TP_CLIMATE_CADENCE_MS },
+          TP_CLIMATE_DELTA_HUMID_PCT, TP_CLIMATE_CADENCE_MS,
+          STATE_MI_THERMO_HUMID_TS, &s_humid_sample_ts, TP_CLIMATE_SAMPLE_MIN_GAP_MS },
+
+        /* weight：HX711 连续采样，15 min 一次**就是**对当前重量的真实抽样
+           （不是"重发缓存值"）⇒ 保留周期兜底，且无采样时刻戳通道。 */
         { STATE_WEIGHT_VALUE,    "weight.value",        &s_weight, &s_weight_ms,
-          TP_WEIGHT_DELTA_G,          TP_WEIGHT_PERIOD_MS  },
+          TP_WEIGHT_DELTA_G,          TP_WEIGHT_PERIOD_MS,
+          TELE_NO_SAMPLE_TS,        nullptr,            0u },
     };
 
     for (uint8_t i = 0u; i < (uint8_t)(sizeof(kChannels) / sizeof(kChannels[0])); i++)
@@ -216,12 +253,39 @@ void telemetry_task()
 
         const float v = state_get_float(c.key);
 
+        /* ★ [P4-T2] 非有限读数（NAN / Inf）一律不发：
+           `state_is_valid()` 在 `state_set_float()` 里被无条件置 true
+           ⇒ 它**不**能证明"有读数"。把 NAN 发出去只会变成信封里的
+           `"value":null`（见 telemetry_envelope.h `te_fixed2`）⇒ Worker
+           按形状校验拒收，白占一条 transport 配额。 */
+        if (!tp_finite(v))
+        {
+            continue;
+        }
+
+        /* 该通道当前的采样时刻戳（0 = 从未采到；重量通道无此概念，恒 0） */
+        const uint32_t sample_ts = (c.sample_ts_key != TELE_NO_SAMPLE_TS)
+            ? (uint32_t)state_get_long(c.sample_ts_key)
+            : 0u;
+
         /*
          * ★★ [P4-T1 · 2026-11-02] 统一走 `tp_should_emit()`（策略层纯函数）。
          *   climate 的 `period_ms` 现为 0 ⇒ 只有**数值真的变化**才发，
          *   不再每 5 min 把缓存旧值当新样本重发（那是图表同值点的唯一来源）。
+         *
+         * ★★ [P4-T2 · 2026-11-02] 追加「真实新样本」通道（**事件驱动**）：
+         *   采样时刻戳推进 ⇒ 传感器确实报了新读数 ⇒ 即使数值没跨过阈值也要发。
+         *   没有新样本时戳不变 ⇒ 永不因"时间到了"重发缓存值（与 T1 不冲突）。
          */
-        if (!tp_should_emit(v, *c.last, c.thr, now, *c.last_ms, c.period_ms))
+        bool emit = tp_should_emit(v, *c.last, c.thr, now, *c.last_ms, c.period_ms);
+
+        if (!emit && c.sample_ts_key != TELE_NO_SAMPLE_TS)
+        {
+            emit = tp_sample_advanced(sample_ts, *c.last_sample_ts)
+                && tp_gap_elapsed(now, *c.last_ms, c.sample_min_gap_ms);
+        }
+
+        if (!emit)
         {
             continue;
         }
@@ -230,6 +294,11 @@ void telemetry_task()
         {
             *c.last    = v;
             *c.last_ms = now;
+            if (c.sample_ts_key != TELE_NO_SAMPLE_TS)
+            {
+                /* 记录"这条数据来自哪个采样" ⇒ 同一采样的重复帧不会再触发 */
+                *c.last_sample_ts = sample_ts;
+            }
             return;   // 每轮最多一条（TP_MAX_EMIT_PER_TASK）
         }
     }

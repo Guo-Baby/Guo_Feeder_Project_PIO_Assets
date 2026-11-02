@@ -235,6 +235,61 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
+    // [2c] policy 「NAN 基线」与「真实新样本」（P4-T2 · 2026-11-02 线上事故回归）
+    //
+    //   事故：刷写 a910a60（cadence=0）后 climate **一条都不发**，weight 正常。
+    //   D1 取证：weight 的 seq 从 1 连号、climate 0 行 ⇒ 设备侧没发。
+    //   设备侧原因：`MiThermometerInit()` 把 `mi_thermo_temp` 写成 `NAN`
+    //   且 `valid=true`，而 `telemetry_publisher_init()` 在其后 ⇒ 基线 = NaN；
+    //   `tp_delta_exceeded(x, NAN, thr)` 与 `NaN` 的比较恒 false ⇒
+    //   cadence=0 之后**再无任何放行路径** ⇒ 整条通道永久静默。
+    //   ⇒ 本组用例锁死两条语义：
+    //     ① 非有限基线（NaN）⇒ 首个真实样本**必发**（否则永久静默）
+    //     ② 采样时戳推进 ⇒ 真实新样本**必发**；时戳不变 ⇒ 绝不因时间重发
+    // ---------------------------------------------------------
+    {
+        const float kNan = __builtin_nanf("");
+        const uint32_t T1MIN = 60u * 1000u;
+        const uint32_t T5MIN = 5u * 60u * 1000u;
+
+        check(tp_finite(kNan) == false, "finite: NaN -> false");
+        check(tp_finite(23.5f) == true, "finite: 23.5 -> true");
+        check(tp_finite(0.0f) == true, "finite: 0 -> true");
+        check(tp_finite(-40.0f) == true, "finite: -40 -> true");
+
+        // ① NAN 基线必须放行（这正是线上缺失的那条路径）
+        check(tp_should_emit(23.5f, kNan, 0.5f, 10u * 60u * 1000u, 0u, 0u) == true,
+              "should_emit: NaN baseline -> first real sample MUST emit (P4-T2)");
+        check(tp_should_emit(23.5f, kNan, 0.5f, 10u * 60u * 1000u, 0u, T5MIN) == true,
+              "should_emit: NaN baseline -> emits regardless of cadence");
+        // 对照：真实基线 + 值不变 + 无兜底 ⇒ 仍然不发（T1 语义未被破坏）
+        check(tp_should_emit(23.5f, 23.5f, 0.5f, 10u * 60u * 1000u, 0u, 0u) == false,
+              "should_emit: finite baseline + unchanged + period 0 -> silent (T1 preserved)");
+
+        // ② 新样本（采样时戳推进）
+        check(tp_sample_advanced(1793634570u, 0u) == true,
+              "sample: first sample ts != 0 -> advanced");
+        check(tp_sample_advanced(1793634570u, 1793634570u) == false,
+              "sample: same ts -> NOT advanced (no re-emit)");
+        check(tp_sample_advanced(1793634571u, 1793634570u) == true,
+              "sample: ts bumped -> advanced");
+        check(tp_sample_advanced(0u, 0u) == false,
+              "sample: ts 0 = never sampled -> NOT advanced (no phantom point at boot)");
+        check(tp_sample_advanced(0u, 1793634570u) == false,
+              "sample: ts reset to 0 -> NOT advanced");
+
+        // ③ 最小间隔闸（同一扫描窗口内多帧）
+        check(tp_gap_elapsed(10u * 60u * 1000u, 9u * 60u * 1000u, T1MIN) == true,
+              "gap: 60s elapsed -> allowed");
+        check(tp_gap_elapsed(9u * 60u * 1000u + 59u * 1000u, 9u * 60u * 1000u, T1MIN) == false,
+              "gap: 59s elapsed -> blocked (same scan window frames)");
+        check(tp_gap_elapsed(1u, 0u, 0u) == true, "gap: 0 -> no limit");
+        // 回绕安全：30 - 0xFFFFFFF0 mod 2^32 = 46 < 60000 ⇒ 未到期
+        check(tp_gap_elapsed(30u, 0xFFFFFFF0u, T1MIN) == false,
+              "gap: uint32 wraparound safe (elapsed 46 < 60s => blocked)");
+    }
+
+    // ---------------------------------------------------------
     // [3] policy 边沿去抖
     // ---------------------------------------------------------
     {

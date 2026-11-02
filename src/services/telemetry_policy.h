@@ -55,6 +55,28 @@
 /** @deprecated 旧名，保留以便历史文档/评审记录按原名检索；语义同 CADENCE。 */
 #define TP_CLIMATE_PERIOD_MS       TP_CLIMATE_CADENCE_MS
 
+// ★★ [P4-T2 · 2026-11-02] 「真实新样本」触发通道（climate 专用）。
+//
+// ── 为什么 cadence=0 之后**还必须**有这条通道（线上事故） ──
+//   只按「变化 ≥ 阈值」发会同时踩两个坑：
+//     ① 上电基线是 `NAN`（`MiThermometerInit()` 无条件写入）⇒
+//        `tp_delta_exceeded(now, NAN, thr)` 恒 false（与 NaN 的任何比较都 false）
+//        ⇒ **整条 channel 永远发不出去**；旧 5 min 兜底掩盖了它，cadence=0 才暴露；
+//     ② 传感器读数 70–80 min 才变 0.1 °C，真实新采样若没跨过 0.5 °C 阈值就被丢弃
+//        ⇒ 图表长期零新点，看起来像"整条链路坏了"。
+//
+//   ⇒ 判据回到**采样事实本身**：该通道的采样时刻戳（`mi_thermo_temp_ts` /
+//     `mi_thermo_humid_ts`，由 BLE 解密成功时写入）发生变化 ⇒ 这是**真实新样本**。
+//     这一条既不会像定时兜底那样把**缓存旧值**包装成新遥测（没有新样本时戳不变），
+//     又能保证每个扫描窗口拿到读数后一定产出一个真实点。
+//
+//   ⚠️ 与「周期兜底」的区别：本通道由**事件**（解码成功）驱动，不由**时间**驱动。
+//      周期兜底 = 时间到了就发（伪造采样）；本通道 = 采到了才发。
+//
+//   最小间隔用于抑制**同一扫描窗口内**连续多帧（温度/湿度/电量包在毫秒级内到达，
+//   时戳会连变数次）造成的重复点；扫描窗口间隔本身是 45–60 min ≫ 本间隔。
+#define TP_CLIMATE_SAMPLE_MIN_GAP_MS (60UL * 1000UL)
+
 // 事件类边沿去重的最小间隔（防止抖动刷屏；非采样周期）
 #define TP_EDGE_MIN_GAP_MS         1000UL
 
@@ -85,6 +107,16 @@ enum TpOnlineState
 // 3. 纯决策函数（无副作用 · 可穷举验证）
 // =====================================================
 
+// 有限值判定（freestanding：不引 <cmath> / <math.h>，避免主机 wasm32 目标缺 libm）
+//   NaN  → `v == v` 为 false ⇒ 判非有限
+//   ±Inf → 与 FLT_MAX 的比较为 false ⇒ 判非有限
+//   理由：`NAN` 一旦进入**基线**，之后所有比较都返回 false（NaN 与任何值比较恒 false）
+//   ⇒ 通道被永久静默。所有进入基线的值必须先过这道闸。
+static inline bool tp_finite(float v)
+{
+    return (v == v) && (v < 3.4028235e38f) && (v > -3.4028235e38f);
+}
+
 // 变化阈值判定（含边界：d == thr 视为**已超过**）
 static inline bool tp_delta_exceeded(float now_v, float last_v, float thr)
 {
@@ -104,20 +136,52 @@ static inline bool tp_cadence_due(uint32_t now_ms, uint32_t last_ms, uint32_t pe
 
 // ★★ [P4-T1 · 2026-11-02] 取值通道「该不该发」的**唯一**决策点（纯函数）。
 //
-//   = 变化阈值已越过  ∨  抽样兜底到期
+//   = 变化阈值已越过  ∨  抽样兜底到期  ∨  **基线无效（首个真实样本）**
 //
 // ★ `period_ms == 0` ⇒ **没有**时间兜底 ⇒ 只在数值变化时发。
 //   这条语义是 T1 修复的核心：周期兜底会把**旧读数**包装成一条新遥测
 //   （ts/seq 都是新的）⇒ 云端逐条落库 ⇒ 图表上凭空多出同值点。
 //   没有真实新采样的"心跳"不应伪装成采样点。
+//
+// ★★ [P4-T2 · 2026-11-02] `last_v` 非有限（上电基线 `NAN`）⇒ **必须发**。
+//   事故复盘：`MiThermometerInit()` 无条件 `state_set_float(..., NAN)`，
+//   而发布器初始化在它之后 ⇒ 基线 = NaN ⇒ `tp_delta_exceeded(now, NAN)` 恒 false；
+//   cadence 置 0 后没有第二条放行路径 ⇒ **整条 climate 通道永久静默**
+//   （线上：刷写后 1h47m 内 weight 落库 6 条、climate 0 条，且 weight 的 seq
+//     从 1 连号 ⇒ 设备侧确实**一个字节都没发**，不是云端丢弃）。
+//   ⇒ NaN 基线不是"数值"，是"尚无基线"⇒ 首个真实样本必须放行。
 static inline bool tp_should_emit(float now_v, float last_v, float thr,
                                   uint32_t now_ms, uint32_t last_ms, uint32_t period_ms)
 {
+    if (!tp_finite(last_v))
+    {
+        return true;    // 基线未建立（NAN / Inf）⇒ 没有可比对象，首个真实样本必发
+    }
     if (tp_delta_exceeded(now_v, last_v, thr))
     {
         return true;
     }
     return tp_cadence_due(now_ms, last_ms, period_ms);
+}
+
+// ★★ [P4-T2 · 2026-11-02] 「真实新样本」判定：采样时刻戳是否推进。
+//
+//   参数单位必须与被比较的两值一致（本工程为 Unix **秒**，来自 `time(nullptr)`）。
+//   `sample_ts == 0` ⇒ 该通道**从未**采到过样本（`MiThermometerInit()` 写 0L）
+//   ⇒ 不算"新样本"，避免上电瞬间凭空产生一条无读数来源的点。
+static inline bool tp_sample_advanced(uint32_t sample_ts, uint32_t last_sample_ts)
+{
+    return (sample_ts != 0u) && (sample_ts != last_sample_ts);
+}
+
+// 最小间隔闸（抑制同一扫描窗口内连续多帧造成的重复点）；gap == 0 ⇒ 不限制
+static inline bool tp_gap_elapsed(uint32_t now_ms, uint32_t last_ms, uint32_t gap_ms)
+{
+    if (gap_ms == 0u)
+    {
+        return true;
+    }
+    return (uint32_t)(now_ms - last_ms) >= gap_ms;
 }
 
 // 边沿去重：同一事件在 min_gap 内只接受一次。

@@ -78,42 +78,73 @@ def climate_cadence_ms(policy_src):
 
 
 def channel_rows(pub_src):
-    """从 kChannels 初始化表里取出 (type, 周期表达式) 列表。"""
+    """从 kChannels 初始化表里取出 {type: [字段, ...]}（按逗号切分、去空白）。
+
+    ★ [P4-T2 · 2026-11-02] 行从 6 字段扩到 **9** 字段（新增
+      `sample_ts_key` / `last_sample_ts` / `sample_min_gap_ms`）。
+      这里必须按"整行"解析，**不能**再假定"第 6 个字段就是周期"；
+      旧版正则要求行尾紧跟 `}`，字段一多就直接解析到 0 行 ——
+      而 0 行会让"某通道缺失"的判断**假绿**（见 C-2a 的数量断言兜底）。
+    """
     at = pub_src.find("kChannels[]")
     if at < 0:
-        return []
-    seg = pub_src[at:at + 2000]
-    rows = []
-    for m in re.finditer(
-        r'\{\s*STATE_[A-Z0-9_]+,\s*"([^"]+)",\s*&\w+,\s*&\w+,\s*'
-        r'([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_()\s\*]+?)\s*\}',
-        seg,
-    ):
-        rows.append((m.group(1), m.group(2), m.group(3).strip()))
+        return {}
+    end = pub_src.find("};", at)
+    seg = pub_src[at:(end if end > at else at + 3000)]
+    rows = {}
+    for m in re.finditer(r"\{([^{}]*)\}", seg):
+        fields = [f.strip() for f in m.group(1).split(",")]
+        if len(fields) < 7 or not fields[0].startswith("STATE_"):
+            continue
+        t = re.match(r'"([^"]+)"', fields[1])
+        if t:
+            rows[t.group(1)] = fields
     return rows
 
 
 def check(policy_src, pub_src):
-    """返回 (是否全部满足, 明细列表)。C-5 的负向探针复用本函数。"""
+    """返回 (是否全部满足, 明细列表)。负向探针复用本函数。"""
     problems = []
 
     n = climate_cadence_ms(policy_src)
     if n != 0:
         problems.append("TP_CLIMATE_CADENCE_MS 不是 0（实际 %s）" % n)
 
-    rows = dict((t, per) for (t, _thr, per) in channel_rows(pub_src))
+    rows = channel_rows(pub_src)
     for t in ("climate.temperature", "climate.humidity"):
         if t not in rows:
             problems.append("kChannels 缺少通道 %s" % t)
-        elif rows[t] != "TP_CLIMATE_CADENCE_MS":
-            problems.append("%s 的周期是 %s（应为 TP_CLIMATE_CADENCE_MS）" % (t, rows[t]))
+        elif rows[t][5] != "TP_CLIMATE_CADENCE_MS":
+            problems.append("%s 的周期是 %s（应为 TP_CLIMATE_CADENCE_MS）" % (t, rows[t][5]))
 
-    if rows.get("weight.value") != "TP_WEIGHT_PERIOD_MS":
+    if "weight.value" not in rows:
+        problems.append("kChannels 缺少通道 weight.value")
+    elif rows["weight.value"][5] != "TP_WEIGHT_PERIOD_MS":
         problems.append("weight.value 的周期被改成了 %s（本轮不应改动 weight）"
-                        % rows.get("weight.value"))
+                        % rows["weight.value"][5])
 
     if "tp_should_emit(" not in pub_src:
         problems.append("发布器未使用 tp_should_emit() 统一决策")
+
+    # C-6 NaN 基线放行（2026-11-02 线上事故根因）
+    if "!tp_finite(last_v)" not in policy_src:
+        problems.append("策略层未对 NAN 基线放行（tp_should_emit 缺少 !tp_finite(last_v) 分支）")
+
+    # C-7 「真实新样本」通道接线
+    for t, key in (("climate.temperature", "STATE_MI_THERMO_TEMP_TS"),
+                   ("climate.humidity", "STATE_MI_THERMO_HUMID_TS")):
+        if t not in rows:
+            continue
+        if rows[t][6] != key:
+            problems.append("%s 的采样时刻键是 %s（应为 %s）" % (t, rows[t][6], key))
+    if "weight.value" in rows and rows["weight.value"][6] != "TELE_NO_SAMPLE_TS":
+        problems.append("weight.value 不该挂采样时刻键（实际 %s）" % rows["weight.value"][6])
+    if "tp_sample_advanced(" not in pub_src:
+        problems.append("发布器未实现「新样本」放行（缺少 tp_sample_advanced 调用）")
+
+    # C-8 非有限读数不得上报
+    if "!tp_finite(v)" not in pub_src:
+        problems.append("发布器未跳过 NAN 读数（缺少 !tp_finite(v) 守卫）")
 
     return (len(problems) == 0), problems
 
@@ -130,15 +161,17 @@ def main():
     print("\n[C-2] 接线：两条 climate 通道必须用该常量")
     rows = channel_rows(pub_src)
     ok("C-2a kChannels 可解析（3 条通道）", len(rows) == 3, "解析到 %d 条" % len(rows))
-    by = dict((t, per) for (t, _thr, per) in rows)
     ok("C-2b climate.temperature 周期 = TP_CLIMATE_CADENCE_MS",
-       by.get("climate.temperature") == "TP_CLIMATE_CADENCE_MS", str(by.get("climate.temperature")))
+       "climate.temperature" in rows and rows["climate.temperature"][5] == "TP_CLIMATE_CADENCE_MS",
+       str(rows.get("climate.temperature", [None] * 7)[5]))
     ok("C-2c climate.humidity 周期 = TP_CLIMATE_CADENCE_MS",
-       by.get("climate.humidity") == "TP_CLIMATE_CADENCE_MS", str(by.get("climate.humidity")))
+       "climate.humidity" in rows and rows["climate.humidity"][5] == "TP_CLIMATE_CADENCE_MS",
+       str(rows.get("climate.humidity", [None] * 7)[5]))
 
     print("\n[C-3] 不扩大改动：weight 仍保留 15 min 兜底")
     ok("C-3 weight.value 周期 = TP_WEIGHT_PERIOD_MS",
-       by.get("weight.value") == "TP_WEIGHT_PERIOD_MS", str(by.get("weight.value")))
+       "weight.value" in rows and rows["weight.value"][5] == "TP_WEIGHT_PERIOD_MS",
+       str(rows.get("weight.value", [None] * 7)[5]))
 
     print("\n[C-4] 发布器走统一决策函数")
     ok("C-4 使用 tp_should_emit()", "tp_should_emit(" in pub_src)
@@ -153,6 +186,55 @@ def main():
     ok("C-5b 检查器能识别该回归",
        (bad_ok is False) and any("climate.temperature" in p for p in bad_problems),
        "problems=%s" % bad_problems)
+
+    # ---------------------------------------------------------------
+    # ★ [P4-T2 · 2026-11-02] 线上事故：「刷写 a910a60 后 climate 一条都不发」
+    #
+    #   根因链（D1 取证）：weight 的 seq 从 1 连号、climate 0 行 ⇒ 设备侧没发。
+    #   设备侧原因：`MiThermometerInit()` 把 `mi_thermo_temp` 写成 `NAN`（valid=true），
+    #   而 `telemetry_publisher_init()` 在其后 ⇒ 基线 = NaN ⇒ 与 NaN 的比较恒 false
+    #   ⇒ cadence=0 之后 `tp_should_emit()` **再无任何放行路径**。
+    #   这两组判据锁住"放行 NAN 基线"与"真实新样本必发"两条接线。
+    # ---------------------------------------------------------------
+    print("\n[C-6] NAN 基线不得静默（否则整条 channel 永久死）")
+    ok("C-6a 策略层对非有限基线放行",
+       "!tp_finite(last_v)" in policy_src)
+    ok("C-6b tp_finite 自身不依赖 <cmath>（freestanding）",
+       "v == v" in policy_src and "#include <cmath>" not in policy_src)
+
+    print("\n[C-7] 「真实新样本」通道：采样时戳推进才发，且两条 climate 都接上")
+    ok("C-7a climate.temperature 挂 STATE_MI_THERMO_TEMP_TS",
+       "climate.temperature" in rows and rows["climate.temperature"][6] == "STATE_MI_THERMO_TEMP_TS",
+       str(rows.get("climate.temperature", [None] * 7)[6]))
+    ok("C-7b climate.humidity 挂 STATE_MI_THERMO_HUMID_TS",
+       "climate.humidity" in rows and rows["climate.humidity"][6] == "STATE_MI_THERMO_HUMID_TS",
+       str(rows.get("climate.humidity", [None] * 7)[6]))
+    ok("C-7c weight 不挂采样时戳（HX711 连续采样，走周期兜底）",
+       "weight.value" in rows and rows["weight.value"][6] == "TELE_NO_SAMPLE_TS",
+       str(rows.get("weight.value", [None] * 7)[6]))
+    ok("C-7d 发布器调用 tp_sample_advanced()", "tp_sample_advanced(" in pub_src)
+
+    print("\n[C-8] 非有限读数不得上报（NAN 会被信封写成 null）")
+    ok("C-8 发布器有 !tp_finite(v) 守卫", "!tp_finite(v)" in pub_src)
+
+    print("\n[C-9] 负向探针 ②：删掉 NAN 放行分支，检查器必须报错")
+    broken2 = policy_src.replace("!tp_finite(last_v)", "!tp_finite(0.0f)")
+    ok("C-9a 探针确实改动了源文本", broken2 != policy_src)
+    bad_ok2, bad_problems2 = check(broken2, pub_src)
+    ok("C-9b 检查器能识别该回归",
+       (bad_ok2 is False) and any("NAN" in p for p in bad_problems2),
+       "problems=%s" % bad_problems2)
+
+    print("\n[C-10] 负向探针 ③：摘掉 climate.temperature 的采样时戳键，检查器必须报错")
+    broken3 = pub_src.replace(
+        "STATE_MI_THERMO_TEMP_TS,  &s_temp_sample_ts",
+        "TELE_NO_SAMPLE_TS,        nullptr          ",
+    )
+    ok("C-10a 探针确实改动了源文本", broken3 != pub_src)
+    bad_ok3, bad_problems3 = check(policy_src, broken3)
+    ok("C-10b 检查器能识别该回归",
+       (bad_ok3 is False) and any("climate.temperature" in p for p in bad_problems3),
+       "problems=%s" % bad_problems3)
 
     print("\n" + "=" * 66)
     print("PASS %d / FAIL %d" % (passes[0], len(failures)))
