@@ -202,6 +202,39 @@ extern "C" int probe_run()
     }
 
     // ---------------------------------------------------------
+    // [2b] policy 「是否该发」合成决策（P4-T1 回归）
+    //
+    //   线上缺陷（2026-11-02）：climate 用 5 min 兜底 ⇒ 旧读数被当新样本重发
+    //   ⇒ D1 每 300 s 一行同值遥测 ⇒ 首页图表 1 小时 12 个同值点。
+    //   本组用例锁住两条语义：
+    //     · period = 0  ⇒ 数值不变时**永不**发（没有真采样就没有点）
+    //     · period ≠ 0  ⇒ 到期即发（这正是旧行为，留作对照，说明差别在哪）
+    // ---------------------------------------------------------
+    {
+        const uint32_t T5MIN = 5u * 60u * 1000u;
+        const uint32_t T15MIN = 15u * 60u * 1000u;
+
+        // 值不变 + 无时间兜底 ⇒ 不发（T1 修复后的 climate 语义）
+        check(tp_should_emit(23.5f, 23.5f, 0.5f, 10u * 60u * 1000u, 0u, 0u) == false,
+              "should_emit: unchanged value + period 0 -> silent (climate fix)");
+        // 对照：值不变 + 5 min 兜底 ⇒ 会发（旧行为，就是缺陷来源）
+        check(tp_should_emit(23.5f, 23.5f, 0.5f, 10u * 60u * 1000u, 0u, T5MIN) == true,
+              "should_emit: unchanged value + 5 min cadence -> re-emits (old defect)");
+        // 无兜底时，只要越过阈值就发（无论多久没发）
+        check(tp_should_emit(24.1f, 23.5f, 0.5f, 1u, 0u, 0u) == true,
+              "should_emit: delta exceeded + period 0 -> emits");
+        // 阈值边界（d == thr 视为越过）
+        check(tp_should_emit(24.0f, 23.5f, 0.5f, 1u, 0u, 0u) == true,
+              "should_emit: delta boundary + period 0 -> emits");
+        // 低于阈值且无兜底 ⇒ 不发
+        check(tp_should_emit(23.9f, 23.5f, 0.5f, 1u, 0u, 0u) == false,
+              "should_emit: below threshold + period 0 -> silent");
+        // weight 仍保留 15 min 兜底（未被 T1 改动）
+        check(tp_should_emit(500.0f, 500.0f, 20.0f, 16u * 60u * 1000u, 0u, T15MIN) == true,
+              "should_emit: weight keeps 15 min cadence");
+    }
+
+    // ---------------------------------------------------------
     // [3] policy 边沿去抖
     // ---------------------------------------------------------
     {

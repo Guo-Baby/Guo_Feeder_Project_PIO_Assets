@@ -28,9 +28,32 @@
 // =====================================================
 
 // 抽样兜底周期
-//   WP1:§5 H-W1-2（weight）= N = 15 min；WP1:§3.5（climate）= 5–15 min ⇒ 取 5 min
+//   WP1:§5 H-W1-2（weight）= N = 15 min；WP1:§3.5（climate）= 5–15 min
 #define TP_WEIGHT_PERIOD_MS        (15UL * 60UL * 1000UL)
-#define TP_CLIMATE_PERIOD_MS       (5UL * 60UL * 1000UL)
+
+// ★★ [P4-T1 · 2026-11-02] climate 通道**关闭时间兜底**（0 = 只按变化发）。
+//
+// ── 线上实测的缺陷（2026-11-02） ──
+//   旧值 5 min ⇒ `tp_cadence_due()` 每 5 min 到期一次 ⇒ 设备把**内存里的旧读数**
+//   原样再发一次（信封的 ts 是发布时刻、seq 也递增，看起来像一条新遥测）。
+//   D1 `telemetry_history` 因此每台设备每 5 min 多一行：
+//     实测 climate.temperature 1366 行 / climate.humidity 1353 行，
+//     相邻行 ts 严格相差 300 s、value 全为 23.5；
+//   而 LYWSD03MMC 的实际读数 70–80 min 才变一次
+//   ⇒ 首页「历史曲线」1 小时内出现 12 个同值点，看起来像"重复采样"。
+//
+// ── 为什么这是根因，而不是前端/云端的问题 ──
+//   ① 信封 v1 已冻结为 {ts,type,value,seq,schema_version} —— **没有采样标识**
+//      （`mi_thermo_temp_ts` 是"最后一次成功解密广播帧的时刻"，每帧都会更新，
+//       不是采样时间）⇒ 云端**无法**在不使用"数值相同"这一被禁止的判据下
+//       区分"同一采样的重复传输"与"不同采样恰好同值"；
+//   ② 因此去重只能发生在**拥有真实采样信息的那一侧**，也就是设备侧：
+//      不再凭空产生"新样本"，数值没跨过阈值就不发。
+//   ⇒ 取 0（关闭时间兜底）。重量通道仍保留 15 min 兜底（水位是缓变量，
+//      且本轮未收到相关反馈，不做扩大改动）。
+#define TP_CLIMATE_CADENCE_MS      (0UL)
+/** @deprecated 旧名，保留以便历史文档/评审记录按原名检索；语义同 CADENCE。 */
+#define TP_CLIMATE_PERIOD_MS       TP_CLIMATE_CADENCE_MS
 
 // 事件类边沿去重的最小间隔（防止抖动刷屏；非采样周期）
 #define TP_EDGE_MIN_GAP_MS         1000UL
@@ -77,6 +100,24 @@ static inline bool tp_cadence_due(uint32_t now_ms, uint32_t last_ms, uint32_t pe
         return false;
     }
     return (uint32_t)(now_ms - last_ms) >= period_ms;
+}
+
+// ★★ [P4-T1 · 2026-11-02] 取值通道「该不该发」的**唯一**决策点（纯函数）。
+//
+//   = 变化阈值已越过  ∨  抽样兜底到期
+//
+// ★ `period_ms == 0` ⇒ **没有**时间兜底 ⇒ 只在数值变化时发。
+//   这条语义是 T1 修复的核心：周期兜底会把**旧读数**包装成一条新遥测
+//   （ts/seq 都是新的）⇒ 云端逐条落库 ⇒ 图表上凭空多出同值点。
+//   没有真实新采样的"心跳"不应伪装成采样点。
+static inline bool tp_should_emit(float now_v, float last_v, float thr,
+                                  uint32_t now_ms, uint32_t last_ms, uint32_t period_ms)
+{
+    if (tp_delta_exceeded(now_v, last_v, thr))
+    {
+        return true;
+    }
+    return tp_cadence_due(now_ms, last_ms, period_ms);
 }
 
 // 边沿去重：同一事件在 min_gap 内只接受一次。

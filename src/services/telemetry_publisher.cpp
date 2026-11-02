@@ -74,7 +74,7 @@ struct TeleChannel
     float         *last;        // 上次上报值（变化阈值基线）
     uint32_t      *last_ms;     // 上次上报时刻（抽样兜底基线）
     float          thr;         // 变化阈值
-    uint32_t       period_ms;   // 抽样兜底周期
+    uint32_t       period_ms;   // 抽样兜底周期；**0 = 无时间兜底**（只按变化发，climate 现为此）
 };
 
 // 时间有效性由 State 决定；未同步 ⇒ ts = 0（按原值上报，不伪造）
@@ -198,9 +198,9 @@ void telemetry_task()
     static const TeleChannel kChannels[] =
     {
         { STATE_MI_THERMO_TEMP,  "climate.temperature", &s_temp,   &s_temp_ms,
-          TP_CLIMATE_DELTA_TEMP_C,    TP_CLIMATE_PERIOD_MS },
+          TP_CLIMATE_DELTA_TEMP_C,    TP_CLIMATE_CADENCE_MS },
         { STATE_MI_THERMO_HUMID, "climate.humidity",    &s_humid,  &s_humid_ms,
-          TP_CLIMATE_DELTA_HUMID_PCT, TP_CLIMATE_PERIOD_MS },
+          TP_CLIMATE_DELTA_HUMID_PCT, TP_CLIMATE_CADENCE_MS },
         { STATE_WEIGHT_VALUE,    "weight.value",        &s_weight, &s_weight_ms,
           TP_WEIGHT_DELTA_G,          TP_WEIGHT_PERIOD_MS  },
     };
@@ -216,8 +216,12 @@ void telemetry_task()
 
         const float v = state_get_float(c.key);
 
-        if (!tp_delta_exceeded(v, *c.last, c.thr) &&
-            !tp_cadence_due(now, *c.last_ms, c.period_ms))
+        /*
+         * ★★ [P4-T1 · 2026-11-02] 统一走 `tp_should_emit()`（策略层纯函数）。
+         *   climate 的 `period_ms` 现为 0 ⇒ 只有**数值真的变化**才发，
+         *   不再每 5 min 把缓存旧值当新样本重发（那是图表同值点的唯一来源）。
+         */
+        if (!tp_should_emit(v, *c.last, c.thr, now, *c.last_ms, c.period_ms))
         {
             continue;
         }
