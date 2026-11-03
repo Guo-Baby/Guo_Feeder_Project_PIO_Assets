@@ -1,0 +1,8 @@
+{
+  "enable": false,
+  "relay_pin": 16,
+  "active_level": 1,
+  "max_duration_ms": 30000,
+  "safety_timeout_ms": 30000,
+  "min_interval_ms": 200
+}

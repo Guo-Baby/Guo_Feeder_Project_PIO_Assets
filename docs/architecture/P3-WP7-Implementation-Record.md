@@ -519,13 +519,13 @@ env.guofeeder_DB (YOUR_OLD_D1_DATABASE_NAME)      D1 Database
 
 ```bash
 # 生产 D1 基线（每表单条 SQL）
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json --config wrangler.toml \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --json --config wrangler.toml \
   --command "SELECT COUNT(*) AS total_rows, COALESCE(MAX(id),0) AS max_id, \
   COALESCE(SUM(CASE WHEN ts < <CUTOFF> THEN 1 ELSE 0 END),0) AS over_window_rows, \
   COALESCE(MIN(ts),0) AS min_ts, COALESCE(MAX(ts),0) AS max_ts FROM <table>;"
 
 # PRE-3 语法 / 计划探测（EXPLAIN = 编译不执行）
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json --config wrangler.toml \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --json --config wrangler.toml \
   --command "EXPLAIN QUERY PLAN DELETE FROM <table> WHERE device_id='probe0000000' AND ts < 1 LIMIT 1000;"
 
 # PRE-4 / PRE-5（Cloudflare 只读 API）

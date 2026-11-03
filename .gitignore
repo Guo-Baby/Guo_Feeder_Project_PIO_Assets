@@ -44,16 +44,20 @@ docs/evidence/**/*serial*.log
 #   ⚠️ 本规则只对「未跟踪」文件生效；已跟踪文件需 git rm --cached
 # ============================================================
 data/*
-# 例外：受跟踪的 MQTT V3 配置模板（不含任何真实凭据）
-#   用途：换机 / 重克隆后据此恢复 data/config/mqtt.json 的 Topic V3 模板
-#   （data/ 被整体忽略，故需先放行 config/ 目录再放行该文件）
+# 例外 1：公开的 CA 证书（**公开证书，不含私钥**，TLS 握手必需 ⇒ 必须能提交）
+!data/emqxsl-ca.crt
+# 例外 2：配置模板（只含字段结构与占位值，不含任何真实凭据）
+#   data/ 与 data/config/* 被整体忽略 ⇒ 先放行目录，再放行 *.json.example
 !data/config/
 data/config/*
-!data/config/mqtt.json.example
+!data/config/*.json.example
+!data/config/README.md
+!data/workflow.json.example
 
 # ============================================================
-# 含真实 MQTT 凭据（host / port / 用户名 / 密码），禁止入库
-#   本地保留供 MQTT 测试
+# 内部工程约定（AI 协作规则 / 个人工作偏好），不属于开源内容
+#   ★ 历史注释曾写「含真实 MQTT 凭据」—— 实测当前与历史版本均**不含**任何凭据；
+#     保留忽略是因为它是私人工程约定，而非因为敏感信息。
 # ============================================================
 AI_RULES.md
 

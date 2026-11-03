@@ -123,7 +123,7 @@
 | # | 项 | 实测值 | 来源 |
 |---|---|---|---|
 | W-1 | 目标库身份 | `name = YOUR_OLD_D1_DATABASE_NAME` · `uuid = YOUR_OLD_D1_DATABASE_ID` · `version = production` · `file_size = 737,280 B` | `wrangler d1 list` |
-| W-2 | **未应用迁移** | **`0003_p3_history_tables.sql`**（**唯一**待应用项） | `wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote` |
+| W-2 | **未应用迁移** | **`0003_p3_history_tables.sql`**（**唯一**待应用项） | `wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote` |
 | W-3 | `0003` 校验和（本地冻结） | `sha256 = cd103cd2b4eef95ecc6164b031cfcda06d190ead7ef3c4ffbcd6a93ef4e882c8` · 138 行 | 继承 `P3-WP4-PhaseC-Integration-Plan.md` |
 | W-4 | 结论 | **`telemetry_history` / `log_history` 在远端 D1 不存在** ⇒ `POST /api/history/ingest` **即使被部署**也会 `503`（`persist_failed`） | 推论 |
 
@@ -166,7 +166,7 @@
 
 | ID | 主题 | 状态 | 类型 | 解锁后动作 |
 |---|---|---|---|---|
-| **`H-WP4C-04`** | 是否授权执行**远端 `0003`**（`--remote`）· 是否需前置导出 | 🔴 **`OPEN`（未授权 · 本轮确认 `0003` 待应用）** | **人工授权** | `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`（§4 W-1…W-4 复核后） |
+| **`H-WP4C-04`** | 是否授权执行**远端 `0003`**（`--remote`）· 是否需前置导出 | 🔴 **`OPEN`（未授权 · 本轮确认 `0003` 待应用）** | **人工授权** | `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`（§4 W-1…W-4 复核后） |
 | **`H-WP4C-05`** | 是否授权**切换 EMQX Action** · 变更窗口 · 回退触发条件 | 🔴 **`OPEN`（未授权）** | **人工授权** | 控制台建/收窄规则（§8 规格） |
 | **`H-WP4C-06`** | **部署顺序**确认（`0003` → Worker → Action，且不同批抢跑） | 🔴 **`OPEN`（未确认）** | **人工决策** | 依序执行 |
 | **`H-WP4C-07`**（**本轮新增**） | **EMQX 控制台作业执行人**确认 —— 因 API `403` / 无 CLI，**实施必须由人**在控制台完成（含变更前**基线导出** `V-0` 与变更后**回写存档**） | 🔴 **`OPEN`（新增）** | **人工作业** | 见 §8 |

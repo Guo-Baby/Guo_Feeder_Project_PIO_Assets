@@ -225,7 +225,7 @@ node test/run_all.mjs
 npx wrangler deploy --dry-run
 
 # 本地查询计划（只读）
-npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --local --command \
+npx wrangler d1 execute YOUR_D1_DATABASE_NAME --local --command \
   "EXPLAIN QUERY PLAN DELETE FROM log_history WHERE device_id='probe' AND ((ts>0 AND ts<1) OR (ts<=0 AND created_at<1)) LIMIT 1000;"
 ```
 

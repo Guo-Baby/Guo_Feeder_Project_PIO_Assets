@@ -73,7 +73,7 @@
 |---|---|
 | **平台** | **Cloudflare D1**（remote） |
 | **对象** | `YOUR_OLD_D1_DATABASE_NAME`（`uuid = YOUR_OLD_D1_DATABASE_ID`，`production`） |
-| **命令** | `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote --config wrangler.toml` |
+| **命令** | `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote --config wrangler.toml` |
 | **操作时间** | **start `2026-10-11T19:58:08Z` → end `2026-10-11T19:58:15Z`** |
 | **操作者** | 代理（`wrangler` OAuth `you@example.com`）· 授权：`H-WP4C-04 = CLOSED` |
 | **执行结果** | `0003_p3_history_tables.sql` **`✅`** · **8 commands in 1.27 ms** · exit `0` |

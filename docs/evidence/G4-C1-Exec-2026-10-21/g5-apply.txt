@@ -1,5 +1,5 @@
 # C-1 执行记录
-# 命令: wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+# 命令: wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 # 工作目录: /d/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
 # 开始时间: 2026-10-21 01:23:15 +0800
 ----------------------------------------

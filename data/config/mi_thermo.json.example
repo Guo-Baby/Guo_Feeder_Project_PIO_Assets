@@ -1,0 +1,5 @@
+{
+  "BLE_key": "YOUR_32_HEX_BLE_BIND_KEY",
+  "MAC": "AA:BB:CC:DD:EE:FF",
+  "mi_thermo_allow_collect": true
+}

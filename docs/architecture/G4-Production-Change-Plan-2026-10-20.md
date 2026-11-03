@@ -70,19 +70,19 @@ C-1（先建列建索引）  →  C-2（再部署 Worker）  →  C-3（观察�
 
 ```bash
 # ① 表结构
-npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
+npx wrangler d1 execute YOUR_D1_DATABASE_NAME --remote \
   --command "SELECT sql FROM sqlite_master WHERE name='mqtt_messages'"
 
 # ② 行数 + 键空间分布（作为变更后对比基线）
-npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
+npx wrangler d1 execute YOUR_D1_DATABASE_NAME --remote \
   --command "SELECT COUNT(*) AS n, COUNT(DISTINCT device_id) AS devs FROM mqtt_messages"
 
 # ③ 确认无 dedup_key 列（必须 = 0）
-npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
+npx wrangler d1 execute YOUR_D1_DATABASE_NAME --remote \
   --command "SELECT COUNT(*) AS n FROM pragma_table_info('mqtt_messages') WHERE name='dedup_key'"
 
 # ④ 确认 0007 未登记
-npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
+npx wrangler d1 execute YOUR_D1_DATABASE_NAME --remote \
   --command "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 5"
 ```
 
@@ -91,7 +91,7 @@ npx wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
 ### 3.2 应用
 
 ```bash
-npx wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+npx wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 ```
 
 ★ **不许**用 `d1 execute --file` 手工执行 `0007`：那会跳过 `d1_migrations` 登记，

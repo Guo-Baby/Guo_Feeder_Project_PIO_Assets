@@ -11,7 +11,7 @@ $ 预置 2 行【完全重复】历史数据（模拟 0007 之前的库）
   }
 ]
 
-$ d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --local --persist-to <scratch>
+$ d1 migrations apply YOUR_D1_DATABASE_NAME --local --persist-to <scratch>
 │ 0007_mqtt_messages_dedup.sql      │
 🚣 15 commands executed successfully.
 │ 0001_p1_device_lifecycle.sql      │ ✅     │

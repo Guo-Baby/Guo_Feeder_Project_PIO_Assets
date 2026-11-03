@@ -39,7 +39,7 @@
 | `guo-feeder-api/wrangler.toml` | 改 | 绑定指向新库 + 内联回滚信息 |
 | `guo-feeder-api/test/real_d1/empty_db_init_real_d1.sh` | **新增** | 38 条断言的空库初始化套件（真实 D1 引擎） |
 | `guo-feeder-api/test/real_d1/patch_real_d1_dbname.py` | **新增** | 一次性补丁工具（库名去硬编码），幂等 |
-| `guo-feeder-api/test/real_d1/*.sh`（9 个） | 改 | `d1 execute/apply YOUR_OLD_D1_DATABASE_NAME` → `"$DB"`，`DB` 从 wrangler.toml 解析 |
+| `guo-feeder-api/test/real_d1/*.sh`（9 个） | 改 | `d1 execute/apply YOUR_D1_DATABASE_NAME` → `"$DB"`，`DB` 从 wrangler.toml 解析 |
 | `scripts/schema_parity_check.py` | **新增** | 备份 dump vs 新库 逐表/逐列/逐索引对比（离线只读） |
 
 ### 2.1 一个必须记录的连带问题
@@ -316,7 +316,7 @@ node node_modules/wrangler/bin/wrangler.js versions deploy <new-version-id>@100%
 `YOUR_OLD_WORKER_VERSION_ID` 仍保留（其绑定就是旧库）。
 
 ```bash
-node node_modules/wrangler/bin/wrangler.js versions deploy YOUR_OLD_WORKER_VERSION_ID@100% \
+node node_modules/wrangler/bin/wrangler.js versions deploy YOUR_RESOURCE_ID@100% \
     --config guo-feeder-api/wrangler.toml --yes
 ```
 

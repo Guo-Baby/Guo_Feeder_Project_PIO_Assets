@@ -120,7 +120,7 @@
 
 | 测试项 | 实测 |
 |---|---|
-| 账号总数 | **5 个**：`YOUR_MQTT_USER_WB` · `YOUR_MQTT_USER_TEST` · `YOUR_MQTT_USER_PHONE` · `YOUR_MQTT_USERNAME` · `YOUR_DEVICE_MQTT_USER_001` |
+| 账号总数 | **5 个**：`YOUR_MQTT_USER_WB` · `YOUR_MQTT_USER_TEST` · `YOUR_MQTT_USER_PHONE` · `YOUR_MQTT_USERNAME` · `YOUR_MQTT_USERNAME001` |
 | **创建账号** | ✅ **`POST → 201`** |
 | **删除账号** | ✅ **`DELETE → 204`** |
 | 平台文档记载上限 | 控制台批量导入「一次 1000 条、**累计最多 2000 条**」 |
@@ -303,7 +303,7 @@ P1-2 的签发链路第一步是"建账号"。若该接口**不幂等**，Worker
 ### 实测结果
 
 测试账号 `a7test_5n7w6cxz`（临时，已删除）；`AUTH_ID = password_based:built_in_database`；
-ACL 基线 = 5 个用户（`YOUR_MQTT_USERNAME` 6 条 / `YOUR_DEVICE_MQTT_USER_001` 6 条 / `YOUR_MQTT_USER_WB` 1 / `YOUR_MQTT_USER_TEST` 1 / `YOUR_MQTT_USER_PHONE` 1）。
+ACL 基线 = 5 个用户（`YOUR_MQTT_USERNAME` 6 条 / `YOUR_MQTT_USERNAME001` 6 条 / `YOUR_MQTT_USER_WB` 1 / `YOUR_MQTT_USER_TEST` 1 / `YOUR_MQTT_USER_PHONE` 1）。
 
 ```
 A-7.1  首次创建

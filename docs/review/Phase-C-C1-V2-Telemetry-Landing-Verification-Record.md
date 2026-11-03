@@ -221,7 +221,7 @@
 | 开启 + 观测（≈11.5 min） | `python .pio/hd1_run.py 001122334455 .pio/v2run/plan_v2.txt .pio/v2run/mqtt_v2.log` |
 | 关闭 + 负窗口（≈7 min） | `python .pio/hd1_run.py 001122334455 .pio/v2run/plan_v2_off.txt .pio/v2run/mqtt_v2_off.log` |
 | Worker tail | `wrangler tail --config guo-feeder-api/wrangler.toml --format json`（经代理 `127.0.0.1:7890`） |
-| D1 查询 | `wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command "SELECT … FROM telemetry_history …"` |
+| D1 查询 | `wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command "SELECT … FROM telemetry_history …"` |
 | 原始日志（临时 · `.pio/v2run/` · 未入库） | `mqtt_v2.log` · `mqtt_v2_off.log` · `tail.jsonl` · `tail_events.txt` · `parse_mqtt.py` · `parse_tail.py` · `d1_*.json` · `plan_v2*.txt` |
 
 ---

@@ -8,7 +8,7 @@ unset https_proxy http_proxy HTTPS_PROXY HTTP_PROXY
 mkdir -p "$EV"
 cd "$API" || exit 1
 
-Q () { $WR d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json --command "$1" 2>&1; }
+Q () { $WR d1 execute YOUR_D1_DATABASE_NAME --remote --json --command "$1" 2>&1; }
 
 echo "# 部署前基线采集: $(date '+%F %T %z')"
 

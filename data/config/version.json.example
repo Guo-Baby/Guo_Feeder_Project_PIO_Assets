@@ -1,0 +1,10 @@
+{
+  "mi_thermo": 1,
+  "mqtt": 1,
+  "oled": 1,
+  "rtc": 1,
+  "time": 1,
+  "valve": 1,
+  "weight": 1,
+  "wifi": 1
+}

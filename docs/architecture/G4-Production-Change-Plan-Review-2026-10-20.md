@@ -119,7 +119,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_mm_dedup_key                       -- :46-4
 
 | 实验 | 命令 | 结果 |
 |---|---|---|
-| **E-1** 正式流程在**缺表**的库上 | `d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --local` | `0001`–`0006` ✅；`0007` ❌ `no such table: mqtt_messages`；`d1_migrations` 中**只有 0001–0006** |
+| **E-1** 正式流程在**缺表**的库上 | `d1 migrations apply YOUR_D1_DATABASE_NAME --local` | `0001`–`0006` ✅；`0007` ❌ `no such table: mqtt_messages`；`d1_migrations` 中**只有 0001–0006** |
 | **E-2** 正式流程在**有表**的库上（fixture 同构 + 预置 2 行完全重复） | 同上 | `0007` ✅ 已登记；`col=1 / idx=1 / rows=2 / nullkeys=2` ⇒ **历史重复行保留、未回填** |
 | **E-3** migration **原子性**（第 3 条语句故意失败） | 临时工程，`0001` = `CREATE TABLE` + `ALTER ADD COLUMN` + `SELECT * FROM 不存在` | 失败后 `tbl=0 / col_b=0 / reg=0` ⇒ **整文件回滚，零残留、零登记** |
 

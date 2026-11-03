@@ -48,7 +48,7 @@
 ### 2.1 执行
 
 ```
-cd guo-feeder-api && npx wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+cd guo-feeder-api && npx wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 → Migrations to be applied: 0008_ui_command_audit.sql
 → Executed 12 commands in 2.32ms
 → 0008_ui_command_audit.sql  ✅

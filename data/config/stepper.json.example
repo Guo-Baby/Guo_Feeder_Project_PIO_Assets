@@ -1,0 +1,15 @@
+{
+  "enable": false,
+  "step_pin": 13,
+  "dir_pin": 14,
+  "en_pin": 15,
+  "en_active_level": 0,
+  "dir_invert": false,
+  "steps_per_rev": 1600,
+  "dispense_angle_deg": 120,
+  "pulse_period_us": 10000,
+  "enable_delay_ms": 50,
+  "max_pulses": 6400,
+  "action_timeout_ms": 30000,
+  "disable_after_action": true
+}

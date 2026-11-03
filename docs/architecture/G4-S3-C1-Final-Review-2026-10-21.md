@@ -35,7 +35,7 @@
 | 该索引的 `sql LIKE '%WHERE dedup_key IS NOT NULL%'` | **0** | 0 ✅ |
 | `d1_migrations` 含 `0007_mqtt_messages_dedup.sql` | **0** | 0 ✅ |
 
-**第二条独立证据**：`wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote`
+**第二条独立证据**：`wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote`
 
 ```
 Migrations to be applied:

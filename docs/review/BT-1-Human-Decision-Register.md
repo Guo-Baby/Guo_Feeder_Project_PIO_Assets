@@ -1283,7 +1283,7 @@ D1 侧查询为**只读**（`meta.changed_db=false`）。
 | 设备段 / 水位 / ACK 状态 | `python test/diag/guo_diag.py diagnose --device-id 001122334455` | `logt stats/cloud/flash/fseg` 快照 + EMQX 会话 + D1 计数（产物 `.pio/diag/<UTC>_diagnose/`） |
 | T05 是否已可判 | `python test/diag/guo_diag.py test-segment-gc --real --device-id 001122334455 --observe-s 15` | `PASS` / `NOT_READY` / `NOT_OBSERVED` / `ANOMALY`（**四态不混用**） |
 | A/B 的原始串口证据 | 同上（`diagnose` 已含 `logt` 原文） | 串口逐行日志 |
-| D1 容量（供 WP-6） | `wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json --command "SELECT …"`（**仅 SELECT**） | 行数 / 每日行数 |
+| D1 容量（供 WP-6） | `wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --json --command "SELECT …"`（**仅 SELECT**） | 行数 / 每日行数 |
 | Worker ACK 实时行 | `wrangler tail`（需 7890 代理） | `[log-ack] …` 行 |
 
 - **不做**：不建 Cron / 不建后台进程 / 不建云端监控；**不为了生成新报告而重复访问生产**。

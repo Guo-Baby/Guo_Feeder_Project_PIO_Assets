@@ -314,7 +314,7 @@
 | 项 | 内容 |
 |---|---|
 | **裁决** | 🔒 **`CLOSED`** |
-| **允许执行** | `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote` |
+| **允许执行** | `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote` |
 | **要求** | **执行前**记录当前 migration 状态 · **执行后**确认 `0003` applied · **记录执行时间与结果** |
 
 ### `H-WP4C-05` —— EMQX Action 切换授权
@@ -431,7 +431,7 @@
 | ID | 主题 | **本记录前** | **本记录后** | 依据 |
 |---|---|---|---|---|
 | **`H-WP4C-03`** | EMQX Rule 分流机制（rule scope） | 🔴 `OPEN`（design proposal 就绪） | 🔒 **`CLOSED`** | 本文档 §2–§5 |
-| `H-WP4C-04` | 远端 `0003` migration 授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许 `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`） | §6A |
+| `H-WP4C-04` | 远端 `0003` migration 授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 允许 `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`） | §6A |
 | `H-WP4C-05` | EMQX Action 切换授权 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 新增 + 收窄**须同一变更窗口**，禁双投） | §6A |
 | `H-WP4C-06` | 部署顺序 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— `0003` → Worker → EMQX → Validation，**禁调整**） | §6A |
 | `H-WP4C-07` | EMQX Console 执行人 + 配置导出责任 | 🔴 `OPEN` | 🔒 **`CLOSED`**（§6A —— 实施前须导出 Rule SQL / Action / Connector；**secret 禁入仓**） | §6A |

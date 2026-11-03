@@ -2,7 +2,7 @@
 
 - 执行日期：`2026-10-21 01:21–01:25 +0800`
 - 目标：D1 `YOUR_OLD_D1_DATABASE_NAME` = `YOUR_OLD_D1_DATABASE_ID`（账号 `9e72d201…`）
-- 命令：`wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`（wrangler `4.145.0`）
+- 命令：`wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`（wrangler `4.145.0`）
 - 正式报告：`docs/architecture/G4-C1-Execution-Report-2026-10-21.md`
 
 ## 文件顺序

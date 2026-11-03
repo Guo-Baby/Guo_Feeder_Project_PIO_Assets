@@ -1,0 +1,37 @@
+{
+  "workflows": [
+    {
+      "id": "wf_example_valve_daily",
+      "name": "示例：每日 08:00 开阀 5 秒",
+      "enable": false,
+      "timeout_ms": 30000,
+      "steps": [
+        {
+          "type": "trigger",
+          "id": "timer_daily",
+          "params": {
+            "hour": 8,
+            "minute": 0
+          }
+        },
+        {
+          "type": "action",
+          "id": "VALVE_OPEN",
+          "params": {}
+        },
+        {
+          "type": "trigger",
+          "id": "delay",
+          "params": {
+            "seconds": 5
+          }
+        },
+        {
+          "type": "action",
+          "id": "VALVE_CLOSE",
+          "params": {}
+        }
+      ]
+    }
+  ]
+}

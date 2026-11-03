@@ -107,7 +107,7 @@ node node_modules/wrangler/bin/wrangler.js versions view <CURRENT_VERSION_ID>
 | 2.3 | 当前 `boot_seq` 与序号水位 | 串口 `cm {"cmd":"system","ob":"stats","id":"..."}` | `boot_seq` · `queue.acked_seq` · `counters.*` |
 | 2.4 | 设备在线与日志链路 | `system.stats` 的 `queue.connected` / `cloud_batch_sent` 在 5 min 内是否增长 | 有增长 = 链路活 |
 | 2.5 | 生产 D1 结构 | 见 §3.2 的 A-1/A-2/A-3 | `mqtt_messages` 的 `sql` 原文 + 无 `dedup_key` |
-| 2.6 | migration 登记 | `npx wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote` | `0007` 必须**未应用**，且 `0001`–`0006` 已应用 |
+| 2.6 | migration 登记 | `npx wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote` | `0007` 必须**未应用**，且 `0001`–`0006` 已应用 |
 | 2.7 | Worker 版本与回退目标 | `npx wrangler deployments list` · `npx wrangler versions list` | **同时记 `deployment id` 与 `version id`**；回退传 **version id** |
 | 2.8 | 观察窗口负责人 | 人工填写 | 谁看 / 看多久 / 触发停止条件时谁下令回滚 |
 | 2.9 | 授权 | 人工书面 | C-1 / C-2 / C-3 **分别**批准 |
@@ -191,9 +191,9 @@ node ../node_modules/wrangler/bin/wrangler.js d1 list --json | grep -A2 '"YOUR_O
 # G-2 制品
 sha256sum migrations/0007_mqtt_messages_dedup.sql     # 期望 90dc0ec0…2f1e
 # G-3 登记状态（期望：**只列 0007**，且 0001–0006 已应用）
-node ../node_modules/wrangler/bin/wrangler.js d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote
+node ../node_modules/wrangler/bin/wrangler.js d1 migrations list YOUR_D1_DATABASE_NAME --remote
 # G-4 半成品状态（期望 col/idx/reg 全 0 ⇒ S0）
-node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json \
+node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_D1_DATABASE_NAME --remote --json \
   --command "<§3.7 的 S-PROBE>"
 ```
 
@@ -201,7 +201,7 @@ node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_OLD_D1_DATABASE_NA
 
 ```bash
 cd D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
-node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 echo "apply_exit=$?"
 ```
 

@@ -197,7 +197,7 @@ POSITIONALS  version-id  The ID of the Worker Version to rollback to
 |---|---|
 | 授权前置 | `R-1…R-5` 已修订并入册；执行前 `migrations list --remote` 只列 `0007`；账号/`database_id`/绑定三方一致；基线已采集归档 |
 | 风险 | 中低。只加列+部分唯一索引，**不改行为**（线上 v47 不写该列）；生产原子性未验证 ⇒ 需 10 min 复检 |
-| 操作范围 | 仅 `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`（禁止 `--file`），**一条命令** |
+| 操作范围 | 仅 `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`（禁止 `--file`），**一条命令** |
 | 成功判据 | `V-1 = 1/1/1/1`；`V-2` 指纹与基线一致且 `keyed=0`；`V-3 = 0` |
 | 停止/回退 | 任一不符 ⇒ 停止；回退 `DROP INDEX IF EXISTS ux_mm_dedup_key`（列保留，**不能复活已拦截记录**） |
 

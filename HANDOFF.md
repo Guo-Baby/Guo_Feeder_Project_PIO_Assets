@@ -632,7 +632,7 @@ B-3 漏记未解决；门禁一个都没动**（`G-4 = BLOCKED` · `WP-5` 未解
 
 | 账号 | 允许 |
 |---|---|
-| `YOUR_MQTT_USERNAME` · `YOUR_DEVICE_MQTT_USER_001` | sub/pub `guo_feeder/<device_id>/{down,up,log}`（**逐设备枚举，禁通配**）+ legacy 三条（过渡期，**仅 dev/test**） |
+| `YOUR_MQTT_USERNAME` · `YOUR_MQTT_USERNAME001` | sub/pub `guo_feeder/<device_id>/{down,up,log}`（**逐设备枚举，禁通配**）+ legacy 三条（过渡期，**仅 dev/test**） |
 | `YOUR_MQTT_USER_WB` · `YOUR_MQTT_USER_TEST` · `YOUR_MQTT_USER_PHONE` | all `guo_feeder/#`（调试用，未来收窄） |
 
 > ⚠️ EMQX Serverless **不支持外部 HTTP 认证 / 扩展授权 / 白名单开关** ⇒ P1 的凭据模型只能是

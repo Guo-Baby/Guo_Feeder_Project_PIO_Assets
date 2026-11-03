@@ -1,5 +1,5 @@
 # 采集时间: 2026-10-21 01:21:56 +0800
-# 命令: d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json（仅 SELECT；changed_db / rows_written 见各段 meta）
+# 命令: d1 execute YOUR_D1_DATABASE_NAME --remote --json（仅 SELECT；changed_db / rows_written 见各段 meta）
 
 === A-1 mqtt_messages 结构原文 ===
 [

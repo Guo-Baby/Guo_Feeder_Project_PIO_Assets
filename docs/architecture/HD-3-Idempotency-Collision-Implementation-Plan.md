@@ -478,7 +478,7 @@ log 域的序号重放需要 **`meta` 写失败（R-1）** 或 **`meta` + 段同
 
 **通用约束（对全部查询生效）**
 
-- 一律用 `wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json`，**单条语句**、**只读**、**不加 `--file`**（避免多语句）。
+- 一律用 `wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --json`，**单条语句**、**只读**、**不加 `--file`**（避免多语句）。
 - 执行前每条先跑 `EXPLAIN QUERY PLAN`（同样只读），确认扫描形态与本节预期一致；不一致则**停止并报告**。
 - 输出中的 `device_id` 属设备标识（12 位小写 hex，MAC 派生）⇒ 写入报告时**掩码**（建议保留前 4 位）。
 - **不取** `payload` / `message` 正文（`Q-5` 除外，且需单独授权）。

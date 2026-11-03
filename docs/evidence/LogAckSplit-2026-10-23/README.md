@@ -417,7 +417,7 @@ curl -X POST \
 
 **根治（后续单独立项）**：把设备的 `mqtt.username` 迁到 `dev_001122334455`
 （需要 Worker 重新签发凭据并让设备 `credential_set` 成功应用），
-然后删掉 `YOUR_MQTT_USERNAME` / `YOUR_DEVICE_MQTT_USER_001` 这两个共享账号。
+然后删掉 `YOUR_MQTT_USERNAME` / `YOUR_MQTT_USERNAME001` 这两个共享账号。
 
 ### 10.5 另一个教训
 

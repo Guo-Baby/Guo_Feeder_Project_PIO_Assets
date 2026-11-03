@@ -351,7 +351,7 @@ E-0 → E-1 → E-2 →［G0：三条计划全部符合预期？］
 ```bash
 cd D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
-node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_OLD_D1_DATABASE_NAME \
+node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_D1_DATABASE_NAME \
      --remote --config wrangler.toml --json --command "<上表 SQL 原文>"
 ```
 

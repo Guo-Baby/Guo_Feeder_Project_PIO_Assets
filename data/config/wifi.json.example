@@ -1,0 +1,6 @@
+{
+  "ssid": "YOUR_WIFI_SSID",
+  "password": "YOUR_WIFI_PASSWORD",
+  "connect_timeout": 30000,
+  "reconnect_interval": 10000
+}

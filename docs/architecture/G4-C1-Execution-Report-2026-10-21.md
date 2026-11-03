@@ -130,7 +130,7 @@ PUSH_EXIT=0
 证据：`g5-apply.txt`
 
 ```
-命令      : wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+命令      : wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 工作目录  : D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
 开始      : 2026-10-21 01:23:15 +0800
 结束      : 2026-10-21 01:23:20 +0800
@@ -235,7 +235,7 @@ C-1 只完成**结构就绪**（列 + 部分唯一索引），效果取决于 C-
 
 ## 10. 明确声明：未执行的操作
 
-本次**仅**执行了：文档/证据的提交与普通 push、`d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`（一次）、执行后只读查询。
+本次**仅**执行了：文档/证据的提交与普通 push、`d1 migrations apply YOUR_D1_DATABASE_NAME --remote`（一次）、执行后只读查询。
 
 **明确未做**：
 

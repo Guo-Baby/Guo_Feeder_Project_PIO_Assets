@@ -482,7 +482,7 @@ WHERE
 | 手端 | 做法 |
 |---|---|
 | MQTT 合成发布 | 账号 `YOUR_MQTT_USER_WB`（ACL `all/allow guo_feeder/#`）· TLS `8883` · 合成 device **`ffffffffffff`**（非真实设备）· QoS1 + **严格 PUBACK 校验** |
-| D1 只读回读 | `wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml`（wrangler OAuth） |
+| D1 只读回读 | `wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml`（wrangler OAuth） |
 | 端点直击 | `curl` + `X-Webhook-Key`（值只从 `.secrets.local` 读入，**不打印**） |
 
 #### 7.5.2 证据表（生产 D1 实测 · 测试行已全部清除）
@@ -615,7 +615,7 @@ WHERE
 ```bash
 cd Cloudflare_Assets
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
-./node_modules/.bin/wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml \
+./node_modules/.bin/wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml \
   --command "SELECT (SELECT COUNT(*) FROM telemetry_history) AS th, (SELECT COUNT(*) FROM log_history) AS lh, (SELECT COUNT(*) FROM mqtt_messages) AS mm;"
 ```
 

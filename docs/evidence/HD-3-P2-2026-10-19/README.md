@@ -30,7 +30,7 @@ curl -sS -u "$EMQX_APP_ID:$EMQX_APP_SECRET" \
   "https://<host>:8443/api/v5/clients/dev_001122334455/subscriptions"
 
 # 报文证据
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote \
   --command "SELECT id,topic,direction,cmd,status,error_code,created_at,raw_payload
              FROM mqtt_messages WHERE msg_id='<id>' ORDER BY id;"
 ```

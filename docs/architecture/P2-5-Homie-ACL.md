@@ -127,7 +127,7 @@ ACL **不能**也**不试图**改变 retained 语义：`retain=true` 与 `retain
 | **`001122334455`（本机开发板，经人工指定）** | **补写** Homie 两条（六步流程 + 回读校验） | **3 → 5 条**，P1 三条全保留 ✅ |
 | `a5a0000000a1` / `b5b0000000b1` / `c5c0000000c1`（P5 fixture） | **未修改** | 3 条 / `deny all #` / `deny all #`（与冻结状态一致） |
 | `d163d0000001/2/3`（已硬退役/REVOKED） | **未修改** | 仍 `deny all #` |
-| `YOUR_MQTT_USERNAME` / `YOUR_DEVICE_MQTT_USER_001`（P0 legacy） | **未修改** | 仍 6 条（3 设备规则 + 3 legacy） |
+| `YOUR_MQTT_USERNAME` / `YOUR_MQTT_USERNAME001`（P0 legacy） | **未修改** | 仍 6 条（3 设备规则 + 3 legacy） |
 | 非设备账号（`YOUR_MQTT_USER_WB`/`YOUR_MQTT_USER_TEST`/`YOUR_MQTT_USER_PHONE`） | **未修改** | 仍 1 条 `guo_feeder/#` |
 
 ### 4.1 `dev_001122334455` 补写前后完整 ACL
@@ -171,7 +171,7 @@ ACL **不能**也**不试图**改变 retained 语义：`retain=true` 与 `retain
 == dev_001122334455 (5)       ← 本轮唯一改动：+ pub homie/5/001122334455/#
                                                           + sub homie/5/001122334455/+/+/set
 == dev_001122334455 (3)       guo_feeder/001122334455/{down,up,log}    ← 生产未改
-== YOUR_DEVICE_MQTT_USER_001 (6)     guo_feeder/001122334455/* + legacy       ← 未变
+== YOUR_MQTT_USERNAME001 (6)     guo_feeder/001122334455/* + legacy       ← 未变
 == YOUR_MQTT_USERNAME (6)        同上                                    ← 未变
 == ALL-USER 兜底               deny all #  (qos 0,1,2)          ← 未变（白名单根基）
 ```

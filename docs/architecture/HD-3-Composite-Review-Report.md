@@ -197,10 +197,10 @@ FAIL  R-0d 0006 只在 drafts/（顶层无 0006）  期望=[absent] 实际=[pres
 
 ```bash
 # 0006 状态
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id;"
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command "PRAGMA table_info(log_boot_watermark);"
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command "SELECT sql FROM sqlite_master WHERE name='log_conflict';"
-wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote          # → No migrations to apply!
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command "SELECT id,name,applied_at FROM d1_migrations ORDER BY id;"
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command "PRAGMA table_info(log_boot_watermark);"
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command "SELECT sql FROM sqlite_master WHERE name='log_conflict';"
+wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote          # → No migrations to apply!
 
 # Worker 版本
 wrangler versions list --json                            # f9647a00 / 508461f3 / 72023596 存在；31762ee8 不存在

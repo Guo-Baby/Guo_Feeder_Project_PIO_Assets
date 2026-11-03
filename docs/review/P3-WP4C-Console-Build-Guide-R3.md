@@ -436,7 +436,7 @@ WHERE
 ```bash
 cd Cloudflare_Assets
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
-./node_modules/.bin/wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml \
+./node_modules/.bin/wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml \
   --command "SELECT (SELECT COUNT(*) FROM telemetry_history) AS th, (SELECT COUNT(*) FROM log_history) AS lh, (SELECT COUNT(*) FROM mqtt_messages) AS mm;"
 ```
 

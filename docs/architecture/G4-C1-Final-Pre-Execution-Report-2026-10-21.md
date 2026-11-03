@@ -135,7 +135,7 @@ error_text, msg_type_text, msg_type`
 
 ```bash
 cd D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
-node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote
+node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_D1_DATABASE_NAME --remote
 ```
 
 - ✅ 走 `d1_migrations` 登记（`migrations/README.md` 的要求）

@@ -1,7 +1,7 @@
 # BT-1 · EMQX Cloud 控制台修改与回滚操作手册
 
 > **版本**：`rev.1`（`2026-10-17`）
-> **适用范围**：Guo Feeder 生产 EMQX Cloud **Serverless** 部署（`n302***.YOUR_MQTT_HOST:8443`）
+> **适用范围**：Guo Feeder 生产 EMQX Cloud **Serverless** 部署（`n302***.mqtt.example.com:8443`）
 > **★ 本次未修改任何 EMQX 对象**：本文档中所有"修改步骤"均为**待执行预案**，只在负责人单独授权后在控制台手工执行。
 > 本轮唯一的生产操作是 **`POST /api/v5/publish` 到 `test/bt1/<run>/**`**（零规则命中、零 D1 写入、零设备投递）。
 

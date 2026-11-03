@@ -31,7 +31,7 @@
 
 | 项 | 值 |
 |---|---|
-| 实例 | `https://n302***.YOUR_MQTT_HOST:8443/api/v5`（**生产**，EMQX Cloud **Serverless**） |
+| 实例 | `https://n302***.mqtt.example.com:8443/api/v5`（**生产**，EMQX Cloud **Serverless**） |
 | 版本 | **未取证**：`GET /api/v5/nodes` → **403**（API Key 权限受限）；仅能观察到 `server: Cowboy`。⇒ 一切结论**以行为实测为准**，不以版本文档推断 |
 | 凭据 | 仓库 `guo-feeder-api/.dev.vars` 中的部署 API Key（**本报告不记录任何明文值**） |
 | 测试 topic | `test/bt1/<run_id>/**`（`run_id = r` + 12 hex，本次 `ra92c71a66e00`） |

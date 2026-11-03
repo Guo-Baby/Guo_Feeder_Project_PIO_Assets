@@ -697,7 +697,7 @@ guo_feeder/log    ──►   单发 V3（双发为可选）            ──�
 
 ### 4.3 P0 规则集（**V3 兼容版**，账号仍为共享）
 
-**设备账号**（`YOUR_MQTT_USERNAME` / `YOUR_DEVICE_MQTT_USER_001`）——**逐 device_id 枚举，不用 `+/down`**：
+**设备账号**（`YOUR_MQTT_USERNAME` / `YOUR_MQTT_USERNAME001`）——**逐 device_id 枚举，不用 `+/down`**：
 
 | 主题 | 动作 | 权限 | 说明 |
 |---|---|---|---|

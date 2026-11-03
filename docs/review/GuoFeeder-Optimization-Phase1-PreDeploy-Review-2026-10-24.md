@@ -29,7 +29,7 @@
 |---|---|---|
 | 固件仓 | `wb` @ `3cdd216`，工作区 8 个未跟踪文档（无代码改动） | `git status` |
 | 云端仓 | `main` @ `8e8d3e0`，**5 改 + 4 新增**（阶段一产物，未提交） | `git status` |
-| 线上 Worker | `YOUR_OLD_WORKER_VERSION_ID`，创建 **2026-10-23T22:37:42Z** = **北京 10-24 06:37** | `wrangler deployments status` |
+| 线上 Worker | `YOUR_RESOURCE_ID`，创建 **2026-10-23T22:37:42Z** = **北京 10-24 06:37** | `wrangler deployments status` |
 | 线上 Pages | 阶段一代码**未部署**（本会话无 deploy 动作） | 命令历史 |
 | 数据库 | `guofeeder_DB` / `0d8385ba-…`，迁移 0001–0008 已应用，**0009 未应用** | 迁移目录 + 本会话无 apply |
 

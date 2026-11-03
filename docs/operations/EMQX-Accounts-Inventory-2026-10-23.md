@@ -34,7 +34,7 @@
 | **`YOUR_MQTT_USER_TEST`** | 1 | ✅ 已连接（MQTTX） | **保留** | 用户的手工测试账号 |
 | `YOUR_MQTT_USER_PHONE` | 1 | ❌ 无 | **待确认** | 名字像"手机"，可能是用户自己的手机 MQTTX |
 | `YOUR_MQTT_USER_WB` | 1 | ❌ 无 | **待确认（倾向可删）** | 无任何记录；疑似早期 WorkBuddy 会话建的测试号 |
-| `YOUR_DEVICE_MQTT_USER_001` | 6 | ❌ 无 | **可删** | 早期手工建的重名测试号 |
+| `YOUR_MQTT_USERNAME001` | 6 | ❌ 无 | **可删** | 早期手工建的重名测试号 |
 | `dev_d163d0000001` | 1 | ⚠️ 有过会话（10-06，未连接） | **可删** | 探测用伪 device_id |
 | `dev_d163d0000002` | 1 | ❌ 无 | **可删** | 同上 |
 | `dev_d163d0000003` | 1 | ❌ 无 | **可删** | 同上 |
@@ -74,7 +74,7 @@ dev_b5b0000000b1
 dev_c5c0000000c1
 dev_001122334455
 dev_deadbeef0001
-YOUR_DEVICE_MQTT_USER_001
+YOUR_MQTT_USERNAME001
 ```
 
 **先确认再删（2 个）**
@@ -142,7 +142,7 @@ YOUR_MQTT_USER_TEST              ← 你的 MQTTX
 |---|---|
 | 给 `YOUR_MQTT_USERNAME` 配置 6 条 ACL（含 `/log/ack` subscribe） | ✅ 已完成 |
 | 清除 `dev_d163d0000001`、`dev_deadbeef0001` 两个「永不过期」僵尸会话 | ✅ 已完成（它们自 10-05 起一直在线） |
-| 清除 `dev_d163d0000002/3`、`dev_a5a0000000a1`、`dev_b5b0000000b1`、`dev_c5c0000000c1`、`dev_001122334455`、`YOUR_DEVICE_MQTT_USER_001` | ⏳ 待办（本次未清） |
+| 清除 `dev_d163d0000002/3`、`dev_a5a0000000a1`、`dev_b5b0000000b1`、`dev_c5c0000000c1`、`dev_001122334455`、`YOUR_MQTT_USERNAME001` | ⏳ 待办（本次未清） |
 | `YOUR_MQTT_USER_WB` / `YOUR_MQTT_USER_PHONE` 是否保留 | ⏳ 待用户确认 |
 | 设备 `mqtt.username` 迁移到 `dev_001122334455`（根治共享账号） | ⏳ 未立项 |
 

@@ -28,7 +28,7 @@
 
 ```bash
 cd D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api
-node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --json \
+node ../node_modules/wrangler/bin/wrangler.js d1 execute YOUR_D1_DATABASE_NAME --remote --json \
   --command "$(cat <本目录>/q4-shadow-validate-s2.sql)"
 ```
 

@@ -175,7 +175,7 @@
 | 项 | 值 |
 |---|---|
 | **目的** | 确认 `0003` 是否已应用（决定 `H-WP4C-04` 必要性） |
-| **自动化** | ✅ **可** —— `npx wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote --config wrangler.toml`（**只读**） |
+| **自动化** | ✅ **可** —— `npx wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote --config wrangler.toml`（**只读**） |
 | **实测结果** | **待应用 = `0003_p3_history_tables.sql`**（**唯一**）；`0001` / `0002` 已应用 |
 | **库身份** | `name = YOUR_OLD_D1_DATABASE_NAME` · `uuid = YOUR_OLD_D1_DATABASE_ID` · `version = production` · `file_size = 737,280 B` |
 | **`0003` 本地校验和** | `sha256 = cd103cd2b4eef95ecc6164b031cfcda06d190ead7ef3c4ffbcd6a93ef4e882c8` · 138 行 |
@@ -213,7 +213,7 @@
 
 | ID | 主题 | 类型 | 内容 / 判据 | 状态 |
 |---|---|---|---|---|
-| **`H-WP4C-04`** | **`0003` migration 执行授权** | 人工授权 | 授权 `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`；执行前记录状态、执行后确认 applied + 记录时间结果 | 🔒 **`CLOSED`** |
+| **`H-WP4C-04`** | **`0003` migration 执行授权** | 人工授权 | 授权 `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`；执行前记录状态、执行后确认 applied + 记录时间结果 | 🔒 **`CLOSED`** |
 | **`H-WP4C-05`** | **EMQX Action 切换授权** | 人工授权 | 允新增 Rule + 收窄旧 Rule + 切 Action；**须同一变更窗口 · 禁只新增 · 禁双投** | 🔒 **`CLOSED`** |
 | **`H-WP4C-06`** | **部署顺序确认** | 人工决策 | 确认 `0003` → Worker → EMQX → Validation，**禁调整** | 🔒 **`CLOSED`** |
 | **`H-WP4C-07`** | **EMQX Console 执行人与配置导出责任** | 人工作业 | ① 具名执行人；② 实施前导出 `B-1`/`B-2`/`B-3`；③ 变更后**回写仓库存档**（`A-2`）；**webhook key / secret 禁入仓** | 🔒 **`CLOSED`** |

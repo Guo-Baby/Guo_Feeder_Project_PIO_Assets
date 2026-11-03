@@ -101,10 +101,10 @@
 | 步 | 动作 | 前置 |
 |---|---|---|
 | 1 | `wrangler whoami` + `wrangler d1 list` 确认账号/库 ID 与 `wrangler.toml` **一致** | 授权 |
-| 2 | `wrangler d1 migrations list YOUR_OLD_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml`（**只读**）→ 记录现状（W-2） | 步 1 |
+| 2 | `wrangler d1 migrations list YOUR_D1_DATABASE_NAME --remote --config guo-feeder-api/wrangler.toml`（**只读**）→ 记录现状（W-2） | 步 1 |
 | 3 | 记录 `0003` 校验和（W-3）并**冻结**「即将执行的字节」 | — |
 | 4 | **先做数据安全网**：导出受影响范围快照（至少 `sqlite_master` DDL + 行数基线） | 步 2 |
-| 5 | 执行 `wrangler d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --remote`（**需人工授权**） | 步 1–4 |
+| 5 | 执行 `wrangler d1 migrations apply YOUR_D1_DATABASE_NAME --remote`（**需人工授权**） | 步 1–4 |
 | 6 | 回读断言：两表存在 · **恰好 5 索引** · `PRAGMA table_info` 逐字段对齐 `DT:WP-2` · `ux_*_dedup` 唯一 | 步 5 |
 | 7 | 断言 **`0001` / `0002` 未被改动**（对照执行前 DDL 快照） | 步 6 |
 | 8 | 记录 `W-1…W-4` 结果 + 执行前后 DDL 差异 | 步 7 |

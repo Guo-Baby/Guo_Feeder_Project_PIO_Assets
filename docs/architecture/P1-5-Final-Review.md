@@ -243,7 +243,7 @@
 
 ## 8. 给 P1-5-5（正式验收）的前置
 
-1. **真实 D1 验证**：`wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --local/--remote` 跑 `bind` / `unbind` / `transfer` / `revoke`，回读 `device_binding` / `device` / `device_event`，断言：单 active binding、事件序列、`INV-4` 关闭。
+1. **真实 D1 验证**：`wrangler d1 execute YOUR_D1_DATABASE_NAME --local/--remote` 跑 `bind` / `unbind` / `transfer` / `revoke`，回读 `device_binding` / `device` / `device_event`，断言：单 active binding、事件序列、`INV-4` 关闭。
 2. **部署版 Worker 验证**：`wrangler deploy` 后用 `ADMIN_API_TOKEN` 打通 6 个端点（含 `?limit=` 与 `a%40b.com` 编码路径）。
 3. **回归 D3-6**：确认 `revoke` 的既有行为（ACL 收紧 + 踢会话 + 凭据 REVOKED）未被 batch 化改变。
 4. **负向检查**：`payload` 无凭据 / 无 token；401 响应体一致性。

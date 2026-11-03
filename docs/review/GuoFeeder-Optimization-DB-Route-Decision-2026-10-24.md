@@ -307,9 +307,9 @@ ALTER TABLE mqtt_messages ADD COLUMN dedup_key TEXT;
 
 **Step 2 — 索引批 1**〔生产 DDL，需单独授权〕
 ```bash
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command \
   "CREATE INDEX IF NOT EXISTS ix_lh_device_id ON log_history(device_id, id);"
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command \
   "CREATE INDEX IF NOT EXISTS ix_th_device_id ON telemetry_history(device_id, id);"
 ```
 - 预期 **≈6.6k 写**（5,414 + 1,217），占日配额 6.6%
@@ -321,9 +321,9 @@ wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command \
 
 **Step 4 — 索引批 2**〔生产 DDL，需单独授权〕
 ```bash
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command \
   "CREATE INDEX IF NOT EXISTS ix_mm_device_msg_id ON mqtt_messages(device_id, msg_id, id);"
-wrangler d1 execute YOUR_OLD_D1_DATABASE_NAME --remote --command \
+wrangler d1 execute YOUR_D1_DATABASE_NAME --remote --command \
   "CREATE INDEX IF NOT EXISTS ix_ev_device_id ON device_event(device_id, id);"
 ```
 - 预期 ≈8.2k 写（7,844 + 385），占 8.2%

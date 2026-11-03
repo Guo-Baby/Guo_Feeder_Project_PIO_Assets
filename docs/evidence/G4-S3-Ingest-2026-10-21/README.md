@@ -105,7 +105,7 @@
 cd D:/Guo_Feeder_Project/Cloudflare_Assets/guo-feeder-api && node test/run_all.mjs
 
 # 2) 本地端到端（先起 dev）
-node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_OLD_D1_DATABASE_NAME --local
+node ../node_modules/wrangler/bin/wrangler.js d1 migrations apply YOUR_D1_DATABASE_NAME --local
 node ../node_modules/wrangler/bin/wrangler.js dev --port 8792 --local
 S3_BASE=http://127.0.0.1:8792 S3_BURST=40 python s3_local_e2e.py
 ```
