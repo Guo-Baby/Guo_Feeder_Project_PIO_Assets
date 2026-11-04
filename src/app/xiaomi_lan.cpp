@@ -12,6 +12,7 @@
 #include "app/xiaomi_lan.h"
 #include "app/xiaomi_lan_parse.h"   // 纯函数解析（宿主侧可测，与固件同一份代码）
 #include "app/xiaomi_lan_slot.h"    // 纯函数互斥决策（P4 · 跨设备命令独立性，宿主侧可测）
+#include "app/xiaomi_lan_discover.h" // 纯函数发现 / RAM IP 归属决策（宿主侧 39 项用例）
 #include "services/config_manager.h"
 #include "services/system_state.h"
 #include "automation/workflow.h"
@@ -62,6 +63,32 @@ constexpr uint32_t kProbeRetryMs = 3000;
  * ★ [P0-2 · 2026-10-31] 状态"新鲜度"上限：定义在 `xiaomi_lan.h` 的
  *   `XIAOMI_STATE_FRESH_MS`（唯一定义源，workflow pre-flight 直接引用）。
  */
+/*
+ * ★★ [2026-11-04] 动态发现时序（**IP 只在 RAM，绝不写 NVS**）。
+ *
+ * 实测依据（本机 LAN，纯 hello / get_properties 只读）：
+ *   · 一次广播 hello 即可同时收到两台目标设备响应（3/3 轮）；
+ *   · 广播响应自带 device_id / stamp，可直接用于后续加密认证查询
+ *     （两台设备均实测成功）⇒ 每个候选认证只需**一次**往返；
+ *   · 同网段共 4 台 miIO 设备响应 ⇒ 必须按各自 Token 认证归属，不按响应顺序。
+ *
+ * 流程 = 广播(2 包) → 收集窗口 → 逐 (设备 × 候选) 一次认证查询。
+ * 不做 254 地址扫描，不引入大数组，不阻塞主循环。
+ */
+/*
+ * ★★ [2026-11-05] 每次独立操作都要重跑一遍这个流程 ⇒ 单轮耗时直接影响
+ *   用户体感与安全定时器（插座到点断电）。因此把「固定等满」改成「静默即收尾」：
+ *     · 收集窗口：最多 `kDiscCollectMs`，但**连续 `kDiscQuietMs` 没有新候选就提前结束**；
+ *     · 单候选认证回包：`kDiscReplyMs`（局域网实测 20–100 ms，700 ms 已很宽）。
+ *   实测值见报告（广播 → 收集 → 认证 → 总耗时）。
+ */
+constexpr uint32_t kDiscCollectMs = 1200;   // 广播响应收集窗口（上限）
+constexpr uint32_t kDiscQuietMs = 400;      // 收集期"无新候选"静默阈值（提前收尾）
+constexpr uint32_t kDiscReplyMs = 700;      // 单个认证查询的回包等待
+constexpr uint32_t kDiscRetryMs = 15000;    // 整轮失败后的静默期（防风暴）
+constexpr uint32_t kDiscRequestBudgetMs = 20000; // 单条命令等待发现完成的上界
+constexpr uint8_t  kDiscBroadcasts = 2;
+
 // ★ [2026-10-29] 普通通电的执行端安全时限（秒）
 constexpr uint32_t kPlugAutoOffSec = 60;
 
@@ -84,21 +111,94 @@ enum ReqKind : uint8_t
 };
 
 // ---------------- 设备描述 ----------------
+/*
+ * ★★ [2026-11-04] `DevInfo` 里**不再有 IP 字段**。
+ *   IP 的唯一存储是下面的 `g_ipCache`（纯 RAM），由发现流程写入、网络变化时清空。
+ *   NVS `gflan` 只保留 `f_tok` / `p_tok`；旧版本遗留的 `f_ip` / `p_ip`
+ *   既不读、也不删（不破坏既有 NVS 数据与回滚）。
+ */
 struct DevInfo
 {
-    IPAddress ip;
     uint8_t token[16];
     uint32_t devId;      // 握手得到的设备号（0 = 未知）
     uint32_t stamp;      // 握手得到的时间戳
-    bool configured;
+    bool configured;     // 只表示「NVS 里有合法 Token」，与 IP 无关
 };
 
 DevInfo g_feeder;
 DevInfo g_plug;
 
+/* ★ RAM 中的 IP 缓存（唯一权威）+ 发现状态机，重启后自然清空 */
+xland::Discovery g_disc;
+xland::IpCache g_ipCache;
+uint32_t g_discDeadline = 0;
+uint32_t g_discRetryAt = 0;
+IPAddress g_discProbeIp;
+uint32_t g_lastLocalIp = 0;
+bool g_lastWifiConnected = false;
+
+/*
+ * ★★ [2026-11-05] 本**轮**发现覆盖的设备位掩码。
+ *
+ * 为什么要记在 `Discovery` 之外：
+ *   · 轮次开始后，另一台设备的操作可能中途加入（`xland::beginOperation`），
+ *     它的 pending 位会被 `nextProbe` 的游标跳过（curDev 已经走过去）；
+ *   · 轮末必须能区分「本轮没覆盖到这台」和「覆盖到了但认证失败」，
+ *     前者要**立刻补一轮**，后者按失败如实返回。
+ */
+uint8_t g_roundMask = 0;
+/* 本轮**真正发过认证查询**的设备位（用于区分「没试过」与「试过但失败」） */
+uint8_t g_roundProbedMask = 0;
+
+/* 发现耗时统计（只读、纯数字，不含凭据） */
+uint32_t g_discRoundStartMs = 0;
+uint32_t g_discProbeStartMs = 0;
+uint32_t g_discLastCandMs = 0;
+uint32_t g_discLastCollectMs = 0;
+uint32_t g_discLastProbeMs = 0;
+uint32_t g_discLastTotalMs = 0;
+uint16_t g_discRounds = 0;
+uint16_t g_discRoundFail = 0;
+
 bool g_inited = false;
 bool g_udpReady = false;
 WiFiUDP g_udp;
+
+/* 该设备的当前有效 IP；无有效缓存时返回 0.0.0.0（绝不回落到旧 NVS 值） */
+IPAddress devIp(bool feeder)
+{
+    const unsigned char idx = feeder ? xland::kDevFeeder : xland::kDevPlug;
+    if (!xland::cacheUsable(g_ipCache, idx, WiFi.status() == WL_CONNECTED)) return IPAddress(0, 0, 0, 0);
+    return IPAddress(g_ipCache.ip[idx]);
+}
+
+/* 网络状态变化 ⇒ 两台设备的 RAM IP 全部作废，重新排队发现（Token 不动） */
+void invalidateIpCache()
+{
+    xland::invalidateAll(g_ipCache, g_disc);
+    g_feeder.devId = 0; g_feeder.stamp = 0;
+    g_plug.devId = 0;   g_plug.stamp = 0;
+}
+
+/*
+ * ★★ [2026-11-05] 只丢弃缓存值，**不碰发现状态机**。
+ *
+ * 为什么不能用 `xland::invalidateOne()`：
+ *   它会把 `phase` 置成 Collecting，但**不发广播、不设 deadline** ⇒
+ *   下一轮 `advanceDiscovery()` 会拿着上一轮的过期 deadline 立刻"超时"，
+ *   用上一轮的旧候选做认证 —— 既浪费一轮又可能误判。
+ * 现在发现完全由「操作」驱动（`beginOperationDiscovery`），
+ * 失败路径只负责把值丢掉，下一次操作自然会重新广播。
+ */
+void dropCachedIp(bool feeder)
+{
+    const unsigned char idx = feeder ? xland::kDevFeeder : xland::kDevPlug;
+    g_ipCache.ip[idx] = 0;
+    g_ipCache.valid[idx] = false;
+    DevInfo &d = feeder ? g_feeder : g_plug;
+    d.devId = 0;
+    d.stamp = 0;
+}
 
 // ---------------- 单请求状态机 ----------------
 struct Request
@@ -124,6 +224,13 @@ struct Request
      *   （结果视为陈旧）。正常路径下 workflow_task 下一轮就会领走 ⇒ 计数到不了 1。
      */
     uint8_t defer_count;
+    /*
+     * ★ [2026-11-05] stage0 阶段"补发现"次数（**每请求有界，最多 2 次**）。
+     *   为什么需要：本轮发现可能因「游标已走过本设备」而根本没试过它，
+     *   若等 `kDiscRetryMs`(15 s) 静默期才补，请求早已超时。
+     *   为什么要上限：设备真离线时不能变成一轮接一轮的广播风暴。
+     */
+    uint8_t discKick;
 };
 
 /*
@@ -365,19 +472,19 @@ size_t decryptPayload(const uint8_t token[16], const uint8_t *ct, size_t ctLen, 
 // =====================================================
 // 组帧 / 发帧
 // =====================================================
-bool sendHello(DevInfo &dev)
+bool sendHelloTo(IPAddress ip)
 {
     uint8_t hello[32];
     hello[0] = 0x21; hello[1] = 0x31; hello[2] = 0x00; hello[3] = 0x20;
     for (int i = 4; i < 32; i++) hello[i] = 0xFF;   // Python: "21310020" + "ff"*28
 
-    if (!g_udp.beginPacket(dev.ip, kPort)) return false;
+    if (!g_udp.beginPacket(ip, kPort)) return false;
     g_udp.write(hello, sizeof(hello));
     g_statSend++;
     return g_udp.endPacket() == 1;
 }
 
-bool sendEncrypted(DevInfo &dev, const char *json)
+bool sendEncryptedTo(DevInfo &dev, IPAddress ip, const char *json)
 {
     uint8_t ct[kMaxFrame];
     size_t plainLen = strlen(json) + 1;             // 尾部 0x00
@@ -417,7 +524,7 @@ bool sendEncrypted(DevInfo &dev, const char *json)
     memcpy(frame + kHeaderLen, sum, 16);
     memcpy(frame + kHeaderLen + 16, ct, ctLen);
 
-    if (!g_udp.beginPacket(dev.ip, kPort)) return false;
+    if (!g_udp.beginPacket(ip, kPort)) return false;
     g_udp.write(frame, total);
     g_statSend++;
     return g_udp.endPacket() == 1;
@@ -536,6 +643,283 @@ const char *buildCommand(uint8_t kind, uint8_t portions, char *buf, size_t cap)
 }
 
 // =====================================================
+// ★★ [2026-11-04] miIO 动态发现 —— IP 只存在于 RAM
+//
+// 分层：xland::*（纯函数，宿主侧 39 项用例）负责「归属决策」；
+//       本节负责 UDP I/O，把决策翻译成实际收发。
+//
+// ★ 五件事必须分开，不能互相冒充：
+//     发现到设备（收到 hello）≠ 认证成功（Token 校验和通过）
+//     ≠ 身份确认（属性 code=0 且有 value）≠ 状态查询成功 ≠ 控制执行成功
+//   本节只做到「身份确认」并写入 RAM IP；后续查询/控制仍由 Request 槽负责。
+// =====================================================
+
+/** 当前子网定向广播地址 = localIP | ~subnetMask（不用 255.255.255.255，减少跨网段噪声） */
+IPAddress subnetBroadcast()
+{
+    IPAddress ip = WiFi.localIP();
+    IPAddress mask = WiFi.subnetMask();
+    return IPAddress((uint32_t)ip | ~(uint32_t)mask);
+}
+
+/** 开启一轮广播发现（非阻塞）。只纳入「有 Token 且当前无有效 RAM IP」的设备。 */
+void startDiscoveryRound()
+{
+    /*
+     * ★★ [2026-11-05 · 真机 boot 实测修复] 没有网络时**绝不伪造"正在发现"**。
+     *
+     * 现象（刷写后串口实拍）：上电时 `periodicProbe()` 立刻发起一次探活
+     *   ⇒ `beginOperationDiscovery()` 把 phase 置成 Collecting，但此时 WiFi
+     *   还没连上 ⇒ 本函数提前返回、既没广播也没设 deadline
+     *   ⇒ 下一轮 `advanceDiscovery()` 拿**过期 deadline** 立刻判"超时"
+     *   ⇒ 连打 3 次 `discovery round=... total=0ms collect=0ms`（空转），
+     *   把 stage0 的补发现额度烧光，等 WiFi 真连上后反而不再发现。
+     *
+     * 修法：不能在无网络时开轮 ⇒ 明确回到 Idle，把"还没开始"和"正在跑"分开；
+     *   stage0 的补发现也会在无网络时**不计数**（见 advanceSlot）。
+     */
+    if (WiFi.status() != WL_CONNECTED || !g_udpReady)
+    {
+        g_disc.phase = xland::PhaseIdle;
+        return;
+    }
+
+    xland::resetDiscovery(g_disc);
+    if (g_feeder.configured && !xland::cacheUsable(g_ipCache, xland::kDevFeeder, true))
+        xland::requestDiscovery(g_disc, xland::kDevFeeder);
+    if (g_plug.configured && !xland::cacheUsable(g_ipCache, xland::kDevPlug, true))
+        xland::requestDiscovery(g_disc, xland::kDevPlug);
+    if (g_disc.pending == 0)
+    {
+        g_disc.phase = xland::PhaseDone;
+        g_roundMask = 0;
+        return;
+    }
+
+    g_roundMask = g_disc.pending;
+    g_roundProbedMask = 0;
+    g_disc.phase = xland::PhaseCollecting;
+    g_discRoundStartMs = millis();
+    g_discRounds++;
+    const IPAddress bc = subnetBroadcast();
+    for (uint8_t i = 0; i < kDiscBroadcasts; i++)
+    {
+        if (!sendHelloTo(bc)) break;
+    }
+    g_discLastCandMs = millis();
+    g_discDeadline = millis() + kDiscCollectMs;
+}
+
+/**
+ * ★★ [2026-11-05 · 任务书 §2.1/§2.2] 一次独立操作开始前的**强制**发现入口。
+ *
+ * 无条件作废该设备的 RAM IP —— **缓存不是跳过发现的理由**。
+ * 同一操作内部的 hello / 加密帧 / 重试属于"同一次操作"，不再重复广播。
+ *
+ * ★★ 真机踩坑（刷写后串口实拍，必须保留这段说明）：
+ *   旧写法先调 `xland::beginOperation()` 再判断 phase —— 而该函数在
+ *   Idle/Done 时会**自己把 phase 置成 Collecting** ⇒ 判断永远命中"在途"
+ *   分支 ⇒ `startDiscoveryRound()` **一次都没被调用**。
+ *   表现：`discovery round=0 ... total=0ms collect=0ms` 反复出现，
+ *   请求在 stage0 等到超时，UI 报 `last_err=2`（无响应）——
+ *   而设备其实完全正常。
+ *   ⇒ **`inFlight` 必须在任何改动 phase 的调用之前算好**。
+ */
+void beginOperationDiscovery(unsigned char devIdx)
+{
+    const unsigned char mask = xland::devMask(devIdx);
+    const bool inFlight = (g_disc.phase == xland::PhaseCollecting ||
+                           g_disc.phase == xland::PhaseProbing);
+
+    xland::beginOperation(g_ipCache, g_disc, devIdx);
+
+    DevInfo &d = (devIdx == xland::kDevFeeder) ? g_feeder : g_plug;
+    d.devId = 0;
+    d.stamp = 0;
+
+    if (inFlight)
+    {
+        /* 在途轮次：并入本轮（保留另一台已收集到的候选，不打断） */
+        g_roundMask |= mask;
+        return;
+    }
+
+    g_discRetryAt = 0;      // 操作优先：不受上一轮失败后的静默期影响
+    startDiscoveryRound();  // 内部按「已清缓存」重新组 pending
+    g_roundMask |= mask;
+}
+
+/**
+ * 本轮发现结束的**唯一**出口（所有 PhaseDone 都必须走这里）。
+ *
+ * 做两件事：
+ *   ① 打印耗时（只读诊断，不含凭据）；
+ *   ② 若有 stage0 请求仍在等且本次没拿到 IP ⇒ **立刻补一轮**，
+ *      不被 `kDiscRetryMs` 静默期拖到请求超时。
+ */
+void endDiscoveryRound()
+{
+    g_disc.phase = xland::PhaseDone;
+    g_discRetryAt = millis() + kDiscRetryMs;
+
+    const uint32_t now = millis();
+    g_discLastTotalMs = (g_discRoundStartMs != 0) ? (now - g_discRoundStartMs) : 0;
+    if (g_discLastTotalMs > 0 && (g_ipCache.ip[0] == 0 && g_ipCache.ip[1] == 0))
+        g_discRoundFail++;
+
+    Serial.printf("[XiaomiLAN] discovery round=%u mask=%u probed=%u cand=%u total=%ums "
+                  "collect=%ums probe=%ums ok=%d/%d\n",
+                  (unsigned)g_discRounds, (unsigned)g_roundMask, (unsigned)g_roundProbedMask,
+                  (unsigned)g_disc.candCount, (unsigned)g_discLastTotalMs,
+                  (unsigned)g_discLastCollectMs, (unsigned)g_discLastProbeMs,
+                  g_ipCache.valid[0] ? 1 : 0, g_ipCache.valid[1] ? 1 : 0);
+}
+
+/** 给当前 (设备 × 候选 IP) 组合发一条**只读**认证查询。 */
+bool sendAuthProbe()
+{
+    unsigned char dev = 0;
+    unsigned int ip = 0;
+    if (!xland::nextProbe(g_disc, &dev, &ip)) return false;
+
+    DevInfo &target = (dev == xland::kDevFeeder) ? g_feeder : g_plug;
+    if (!target.configured) return false;
+
+    g_roundProbedMask |= xland::devMask(dev);   // 记录"本轮确实试过这台"
+
+    /*
+     * 广播 hello 响应自带的 devId / stamp 可直接用于加密请求
+     * （2026-11-04 本机实测：两台设备均一次通过，无需再单播握手）。
+     */
+    DevInfo probe;
+    memcpy(probe.token, target.token, 16);
+    probe.devId = g_disc.cand[g_disc.candIdx].devId;
+    probe.stamp = g_disc.cand[g_disc.candIdx].stamp + 1;
+    probe.configured = true;
+
+    char payload[kMaxPayload];
+    buildCommand(dev == xland::kDevFeeder ? REQ_READ_FEEDER : REQ_READ_PLUG,
+                 0, payload, sizeof(payload));
+    g_discProbeIp = IPAddress(ip);
+    if (!sendEncryptedTo(probe, g_discProbeIp, payload)) return false;
+    g_disc.probeStage = 1;
+    g_discDeadline = millis() + kDiscReplyMs;
+    return true;
+}
+
+/**
+ * 认证回包判定：**四个条件同时满足**才算身份确认。
+ *   parseReply 内部已做「校验和 = md5(header+token+ct)」⇒ 校验失败即 Token 不匹配。
+ */
+bool authReplyOk(bool feeder, uint8_t *buf, int len)
+{
+    DevInfo probe;
+    DevInfo &target = feeder ? g_feeder : g_plug;
+    memcpy(probe.token, target.token, 16);
+    probe.devId = 0;
+    probe.stamp = 0;
+    probe.configured = true;
+    Reply r;
+    if (!parseReply(probe, buf, len, r) || !r.valid) return false;
+    return (r.code == 0) && (r.propCode == 0) && r.hasValue;
+}
+
+/**
+ * 发现状态机推进（每个 loop 一次）。
+ * @param len 0 表示本轮没有属于发现层的包，仅推进超时。
+ */
+void advanceDiscovery(uint8_t *buf, int len, IPAddress from)
+{
+    if (g_disc.phase != xland::PhaseCollecting && g_disc.phase != xland::PhaseProbing) return;
+    const uint32_t now = millis();
+
+    if (g_disc.phase == xland::PhaseCollecting)
+    {
+        if (len == 32 && ((uint16_t)((buf[0] << 8) | buf[1]) == kMagic))
+        {
+            const uint32_t did = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
+                                 ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
+            const uint32_t ts  = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
+                                 ((uint32_t)buf[14] << 8) | (uint32_t)buf[15];
+            xland::addCandidate(g_disc, (uint32_t)from, did, ts);
+            g_discLastCandMs = now;      // 有任何 hello 响应 ⇒ 收集窗口重新计静默
+        }
+        /*
+         * ★ [2026-11-05] 提前收尾：已经有候选且连续 kDiscQuietMs 没有新响应
+         *   ⇒ 不再死等满 kDiscCollectMs（每次操作都要重跑，省下的是纯等待）。
+         */
+        const bool quiet = (g_disc.candCount > 0) &&
+                           ((uint32_t)(now - g_discLastCandMs) >= kDiscQuietMs);
+        if (quiet || (int32_t)(now - g_discDeadline) >= 0)
+        {
+            g_discLastCollectMs = (g_discRoundStartMs != 0) ? (now - g_discRoundStartMs) : 0;
+            g_discProbeStartMs = now;
+            if (g_disc.candCount == 0)
+            {
+                /* 没有任何 UDP 响应：如实结束，绝不把旧 IP 当有效地址 */
+                g_discLastProbeMs = 0;
+                endDiscoveryRound();
+            }
+            else
+            {
+                g_disc.phase = xland::PhaseProbing;
+                g_disc.curDev = xland::kDevFeeder;
+                g_disc.candIdx = 0;
+                if (!sendAuthProbe())
+                {
+                    g_discLastProbeMs = millis() - g_discProbeStartMs;
+                    endDiscoveryRound();
+                }
+            }
+        }
+        return;
+    }
+
+    /* ---- PhaseProbing：等当前候选的认证回包 ---- */
+    if (g_disc.probeStage == 0)
+    {
+        if (!sendAuthProbe())
+        {
+            g_discLastProbeMs = (g_discProbeStartMs != 0) ? (now - g_discProbeStartMs) : 0;
+            endDiscoveryRound();
+        }
+        return;
+    }
+
+    if (len > 32 && from == g_discProbeIp)
+    {
+        const bool ok = authReplyOk(g_disc.curDev == xland::kDevFeeder, buf, len);
+        if (xland::claimOnAuth(g_disc, g_ipCache, ok))
+        {
+            /* 只更新「本设备」的会话参数，绝不写另一台 */
+            DevInfo &target = (g_disc.curDev == xland::kDevFeeder) ? g_feeder : g_plug;
+            target.devId = g_disc.cand[g_disc.candIdx].devId;
+            target.stamp = g_disc.cand[g_disc.candIdx].stamp;
+            g_disc.curDev++;
+            g_disc.candIdx = 0;
+        }
+        else
+        {
+            xland::skipCandidate(g_disc);   // Token 不匹配 / 属性不支持 / 无 value
+        }
+    }
+    else if ((int32_t)(now - g_discDeadline) < 0)
+    {
+        return;                              // 还没超时，继续等
+    }
+    else
+    {
+        xland::skipCandidate(g_disc);        // 超时：试下一个候选，不重发同一个
+    }
+
+    if (xland::discoveryFinished(g_disc) || !sendAuthProbe())
+    {
+        g_discLastProbeMs = (g_discProbeStartMs != 0) ? (millis() - g_discProbeStartMs) : 0;
+        endDiscoveryRound();
+    }
+}
+
+// =====================================================
 // 状态更新
 // =====================================================
 void setOnline(bool feeder, bool online)
@@ -583,6 +967,19 @@ void markErr(bool feeder, uint8_t err)
      * --------------------------------------------------------------- */
     const bool wasRead = (reqOf(feeder).kind == REQ_READ_FEEDER || reqOf(feeder).kind == REQ_READ_PLUG);
     const bool commErr = (err == XIAOMI_ERR_TIMEOUT || err == XIAOMI_ERR_AUTH);
+
+    /*
+     * ★★ [2026-11-04] 通信层失败 ⇒ 该设备的 RAM IP 作废，重新发现。
+     *   这是 DHCP 换址后自动恢复的触发点：旧 IP 不再被当作有效地址。
+     *   · AUTH（校验和/解密失败）立刻失效 —— 这个 IP 上很可能已不是原设备；
+     *   · TIMEOUT 要求连败 ≥2 才失效 —— 米家设备对密集握手偶发丢包，
+     *     单次丢包不该触发一次全网广播（否则反而加剧拥塞）。
+     *   · 只动 IP 缓存，**绝不清 NVS Token**，也不影响另一台设备。
+     */
+    if (err == XIAOMI_ERR_AUTH || (err == XIAOMI_ERR_TIMEOUT && s >= 2))
+    {
+        dropCachedIp(feeder);      // 只丢值，不伪造"正在发现"的状态
+    }
 
     if (wasRead && commErr && s == 1)
     {
@@ -849,7 +1246,6 @@ bool startRequest(uint8_t kind, uint8_t portions, DevInfo &dev, bool feeder,
 
     Request &rq = reqOf(feeder);
     rq.active = true;
-    rq.stage = 1;
     rq.kind = kind;
     rq.portions = portions;
     rq.dev = &dev;
@@ -858,14 +1254,27 @@ bool startRequest(uint8_t kind, uint8_t portions, DevInfo &dev, bool feeder,
     rq.ok = false;
     rq.gotPacket = false;
     rq.badsum0 = g_statBadChecksum;
-    rq.deadline = millis() + kHelloTimeoutMs;
 
-    if (!sendHello(dev))
-    {
-        finishRequest(feeder, false);
-        markErr(feeder, XIAOMI_ERR_TIMEOUT);
-        return false;
-    }
+    /*
+     * ★★ [2026-11-05 · 任务书 §2.1] **每一次独立操作都必须重新发现**。
+     *
+     * 旧实现（2026-11-04）：`if (devIp()==0) 才去发现，否则直接用缓存 IP`。
+     *   ⇒ 只要本次运行周期内成功过一次，后续所有操作都复用那个 IP；
+     *     DHCP 换址后缓存"看起来仍然有效"（valid=true、非零、WiFi 也连着），
+     *     请求就会打到旧地址/别的设备上，且没有任何入口能自愈。
+     *
+     * 现在：无条件进入 `stage 0`（等发现），由 `beginOperationDiscovery()`
+     *   先作废该设备的 RAM IP，再发起/并入一轮广播 + Token 认证。
+     *   `dev.configured` 只表示「NVS 里有合法 Token」，与 IP 是否已知无关。
+     *
+     * 时间预算：`kDiscRequestBudgetMs`(20 s) 覆盖「广播 + 收集 + 多候选认证」，
+     *   发现成功后才发 hello（`kHelloTimeoutMs`）与命令帧（`kReplyTimeoutMs`）。
+     *   超时如实失败，绝不自动重试出粮/通断这类非幂等物理动作。
+     */
+    rq.stage = 0;
+    rq.discKick = 0;
+    rq.deadline = millis() + kDiscRequestBudgetMs;
+    beginOperationDiscovery(feeder ? xland::kDevFeeder : xland::kDevPlug);
     return true;
 }
 
@@ -889,6 +1298,60 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
 
     if (len > 0) { g_statRecv++; g_req.gotPacket = true; }
 
+    /*
+     * ★★ [2026-11-04] stage 0 = 等待动态发现给出有效 IP。
+     *   发现是 RAM-only 的，成功后 `devIp()` 才有值；超时如实失败，
+     *   **不自动重试**（出粮/通断非幂等）。
+     */
+    if (g_req.stage == 0)
+    {
+        const IPAddress ip = devIp(isFeeder);
+        if ((uint32_t)ip != 0)
+        {
+            g_req.stage = 1;
+            g_req.deadline = now + kHelloTimeoutMs;
+            if (!sendHelloTo(ip))
+            {
+                finishRequest(isFeeder, false);
+                markErr(isFeeder, XIAOMI_ERR_TIMEOUT);
+            }
+            return;
+        }
+
+        /*
+         * ★★ [2026-11-05] 有界补发现（最多 2 次）。
+         *   条件：发现层已结束（Done/Idle）但本设备仍无 IP ⇒ 要么本轮被游标
+         *   跳过、要么上一轮已失败。两种情况都值得再跑一轮，但**必须有上限**：
+         *   设备真离线时绝不允许把 20 s 预算刷成十几轮广播。
+         *   剩余预算不足 3 s 时不再补 —— 补了也来不及完成握手与命令帧。
+         *
+         *   ★ 无网络时**不计次、不补轮**（上电瞬间就在等 WiFi 的情况）：
+         *     否则 3 次空转会把额度烧光，WiFi 连上后反而不发现（真机已踩到）。
+         */
+        if (WiFi.status() != WL_CONNECTED)
+        {
+            return;                     // 等网络；网络恢复时由 loop 重置额度与预算
+        }
+        if ((g_disc.phase == xland::PhaseIdle || g_disc.phase == xland::PhaseDone) &&
+            g_req.discKick < 2 &&
+            (int32_t)(g_req.deadline - now) > 3000)
+        {
+            g_req.discKick++;
+            g_discRetryAt = 0;
+            Serial.printf("[XiaomiLAN] stage0 re-discover dev=%s try=%u\n",
+                          isFeeder ? "feeder" : "plug", (unsigned)g_req.discKick);
+            beginOperationDiscovery(isFeeder ? xland::kDevFeeder : xland::kDevPlug);
+            return;
+        }
+
+        if ((int32_t)(now - g_req.deadline) >= 0)
+        {
+            finishRequest(isFeeder, false);
+            markErr(isFeeder, XIAOMI_ERR_TIMEOUT);
+        }
+        return;
+    }
+
     if (g_req.stage == 1)
     {
         // 等握手：拿到 device_id / stamp 才能组后续密文帧
@@ -902,7 +1365,7 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
 
                 char payload[kMaxPayload];
                 buildCommand(g_req.kind, g_req.portions, payload, sizeof(payload));
-                if (sendEncrypted(*g_req.dev, payload))
+                if (sendEncryptedTo(*g_req.dev, devIp(isFeeder), payload))
                 {
                     g_req.stage = 2;
                     g_req.deadline = now + kReplyTimeoutMs;
@@ -1021,16 +1484,21 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
  * ★ 为什么要按 IP 而不是按 devId：
  *   devId 要**先解密**才能拿到，而解密需要该设备自己的 token 与会话号；
  *   而回包**来源 IP** 是明文可见的，直接比对即可。
- *   （g_feeder.ip / g_plug.ip 来自 NVS 配置，来源 IP 必须与之一致。）
+ *   （IP 来自 `g_ipCache` —— 本次运行周期里经 Token 认证确认过的 RAM 值。）
  *
- * ★ 若来源 IP 两边都不匹配（陌生设备/迟到包）⇒ 丢弃（不喂给任何槽），
- *   但**仍然计入** g_statRecv（那确实是收到了包）。
+ * ★ [2026-11-04] 分派优先级（发现层与请求槽共存同一个 UDP socket）：
+ *     ① 来自某台**已认领 IP** 且该槽在飞 ⇒ 交给该槽；
+ *     ② 否则若发现层在跑 ⇒ 交给发现层（广播 hello 响应 / 认证回包）；
+ *     ③ 都不匹配 ⇒ 丢弃（仍计入 g_statRecv）。
+ *   发现层每轮都被调用一次：没有属于自己的包时传 len=0，仅推进超时。
  */
 void advanceRequest()
 {
     const bool feederBusy = devBusy(true);
     const bool plugBusy = devBusy(false);
-    if (!feederBusy && !plugBusy) return;
+    const bool discActive = (g_disc.phase == xland::PhaseCollecting ||
+                             g_disc.phase == xland::PhaseProbing);
+    if (!feederBusy && !plugBusy && !discActive) return;
 
     uint8_t buf[kMaxFrame];
     int len = 0;
@@ -1043,29 +1511,29 @@ void advanceRequest()
         if (len > 0) g_statRecv++;
     }
 
-    /* ---- 分派：把包交给来源设备对应的槽（最多一个） ---- */
     int feederLen = 0;
     int plugLen = 0;
+    int discLen = 0;
     if (len > 0)
     {
-        if (feederBusy && from == g_feeder.ip)
+        const IPAddress fIp = devIp(true);
+        const IPAddress pIp = devIp(false);
+        if (feederBusy && (uint32_t)fIp != 0 && from == fIp)
         {
             feederLen = len;
         }
-        else if (plugBusy && from == g_plug.ip)
+        else if (plugBusy && (uint32_t)pIp != 0 && from == pIp)
         {
             plugLen = len;
         }
-        else
+        else if (discActive)
         {
-            /*
-             * 来源不明（陌生设备 / 迟到包 / 槽已结束）：
-             *   · 计入 g_statRecv（确实收到了包）；
-             *   · **不喂给任何槽** —— 喂错槽会造成串台误判。
-             */
+            discLen = len;
         }
+        /* 其余：陌生设备 / 迟到包 ⇒ 丢弃，不喂给任何槽（防串台） */
     }
 
+    if (discActive) advanceDiscovery(buf, discLen, from);
     if (feederBusy) advanceSlot(true, buf, feederLen);
     if (plugBusy) advanceSlot(false, buf, plugLen);
 }
@@ -1475,33 +1943,29 @@ static WorkflowActionDescriptor plugStatusDesc = {
 };
 
 // =====================================================
-// NVS 凭证
+// NVS 凭证（★ 2026-11-04：IP **不再**持久化，这里只读 Token）
 // =====================================================
-bool loadDev(DevInfo &dev, const char *ipKey, const char *tokKey)
+bool loadDev(DevInfo &dev, const char *tokKey)
 {
     Preferences p;
     if (!p.begin(kNvsNs, true)) return false;
 
-    String ipStr = p.getString(ipKey, "");
+    /* 旧版本 NVS 里可能残留 `f_ip` / `p_ip`：**既不读、也不删**。
+       不读 ⇒ 运行时绝不依赖旧 IP；不删 ⇒ 不破坏既有数据与回滚能力。 */
     String tokStr = p.getString(tokKey, "");
     p.end();
 
     bool ok = false;
-    if (ipStr.length() > 0 && tokStr.length() == 32)
+    if (tokStr.length() == 32)
     {
-        IPAddress ip;
-        if (ip.fromString(ipStr))
+        uint8_t tok[16];
+        if (parseToken(tokStr.c_str(), tok))
         {
-            uint8_t tok[16];
-            if (parseToken(tokStr.c_str(), tok))
-            {
-                dev.ip = ip;
-                memcpy(dev.token, tok, 16);
-                dev.configured = true;
-                ok = true;
-            }
-            zeroBytes(tok, sizeof(tok));
+            memcpy(dev.token, tok, 16);
+            dev.configured = true;
+            ok = true;
         }
+        zeroBytes(tok, sizeof(tok));
     }
     // ★ 不在日志里出现任何凭据片段
     return ok;
@@ -1524,7 +1988,11 @@ uint8_t xiaomi_lan_abort_noncritical(const char *reason)
 {
     return abortNoncriticalImpl(reason);
 }
-bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, const char **reason)
+/*
+ * ★★ [2026-11-04] 协议变更：`system.lan_prov` **只接受 dev + token**。
+ *   IP 由设备在家庭 LAN 内广播发现后只存 RAM，不再是用户可维护的配置。
+ */
+bool xiaomi_lan_provision(const char *dev, const char *token, const char **reason)
 {
     if (reason) *reason = "";
     if (dev == nullptr) { if (reason) *reason = "missing_dev"; return false; }
@@ -1533,18 +2001,13 @@ bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, co
     const bool isPlug = (strcmp(dev, "plug") == 0);
     if (!isFeeder && !isPlug) { if (reason) *reason = "unknown_dev"; return false; }
 
-    if (ip != nullptr && ip[0] != 0)
-    {
-        IPAddress tmp;
-        if (!tmp.fromString(ip)) { if (reason) *reason = "bad_ip"; return false; }
-    }
     if (token != nullptr && token[0] != 0)
     {
         uint8_t tmp[16];
         if (!parseToken(token, tmp)) { if (reason) *reason = "bad_token"; zeroBytes(tmp, sizeof(tmp)); return false; }
         zeroBytes(tmp, sizeof(tmp));
     }
-    if ((ip == nullptr || ip[0] == 0) && (token == nullptr || token[0] == 0))
+    if (token == nullptr || token[0] == 0)
     {
         if (reason) *reason = "nothing_to_write";
         return false;
@@ -1552,16 +2015,18 @@ bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, co
 
     Preferences p;
     if (!p.begin(kNvsNs, false)) { if (reason) *reason = "nvs_open_failed"; return false; }
-    bool ok = true;
-    if (ip != nullptr && ip[0] != 0) ok = ok && p.putString(isFeeder ? "f_ip" : "p_ip", ip) > 0;
-    if (token != nullptr && token[0] != 0) ok = ok && p.putString(isFeeder ? "f_tok" : "p_tok", token) > 0;
+    /* ★ 只写 Token；绝不写任何 IP 键 */
+    const bool ok = p.putString(isFeeder ? "f_tok" : "p_tok", token) > 0;
     p.end();
 
     if (!ok) { if (reason) *reason = "nvs_write_failed"; return false; }
 
     // 立即生效（无需重启）
-    if (isFeeder) loadDev(g_feeder, "f_ip", "f_tok");
-    else loadDev(g_plug, "p_ip", "p_tok");
+    if (isFeeder) loadDev(g_feeder, "f_tok");
+    else loadDev(g_plug, "p_tok");
+
+    /* ★ Token 变了 ⇒ 旧 IP 是「旧凭证认证过」的结论，必须作废；下一次操作会重新发现 */
+    dropCachedIp(isFeeder);
 
     /* ★ [2026-10-30 · A2] 写完立刻重算并发布"是否已配置"（页面据此回显，不信前端假成功） */
     state_set_bool(isFeeder ? STATE_XIAOMI_FEEDER_CONFIGURED : STATE_XIAOMI_PLUG_CONFIGURED,
@@ -1597,8 +2062,7 @@ bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, co
     g_probeTurn = isFeeder ? 0 : 1;
     g_nextProbeMs = millis() + 25000;
 
-    Serial.printf("[XiaomiLAN] provision ok dev=%s ip_set=%d token_set=%d\n",
-                  dev, (ip && ip[0]) ? 1 : 0, (token && token[0]) ? 1 : 0);
+    Serial.printf("[XiaomiLAN] provision ok dev=%s token_set=1 ip=nvs_never\n", dev);
     return true;
 }
 
@@ -1664,8 +2128,17 @@ void xiaomi_lan_init()
     g_feeder.devId = 0; g_feeder.stamp = 0; g_feeder.configured = false;
     g_plug.devId = 0;   g_plug.stamp = 0;   g_plug.configured = false;
 
-    loadDev(g_feeder, "f_ip", "f_tok");
-    loadDev(g_plug, "p_ip", "p_tok");
+    /* ★★ [2026-11-04] IP 缓存是纯 RAM：每次启动都从空开始，首次操作前重新发现 */
+    xland::resetDiscovery(g_disc);
+    xland::resetCache(g_ipCache);
+    g_discDeadline = 0;
+    g_discRetryAt = 0;
+    g_lastLocalIp = 0;
+    g_lastWifiConnected = false;
+
+    /* ★ 只读 Token；NVS 里旧版遗留的 IP 键既不读也不删（兼容回滚） */
+    loadDev(g_feeder, "f_tok");
+    loadDev(g_plug, "p_tok");
 
     state_set_bool(STATE_XIAOMI_FEEDER_ENABLE, devEnabled(true));
     state_set_bool(STATE_XIAOMI_PLUG_ENABLE, devEnabled(false));
@@ -1738,7 +2211,41 @@ void xiaomi_lan_loop()
 
     if (!f && !p) return;
 
-    if (WiFi.status() != WL_CONNECTED)
+    /*
+     * ★★ [2026-11-04] 网络状态变化 ⇒ RAM IP 缓存整体失效。
+     *   WiFi 断开 / 重连 / 本机 DHCP 换址 / 切 AP 都会让上次认证过的 IP
+     *   不再可信；Token 仍在 NVS，不受影响。
+     */
+    const bool connected = (WiFi.status() == WL_CONNECTED);
+    const uint32_t localIp = connected ? (uint32_t)WiFi.localIP() : 0;
+    if (xland::networkInvalidates(g_lastWifiConnected, connected, g_lastLocalIp, localIp))
+    {
+        invalidateIpCache();
+        g_discRetryAt = 0;                  // 立即允许重新发现
+        g_disc.phase = xland::PhaseIdle;    // 打断在途发现（网络已变，旧候选作废）
+        g_disc.candCount = 0;
+
+        /*
+         * ★★ [2026-11-05] 网络变化 ⇒ 重置 stage0 的**补发现额度与预算**。
+         *   为什么必须：上电瞬间发起的探活会一直排在 stage0 等 WiFi；
+         *   旧逻辑下它的 20 s 预算从"上电那一刻"开始算，WiFi 若 11 s 才连上，
+         *   剩下不到 9 s（扣掉 3 s 保留）就不够再跑一轮发现 ⇒ 首次探活必然失败。
+         *   网络状态变了，等于"重新开始"，所以额度与截止时间都按现在重算。
+         */
+        for (uint8_t i = 0; i < 2; i++)
+        {
+            Request &r = g_req[i];
+            if (r.active && r.stage == 0)
+            {
+                r.discKick = 0;
+                r.deadline = millis() + kDiscRequestBudgetMs;
+            }
+        }
+    }
+    g_lastWifiConnected = connected;
+    g_lastLocalIp = localIp;
+
+    if (!connected)
     {
         if (g_udpReady) { g_udp.stop(); g_udpReady = false; }
         return;
@@ -1749,15 +2256,20 @@ void xiaomi_lan_loop()
         else return;
     }
 
+    /*
+     * ★★ [2026-11-05] 发现**只由操作驱动**（`startRequest` → `beginOperationDiscovery`），
+     *   这里不再做"后台预热"：缓存不再是跳过发现的理由，也就不需要提前把 IP 备好。
+     *   若发现层已结束而仍有 stage0 请求在等，由 `advanceSlot()` 的**有界补发现**
+     *   （每请求最多 2 次）处理，避免设备离线时刷成广播风暴。
+     */
+
     /* ★ 安全定时器优先：到点必须发断电，不能被探活饿死 */
     serviceAutoOff();
 
     /*
      * ★ [P4 · 2026-11-01] 两台设备**各自**推进（并行），不再二选一。
-     *   旧实现 `if (g_req.active) advanceRequest(); else periodicProbe();`
-     *   意味着：一台在飞时，另一台既不推进、也不做周期探活。
+     * ★ [2026-11-04] 发现层与请求槽共用一个 UDP socket ⇒ 只要有任一方在跑就推进。
      */
-    if (devBusy(true) || devBusy(false)) advanceRequest();
-    if (!devBusy(true) && !devBusy(false)) periodicProbe();
-    else periodicProbe();
+    advanceRequest();
+    periodicProbe();
 }

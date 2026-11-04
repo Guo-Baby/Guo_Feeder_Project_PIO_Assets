@@ -60,7 +60,8 @@
 #define CONFIG_MODULE_STEPPER   "stepper"
 #define CONFIG_MODULE_VIBRATION "vibration"
 // 米家 LAN 设备（喂食器 / 智能插座）
-// ★ 只放 enable 开关；设备 IP 与 Token 在 NVS `gflan`（不进 config，避免 config.get 回显凭据）
+// ★ 只放 enable 开关；设备 **Token** 在 NVS `gflan`（不进 config，避免 config.get 回显凭据）。
+// ★ [2026-11-04] 设备 IP **不持久化**：本机广播发现 + Token 认证，只缓存在 RAM。
 #define CONFIG_MODULE_XIAOMI_LAN "xiaomi_lan"
 
 // ---------------------------------------------------------------------

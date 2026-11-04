@@ -107,18 +107,21 @@ void xiaomi_lan_request_probe(bool feeder);
 uint8_t xiaomi_lan_abort_noncritical(const char *reason);
 
 // =====================================================
-// 本地配网/配凭证（NVS）
+// 本地配凭证（NVS）—— ★ [2026-11-04] IP **不再是配置项**
 //
 // dev   : "feeder" | "plug"
-// ip    : 点分十进制；传 nullptr / "" 表示不改 IP
-// token : 32 位 hex；传 nullptr / "" 表示不改 Token
+// token : 32 位 hex（必填，写入 NVS `gflan` 的 f_tok / p_tok）
+//
+// 设备 IP 由 ESP32 在家庭 LAN 内经 miIO 广播发现 + Token 认证获得，
+// **只存 RAM**（重启 / WiFi 重连 / 换址后自动重新发现），绝不写入 NVS。
+// 旧版本 NVS 里遗留的 f_ip / p_ip 既不读也不删，运行时不依赖它们。
 //
 // 返回 false 时 reason 指向静态错误串（不含任何凭据值）。
 // ★ 刻意不接受 MQTT 回显：写入后只回 ok/错误，不返回值本身。
 // =====================================================
-bool xiaomi_lan_provision(const char *dev, const char *ip, const char *token, const char **reason);
+bool xiaomi_lan_provision(const char *dev, const char *token, const char **reason);
 
-// 是否已配置（IP + Token 都存在）。不返回任何凭证内容。
+// 是否已配置（NVS 中存在合法 Token）。不返回任何凭证内容，与 IP 无关。
 bool xiaomi_lan_configured(bool feeder);
 
 // =====================================================

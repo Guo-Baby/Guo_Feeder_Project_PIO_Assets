@@ -2920,9 +2920,10 @@ static bool system_router(
     if (object == "lan_prov")
     {
         /*
-         * 米家 LAN 设备本地配凭证（IP / 32-hex Token）→ NVS `gflan`。
-         * 参数：{"dev":"feeder|plug", "ip":"x.x.x.x", "token":"<32hex>"}（两者可只给一个）
-         * ★ 回包**只含 ok/错误码**，绝不回显 ip 以外的任何值；Token 一律不出现。
+         * ★★ [2026-11-04] 米家 LAN 设备本地配凭证 → NVS `gflan`。
+         * 参数：{"dev":"feeder|plug", "token":"<32hex>"}
+         * IP **不再是参数**：设备自行广播发现，只缓存到 RAM。
+         * ★ 回包只含 ok / dev / token_set，绝不回显 Token 或任何 IP。
          * ★ 该命令只写 NVS，不写 config JSON ⇒ `config.get` 永远读不到 Token。
          */
         JsonDocument pl;
@@ -2931,10 +2932,9 @@ static bool system_router(
             return false;
         }
         const char *dev = pl["dev"] | "";
-        const char *ip = pl["ip"] | "";
         const char *token = pl["token"] | "";
         const char *why = "";
-        bool ok = xiaomi_lan_provision(dev, ip, token, &why);
+        bool ok = xiaomi_lan_provision(dev, token, &why);
         if (!ok)
         {
             command_send_error(cmd, CMD_ERROR_PARAM, why && why[0] ? why : "lan_prov failed");
@@ -2942,7 +2942,6 @@ static bool system_router(
         }
         response["status"] = "ok";
         response["dev"] = dev;
-        response["ip"] = ip;                    // IP 不是凭据，可回显
         response["token_set"] = (token && token[0]) ? true : false;
         last_result = CMD_RESULT_OK;
         return true;

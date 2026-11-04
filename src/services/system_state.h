@@ -122,14 +122,16 @@ enum SystemStateKey
     /*
      * ★ [2026-10-30 · 任务 A2] 凭据是否已配置（**只读布尔，绝不暴露任何凭据值**）。
      *
-     * 为什么需要它：IP/Token 只写 NVS（`gflan`），`config.get` 永远读不到
+     * 为什么需要它：Token 只写 NVS（`gflan`），`config.get` 永远读不到
      * ⇒ 配置页没法回答"这台设备的 Token 到底存进去了没有、重启后还在不在"。
      * 之前只能靠 `*_last_err==4`（NO_CFG）间接推断，但模块被停用（err=5）时
      * 就完全不可知，用户会误以为"保存失败"。
      *
-     * 语义：`true` = NVS 里同时有合法 IP 与 32-hex Token（`loadDev()` 成功）；
+     * 语义：`true` = NVS 里有合法 32-hex Token（`loadDev()` 成功）；
+     *       ★ [2026-11-04] **与 IP 无关** —— IP 由广播发现、只存 RAM，
+     *       不参与"是否已配置"的判断。
      *       在 `xiaomi_lan_init()` 与每次 `lan_prov` 写入后重新计算 ⇒
-     *       重启后仍为 true 即证明**已落 NVS**。
+     *       重启后仍为 true 即证明**Token 已落 NVS**。
      */
     STATE_XIAOMI_FEEDER_CONFIGURED,
     STATE_XIAOMI_PLUG_CONFIGURED,

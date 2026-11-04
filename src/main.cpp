@@ -589,7 +589,8 @@ void setup()
     test_mqtt_init();
     bool ok = MiThermometerInit();
     // 米家 LAN 设备（喂食器 / 插座）：只注册 Action + 维护 state；
-    // 依赖 config（enable）与 NVS（ip/token，由 `system/lan_prov` 写入）
+    // 依赖 config（enable）与 NVS（**只有 Token**，由 `system/lan_prov` 写入）。
+    // ★ [2026-11-04] 设备 IP 由本机广播发现并只存 RAM，不作为配置持久化。
     xiaomi_lan_init();
     // =====================================================
     // 第五层：命令和云端（依赖业务模块注册完成）

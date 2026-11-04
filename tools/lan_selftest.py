@@ -27,8 +27,8 @@ BAUD = 115200
 # 绝不会让真机执行任何动作（设备校验和不符 ⇒ 直接丢弃）。
 SYNTH_TOKEN = "0" * 32
 
-FEEDER_IP = "192.168.124.5"
-PLUG_IP = "192.168.124.3"
+# ★ [2026-11-04] IP 不再是配置项：设备广播发现并只存 RAM，脚本不再传 IP。
+#   （本机独立交叉验证仍可用 MiLAN_Test 的 devices.local.json。）
 
 
 def drain(ser, seconds, sink):
@@ -77,12 +77,12 @@ def main():
     send(ser, sink, "query_state", cid="s2")
     # 3) 非法 token 必须被拒
     send(ser, sink, "system/lan_prov",
-         {"dev": "feeder", "ip": FEEDER_IP, "token": "zz"}, cid="s3")
-    # 4) 合法格式（合成）token 写 NVS
+         {"dev": "feeder", "token": "zz"}, cid="s3")
+    # 4) 合法格式（合成）token 写 NVS（★ 不再传 ip）
     send(ser, sink, "system/lan_prov",
-         {"dev": "feeder", "ip": FEEDER_IP, "token": SYNTH_TOKEN}, cid="s4")
+         {"dev": "feeder", "token": SYNTH_TOKEN}, cid="s4")
     send(ser, sink, "system/lan_prov",
-         {"dev": "plug", "ip": PLUG_IP, "token": SYNTH_TOKEN}, cid="s5")
+         {"dev": "plug", "token": SYNTH_TOKEN}, cid="s5")
     # 5) 打开 enable（RAM only，不落盘 ⇒ 不触发重启）
     send(ser, sink, "system/config_set",
          {"module": "xiaomi_lan", "key": "feeder_enable", "value": True}, cid="s6")
