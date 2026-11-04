@@ -187,6 +187,41 @@ void telemetry_publisher_init()
     //   ⇒ cadence 归零后该通道再无任何放行路径 ⇒ 线上 climate 永久静默。
 
     s_ready = true;
+
+    // ★★ [2026-11-05 · 遥测中断事故] 启动时把「遥测门」状态显式打出来。
+    //
+    // ── 事故教训 ──
+    //   故障期间串口里**没有任何一行**与遥测有关：log 通道照常上行，
+    //   设备在线、命令正常、日志正常，看上去"一切健康"，实际遥测
+    //   一条都没发（`telemetry_task()` 在最前置的开关判定处静默 return）。
+    //   ⇒ 门控状态必须**可观测**，否则同一类故障必然再次静默数小时。
+    //
+    // ── 这行日志的判读方式 ──
+    //   compile_gate=1 ∧ runtime_enable=1  ⇒ ARMED（应当能看到上行）
+    //   compile_gate=1 ∧ runtime_enable=0  ⇒ DISABLED（**故障态**，附 WARN）
+    //   编译门为 0 时本文件是空实现，**根本不会打印这一行** —— 这本身就是
+    //   "固件没编入遥测"的判据（比体积/字符串 grep 更直接）。
+    const bool rt_enable = config_get_telemetry_enable();
+    Serial.printf("[Telemetry] init: compile_gate=1 runtime_enable=%d => %s\n",
+                  rt_enable ? 1 : 0, rt_enable ? "ARMED" : "DISABLED");
+    Serial.printf("[Telemetry] init: valid(temp=%d humid=%d weight=%d) "
+                  "weight_period=%lums climate=change-driven\n",
+                  state_is_valid(STATE_MI_THERMO_TEMP) ? 1 : 0,
+                  state_is_valid(STATE_MI_THERMO_HUMID) ? 1 : 0,
+                  state_is_valid(STATE_WEIGHT_VALUE) ? 1 : 0,
+                  (unsigned long)TP_WEIGHT_PERIOD_MS);
+
+    if (!rt_enable)
+    {
+        Serial.println("[Telemetry] WARN: runtime gate OFF "
+                       "(mqtt.telemetry_enable=false) => NO telemetry uplink; "
+                       "config_set mqtt telemetry_enable true + config_save to re-arm");
+    }
+    else if (!state_is_valid(STATE_WEIGHT_VALUE))
+    {
+        Serial.println("[Telemetry] WARN: weight channel invalid at boot "
+                       "(weight.enable=false or HX711 absent) => weight.value will not emit");
+    }
 }
 
 void telemetry_task()

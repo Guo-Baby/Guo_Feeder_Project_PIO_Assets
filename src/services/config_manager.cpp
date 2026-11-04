@@ -141,6 +141,32 @@ static const ConfigKeyDecl kDeclaredKeys[] =
         CONFIG_XIAOMI_KEY_PLUG_ENABLE,
         CFG_KEY_BOOL,
         CONFIG_XIAOMI_ENABLE_DEFAULT
+    },
+
+    // ★★ [2026-11-05 · 遥测静默事故] MQTT 遥测上行运行时开关。
+    //
+    // ── 为什么必须进这张表（线上事故复盘） ──
+    //   该开关此前**只存在于配置文件里**，不在任何声明中：
+    //     · 键在 `/config/mqtt.json` 里 ⇒ `module_ro(...)["telemetry_enable"]` 读得到；
+    //     · 键一旦缺失（配置被模板覆盖 / 模块 bootstrap 成 `{}`）⇒
+    //       `config_get_telemetry_enable()` 落到 `| false` ⇒
+    //       `telemetry_task()` 在最前置判定处 return ⇒ **零遥测上行**，
+    //       而 log 通道不受该门控制 ⇒ 表现为"设备在线、命令正常、日志正常，
+    //       只有历史曲线停了"，且**没有任何告警**（静默 10 小时才被发现）。
+    //
+    // ── 为什么默认值是 true（把 fail-closed 改成 fail-open） ──
+    //   遥测是本系统**核心功能**（历史曲线唯一数据源），不是可选诊断开关。
+    //   fail-closed 的唯一收益是"配置损坏时不产生上行"，代价却是
+    //   "配置损坏时核心功能静默消失且不可观测"——代价远大于收益。
+    //   与 `CONFIG_XIAOMI_ENABLE_DEFAULT = true` 同构：核心能力默认可用。
+    //   需要完全静默（联调/压测）时显式 `config_set mqtt telemetry_enable false`
+    //   并落盘即可，显式值永远优先于本默认值（见 `apply_declared_defaults`：
+    //   "已有值（含显式 false）⇒ 一律尊重"）。
+    {
+        CONFIG_MODULE_MQTT,
+        "telemetry_enable",
+        CFG_KEY_BOOL,
+        true
     }
 };
 
@@ -4125,7 +4151,11 @@ int config_get_mqtt_keep_alive()
 //   · 沿用既有单键 getter 模式（同 config_get_valve_enable / config_get_weight_enable）
 bool config_get_telemetry_enable()
 {
-    return module_ro(CONFIG_MODULE_MQTT)["telemetry_enable"] | false;
+    // ★ [2026-11-05] 兜底值 `false` → `true`：与 `kDeclaredKeys` 里的声明保持一致。
+    //   键缺失时（模块未加载 / 配置损坏）也必须让核心遥测能力可用，
+    //   否则故障表现为"设备一切正常、只有历史曲线停了"，且完全静默。
+    //   显式 false（联调/压测静默窗口）不受影响：键存在时读的就是实际值。
+    return module_ro(CONFIG_MODULE_MQTT)["telemetry_enable"] | true;
 }
 
 // ---------------- WiFi 配置更新 ----------------
