@@ -218,6 +218,52 @@ int probe_run()
         check(s2.hasPower && s2.power == true && s2.lastResult == 1, "插座 true 正确落库");
     }
 
+    /* ============================================================
+     * ★ [2026-11-05 二期] 请求 id 回显 —— 身份认证的"请求/响应关联"基础
+     *
+     * 为什么必须锁死：单播验证与并行认证都靠「回包 id == 本次请求 id」来
+     *   排除迟到/跨轮的旧响应。若解析层悄悄丢掉 id，上层会把任何能解开的包
+     *   都当成"这次请求的答案"，安全语义直接塌掉。
+     * ============================================================ */
+    {
+        xlan::Reply r;
+
+        const char *ok1 = "{\"id\":1234,\"result\":[{\"did\":\"p\",\"siid\":2,\"piid\":26,\"code\":0,\"value\":0}]}";
+        check(parseN(ok1, r) && r.hasId && r.id == 1234,
+              "ID-1 成功回包的 id 被原样解析（实测设备回显 1234）");
+        check(r.value.hasValue && r.value.intVal == 0,
+              "ID-2 带 id 不影响属性值解析");
+
+        const char *ok2 = "{\"id\":900,\"result\":[{\"siid\":2,\"piid\":1,\"value\":true}]}";
+        check(parseN(ok2, r) && r.hasId && r.id == 900 && r.value.boolVal,
+              "ID-3 布尔属性同样带 id 且值正确");
+
+        /* 认证探针 id 的最大值（并行认证编码上限附近）必须能解析 */
+        const char *big = "{\"id\":1211,\"result\":[{\"siid\":2,\"piid\":1,\"value\":false}]}";
+        check(parseN(big, r) && r.hasId && r.id == 1211,
+              "ID-4 探针 id 上界（1211）可解析");
+
+        /* id 缺失 ⇒ hasId=false（上层必须判为"不可关联"） */
+        const char *noid = "{\"result\":[{\"siid\":2,\"piid\":26,\"value\":1}]}";
+        check(parseN(noid, r) && !r.hasId,
+              "ID-5 缺 id ⇒ hasId=false（不可关联，上层必须拒绝认领）");
+
+        /* id 类型不对 ⇒ 不可关联，但整帧仍合法（否则会连带丢掉有效属性） */
+        const char *badid = "{\"id\":\"abc\",\"result\":[{\"siid\":2,\"piid\":26,\"value\":2}]}";
+        check(parseN(badid, r) && !r.hasId && r.value.hasValue && r.value.intVal == 2,
+              "ID-6 id 非整数 ⇒ 不可关联，但属性仍解析（不整帧丢弃）");
+
+        /* 错误回包：id + code 并存，仍是合法 JSON */
+        const char *errj = "{\"id\":777,\"code\":-704220043,\"message\":\"x\"}";
+        check(parseN(errj, r) && r.hasId && r.id == 777 && r.hasCode && r.code == -704220043,
+              "ID-7 错误回包同时带 id 与 code（关联 + 错误码都能取到）");
+
+        /* id 出现在 result 之后也不受影响（字段顺序无关） */
+        const char *late = "{\"result\":[{\"siid\":2,\"piid\":26,\"value\":3}],\"id\":555}";
+        check(parseN(late, r) && r.hasId && r.id == 555 && r.value.intVal == 3,
+              "ID-8 字段顺序无关（id 在后也能解析）");
+    }
+
     puts(g_fail == 0 ? "\n== ALL PASS ==\n" : "\n== HAS FAILURES ==\n");
     return g_fail;
 }

@@ -64,30 +64,44 @@ constexpr uint32_t kProbeRetryMs = 3000;
  *   `XIAOMI_STATE_FRESH_MS`（唯一定义源，workflow pre-flight 直接引用）。
  */
 /*
- * ★★ [2026-11-04] 动态发现时序（**IP 只在 RAM，绝不写 NVS**）。
+ * ★★ [2026-11-05 · 二期] 身份确认有**两条**路，不是一条：
  *
- * 实测依据（本机 LAN，纯 hello / get_properties 只读）：
- *   · 一次广播 hello 即可同时收到两台目标设备响应（3/3 轮）；
- *   · 广播响应自带 device_id / stamp，可直接用于后续加密认证查询
- *     （两台设备均实测成功）⇒ 每个候选认证只需**一次**往返；
- *   · 同网段共 4 台 miIO 设备响应 ⇒ 必须按各自 Token 认证归属，不按响应顺序。
+ *   ① 快路径（缓存 IP 单播验证，§2）
+ *        上次认证过的 RAM IP 还在 ⇒ 向它单播 hello（拿 device_id/stamp）
+ *        ⇒ 用它自己的会话参数发**一条加密只读查询** ⇒ 解密 + id 回显都对上
+ *        ⇒ 身份确认，直接执行本次命令。**不需要广播、不需要候选收集。**
  *
- * 流程 = 广播(2 包) → 收集窗口 → 逐 (设备 × 候选) 一次认证查询。
- * 不做 254 地址扫描，不引入大数组，不阻塞主循环。
+ *   ② 回退（广播 + 并行认证，§3）
+ *        单播无响应 / 解密失败 / hello 的 device_id 与上次不符（IP 被别的
+ *        米家设备占用了）⇒ 作废缓存，全子网广播收集候选，再**同时**向
+ *        所有 (设备 × 候选) 发认证帧，用一个接收窗口统一收集。
+ *        旧实现是逐个候选串行等 700 ms 超时 ⇒ 4 个候选最坏 2.8 s；
+ *        并行后与候选数量**无关**。
+ *
+ * 实测（本机 LAN，纯 hello / get_properties 只读，各 6 轮）：
+ *   · 喂食器 hello p50 8 ms / 认证 p50 11 ms ⇒ 快路径合计约 19 ms；
+ *   · 插座   hello p50 88 ms / 认证 p50 203 ms ⇒ 约 291 ms（设备端唤醒慢，
+ *     属协议现实，不能靠缩短安全步骤去"凑"指标）；
+ *   · 两台设备都**原样回显请求 id** ⇒ 用它做请求/响应关联，排除迟到与跨轮响应。
  */
-/*
- * ★★ [2026-11-05] 每次独立操作都要重跑一遍这个流程 ⇒ 单轮耗时直接影响
- *   用户体感与安全定时器（插座到点断电）。因此把「固定等满」改成「静默即收尾」：
- *     · 收集窗口：最多 `kDiscCollectMs`，但**连续 `kDiscQuietMs` 没有新候选就提前结束**；
- *     · 单候选认证回包：`kDiscReplyMs`（局域网实测 20–100 ms，700 ms 已很宽）。
- *   实测值见报告（广播 → 收集 → 认证 → 总耗时）。
- */
+constexpr uint32_t kVerifyHelloMs = 600;    // 单播 hello 回包等待（插座 p95 121 ms）
+constexpr uint32_t kVerifyAuthMs  = 900;    // 单播认证回包等待（插座 p95 222 ms）
 constexpr uint32_t kDiscCollectMs = 1200;   // 广播响应收集窗口（上限）
 constexpr uint32_t kDiscQuietMs = 400;      // 收集期"无新候选"静默阈值（提前收尾）
-constexpr uint32_t kDiscReplyMs = 700;      // 单个认证查询的回包等待
+constexpr uint32_t kAuthWindowMs  = 900;    // 并行认证统一接收窗口（覆盖最慢设备）
 constexpr uint32_t kDiscRetryMs = 15000;    // 整轮失败后的静默期（防风暴）
 constexpr uint32_t kDiscRequestBudgetMs = 20000; // 单条命令等待发现完成的上界
 constexpr uint8_t  kDiscBroadcasts = 2;
+
+/*
+ * ★★ [2026-11-05 二期 · 真机验收发现] 控制命令受理后，**延时**再补一次只读确认。
+ *
+ * 为什么不能立刻读：插座收到 set_properties 后回包很快，但**真正切换**要再过
+ *   一秒左右。实测（UI 通电 → 8 s 后查询仍为 false，而 LAN 独立查询已是 true）：
+ *   立刻读会把"还没切换"的旧值写回 System State ⇒ 页面一直显示「已断电」。
+ * 取 2.5 s：覆盖插座的最坏切换时延，又远小于 60 s 安全定时器。
+ */
+constexpr uint32_t kConfirmReadDelayMs = 2500;
 
 // ★ [2026-10-29] 普通通电的执行端安全时限（秒）
 constexpr uint32_t kPlugAutoOffSec = 60;
@@ -131,34 +145,67 @@ DevInfo g_plug;
 /* ★ RAM 中的 IP 缓存（唯一权威）+ 发现状态机，重启后自然清空 */
 xland::Discovery g_disc;
 xland::IpCache g_ipCache;
-uint32_t g_discDeadline = 0;
+uint32_t g_collectDeadline = 0;     // 广播收集截止（秒级窗口）
 uint32_t g_discRetryAt = 0;
-IPAddress g_discProbeIp;
 uint32_t g_lastLocalIp = 0;
 bool g_lastWifiConnected = false;
 
 /*
- * ★★ [2026-11-05] 本**轮**发现覆盖的设备位掩码。
+ * ★ [2026-11-05 二期] 上次**认证通过**时的 device_id（每台一份，纯 RAM）。
  *
- * 为什么要记在 `Discovery` 之外：
- *   · 轮次开始后，另一台设备的操作可能中途加入（`xland::beginOperation`），
- *     它的 pending 位会被 `nextProbe` 的游标跳过（curDev 已经走过去）；
- *   · 轮末必须能区分「本轮没覆盖到这台」和「覆盖到了但认证失败」，
- *     前者要**立刻补一轮**，后者按失败如实返回。
+ * 用途只有一个：快路径单播 hello 回来后，若 device_id 与上次不同 ⇒
+ * 这个 IP 上已经不是原来那台设备（典型的 DHCP 把地址分给了别的米家设备，
+ * §2.1 的核心场景）。此时**立即**判失败转广播，不必再发一条必然解不开的
+ * 认证帧（插座那一条要多花 200 ms）。
+ *
+ * ⚠ 它不是身份依据：device_id 只在明文 hello 头里，谁都能伪造。
+ *   真正的身份依据永远是「Token 解密 + 校验和 + id 关联」。
+ */
+uint32_t g_lastDevId[2] = {0, 0};
+
+/*
+ * ★ [2026-11-05 二期] 本设备的**本次操作**是否已完成身份确认。
+ *   `startRequest()` 一开始就清 false；只有发现层确认成功才置 true。
+ *   ⇒ 缓存值存在本身**绝不能**让 stage0 认为"可以发命令了"。
+ */
+bool g_devReady[2] = {false, false};
+
+/*
+ * ★★ [2026-11-05] 本**轮**发现覆盖的设备位掩码。
+ *   轮次开始后另一台设备的操作可能中途加入 ⇒ 轮末必须能区分
+ *   「本轮没覆盖到这台」和「覆盖到了但认证失败」。
  */
 uint8_t g_roundMask = 0;
 /* 本轮**真正发过认证查询**的设备位（用于区分「没试过」与「试过但失败」） */
 uint8_t g_roundProbedMask = 0;
+/* 本轮实际发出的并行认证探针条数（诊断用；未被认领的探针不会置 resolved 位） */
+uint8_t g_roundSentProbes = 0;
 
 /* 发现耗时统计（只读、纯数字，不含凭据） */
 uint32_t g_discRoundStartMs = 0;
-uint32_t g_discProbeStartMs = 0;
 uint32_t g_discLastCandMs = 0;
 uint32_t g_discLastCollectMs = 0;
-uint32_t g_discLastProbeMs = 0;
+uint32_t g_discLastAuthMs = 0;
+uint32_t g_discAuthStartMs = 0;
 uint32_t g_discLastTotalMs = 0;
 uint16_t g_discRounds = 0;
 uint16_t g_discRoundFail = 0;
+
+/*
+ * ★ [2026-11-05 二期] 控制类命令受理后的**延时确认读**排程（0 = 无）。
+ *   独立于 periodicProbe 的 60 s 计时，避免"被打上计时又被延迟"导致永不执行。
+ */
+uint32_t g_confirmAt[2] = {0, 0};
+
+/* 单播快路径统计（每个设备一份，供报告与串口取证） */
+uint32_t g_verifyT0[2] = {0, 0};
+uint32_t g_verifyAuthT[2] = {0, 0};
+uint32_t g_verifyHelloMs[2] = {0, 0};
+uint32_t g_verifyAuthMs[2] = {0, 0};
+uint8_t  g_verifyResult[2] = {0, 0};   // 0=未做 1=快路径成功 2=已回退广播
+uint16_t g_verifyCount = 0;
+uint16_t g_verifyOkCnt = 0;
+uint16_t g_verifyFallbackCnt = 0;
 
 bool g_inited = false;
 bool g_udpReady = false;
@@ -178,6 +225,20 @@ void invalidateIpCache()
     xland::invalidateAll(g_ipCache, g_disc);
     g_feeder.devId = 0; g_feeder.stamp = 0;
     g_plug.devId = 0;   g_plug.stamp = 0;
+
+    /*
+     * ★ [2026-11-05 二期] 网络变了，三样东西一起作废：
+     *   · 在途的单播验证（旧 IP 在新网络里毫无意义）；
+     *   · 上次认证过的 device_id 基准（换了网络可能换了一整套设备）；
+     *   · "本次操作已验证"标志。
+     * 唯一不动的是 NVS 里的 Token。
+     */
+    g_disc.candCount = 0;   /* vf 已由 invalidateAll 清空 */
+    g_disc.phase = xland::PhaseIdle;
+    g_lastDevId[0] = 0;
+    g_lastDevId[1] = 0;
+    g_devReady[0] = false;
+    g_devReady[1] = false;
 }
 
 /*
@@ -195,6 +256,7 @@ void dropCachedIp(bool feeder)
     const unsigned char idx = feeder ? xland::kDevFeeder : xland::kDevPlug;
     g_ipCache.ip[idx] = 0;
     g_ipCache.valid[idx] = false;
+    g_devReady[idx] = false;        /* ★ 缓存没了，"本次已验证"自然也失效 */
     DevInfo &d = feeder ? g_feeder : g_plug;
     d.devId = 0;
     d.stamp = 0;
@@ -538,6 +600,13 @@ struct Reply
     bool valid;
     uint32_t devId;
     uint32_t stamp;
+    /*
+     * ★ [2026-11-05 二期] 请求 id 的回显。身份认证用它做「这条回包是不是
+     *   回答我这次请求」的关联：迟到响应 / 上一轮的残留 / 别人的探测
+     *   都会因为 id 对不上而被丢弃。
+     */
+    bool hasId;
+    int  reqId;
     int code;          // 顶层 code：**成功回包不带此字段** ⇒ 缺省视为 0
     int propCode;      // result[0].code：单属性级错误码（成功同样可能缺省 ⇒ 0）
     bool hasResult;
@@ -549,6 +618,8 @@ struct Reply
 bool parseReply(DevInfo &dev, uint8_t *buf, int len, Reply &out)
 {
     out.valid = false;
+    out.hasId = false;
+    out.reqId = 0;
     if (len < 32) return false;
 
     uint16_t magic = (uint16_t)((buf[0] << 8) | buf[1]);
@@ -600,6 +671,8 @@ bool parseReply(DevInfo &dev, uint8_t *buf, int len, Reply &out)
     if (!xlan::parseReply((const char *)plain, (int)plainLen, xr) || !xr.ok) return false;
 
     out.valid = true;
+    out.hasId = xr.hasId;
+    out.reqId = xr.id;
     out.code = xr.code;
     out.propCode = xr.propCode;
     out.hasResult = xr.hasResult;
@@ -642,6 +715,25 @@ const char *buildCommand(uint8_t kind, uint8_t portions, char *buf, size_t cap)
     }
 }
 
+/*
+ * ★ [2026-11-05 二期] **身份认证专用**只读查询：与 `REQ_READ_*` 同属性，
+ *   但请求 id 由调用方指定（`verifyReplyId` / `probeReplyId`）。
+ *
+ * 为什么必须换 id：
+ *   · 固定 id（1/2）无法判断一条回包是"回答我这次请求"还是"上一轮的迟到包"；
+ *   · 带代号 + 设备位 + 候选位的 id 让每个在飞请求都有唯一关联键，
+ *     回包 id 对不上就一律丢弃 ⇒ 迟到/重复/跨轮响应不会被误认领；
+ *   · 值域与普通命令 id(1..5) 不重叠，避免被当成命令结果。
+ */
+const char *buildProbeCommand(uint8_t kind, unsigned int replyId, char *buf, size_t cap)
+{
+    const int piid = (kind == REQ_READ_FEEDER) ? 26 : 1;   // 2/26 out_status · 2/1 power
+    snprintf(buf, cap,
+             "{\"id\":%u,\"method\":\"get_properties\",\"params\":[{\"did\":\"p\",\"siid\":2,\"piid\":%d}]}",
+             replyId, piid);
+    return buf;
+}
+
 // =====================================================
 // ★★ [2026-11-04] miIO 动态发现 —— IP 只存在于 RAM
 //
@@ -662,33 +754,94 @@ IPAddress subnetBroadcast()
     return IPAddress((uint32_t)ip | ~(uint32_t)mask);
 }
 
-/** 开启一轮广播发现（非阻塞）。只纳入「有 Token 且当前无有效 RAM IP」的设备。 */
+/* =====================================================
+ * 身份确认 ①：单播快路径（§2）
+ *   缓存 IP → hello（取 device_id/stamp）→ 加密只读认证 → 身份确认
+ * ===================================================== */
+
+static bool applyVerifiedReply(unsigned char dev, const Reply &r);
+
+/**
+ * 为**单台**设备启动单播验证（发一条单播 hello 并起自己的倒计时）。
+ *
+ * ★ 之所以按设备拆开：两台是相互独立的 unicast 流，第二台可以在第一台
+ *   验证在飞时**立刻加入**，不必等它结束、更不必退化成广播。
+ */
+void startVerifyDev(unsigned char dev)
+{
+    if (WiFi.status() != WL_CONNECTED || !g_udpReady)
+    {
+        g_disc.vf[dev].active = 0;
+        g_disc.vf[dev].stage = 0;
+        return;
+    }
+    xland::Verify &v = g_disc.vf[dev];
+    const uint32_t now = millis();
+    g_verifyT0[dev] = now;
+    g_verifyHelloMs[dev] = 0;
+    g_verifyAuthMs[dev] = 0;
+    g_verifyResult[dev] = 0;
+    v.deadline = now + kVerifyHelloMs;
+    if (!sendHelloTo(IPAddress(v.ip)))
+    {
+        Serial.printf("[XiaomiLAN] verify dev=%s hello send failed -> broadcast\n",
+                      dev == xland::kDevFeeder ? "feeder" : "plug");
+        xland::verifyFail(g_disc, g_ipCache, dev);
+        g_verifyResult[dev] = 2;
+        g_verifyFallbackCnt++;
+    }
+}
+
+/**
+ * 启动单播验证：对每台 active 的设备各发一条**单播** hello。
+ *
+ * ★ 两台可以同时验证：目标 IP 不同、Token 不同、回包 id 带设备位 ⇒ 不会串台。
+ */
+void startVerify()
+{
+    if (WiFi.status() != WL_CONNECTED || !g_udpReady)
+    {
+        /*
+         * ★★ 没有网络时**绝不伪造"正在验证"**。
+         *   2026-11-05 真机踩到：上电瞬间伪造在途状态 ⇒ 下一轮拿过期 deadline
+         *   立刻判超时 ⇒ 空转把 stage0 的补发现额度烧光，WiFi 连上后反而不发现。
+         */
+        for (unsigned char dev = 0; dev < 2; dev++)
+        {
+            g_disc.vf[dev].active = 0;
+            g_disc.vf[dev].stage = 0;
+        }
+        g_disc.phase = xland::PhaseIdle;
+        return;
+    }
+
+    bool any = false;
+    for (unsigned char dev = 0; dev < 2; dev++)
+    {
+        if (!g_disc.vf[dev].active) continue;
+        any = true;
+        startVerifyDev(dev);
+    }
+    g_disc.phase = any ? xland::PhaseVerifying : xland::PhaseDone;
+}
+
+/** 开启一轮广播发现（非阻塞）。只纳入调用方已排入 pending 且已配 Token 的设备。 */
 void startDiscoveryRound()
 {
-    /*
-     * ★★ [2026-11-05 · 真机 boot 实测修复] 没有网络时**绝不伪造"正在发现"**。
-     *
-     * 现象（刷写后串口实拍）：上电时 `periodicProbe()` 立刻发起一次探活
-     *   ⇒ `beginOperationDiscovery()` 把 phase 置成 Collecting，但此时 WiFi
-     *   还没连上 ⇒ 本函数提前返回、既没广播也没设 deadline
-     *   ⇒ 下一轮 `advanceDiscovery()` 拿**过期 deadline** 立刻判"超时"
-     *   ⇒ 连打 3 次 `discovery round=... total=0ms collect=0ms`（空转），
-     *   把 stage0 的补发现额度烧光，等 WiFi 真连上后反而不再发现。
-     *
-     * 修法：不能在无网络时开轮 ⇒ 明确回到 Idle，把"还没开始"和"正在跑"分开；
-     *   stage0 的补发现也会在无网络时**不计数**（见 advanceSlot）。
-     */
     if (WiFi.status() != WL_CONNECTED || !g_udpReady)
     {
         g_disc.phase = xland::PhaseIdle;
         return;
     }
 
+    /* 保留"要发现哪几台"的意图（resetDiscovery 会清 pending / 候选 / vf） */
+    unsigned char want = g_disc.pending;
+    if (!g_feeder.configured) want &= (unsigned char)~xland::kMaskFeeder;
+    if (!g_plug.configured)   want &= (unsigned char)~xland::kMaskPlug;
+
     xland::resetDiscovery(g_disc);
-    if (g_feeder.configured && !xland::cacheUsable(g_ipCache, xland::kDevFeeder, true))
-        xland::requestDiscovery(g_disc, xland::kDevFeeder);
-    if (g_plug.configured && !xland::cacheUsable(g_ipCache, xland::kDevPlug, true))
-        xland::requestDiscovery(g_disc, xland::kDevPlug);
+    g_disc.pending = (unsigned char)(want & xland::kMaskBoth);
+
     if (g_disc.pending == 0)
     {
         g_disc.phase = xland::PhaseDone;
@@ -698,6 +851,7 @@ void startDiscoveryRound()
 
     g_roundMask = g_disc.pending;
     g_roundProbedMask = 0;
+    g_roundSentProbes = 0;
     g_disc.phase = xland::PhaseCollecting;
     g_discRoundStartMs = millis();
     g_discRounds++;
@@ -707,55 +861,73 @@ void startDiscoveryRound()
         if (!sendHelloTo(bc)) break;
     }
     g_discLastCandMs = millis();
-    g_discDeadline = millis() + kDiscCollectMs;
+    g_collectDeadline = millis() + kDiscCollectMs;
 }
 
 /**
- * ★★ [2026-11-05 · 任务书 §2.1/§2.2] 一次独立操作开始前的**强制**发现入口。
+ * ★★ [2026-11-05] 一次独立操作开始前的**强制**身份确认入口。
  *
- * 无条件作废该设备的 RAM IP —— **缓存不是跳过发现的理由**。
- * 同一操作内部的 hello / 加密帧 / 重试属于"同一次操作"，不再重复广播。
- *
- * ★★ 真机踩坑（刷写后串口实拍，必须保留这段说明）：
- *   旧写法先调 `xland::beginOperation()` 再判断 phase —— 而该函数在
- *   Idle/Done 时会**自己把 phase 置成 Collecting** ⇒ 判断永远命中"在途"
- *   分支 ⇒ `startDiscoveryRound()` **一次都没被调用**。
- *   表现：`discovery round=0 ... total=0ms collect=0ms` 反复出现，
- *   请求在 stage0 等到超时，UI 报 `last_err=2`（无响应）——
- *   而设备其实完全正常。
- *   ⇒ **`inFlight` 必须在任何改动 phase 的调用之前算好**。
+ * 「缓存不是跳过验证的理由」在这里落地成：
+ *   · 有缓存 IP ⇒ 单播快路径（必须 hello + 加密认证都过才算数）；
+ *   · 无缓存 / 验证失败 ⇒ 广播 + 并行认证。
+ * 两条路都**必然**做一次 Token 身份认证，没有"免验"分支。
  */
 void beginOperationDiscovery(unsigned char devIdx)
 {
     const unsigned char mask = xland::devMask(devIdx);
-    const bool inFlight = (g_disc.phase == xland::PhaseCollecting ||
-                           g_disc.phase == xland::PhaseProbing);
-
-    xland::beginOperation(g_ipCache, g_disc, devIdx);
-
     DevInfo &d = (devIdx == xland::kDevFeeder) ? g_feeder : g_plug;
     d.devId = 0;
     d.stamp = 0;
+    g_devReady[devIdx] = false;      // ★ 本次操作尚未验证
 
-    if (inFlight)
+    /*
+     * ★★ 在途轮次：只并入，不打断。
+     *   判断必须在 `beginOperation()` **之前** —— 后者在 Idle/Done 时会
+     *   自己把 phase 置成 PhaseVerifying；判晚一步就永远走不到"开轮"分支
+     *   （2026-11-05 真机踩过：串口恒为 `discovery round=0 total=0ms`）。
+     */
+    if (xland::discoveryInFlight(g_disc))
     {
-        /* 在途轮次：并入本轮（保留另一台已收集到的候选，不打断） */
+        /* 并入在途轮次；顺带把该设备的"已确认"降级（beginOperation 内部处理） */
+        xland::beginOperation(g_ipCache, g_disc, devIdx);
+        g_disc.pending |= mask;
         g_roundMask |= mask;
+
+        /*
+         * ★★ [2026-11-05 二期 · 真机日志发现] 在途的如果是**单播验证**，
+         *   本设备也可以立刻并行开始自己那条验证（两台互不干扰）。
+         *   旧行为是干等对方验证结束，然后因为 pending 非空而**退化成整轮广播**
+         *   —— 实测多花 ~540 ms，而这正是"一次点读取两台状态"最常见的交错。
+         */
+        if (g_disc.phase == xland::PhaseVerifying &&
+            xland::beginVerifyOnly(g_disc, g_ipCache, devIdx))
+        {
+            g_verifyCount++;
+            startVerifyDev(devIdx);
+        }
         return;
     }
 
-    g_discRetryAt = 0;      // 操作优先：不受上一轮失败后的静默期影响
-    startDiscoveryRound();  // 内部按「已清缓存」重新组 pending
-    g_roundMask |= mask;
+    const bool fast = xland::beginOperation(g_ipCache, g_disc, devIdx);
+    g_discRetryAt = 0;               // 操作优先：不受上一轮失败后的静默期影响
+    g_disc.pending |= mask;
+    g_roundMask = g_disc.pending;
+    g_discRoundStartMs = millis();
+
+    if (fast)
+    {
+        g_verifyCount++;
+        startVerify();
+    }
+    else
+    {
+        startDiscoveryRound();
+    }
 }
 
 /**
- * 本轮发现结束的**唯一**出口（所有 PhaseDone 都必须走这里）。
- *
- * 做两件事：
- *   ① 打印耗时（只读诊断，不含凭据）；
- *   ② 若有 stage0 请求仍在等且本次没拿到 IP ⇒ **立刻补一轮**，
- *      不被 `kDiscRetryMs` 静默期拖到请求超时。
+ * 本轮发现结束的**唯一**出口。
+ * 只打印诊断（纯数字，不含任何凭据），不做补轮 —— 补轮由 stage0 有界触发。
  */
 void endDiscoveryRound()
 {
@@ -764,64 +936,328 @@ void endDiscoveryRound()
 
     const uint32_t now = millis();
     g_discLastTotalMs = (g_discRoundStartMs != 0) ? (now - g_discRoundStartMs) : 0;
-    if (g_discLastTotalMs > 0 && (g_ipCache.ip[0] == 0 && g_ipCache.ip[1] == 0))
+    if (g_discLastTotalMs > 0 && g_ipCache.ip[0] == 0 && g_ipCache.ip[1] == 0)
         g_discRoundFail++;
 
-    Serial.printf("[XiaomiLAN] discovery round=%u mask=%u probed=%u cand=%u total=%ums "
-                  "collect=%ums probe=%ums ok=%d/%d\n",
-                  (unsigned)g_discRounds, (unsigned)g_roundMask, (unsigned)g_roundProbedMask,
-                  (unsigned)g_disc.candCount, (unsigned)g_discLastTotalMs,
-                  (unsigned)g_discLastCollectMs, (unsigned)g_discLastProbeMs,
+    uint8_t resolved = 0;
+    for (unsigned char i = 0; i < 16; i++)
+        if (g_disc.authResolved & (1u << i)) resolved++;
+
+    Serial.printf("[XiaomiLAN] discovery round=%u gen=%u mask=%u cand=%u probes=%u/%u conflict=%u "
+                  "total=%ums collect=%ums auth=%ums ok=%d/%d\n",
+                  (unsigned)g_discRounds, (unsigned)g_disc.gen, (unsigned)g_roundMask,
+                  (unsigned)g_disc.candCount, (unsigned)g_roundSentProbes,
+                  (unsigned)resolved, (unsigned)g_disc.conflictMask,
+                  (unsigned)g_discLastTotalMs, (unsigned)g_discLastCollectMs,
+                  (unsigned)g_discLastAuthMs,
                   g_ipCache.valid[0] ? 1 : 0, g_ipCache.valid[1] ? 1 : 0);
 }
 
-/** 给当前 (设备 × 候选 IP) 组合发一条**只读**认证查询。 */
-bool sendAuthProbe()
-{
-    unsigned char dev = 0;
-    unsigned int ip = 0;
-    if (!xland::nextProbe(g_disc, &dev, &ip)) return false;
+/* =====================================================
+ * 身份确认 ②：广播 + **并行**认证（§3）
+ *
+ * 为什么必须并行：旧实现逐候选串行、每错一个等 700 ms 超时，
+ *   4 个候选最坏 2.8 s（插座更慢，实测单次认证就 200 ms）。
+ *   现在同一轮把所有 (设备 × 候选) 全发出去，用一个接收窗口收，
+ *   总耗时与候选数量**无关**。
+ *
+ * ★ 每个探针都用**该候选自己的** device_id/stamp 组帧，绝不复制同一个报文；
+ *   回包按「来源 IP + 解密成功 + id 回显」三段联合匹配，
+ *   迟到 / 重复 / 跨轮响应都会被 id 挡掉。
+ * ===================================================== */
 
+/** 向某个候选发一条本设备的认证查询。 */
+bool sendProbe(unsigned char dev, unsigned char cand)
+{
     DevInfo &target = (dev == xland::kDevFeeder) ? g_feeder : g_plug;
     if (!target.configured) return false;
 
-    g_roundProbedMask |= xland::devMask(dev);   // 记录"本轮确实试过这台"
-
     /*
-     * 广播 hello 响应自带的 devId / stamp 可直接用于加密请求
-     * （2026-11-04 本机实测：两台设备均一次通过，无需再单播握手）。
+     * probe 只是借一个 Token 的载体：devId/stamp 必须用**该候选自己**的，
+     * 否则多个候选会共用同一会话号（任务书明令禁止）。
      */
     DevInfo probe;
     memcpy(probe.token, target.token, 16);
-    probe.devId = g_disc.cand[g_disc.candIdx].devId;
-    probe.stamp = g_disc.cand[g_disc.candIdx].stamp + 1;
+    probe.devId = g_disc.cand[cand].devId;
+    probe.stamp = g_disc.cand[cand].stamp + 1;   // 与 MiLAN_Test 一致：hello ts + 1
     probe.configured = true;
 
     char payload[kMaxPayload];
-    buildCommand(dev == xland::kDevFeeder ? REQ_READ_FEEDER : REQ_READ_PLUG,
-                 0, payload, sizeof(payload));
-    g_discProbeIp = IPAddress(ip);
-    if (!sendEncryptedTo(probe, g_discProbeIp, payload)) return false;
-    g_disc.probeStage = 1;
-    g_discDeadline = millis() + kDiscReplyMs;
-    return true;
+    buildProbeCommand(dev == xland::kDevFeeder ? REQ_READ_FEEDER : REQ_READ_PLUG,
+                      xland::probeReplyId(g_disc.gen, dev, cand), payload, sizeof(payload));
+    return sendEncryptedTo(probe, IPAddress(g_disc.cand[cand].ip), payload);
+}
+
+/** 把本轮所有 (设备 × 候选) 认证帧一次性发出。@return 实际发出条数 */
+uint8_t sendAllAuthProbes()
+{
+    uint8_t sent = 0;
+    for (unsigned char dev = 0; dev < 2; dev++)
+    {
+        if ((g_disc.pending & xland::devMask(dev)) == 0) continue;
+        g_roundProbedMask |= xland::devMask(dev);   // 记录"本轮确实试过这台"
+        for (unsigned char i = 0; i < g_disc.candCount; i++)
+        {
+            if (sendProbe(dev, i)) sent++;
+            else xland::resolveProbe(g_disc, dev, i);   // 发不出去就别再等它
+        }
+    }
+    return sent;
 }
 
 /**
- * 认证回包判定：**四个条件同时满足**才算身份确认。
- *   parseReply 内部已做「校验和 = md5(header+token+ct)」⇒ 校验失败即 Token 不匹配。
+ * 处理一条并口认证回包。
+ *
+ * ★ 为什么不能"按来源 IP 直接归属"：同一个 IP 上可能同时有两个探针在飞
+ *   （喂食器与插座都对它试过），只有 Token 能解开的那条才是真的。
+ *   所以顺序是：先定位候选 → 再逐设备尝试解密 → 解开的那个再看 id 关联。
  */
-bool authReplyOk(bool feeder, uint8_t *buf, int len)
+void onAuthPacket(uint8_t *buf, int len, IPAddress from)
 {
-    DevInfo probe;
-    DevInfo &target = feeder ? g_feeder : g_plug;
-    memcpy(probe.token, target.token, 16);
-    probe.devId = 0;
-    probe.stamp = 0;
-    probe.configured = true;
-    Reply r;
-    if (!parseReply(probe, buf, len, r) || !r.valid) return false;
-    return (r.code == 0) && (r.propCode == 0) && r.hasValue;
+    for (unsigned char dev = 0; dev < 2; dev++)
+    {
+        unsigned char cand = 0;
+        unsigned int expectId = 0;
+        if (!xland::matchProbe(g_disc, dev, (uint32_t)from, &cand, &expectId)) continue;
+
+        DevInfo &target = (dev == xland::kDevFeeder) ? g_feeder : g_plug;
+        if (!target.configured) continue;
+
+        DevInfo probe;
+        memcpy(probe.token, target.token, 16);
+        probe.devId = 0;
+        probe.stamp = 0;
+        probe.configured = true;
+
+        Reply r;
+        /* 解密/校验和不过 ⇒ 不是这台设备的回包（Token 不匹配），交给另一台试 */
+        if (!parseReply(probe, buf, len, r) || !r.valid) continue;
+        /* 解开但 id 不是本次请求 ⇒ 迟到 / 跨轮 / 别人的响应 ⇒ 丢弃 */
+        if (!r.hasId || r.reqId != (int)expectId) continue;
+
+        const bool attrOk = (r.code == 0) && (r.propCode == 0) && r.hasValue;
+        if (!attrOk)
+        {
+            /* 能解密说明 Token 对，但属性读不到 ⇒ 该组合不成立，别再等它 */
+            xland::resolveProbe(g_disc, dev, cand);
+            return;
+        }
+
+        const xland::ClaimResult cr = xland::claimParallel(g_disc, g_ipCache, dev, cand);
+        if (cr == xland::ClaimOk)
+        {
+            DevInfo &tgt = (dev == xland::kDevFeeder) ? g_feeder : g_plug;
+            tgt.devId = r.devId;
+            tgt.stamp = r.stamp;
+            g_lastDevId[dev] = r.devId;
+            g_devReady[dev] = true;
+            Serial.printf("[XiaomiLAN] auth claim dev=%s cand=%u (parallel)\n",
+                          dev == xland::kDevFeeder ? "feeder" : "plug", (unsigned)cand);
+            applyVerifiedReply(dev, r);
+        }
+        else if (cr == xland::ClaimConflict)
+        {
+            Serial.printf("[XiaomiLAN] auth CONFLICT dev=%s cand=%u -> cache dropped\n",
+                          dev == xland::kDevFeeder ? "feeder" : "plug", (unsigned)cand);
+        }
+        return;   // 一个包只归一台设备
+    }
+    /* 谁都没认领：陌生设备 / 迟到包 ⇒ 丢弃（已计入 g_statRecv） */
+}
+
+/* ------------------------------------------------------------ 分阶段推进 */
+
+void advanceVerify(uint8_t *buf, int len, IPAddress from, uint32_t now)
+{
+    bool changed = false;
+
+    for (unsigned char dev = 0; dev < 2; dev++)
+    {
+        xland::Verify &v = g_disc.vf[dev];
+        if (!v.active) continue;
+
+        const bool mine = (len > 0 && (uint32_t)from == v.ip);
+        DevInfo &target = (dev == xland::kDevFeeder) ? g_feeder : g_plug;
+
+        /* ---------- stage 0：等单播 hello 回包 ---------- */
+        if (v.stage == 0)
+        {
+            if (mine && len == 32 && ((uint16_t)((buf[0] << 8) | buf[1]) == kMagic))
+            {
+                const uint32_t did = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
+                                     ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
+                const uint32_t ts  = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
+                                     ((uint32_t)buf[14] << 8) | (uint32_t)buf[15];
+                g_verifyHelloMs[dev] = now - g_verifyT0[dev];
+
+                /*
+                 * ★ device_id 只作**早退**判据，不作身份依据：
+                 *   与上次认证过的值不同 ⇒ 这个 IP 上已经换成别的米家设备
+                 *   （DHCP 换址，§2.1 的核心场景）⇒ 直接回退广播，
+                 *   省掉一条必然解不开的认证帧（插座要 200 ms）。
+                 */
+                if (!xland::verifyHelloOk(g_disc, dev, did, ts, g_lastDevId[dev]))
+                {
+                    Serial.printf("[XiaomiLAN] verify dev=%s ip owner changed -> broadcast\n",
+                                  dev == xland::kDevFeeder ? "feeder" : "plug");
+                    xland::verifyFail(g_disc, g_ipCache, dev);
+                    g_verifyResult[dev] = 2;
+                    g_verifyFallbackCnt++;
+                    changed = true;
+                    continue;
+                }
+
+                DevInfo probe;
+                memcpy(probe.token, target.token, 16);
+                probe.devId = did;
+                probe.stamp = ts + 1;
+                probe.configured = true;
+                char payload[kMaxPayload];
+                buildProbeCommand(dev == xland::kDevFeeder ? REQ_READ_FEEDER : REQ_READ_PLUG,
+                                  v.replyId, payload, sizeof(payload));
+                if (!sendEncryptedTo(probe, IPAddress(v.ip), payload))
+                {
+                    xland::verifyFail(g_disc, g_ipCache, dev);
+                    g_verifyResult[dev] = 2;
+                    g_verifyFallbackCnt++;
+                }
+                else
+                {
+                    v.deadline = now + kVerifyAuthMs;
+                    g_verifyAuthT[dev] = now;
+                }
+                changed = true;
+                continue;
+            }
+        }
+        /* ---------- stage 1：等加密认证回包 ---------- */
+        else if (mine && len > 32)
+        {
+            DevInfo probe;
+            memcpy(probe.token, target.token, 16);
+            probe.devId = 0;
+            probe.stamp = 0;
+            probe.configured = true;
+
+            Reply r;
+            const bool decoded = parseReply(probe, buf, len, r) && r.valid;
+            const bool linked = decoded && r.hasId && r.reqId == (int)v.replyId;
+            const bool ok = linked && (r.code == 0) && (r.propCode == 0) && r.hasValue;
+
+            if (ok)
+            {
+                g_verifyAuthMs[dev] = now - g_verifyAuthT[dev];
+                xland::verifyOk(g_disc, g_ipCache, dev);
+                target.devId = r.devId;
+                target.stamp = r.stamp;
+                g_lastDevId[dev] = r.devId;
+                g_devReady[dev] = true;
+                g_verifyResult[dev] = 1;
+                g_verifyOkCnt++;
+                Serial.printf("[XiaomiLAN] verify dev=%s ok hello=%ums auth=%ums total=%ums\n",
+                              dev == xland::kDevFeeder ? "feeder" : "plug",
+                              (unsigned)g_verifyHelloMs[dev], (unsigned)g_verifyAuthMs[dev],
+                              (unsigned)(g_verifyHelloMs[dev] + g_verifyAuthMs[dev]));
+                applyVerifiedReply(dev, r);
+            }
+            else
+            {
+                /* 有回包但对不上：可能被别的设备占用 / Token 已变 / 响应过期 */
+                Serial.printf("[XiaomiLAN] verify dev=%s auth rejected (decoded=%d linked=%d) -> broadcast\n",
+                              dev == xland::kDevFeeder ? "feeder" : "plug",
+                              decoded ? 1 : 0, linked ? 1 : 0);
+                xland::verifyFail(g_disc, g_ipCache, dev);
+                g_verifyResult[dev] = 2;
+                g_verifyFallbackCnt++;
+            }
+            changed = true;
+            continue;
+        }
+
+        /* ---------- 超时 ---------- */
+        if ((int32_t)(now - v.deadline) >= 0)
+        {
+            if (v.stage == 0) g_verifyHelloMs[dev] = now - g_verifyT0[dev];
+            else              g_verifyAuthMs[dev] = now - g_verifyAuthT[dev];
+            Serial.printf("[XiaomiLAN] verify dev=%s stage=%u timeout -> broadcast\n",
+                          dev == xland::kDevFeeder ? "feeder" : "plug", (unsigned)v.stage);
+            xland::verifyFail(g_disc, g_ipCache, dev);
+            g_verifyResult[dev] = 2;
+            g_verifyFallbackCnt++;
+            changed = true;
+        }
+    }
+
+    if (changed && xland::verifyAllDone(g_disc))
+    {
+        if (g_disc.pending != 0)
+        {
+            /* 验证失败的那几台 ⇒ 立刻回退广播（不受静默期限制） */
+            Serial.println("[XiaomiLAN] verify -> broadcast fallback");
+            g_discRetryAt = 0;
+            startDiscoveryRound();
+        }
+        else
+        {
+            g_disc.phase = xland::PhaseDone;
+        }
+    }
+}
+
+void advanceCollect(uint8_t *buf, int len, IPAddress from, uint32_t now)
+{
+    if (len == 32 && ((uint16_t)((buf[0] << 8) | buf[1]) == kMagic))
+    {
+        const uint32_t did = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
+                             ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
+        const uint32_t ts  = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
+                             ((uint32_t)buf[14] << 8) | (uint32_t)buf[15];
+        xland::addCandidate(g_disc, (uint32_t)from, did, ts);
+        g_discLastCandMs = now;      // 有任何 hello 响应 ⇒ 收集窗口重新计静默
+    }
+
+    /* 已有候选且连续 kDiscQuietMs 没有新响应 ⇒ 不再死等满 kDiscCollectMs */
+    const bool quiet = (g_disc.candCount > 0) &&
+                       ((uint32_t)(now - g_discLastCandMs) >= kDiscQuietMs);
+    if (!quiet && (int32_t)(now - g_collectDeadline) < 0) return;
+
+    g_discLastCollectMs = (g_discRoundStartMs != 0) ? (now - g_discRoundStartMs) : 0;
+
+    if (g_disc.candCount == 0)
+    {
+        /* 没有任何 UDP 响应：如实结束，绝不把旧 IP 当有效地址 */
+        g_discLastAuthMs = 0;
+        endDiscoveryRound();
+        return;
+    }
+
+    xland::beginAuthRound(g_disc);
+    g_discAuthStartMs = now;
+    g_discLastAuthMs = 0;
+    g_roundSentProbes = sendAllAuthProbes();
+    if (g_roundSentProbes == 0)
+    {
+        endDiscoveryRound();
+        return;
+    }
+    g_disc.authDeadline = now + kAuthWindowMs;
+}
+
+void advanceAuth(uint8_t *buf, int len, IPAddress from, uint32_t now)
+{
+    if (len > 32) onAuthPacket(buf, len, from);
+
+    bool remaining = false;
+    for (unsigned char dev = 0; dev < 2; dev++)
+    {
+        if (xland::probeRemaining(g_disc, dev, g_disc.candCount)) { remaining = true; break; }
+    }
+
+    if (!remaining || (int32_t)(now - g_disc.authDeadline) >= 0)
+    {
+        g_discLastAuthMs = (g_discAuthStartMs != 0) ? (now - g_discAuthStartMs) : 0;
+        endDiscoveryRound();
+    }
 }
 
 /**
@@ -830,92 +1266,20 @@ bool authReplyOk(bool feeder, uint8_t *buf, int len)
  */
 void advanceDiscovery(uint8_t *buf, int len, IPAddress from)
 {
-    if (g_disc.phase != xland::PhaseCollecting && g_disc.phase != xland::PhaseProbing) return;
     const uint32_t now = millis();
-
+    if (g_disc.phase == xland::PhaseVerifying)
+    {
+        advanceVerify(buf, len, from, now);
+        return;
+    }
     if (g_disc.phase == xland::PhaseCollecting)
     {
-        if (len == 32 && ((uint16_t)((buf[0] << 8) | buf[1]) == kMagic))
-        {
-            const uint32_t did = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
-                                 ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
-            const uint32_t ts  = ((uint32_t)buf[12] << 24) | ((uint32_t)buf[13] << 16) |
-                                 ((uint32_t)buf[14] << 8) | (uint32_t)buf[15];
-            xland::addCandidate(g_disc, (uint32_t)from, did, ts);
-            g_discLastCandMs = now;      // 有任何 hello 响应 ⇒ 收集窗口重新计静默
-        }
-        /*
-         * ★ [2026-11-05] 提前收尾：已经有候选且连续 kDiscQuietMs 没有新响应
-         *   ⇒ 不再死等满 kDiscCollectMs（每次操作都要重跑，省下的是纯等待）。
-         */
-        const bool quiet = (g_disc.candCount > 0) &&
-                           ((uint32_t)(now - g_discLastCandMs) >= kDiscQuietMs);
-        if (quiet || (int32_t)(now - g_discDeadline) >= 0)
-        {
-            g_discLastCollectMs = (g_discRoundStartMs != 0) ? (now - g_discRoundStartMs) : 0;
-            g_discProbeStartMs = now;
-            if (g_disc.candCount == 0)
-            {
-                /* 没有任何 UDP 响应：如实结束，绝不把旧 IP 当有效地址 */
-                g_discLastProbeMs = 0;
-                endDiscoveryRound();
-            }
-            else
-            {
-                g_disc.phase = xland::PhaseProbing;
-                g_disc.curDev = xland::kDevFeeder;
-                g_disc.candIdx = 0;
-                if (!sendAuthProbe())
-                {
-                    g_discLastProbeMs = millis() - g_discProbeStartMs;
-                    endDiscoveryRound();
-                }
-            }
-        }
+        advanceCollect(buf, len, from, now);
         return;
     }
-
-    /* ---- PhaseProbing：等当前候选的认证回包 ---- */
-    if (g_disc.probeStage == 0)
+    if (g_disc.phase == xland::PhaseAuthing)
     {
-        if (!sendAuthProbe())
-        {
-            g_discLastProbeMs = (g_discProbeStartMs != 0) ? (now - g_discProbeStartMs) : 0;
-            endDiscoveryRound();
-        }
-        return;
-    }
-
-    if (len > 32 && from == g_discProbeIp)
-    {
-        const bool ok = authReplyOk(g_disc.curDev == xland::kDevFeeder, buf, len);
-        if (xland::claimOnAuth(g_disc, g_ipCache, ok))
-        {
-            /* 只更新「本设备」的会话参数，绝不写另一台 */
-            DevInfo &target = (g_disc.curDev == xland::kDevFeeder) ? g_feeder : g_plug;
-            target.devId = g_disc.cand[g_disc.candIdx].devId;
-            target.stamp = g_disc.cand[g_disc.candIdx].stamp;
-            g_disc.curDev++;
-            g_disc.candIdx = 0;
-        }
-        else
-        {
-            xland::skipCandidate(g_disc);   // Token 不匹配 / 属性不支持 / 无 value
-        }
-    }
-    else if ((int32_t)(now - g_discDeadline) < 0)
-    {
-        return;                              // 还没超时，继续等
-    }
-    else
-    {
-        xland::skipCandidate(g_disc);        // 超时：试下一个候选，不重发同一个
-    }
-
-    if (xland::discoveryFinished(g_disc) || !sendAuthProbe())
-    {
-        g_discLastProbeMs = (g_discProbeStartMs != 0) ? (millis() - g_discProbeStartMs) : 0;
-        endDiscoveryRound();
+        advanceAuth(buf, len, from, now);
     }
 }
 
@@ -1058,6 +1422,56 @@ void finishRequest(bool feeder, bool ok)
     r.active = false;
     state_set_int(STATE_XIAOMI_LAN_LAST_RESULT, ok ? 1 : 2);
     publishDiag();
+}
+
+/*
+ * ★★ [2026-11-05 二期] 身份认证回包同时也是**一条成功的只读查询**。
+ *
+ * 认证用的就是该设备的特征属性（喂食器 2/26 out_status、插座 2/1 power），
+ * 与 `REQ_READ_*` 完全同一条报文。因此：
+ *   · 只读请求 ⇒ 认证回包就是答案，**不必再发第二条**（插座能省 ~200 ms）；
+ *   · 控制请求 ⇒ 身份已确认，用回包里的最新 stamp 立刻发真正的命令帧。
+ *
+ * 语义边界没有变：控制类仍然"设备受理 ≠ 动作完成"，结果仍由 stage2 的回包决定。
+ */
+static bool applyVerifiedReply(unsigned char dev, const Reply &r)
+{
+    const bool feeder = (dev == xland::kDevFeeder);
+    Request &rq = reqOf(feeder);
+    if (!rq.active || rq.stage != 0) return false;   // 请求已超时/已被领走
+
+    const bool isRead = (rq.kind == REQ_READ_FEEDER || rq.kind == REQ_READ_PLUG);
+    if (isRead)
+    {
+        markOk(feeder);
+        if (r.code == 0 && r.propCode == 0 && r.hasValue)
+        {
+            if (feeder) state_set_int(STATE_XIAOMI_FEEDER_OUT_STATUS, r.resultInt);
+            else        state_set_bool(STATE_XIAOMI_PLUG_POWER, r.resultBool);
+        }
+        finishRequest(feeder, true);
+        return true;
+    }
+
+    /* 控制类：用认证回包给出的 device_id / stamp 直接组命令帧。
+       stamp 用"回包 ts + 1"，与 MiLAN_Test 的 `send_ts = _device_ts + 1` 一致。 */
+    rq.dev->devId = r.devId;
+    rq.dev->stamp = r.stamp + 1;
+
+    char payload[kMaxPayload];
+    buildCommand(rq.kind, rq.portions, payload, sizeof(payload));
+    const IPAddress ip = devIp(feeder);
+    if ((uint32_t)ip != 0 && sendEncryptedTo(*rq.dev, ip, payload))
+    {
+        rq.stage = 2;
+        rq.deadline = millis() + kReplyTimeoutMs;
+        return true;
+    }
+
+    /* 连命令都发不出去 ⇒ 如实失败，绝不"假装已下发" */
+    finishRequest(feeder, false);
+    markErr(feeder, XIAOMI_ERR_TIMEOUT);
+    return false;
 }
 
 // =====================================================
@@ -1256,20 +1670,19 @@ bool startRequest(uint8_t kind, uint8_t portions, DevInfo &dev, bool feeder,
     rq.badsum0 = g_statBadChecksum;
 
     /*
-     * ★★ [2026-11-05 · 任务书 §2.1] **每一次独立操作都必须重新发现**。
+     * ★★ [2026-11-05 二期] **每一次独立操作都必须重新确认身份**。
      *
-     * 旧实现（2026-11-04）：`if (devIp()==0) 才去发现，否则直接用缓存 IP`。
-     *   ⇒ 只要本次运行周期内成功过一次，后续所有操作都复用那个 IP；
-     *     DHCP 换址后缓存"看起来仍然有效"（valid=true、非零、WiFi 也连着），
-     *     请求就会打到旧地址/别的设备上，且没有任何入口能自愈。
+     * 这里刻意不区分"有没有缓存"：两条路都必然做一次 Token 认证 ——
+     *   · 有缓存 IP ⇒ `beginOperationDiscovery()` 走单播快路径
+     *     （hello → 加密只读查询 → 解密 + id 关联，全都通过才算数）；
+     *   · 无缓存 / 验证失败 ⇒ 广播 + 并行认证。
+     * 「缓存有效就跳过验证」的捷径被彻底删除：DHCP 换址后旧地址可能
+     * 已经属于**另一台米家设备**（§2.1 的核心场景），跳过验证就是把命令
+     * 打到别人家里去。
      *
-     * 现在：无条件进入 `stage 0`（等发现），由 `beginOperationDiscovery()`
-     *   先作废该设备的 RAM IP，再发起/并入一轮广播 + Token 认证。
-     *   `dev.configured` 只表示「NVS 里有合法 Token」，与 IP 是否已知无关。
-     *
-     * 时间预算：`kDiscRequestBudgetMs`(20 s) 覆盖「广播 + 收集 + 多候选认证」，
-     *   发现成功后才发 hello（`kHelloTimeoutMs`）与命令帧（`kReplyTimeoutMs`）。
-     *   超时如实失败，绝不自动重试出粮/通断这类非幂等物理动作。
+     * 时间预算：`kDiscRequestBudgetMs`(20 s) 覆盖「单播验证 + 可能的广播回退
+     *   + 并行认证 + 命令帧（kReplyTimeoutMs）」。超时如实失败，
+     *   绝不自动重试出粮/通断这类非幂等物理动作。
      */
     rq.stage = 0;
     rq.discKick = 0;
@@ -1305,12 +1718,23 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
      */
     if (g_req.stage == 0)
     {
-        const IPAddress ip = devIp(isFeeder);
-        if ((uint32_t)ip != 0)
+        const unsigned char idx = isFeeder ? xland::kDevFeeder : xland::kDevPlug;
+
+        /*
+         * ★★ [2026-11-05 二期] 只有发现层**本次操作内**确认过身份，
+         *   `g_devReady` 才为真。缓存里"看起来有个 IP"绝不代表可以发命令 ——
+         *   那正是 DHCP 换址后把命令打到别的米家设备上的成因。
+         */
+        if (g_devReady[idx] && (uint32_t)devIp(isFeeder) != 0)
         {
-            g_req.stage = 1;
-            g_req.deadline = now + kHelloTimeoutMs;
-            if (!sendHelloTo(ip))
+            char payload[kMaxPayload];
+            buildCommand(g_req.kind, g_req.portions, payload, sizeof(payload));
+            if (sendEncryptedTo(*g_req.dev, devIp(isFeeder), payload))
+            {
+                g_req.stage = 2;
+                g_req.deadline = now + kReplyTimeoutMs;
+            }
+            else
             {
                 finishRequest(isFeeder, false);
                 markErr(isFeeder, XIAOMI_ERR_TIMEOUT);
@@ -1319,14 +1743,26 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
         }
 
         /*
-         * ★★ [2026-11-05] 有界补发现（最多 2 次）。
-         *   条件：发现层已结束（Done/Idle）但本设备仍无 IP ⇒ 要么本轮被游标
-         *   跳过、要么上一轮已失败。两种情况都值得再跑一轮，但**必须有上限**：
-         *   设备真离线时绝不允许把 20 s 预算刷成十几轮广播。
-         *   剩余预算不足 3 s 时不再补 —— 补了也来不及完成握手与命令帧。
+         * ★ 身份冲突（同一 Token 有多台设备通过认证 / 同一 IP 被两台设备认领）
+         *   ⇒ 本轮**不猜**，如实失败。下一轮从干净状态重新发现。
+         */
+        if ((g_disc.conflictMask & xland::devMask(idx)) &&
+            (g_disc.phase == xland::PhaseDone || g_disc.phase == xland::PhaseIdle))
+        {
+            finishRequest(isFeeder, false);
+            markErr(isFeeder, XIAOMI_ERR_CONFLICT);
+            return;
+        }
+
+        /*
+         * ★★ [2026-11-05] 有界补发现（每请求最多 2 次）。
+         *   发现层已结束（Done/Idle）但本设备仍未确认身份 ⇒ 要么本轮没覆盖到它
+         *   （中途加入被游标跳过），要么单播快路径刚失败。两种情况都值得再跑一轮，
+         *   但**必须有上限**：设备真离线时绝不允许把 20 s 预算刷成十几轮广播。
+         *   剩余预算不足 3 s 时不再补 —— 补了也来不及完成认证与命令帧。
          *
          *   ★ 无网络时**不计次、不补轮**（上电瞬间就在等 WiFi 的情况）：
-         *     否则 3 次空转会把额度烧光，WiFi 连上后反而不发现（真机已踩到）。
+         *     否则空转会把额度烧光，WiFi 连上后反而不发现（真机已踩到）。
          */
         if (WiFi.status() != WL_CONNECTED)
         {
@@ -1338,48 +1774,14 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
         {
             g_req.discKick++;
             g_discRetryAt = 0;
-            Serial.printf("[XiaomiLAN] stage0 re-discover dev=%s try=%u\n",
+            Serial.printf("[XiaomiLAN] stage0 re-verify dev=%s try=%u\n",
                           isFeeder ? "feeder" : "plug", (unsigned)g_req.discKick);
-            beginOperationDiscovery(isFeeder ? xland::kDevFeeder : xland::kDevPlug);
+            beginOperationDiscovery(idx);
             return;
         }
 
         if ((int32_t)(now - g_req.deadline) >= 0)
         {
-            finishRequest(isFeeder, false);
-            markErr(isFeeder, XIAOMI_ERR_TIMEOUT);
-        }
-        return;
-    }
-
-    if (g_req.stage == 1)
-    {
-        // 等握手：拿到 device_id / stamp 才能组后续密文帧
-        if (len >= 32)
-        {
-            Reply r;
-            if (parseReply(*g_req.dev, buf, len, r) && r.valid)
-            {
-                g_req.dev->devId = r.devId;
-                g_req.dev->stamp = r.stamp;
-
-                char payload[kMaxPayload];
-                buildCommand(g_req.kind, g_req.portions, payload, sizeof(payload));
-                if (sendEncryptedTo(*g_req.dev, devIp(isFeeder), payload))
-                {
-                    g_req.stage = 2;
-                    g_req.deadline = now + kReplyTimeoutMs;
-                    return;
-                }
-            }
-            finishRequest(isFeeder, false);
-            markErr(isFeeder, classifyParseFail(isFeeder));
-            return;
-        }
-        if ((int32_t)(now - g_req.deadline) >= 0)
-        {
-            // ★ 不重试：超时即如实记超时，交给上层决定
-            g_statTimeout++;
             finishRequest(isFeeder, false);
             markErr(isFeeder, XIAOMI_ERR_TIMEOUT);
         }
@@ -1425,6 +1827,18 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
                     else
                     {
                         applied = true;   // 控制类：设备受理
+                        /*
+                         * ★★ [2026-11-05 二期 · 真机验收发现] 控制类成功只代表
+                         *   「设备受理」，**不代表**物理动作完成，更不能据此改写
+                         *   缓存的 power/out_status（那会把"受理"当成"执行成功"）。
+                         *   但页面会立刻拿旧值下结论：刚点完「通电」，卡片仍写
+                         *   「已断电」—— 这是**错误的确定性**，比"未知"更糟。
+                         *
+                         *   做法：受理成功后**立刻安排一次只读确认**（REQ_READ_*），
+                         *   让 UI 在几百毫秒内收敛到设备事实。
+                         *   ★ 这不是重发控制命令：只读 get_properties，无副作用。
+                         */
+                        /* 真正的排程在下面 `g_confirmAt`（见控制类收尾处） */
                     }
                 }
 
@@ -1452,7 +1866,23 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
                 if (g_req.ok && g_req.kind == REQ_PLUG_OFF) disarmAutoOff();
                 if (g_req.ok)
                 {
-                    if (g_req.kind == REQ_PLUG_ON || g_req.kind == REQ_PLUG_OFF) forceProbe(false);
+                    if (g_req.kind == REQ_PLUG_ON || g_req.kind == REQ_PLUG_OFF)
+                    {
+                        /*
+                         * ★★ [2026-11-05 二期 · 真机验收发现] 这里**不能**用
+                         *   `forceProbe()`：它只是把 g_nextProbeMs 置 0，随后的
+                         *   `periodicProbe()` 会先把 60 s 计时打上、再调 startRequest；
+                         *   而控制类刚结束时"上一条结果还没被 workflow 领走"，
+                         *   startRequest 会**延迟不发** ⇒ 探测被白等 60 s，
+                         *   System State 里 power 一直是旧值（真机实测）。
+                         *   改成一个独立的**延时确认队列**（见 xiaomi_lan_loop），
+                         *   到点、槽空、且 startRequest 真的受理了才清标志。
+                         */
+                        g_confirmAt[isFeeder ? 0 : 1] = millis() + kConfirmReadDelayMs;
+                        Serial.printf("[XiaomiLAN] confirm read dev=%s scheduled in %ums\n",
+                                      isFeeder ? "feeder" : "plug",
+                                      (unsigned)kConfirmReadDelayMs);
+                    }
                     else if (g_req.kind == REQ_FEED) forceProbe(true);
                 }
                 return;
@@ -1487,17 +1917,21 @@ static void advanceSlot(bool feeder, uint8_t *buf, int len)
  *   （IP 来自 `g_ipCache` —— 本次运行周期里经 Token 认证确认过的 RAM 值。）
  *
  * ★ [2026-11-04] 分派优先级（发现层与请求槽共存同一个 UDP socket）：
- *     ① 来自某台**已认领 IP** 且该槽在飞 ⇒ 交给该槽；
- *     ② 否则若发现层在跑 ⇒ 交给发现层（广播 hello 响应 / 认证回包）；
+ *     ① 来自某台**已验证 IP** 且该槽处在"命令在飞"（stage>=2）⇒ 交给该槽；
+ *     ② 否则若发现层在跑（单播验证 / 广播收集 / 并行认证）⇒ 交给发现层；
  *     ③ 都不匹配 ⇒ 丢弃（仍计入 g_statRecv）。
  *   发现层每轮都被调用一次：没有属于自己的包时传 len=0，仅推进超时。
+ *
+ * ★ [2026-11-05 二期] ① 增加了 `stage >= 2` 条件：stage0 是"身份还没确认"，
+ *   此时的包属于**验证流程**，喂给请求槽会把认证回包吃掉、让验证永远超时。
  */
 void advanceRequest()
 {
     const bool feederBusy = devBusy(true);
     const bool plugBusy = devBusy(false);
-    const bool discActive = (g_disc.phase == xland::PhaseCollecting ||
-                             g_disc.phase == xland::PhaseProbing);
+    const bool discActive = (g_disc.phase == xland::PhaseVerifying ||
+                             g_disc.phase == xland::PhaseCollecting ||
+                             g_disc.phase == xland::PhaseAuthing);
     if (!feederBusy && !plugBusy && !discActive) return;
 
     uint8_t buf[kMaxFrame];
@@ -1518,11 +1952,11 @@ void advanceRequest()
     {
         const IPAddress fIp = devIp(true);
         const IPAddress pIp = devIp(false);
-        if (feederBusy && (uint32_t)fIp != 0 && from == fIp)
+        if (feederBusy && reqOf(true).stage >= 2 && (uint32_t)fIp != 0 && from == fIp)
         {
             feederLen = len;
         }
-        else if (plugBusy && (uint32_t)pIp != 0 && from == pIp)
+        else if (plugBusy && reqOf(false).stage >= 2 && (uint32_t)pIp != 0 && from == pIp)
         {
             plugLen = len;
         }
@@ -2128,13 +2562,17 @@ void xiaomi_lan_init()
     g_feeder.devId = 0; g_feeder.stamp = 0; g_feeder.configured = false;
     g_plug.devId = 0;   g_plug.stamp = 0;   g_plug.configured = false;
 
-    /* ★★ [2026-11-04] IP 缓存是纯 RAM：每次启动都从空开始，首次操作前重新发现 */
+    /* ★★ [2026-11-04] IP 缓存是纯 RAM：每次启动都从空开始，首次操作前重新验证 */
     xland::resetDiscovery(g_disc);
     xland::resetCache(g_ipCache);
-    g_discDeadline = 0;
+    g_collectDeadline = 0;
     g_discRetryAt = 0;
     g_lastLocalIp = 0;
     g_lastWifiConnected = false;
+    g_lastDevId[0] = 0;
+    g_lastDevId[1] = 0;
+    g_devReady[0] = false;
+    g_devReady[1] = false;
 
     /* ★ 只读 Token；NVS 里旧版遗留的 IP 键既不读也不删（兼容回滚） */
     loadDev(g_feeder, "f_tok");
@@ -2220,10 +2658,10 @@ void xiaomi_lan_loop()
     const uint32_t localIp = connected ? (uint32_t)WiFi.localIP() : 0;
     if (xland::networkInvalidates(g_lastWifiConnected, connected, g_lastLocalIp, localIp))
     {
+        /* invalidateIpCache() 内部已清空缓存 / 在途验证 / 候选 / device_id 基准，
+           并把 phase 收回 Idle（不伪造"正在发现"）。 */
         invalidateIpCache();
         g_discRetryAt = 0;                  // 立即允许重新发现
-        g_disc.phase = xland::PhaseIdle;    // 打断在途发现（网络已变，旧候选作废）
-        g_disc.candCount = 0;
 
         /*
          * ★★ [2026-11-05] 网络变化 ⇒ 重置 stage0 的**补发现额度与预算**。
@@ -2271,5 +2709,31 @@ void xiaomi_lan_loop()
      * ★ [2026-11-04] 发现层与请求槽共用一个 UDP socket ⇒ 只要有任一方在跑就推进。
      */
     advanceRequest();
+
+    /*
+     * ★★ [2026-11-05 二期] 延时确认读：到点 + 槽空 ⇒ 发一条**只读**刷新，
+     *   让 System State 收敛到设备事实（不重发控制命令，不改写状态值）。
+     *   12 s 内一直被拒（结果未领取/总线忙）就放弃，绝不无限重试。
+     */
+    for (uint8_t i = 0; i < 2; i++)
+    {
+        if (g_confirmAt[i] == 0) continue;
+        if ((int32_t)(millis() - g_confirmAt[i]) < 0) continue;
+        const bool fd = (i == 0);
+        if (devBusy(fd)) continue;
+        DevInfo &dv = fd ? g_feeder : g_plug;
+        if (!devEnabled(fd) || !dv.configured) { g_confirmAt[i] = 0; continue; }
+        if (startRequest(fd ? REQ_READ_FEEDER : REQ_READ_PLUG, 0, dv, fd, nullptr))
+        {
+            g_confirmAt[i] = 0;
+            Serial.printf("[XiaomiLAN] confirm read dev=%s fired\n", fd ? "feeder" : "plug");
+        }
+        else if ((uint32_t)(millis() - g_confirmAt[i]) > 12000)
+        {
+            g_confirmAt[i] = 0;
+            Serial.printf("[XiaomiLAN] confirm read dev=%s gave up (busy)\n", fd ? "feeder" : "plug");
+        }
+    }
+
     periodicProbe();
 }

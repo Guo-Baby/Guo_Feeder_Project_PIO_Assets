@@ -36,6 +36,14 @@ struct PropValue
 struct Reply
 {
     bool ok;
+    /*
+     * ★ [2026-11-05] `id` 回显：真机实测两台设备都会把请求 id 原样带回
+     *   （请求 id=1234 → 回包 id=1234）。并行认证与单播验证都用它做
+     *   「这条回包是不是回答我这次请求」的关联，从而排除跨轮次的迟到响应。
+     *   缺失（hasId=false）时上层必须判为**不可关联**，不能退化成"随便认"。
+     */
+    bool hasId;
+    int  id;
     bool hasCode;
     int  code;
     bool hasResult;
@@ -266,6 +274,8 @@ inline bool parsePropObject(const char *&p, const char *end, Reply &out)
 inline bool parseReply(const char *json, int len, Reply &out)
 {
     out.ok = false;
+    out.hasId = false;
+    out.id = 0;
     out.hasCode = false;
     out.code = 0;
     out.hasResult = false;
@@ -304,6 +314,17 @@ inline bool parseReply(const char *json, int len, Reply &out)
             if (!detail::readNumber(p, end, v)) return false;   // 类型错误 ⇒ 整帧判非法
             out.hasCode = true;
             out.code = v;
+        }
+        else if (detail::keyIs(ks, ke, "id"))
+        {
+            /*
+             * ★ [2026-11-05] 请求/响应关联字段。
+             *   只接受整数（本协议 id 恒为整数）；其它类型按"不可关联"处理，
+             *   但**不判整帧非法** —— 否则老固件/异常回包会把有效属性一起丢掉。
+             */
+            int v = 0;
+            if (detail::readNumber(p, end, v)) { out.hasId = true; out.id = v; }
+            else { if (!detail::skipValue(p, end, 1)) return false; out.hasId = false; }
         }
         else if (detail::keyIs(ks, ke, "result"))
         {
